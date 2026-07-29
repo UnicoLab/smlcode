@@ -1,6 +1,6 @@
-MODULE := github.com/piotrlaczkowski/slmcode
+MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.5.6
+VERSION ?= 0.5.7
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -45,12 +45,14 @@ uninstall-system:
 
 test:
 	go test ./...
+	@if command -v node >/dev/null 2>&1; then node cmd/slmcode/ui/markdown_node_test.js; fi
 
 # Fast board/docs tests + optional live oMLX e2e (set RUN_E2E=1)
 e2e:
 	go test ./test/e2e/ -count=1 -timeout 30m
+	@if command -v node >/dev/null 2>&1; then node cmd/slmcode/ui/markdown_node_test.js; fi
 	@if [ "$$RUN_E2E" = "1" ]; then \
-		go test ./test/e2e/ -count=1 -timeout 45m -run TestLiveOMLX; \
+		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \
 	fi
 
 studio: build

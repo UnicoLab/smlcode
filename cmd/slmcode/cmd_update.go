@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/installmeta"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/installmeta"
 )
 
 func updateCmd() *cobra.Command {

@@ -1,4 +1,4 @@
-module github.com/piotrlaczkowski/slmcode
+module github.com/UnicoLab/slmcode
 
 go 1.23.0
 

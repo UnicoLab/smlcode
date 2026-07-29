@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/agents"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/knowledge"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/server"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/knowledge"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/server"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 func TestStudioAPIAndKnowledge(t *testing.T) {

@@ -10,23 +10,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/instructions"
+	"github.com/UnicoLab/slmcode/pkg/knowledge"
+	"github.com/UnicoLab/slmcode/pkg/learning"
+	"github.com/UnicoLab/slmcode/pkg/loop"
+	"github.com/UnicoLab/slmcode/pkg/multipass"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/session"
+	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/stream"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/slmcode/pkg/agents"
-	"github.com/piotrlaczkowski/slmcode/pkg/backends"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	contextstore "github.com/piotrlaczkowski/slmcode/pkg/context"
-	"github.com/piotrlaczkowski/slmcode/pkg/instructions"
-	"github.com/piotrlaczkowski/slmcode/pkg/knowledge"
-	"github.com/piotrlaczkowski/slmcode/pkg/learning"
-	"github.com/piotrlaczkowski/slmcode/pkg/loop"
-	"github.com/piotrlaczkowski/slmcode/pkg/multipass"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/session"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
-	"github.com/piotrlaczkowski/slmcode/pkg/stream"
-	"github.com/piotrlaczkowski/slmcode/pkg/workspace"
 )
 
 // Event is streamed live to CLI + Studio (Antigravity-style progress).
@@ -53,6 +53,7 @@ type Orchestrator struct {
 	skills     *skills.Loader
 	llm        *llm.ProviderManager
 	tools      *tools.ToolRegistry
+	focus      *workspace.FocusGuard
 	factory    *agents.Factory
 	registry   *ggagent.AgentRegistry
 	executor   *ggagent.SubAgentExecutor
@@ -82,6 +83,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		filepath.Join(cfg.SlmDir(), "skills"),
 		bundledDir,
 	}
+	skillRoots = append(skillRoots, globalSkillRoots()...)
 	skillRoots = append(skillRoots, cfg.SkillsDirs...)
 	loader := skills.NewLoader(skillRoots...)
 
@@ -90,23 +92,26 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		return nil, err
 	}
 
+	var o *Orchestrator
+	focus := workspace.NewFocusGuard()
 	toolReg := tools.NewToolRegistry()
 	if err := workspace.RegisterCodingToolsOpts(toolReg, cfg.Root, workspace.ToolOpts{
 		DryRun: cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
+		Focus: focus,
+		OnFileChange: func(path, kind, detail string) {
+			if o != nil {
+				o.emitFull("execute", stream.KindFileChange, "worker", "",
+					fmt.Sprintf("%s %s", kind, path), path, detail)
+			}
+		},
 	}); err != nil {
 		return nil, err
 	}
 
-	// AgentConfig Provider must match registered name
-	providerName := cfg.Provider
-	if providerName == "mlx" {
-		providerName = "omlx"
-	}
+	// AgentConfig.Provider must match the name registered by backends.RegisterLLM.
+	providerName := config.NormalizeProvider(cfg.Provider)
+	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
-	// OpenAI-compat providers are registered as omlx/openai — ensure agent provider matches
-	if providerName == "omlx" || providerName == "openai" {
-		factory = agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
-	}
 
 	registry, err := factory.BuildRegistry()
 	if err != nil {
@@ -116,7 +121,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	exec.SetParallel(true)
 	exec.SetTimeout(cfg.TaskTimeout)
 
-	o := &Orchestrator{
+	o = &Orchestrator{
 		cfg:        cfg,
 		store:      store,
 		boardStore: boardStore,
@@ -124,6 +129,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		skills:     loader,
 		llm:        llmManager,
 		tools:      toolReg,
+		focus:      focus,
 		factory:    factory,
 		registry:   registry,
 		executor:   exec,
@@ -140,12 +146,12 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	return o, nil
 }
 
-func (o *Orchestrator) OnEvent(h EventHandler)          { o.onEvent = h }
-func (o *Orchestrator) Store() *contextstore.Store      { return o.store }
-func (o *Orchestrator) Board() *plan.LiveStore          { return o.boardStore }
-func (o *Orchestrator) Skills() *skills.Loader          { return o.skills }
-func (o *Orchestrator) Config() *config.Config          { return o.cfg }
-func (o *Orchestrator) Packer() *contextstore.Packer    { return o.packer }
+func (o *Orchestrator) OnEvent(h EventHandler)       { o.onEvent = h }
+func (o *Orchestrator) Store() *contextstore.Store   { return o.store }
+func (o *Orchestrator) Board() *plan.LiveStore       { return o.boardStore }
+func (o *Orchestrator) Skills() *skills.Loader       { return o.skills }
+func (o *Orchestrator) Config() *config.Config       { return o.cfg }
+func (o *Orchestrator) Packer() *contextstore.Packer { return o.packer }
 
 func (o *Orchestrator) Stop() {
 	o.mu.Lock()
@@ -303,9 +309,20 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		skillPack = skillPack + "\n\n## Project instructions\n\n" + truncate(instr, 6000)
 	}
 
+	// 0a Parse @file: / @folder: references from the query (Claude Code–style)
+	if refs := extractFileRefs(query); len(refs) > 0 {
+		o.shared.SetGlobal("query_file_refs", strings.Join(refs, ","))
+		discoveredEarly := plan.ReconcileFiles(o.cfg.Root, refs, refs)
+		_ = o.store.Append(contextstore.DocContext, "User file refs", "- "+strings.Join(discoveredEarly, "\n- "))
+		o.emit("init", fmt.Sprintf("attached %d file ref(s)", len(discoveredEarly)), "")
+	}
+
 	// 0b Authoritative workspace inventory — stops SLMs inventing internal/... paths
 	inventory := plan.ListWorkspaceFiles(o.cfg.Root, 48)
 	discoveredEarly := plan.DiscoverRelevantFiles(o.cfg.Root, query, "")
+	if refs := extractFileRefs(query); len(refs) > 0 {
+		discoveredEarly = plan.ReconcileFiles(o.cfg.Root, append(discoveredEarly, refs...), inventory)
+	}
 	if len(inventory) > 0 {
 		invMD := "## Workspace files (authoritative — do NOT invent paths)\n\n- " + strings.Join(inventory, "\n- ")
 		if len(discoveredEarly) > 0 {
@@ -333,12 +350,21 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 			"\n\n## Recent findings\n\n(awaiting explorer)\n\n## Workspace inventory\n\n- "+
 			strings.Join(inventory, "\n- ")+"\n")
 	}
+	// Re-assert authoritative paths after the context rewrite (SLMs often invent main.go).
 	if len(inventory) > 0 {
-		_ = o.store.Append(contextstore.DocContext, "Workspace inventory",
-			"- "+strings.Join(inventory, "\n- "))
+		invMD := "- " + strings.Join(inventory, "\n- ")
+		_ = o.store.Append(contextstore.DocContext, "Workspace inventory (authoritative)", invMD)
+		if real := plan.FilterExisting(o.cfg.Root, discoveredEarly); len(real) > 0 {
+			_ = o.store.Append(contextstore.DocContext, "Likely targets (existing files only)",
+				"- "+strings.Join(real, "\n- "))
+		}
 	}
 
-	// 2 Explore — skip deep dive when CONTEXT + FS discovery already enough
+	// 1b Ensure PROJECT.md is populated (was empty scaffold during self-use)
+	o.ensureProjectDoc(inventory)
+
+	// 2 Explore — skip deep dive when CONTEXT + FS discovery already enough.
+	// Higher think_passes forces deeper / parallel antigravity-style digs for SLMs.
 	var exploreOut string
 	deep, reason := o.shouldDeepExplore(query)
 	if !deep {
@@ -355,25 +381,63 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	} else {
 		o.emitAgent("explore", plan.RoleExplorer, "", "codebase deep-dive", "", "")
 		expPack, _ := o.packer.Build("explorer", query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor("explorer", query))
-		exploreOut, err = o.runRoleTracked(ctx, plan.RoleExplorer, "", expPack.Render()+"\nExplore for this query. Return JSON.")
-		if err != nil {
-			return nil, fmt.Errorf("explorer: %w", err)
-		}
-		_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
-		o.shared.SetGlobal("exploration", exploreOut)
-		o.shared.SetGlobal("explore_mode", "deep")
-
-		// Docs explorer when query smells like docs/API/README work
-		if wantsDocsExplorer(query) {
-			o.emitAgent("docs", "docs", "", "documentation explorer", "docs/, README*", "")
-			docsPack, _ := o.packer.Build("docs", query, []string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
-			docsOut, _ := o.runRoleTracked(ctx, "docs", "", docsPack.Render()+"\nMap docs/conventions for this query. Return JSON.")
-			if strings.TrimSpace(docsOut) != "" {
+		explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
+		needDocs := wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3
+		if needDocs && o.cfg.ThinkPasses >= 2 {
+			// Parallel deep-dives: explorer + docs simultaneously.
+			o.emit("explore", "parallel deep-dives (explorer + docs)", "")
+			type res struct {
+				role string
+				out  string
+				err  error
+			}
+			ch := make(chan res, 2)
+			go func() {
+				out, e := o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
+				ch <- res{plan.RoleExplorer, out, e}
+			}()
+			go func() {
+				o.emitAgent("docs", "docs", "", "documentation explorer", "docs/, README*", "")
+				docsPack, _ := o.packer.Build("docs", query, []string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
+				out, e := o.runRoleTracked(ctx, "docs", "", docsPack.Render()+"\nMap docs/conventions for this query. Return JSON.")
+				ch <- res{"docs", out, e}
+			}()
+			var docsOut string
+			for i := 0; i < 2; i++ {
+				r := <-ch
+				if r.role == plan.RoleExplorer {
+					exploreOut, err = r.out, r.err
+				} else if strings.TrimSpace(r.out) != "" {
+					docsOut = r.out
+				}
+			}
+			if err != nil {
+				return nil, fmt.Errorf("explorer: %w", err)
+			}
+			if docsOut != "" {
 				_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
 				exploreOut += "\n\n" + docsOut
 				o.shared.SetGlobal("docs_exploration", docsOut)
 			}
+		} else {
+			exploreOut, err = o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
+			if err != nil {
+				return nil, fmt.Errorf("explorer: %w", err)
+			}
+			if wantsDocsExplorer(query) {
+				o.emitAgent("docs", "docs", "", "documentation explorer", "docs/, README*", "")
+				docsPack, _ := o.packer.Build("docs", query, []string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
+				docsOut, _ := o.runRoleTracked(ctx, "docs", "", docsPack.Render()+"\nMap docs/conventions for this query. Return JSON.")
+				if strings.TrimSpace(docsOut) != "" {
+					_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
+					exploreOut += "\n\n" + docsOut
+					o.shared.SetGlobal("docs_exploration", docsOut)
+				}
+			}
 		}
+		_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
+		o.shared.SetGlobal("exploration", exploreOut)
+		o.shared.SetGlobal("explore_mode", "deep")
 	}
 
 	// 2b Architect pass for larger / design-ish queries
@@ -400,6 +464,28 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if err != nil {
 		return nil, fmt.Errorf("planner: %w", err)
 	}
+	// SLM planning depth: critique + refine when think_passes >= 2
+	if o.cfg.ThinkPasses >= 2 {
+		o.emitAgent("plan", plan.RoleReviewer, "", "plan critique pass", "", "")
+		critiquePrompt := "You critique a coding plan for a small local model.\n" +
+			"Check: missing files, oversized tasks, unclear acceptance criteria, wrong order, skipped tests.\n" +
+			"Query:\n" + query + "\n\nPlan JSON:\n" + truncate(planOut, 6000) +
+			"\n\nReturn STRICT JSON: {\"ok\":bool,\"issues\":[string],\"revised_summary\":string,\"hints\":[string]}"
+		critique, _ := o.runRoleTracked(ctx, plan.RoleReviewer, "", critiquePrompt)
+		if strings.TrimSpace(critique) != "" {
+			_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
+			o.emitFull("plan", stream.KindOutput, plan.RoleReviewer, "", "plan critique", "", truncate(critique, 1000))
+			if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
+				!strings.Contains(strings.ToLower(critique), `"ok":true`) {
+				o.emitAgent("plan", plan.RolePlanner, "", "refining plan from critique", "", "")
+				refine := planPrompt + "\n\n## Critique to address\n" + truncate(critique, 3000) +
+					"\n\nRevise the plan. Keep it atomic for an SLM. Return STRICT JSON plan."
+				if refined, rerr := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
+					planOut = refined
+				}
+			}
+		}
+	}
 	pl, _ := plan.ParsePlanJSON(planOut)
 	if strings.TrimSpace(pl.Summary) == "" {
 		pl.Summary = firstSentence(planOut)
@@ -411,7 +497,11 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// 4 Split
 	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
 	splitPack, _ := o.packer.Build("splitter", query, contextstore.DefaultDocsForRole("splitter"), nil, o.skillPackFor("splitter", query))
-	tasksOut, err := o.runRoleMultipassTracked(ctx, "splitter", "", splitPack.Render()+"\nPlan:\n"+planOut+"\n\nReturn STRICT JSON tasks.")
+	splitPrompt := splitPack.Render() + "\nPlan:\n" + planOut + "\n\nReturn STRICT JSON tasks."
+	if o.cfg.ThinkPasses >= 2 {
+		splitPrompt += "\nPrefer ≤6 tiny tasks, each with clear files + acceptance checks. Include a tester task when code changes."
+	}
+	tasksOut, err := o.runRoleMultipassTracked(ctx, "splitter", "", splitPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("splitter: %w", err)
 	}
@@ -429,6 +519,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	for i := range tasks {
 		tasks[i].Files = plan.ReconcileFiles(o.cfg.Root, tasks[i].Files, discovered)
+		// Keep persisted descriptions lean — scoped packs are injected at execute time.
+		tasks[i].Description = loop.StripScopedPack(tasks[i].Description)
+	}
+	if len(tasks) > 8 {
+		o.emit("split", fmt.Sprintf("capping tasks %d → 8 for SLM efficiency", len(tasks)), "")
+		tasks = tasks[:8]
 	}
 
 	board := &plan.Board{Plan: pl, Tasks: tasks}
@@ -448,12 +544,18 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
 	o.emit("execute", fmt.Sprintf("%d tasks · parallel=%d · think_passes=%d", len(board.Tasks), o.cfg.MaxParallel, o.cfg.ThinkPasses), "")
+	// Clear focus during planning; runner re-enables per execute wave.
+	if o.focus != nil {
+		o.focus.Clear()
+	}
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
 	runner.Store = o.boardStore
+	runner.Focus = o.focus
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.Timeout = o.cfg.TaskTimeout
+	runner.FailureHandler = loop.NewEnhancedFailureHandler(o.cfg.Root)
 	runner.Log = func(format string, args ...interface{}) {
 		o.emit("execute", fmt.Sprintf(format, args...), "")
 	}
@@ -464,18 +566,21 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.coordinate(ctx, query, board, "after-wave")
 	}
-	// Enrich descriptions with scoped packs once
+	// Ephemeral scoped packs — never persist fat context into TASKS.md / board descriptions.
+	// Workers get lean docs + tight file excerpts for faster SLM inference.
+	runner.BuildInput = func(t plan.Task) string {
+		lean := loop.StripScopedPack(t.Description)
+		docs := contextstore.LeanDocsForRole(t.Role)
+		tp, _ := o.packer.Build(t.Role, query, docs, t.Files, o.skillPackFor(t.Role, query))
+		tp.TaskID = t.ID
+		tp.TaskTitle = t.Title
+		t.Description = tp.Render() + "\n## Task instructions\n\n" + lean
+		return formatWorkerPromptFor(t)
+	}
 	snap := o.boardStore.Snapshot()
 	board = &snap
 	for i := range board.Tasks {
-		t := board.Tasks[i]
-		tp, _ := o.packer.Build(t.Role, query, contextstore.DefaultDocsForRole(t.Role), t.Files, o.skillPackFor(t.Role, query))
-		tp.TaskID = t.ID
-		tp.TaskTitle = t.Title
-		if !strings.Contains(t.Description, "# Scoped context") {
-			t.Description = tp.Render() + "\n## Task instructions\n\n" + t.Description
-		}
-		board.Tasks[i] = t
+		board.Tasks[i].Description = loop.StripScopedPack(board.Tasks[i].Description)
 	}
 	o.persistBoard(board)
 
@@ -495,6 +600,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
 		o.emitFull("test", stream.KindOutput, plan.RoleTester, "", "tester output", "", truncate(testOut, 1200))
 	}
+
+	// 6b Iterate-until-green QA gate (configurable command + max rounds)
+	o.runQAGate(ctx, query, board)
 
 	// 7 Memory — consolidate wave lessons + SLM distillation
 	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
@@ -520,11 +628,14 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if ev, err := knowledge.Evolve(o.cfg.SlmDir(), query, board, lessonsMD, skillList); err == nil && ev != nil {
 		o.emitFull("skills", stream.KindLearn, "memory", "",
 			fmt.Sprintf("updated %s + %s", ev.SkillsIndex, ev.LearnedSkill), "", "")
-		// Reload skills so next packs see learned/
-		o.skills = skills.NewLoader(append([]string{
+		// Reload skills so next packs see learned/ + global skill roots
+		roots := []string{
 			filepath.Join(o.cfg.SlmDir(), "skills"),
 			filepath.Join(o.cfg.SlmDir(), "skills", "_bundled"),
-		}, o.cfg.SkillsDirs...)...)
+		}
+		roots = append(roots, globalSkillRoots()...)
+		roots = append(roots, o.cfg.SkillsDirs...)
+		o.skills = skills.NewLoader(roots...)
 	}
 
 	_ = o.store.Append(contextstore.DocContext, "Run complete", summarize(board, pl))
@@ -540,6 +651,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		ID: runID, Query: query, Summary: res.Summary, Success: res.Success, Board: *board,
 	}); err == nil {
 		o.emit("session", "saved "+filepath.Base(path), "")
+		if arch, aerr := session.Archive(o.cfg.SlmDir(), runID, query, res.Summary); aerr == nil && arch != "" {
+			o.emit("session", "archived "+filepath.Base(arch), "")
+		}
 	}
 	o.emit("done", res.Summary, "")
 	return res, nil
@@ -634,6 +748,10 @@ func (o *Orchestrator) shouldDeepExplore(query string) (doDeep bool, reason stri
 	if os.Getenv("SLMCODE_FORCE_EXPLORE") == "1" {
 		return true, ""
 	}
+	// Deeper SLM planning: think_passes>=3 always digs; >=2 digs on non-trivial queries.
+	if o.cfg != nil && o.cfg.ThinkPasses >= 3 {
+		return true, ""
+	}
 	ctxDoc, _ := o.store.Read(contextstore.DocContext)
 	memDoc, _ := o.store.Read(contextstore.DocMemory)
 	projDoc, _ := o.store.Read(contextstore.DocProject)
@@ -641,6 +759,9 @@ func (o *Orchestrator) shouldDeepExplore(query string) (doDeep bool, reason stri
 	rich := len(ctxDoc) > 500 && (strings.Contains(ctxDoc, "Discovered files") || strings.Contains(ctxDoc, "Wave"))
 	hasFiles := len(discovered) > 0
 	hasMemory := len(memDoc) > 200 || len(projDoc) > 200
+	if o.cfg != nil && o.cfg.ThinkPasses >= 2 && (wantsForceExplore(query) || len(strings.Fields(query)) > 8 || !rich) {
+		return true, ""
+	}
 	if rich && hasFiles && hasMemory && !wantsForceExplore(query) {
 		return false, fmt.Sprintf("reusing CONTEXT/MEMORY + %d known file(s) — skip deep explore", len(discovered))
 	}
@@ -675,9 +796,9 @@ func (o *Orchestrator) applyCoordinatorActions(board *plan.Board, raw string) {
 		Text   string `json:"text"`
 	}
 	var wrap struct {
-		Actions     []action `json:"actions"`
-		FocusFiles  []string `json:"focus_files"`
-		Summary     string   `json:"summary"`
+		Actions    []action `json:"actions"`
+		FocusFiles []string `json:"focus_files"`
+		Summary    string   `json:"summary"`
 	}
 	raw = strings.TrimSpace(raw)
 	if i := strings.Index(raw, "{"); i >= 0 {
@@ -715,9 +836,22 @@ func (o *Orchestrator) applyCoordinatorActions(board *plan.Board, raw string) {
 			if strings.TrimSpace(a.Text) == "" {
 				continue
 			}
+			title := firstSentence(a.Text)
+			if taskTitleExists(board, title) {
+				o.emit("coord", "skip duplicate task: "+title, "")
+				continue
+			}
+			if openTaskCoversFiles(board, wrap.FocusFiles) {
+				o.emit("coord", "skip overlapping task for focus files: "+title, "")
+				continue
+			}
+			if len(board.Tasks) >= 12 {
+				o.emit("coord", "task cap reached — skip add_task", "")
+				continue
+			}
 			id := board.NextID()
 			nt := plan.Task{
-				ID: id, Title: firstSentence(a.Text), Description: a.Text,
+				ID: id, Title: title, Description: a.Text,
 				Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: wrap.FocusFiles,
 			}
 			if a.Role != "" {
@@ -765,22 +899,11 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		o.shared.SetGlobal("latest_lessons", md)
 	}
 
-	// Refresh scoped packs for remaining ready/pending work with latest CONTEXT/MEMORY
+	// Keep descriptions lean; BuildInput injects fresh packs at execute time.
 	for i := range board.Tasks {
 		t := board.Tasks[i]
 		t.Normalize()
-		if t.Column != plan.ColReadyToDev && t.Column != plan.ColToScope && t.Column != plan.ColScoped {
-			continue
-		}
-		// Strip previous scoped header if present
-		desc := t.Description
-		if idx := strings.Index(desc, "## Task instructions"); idx >= 0 {
-			desc = strings.TrimSpace(desc[idx+len("## Task instructions"):])
-		}
-		tp, _ := o.packer.Build(t.Role, query, contextstore.DefaultDocsForRole(t.Role), t.Files, o.skillPackFor(t.Role, query))
-		tp.TaskID = t.ID
-		tp.TaskTitle = t.Title
-		t.Description = tp.Render() + "\n## Task instructions\n\n" + desc
+		t.Description = loop.StripScopedPack(t.Description)
 		board.Tasks[i] = t
 	}
 }
@@ -894,8 +1017,17 @@ func InitWorkspace(root string, cfg *config.Config) error {
 		return err
 	}
 	_ = os.MkdirAll(cfg.SkillsDir(), 0o755)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "errors"), 0o755)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "archives"), 0o755)
 	// Materialize bundled skills only — CONTEXT/PLAN/TASKS stay empty until agents write them.
 	_ = skills.MaterializeBundled(filepath.Join(cfg.SlmDir(), "skills", "_bundled"))
+	// Seed PROJECT.md from README / go.mod / layout so agents always have context.
+	seeded := contextstore.SeedProjectMarkdown(root, filepath.Base(root))
+	if cur, err := store.Read(contextstore.DocProject); err != nil || contextstore.ProjectNeedsSeed(cur) {
+		_ = store.Write(contextstore.DocProject, seeded)
+	} else {
+		_ = store.Write(contextstore.DocProject, contextstore.MergeProjectSections(cur, seeded))
+	}
 	// Empty board.json so Studio/CLI have a writable board (no seeded tasks).
 	boardPath := filepath.Join(cfg.SlmDir(), "board.json")
 	if _, err := os.Stat(boardPath); os.IsNotExist(err) {
@@ -905,6 +1037,162 @@ func InitWorkspace(root string, cfg *config.Config) error {
 		}
 	}
 	return cfg.Save()
+}
+
+func (o *Orchestrator) ensureProjectDoc(inventory []string) {
+	cur, _ := o.store.Read(contextstore.DocProject)
+	seeded := contextstore.SeedProjectMarkdown(o.cfg.Root, filepath.Base(o.cfg.Root))
+	if contextstore.ProjectNeedsSeed(cur) {
+		if len(inventory) > 0 {
+			// Enrich key paths from live inventory when seed table is thin.
+			seeded = contextstore.MergeProjectSections(seeded, seeded)
+		}
+		_ = o.store.Write(contextstore.DocProject, seeded)
+		o.emit("context", "seeded PROJECT.md from repository metadata", "")
+		return
+	}
+	merged := contextstore.MergeProjectSections(cur, seeded)
+	if merged != cur {
+		_ = o.store.Write(contextstore.DocProject, merged)
+		o.emit("context", "refreshed empty PROJECT.md sections", "")
+	}
+}
+
+func globalSkillRoots() []string {
+	var roots []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots,
+			filepath.Join(home, ".slmcode", "skills"),
+			filepath.Join(home, ".config", "slmcode", "skills"),
+		)
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		roots = append(roots, filepath.Join(xdg, "slmcode", "skills"))
+	}
+	return roots
+}
+
+func taskTitleExists(board *plan.Board, title string) bool {
+	norm := strings.ToLower(strings.TrimSpace(title))
+	if norm == "" {
+		return false
+	}
+	for _, t := range board.Tasks {
+		other := strings.ToLower(strings.TrimSpace(t.Title))
+		if other == norm {
+			return true
+		}
+		if strings.Contains(other, norm) || strings.Contains(norm, other) {
+			// Near-duplicate titles from coordinator spam.
+			if abs(len(other)-len(norm)) <= 12 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// openTaskCoversFiles reports whether a non-done board task already targets the
+// same focus files (coordinator often re-adds the splitter's work).
+func openTaskCoversFiles(board *plan.Board, files []string) bool {
+	if board == nil || len(files) == 0 {
+		return false
+	}
+	want := map[string]bool{}
+	for _, f := range files {
+		f = filepath.ToSlash(strings.TrimSpace(f))
+		if f != "" {
+			want[strings.ToLower(f)] = true
+		}
+	}
+	if len(want) == 0 {
+		return false
+	}
+	for _, t := range board.Tasks {
+		t.Normalize()
+		switch t.Column {
+		case plan.ColDone, plan.ColBlocked:
+			continue
+		}
+		for _, f := range t.Files {
+			f = filepath.ToSlash(strings.TrimSpace(f))
+			if want[strings.ToLower(f)] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func extractFileRefs(query string) []string {
+	var out []string
+	seen := map[string]bool{}
+	fields := strings.Fields(query)
+	for _, f := range fields {
+		f = strings.Trim(f, "`,\"'")
+		var path string
+		switch {
+		case strings.HasPrefix(f, "@file:"):
+			path = strings.TrimPrefix(f, "@file:")
+		case strings.HasPrefix(f, "@folder:"):
+			path = strings.TrimPrefix(f, "@folder:")
+		case strings.HasPrefix(f, "@") && strings.Contains(f, "/") && !strings.HasPrefix(f, "@skill:"):
+			path = strings.TrimPrefix(f, "@")
+		default:
+			continue
+		}
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+func formatWorkerPromptFor(t plan.Task) string {
+	// Keep ephemeral scoped packs (injected by BuildInput); only strip when absent.
+	desc := t.Description
+	if !strings.Contains(desc, "# Scoped context") {
+		desc = loop.StripScopedPack(desc)
+	}
+	var b strings.Builder
+	b.WriteString("Atomic task — complete only this:\n\n")
+	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
+	b.WriteString(desc)
+	b.WriteString("\n")
+	if len(t.Files) > 0 {
+		b.WriteString("\n## Focus files (HARD SCOPE)\nOnly edit these paths or files in the same package directory:\n- ")
+		b.WriteString(strings.Join(t.Files, "\n- "))
+		b.WriteString("\nDo NOT create main.go / index.js / other entrypoints unless listed above.\n")
+	}
+	if t.Acceptance != "" {
+		b.WriteString("\nAcceptance criteria:\n")
+		b.WriteString(t.Acceptance)
+		b.WriteString("\n")
+	}
+	if t.Notes != "" {
+		b.WriteString("\nHuman notes:\n")
+		b.WriteString(t.Notes)
+		b.WriteString("\n")
+	}
+	b.WriteString(`
+## Required finish
+1. Use ws_read / ws_edit / ws_patch / ws_write on focus files only.
+2. Prefer small patches; never invent unrelated new files.
+3. End with STRICT JSON only:
+{"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}
+Never claim done without tool edits. Never end on a tool call.
+`)
+	return b.String()
 }
 
 func ensureHeading(body, heading string) string {

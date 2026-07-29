@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 func TestExtractAndRender(t *testing.T) {

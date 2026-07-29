@@ -6,8 +6,8 @@ import (
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/workspace"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // RoleSpec describes a specialist sub-agent.

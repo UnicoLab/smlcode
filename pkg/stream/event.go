@@ -11,6 +11,7 @@ const (
 	KindLearn      = "learn"
 	KindOutput     = "output"
 	KindTool       = "tool"
+	KindFileChange = "file_change" // partial apply / ws_edit / ws_write / ws_patch
 )
 
 // Event is a live progress unit streamed to CLI + Studio SSE.

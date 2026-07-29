@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	contextstore "github.com/piotrlaczkowski/slmcode/pkg/context"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 func TestInitWorkspaceNoSeedsAgentsWillPopulate(t *testing.T) {

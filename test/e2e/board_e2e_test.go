@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	contextstore "github.com/piotrlaczkowski/slmcode/pkg/context"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 func TestWorkspaceInitAndBoardCRUD(t *testing.T) {

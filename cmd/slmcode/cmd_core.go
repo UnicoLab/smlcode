@@ -10,17 +10,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/server"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/server"
 )
 
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Create .slmcode/ memory, board.json, config (oMLX defaults)",
+		Short: "Create .slmcode/ memory, board.json, config (provider/model overridable)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
@@ -91,14 +91,17 @@ func runCmd() *cobra.Command {
 			fmt.Println(cli.Bold("Query: ") + query)
 			fmt.Println()
 
+			status := cli.NewStatusTracker()
 			h.Orchestrator.OnEvent(func(e orchestrator.Event) {
-				cli.PrintEvent(e)
+				cli.PrintEventWithStatus(e, status)
 			})
 
 			res, err := h.Run(ctx, query)
 			if err != nil {
 				return err
 			}
+			fmt.Println()
+			fmt.Println(status.Footer())
 			fmt.Println()
 			if res.Success {
 				fmt.Println(cli.Success(res.Summary))
@@ -108,8 +111,9 @@ func runCmd() *cobra.Command {
 			cli.KeyVal("duration", res.Duration.Round(time.Millisecond).String())
 			cli.KeyVal("failed", fmt.Sprintf("%d", res.FailedTasks))
 			cli.KeyVal("board", h.Config.SlmDir()+"/board.json")
+			cli.KeyVal("errors", h.Config.SlmDir()+"/errors/errors.md")
 			if !res.Success {
-				return fmt.Errorf("run finished with failures — inspect board / promote blocked tasks")
+				return fmt.Errorf("run finished with failures — inspect board / promote escalated tasks")
 			}
 			return nil
 		},
@@ -189,7 +193,7 @@ func versionCmd() *cobra.Command {
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(cli.Accent("slmcode") + " " + cli.Bold(Version))
-			fmt.Println(cli.Dim("SLM engine · GoLangGraph specialists · oMLX default"))
+			fmt.Println(cli.Dim("SLM engine · GoLangGraph specialists · any OpenAI-compatible provider"))
 			if p, err := os.Executable(); err == nil {
 				if real, err2 := filepath.EvalSymlinks(p); err2 == nil {
 					p = real

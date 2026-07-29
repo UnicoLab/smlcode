@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 // Lesson is a durable takeaway for MEMORY.md / future packs.

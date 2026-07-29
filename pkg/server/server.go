@@ -13,25 +13,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/agents"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	contextstore "github.com/piotrlaczkowski/slmcode/pkg/context"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 // Server exposes the SLMCode Studio API + optional embedded web UI.
 type Server struct {
-	h        *harness.Harness
-	mux      *http.ServeMux
-	ui       fs.FS
-	mu       sync.Mutex
-	events   []orchestrator.Event
-	lastRes  *orchestrator.Result
-	running  bool
-	subs     map[chan orchestrator.Event]struct{}
+	h       *harness.Harness
+	mux     *http.ServeMux
+	ui      fs.FS
+	mu      sync.Mutex
+	events  []orchestrator.Event
+	lastRes *orchestrator.Result
+	running bool
+	subs    map[chan orchestrator.Event]struct{}
 }
 
 func New(h *harness.Harness, ui fs.FS) *Server {
@@ -540,7 +540,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	cfg.ResolveAPIKey()
 	endpoint := strings.TrimRight(cfg.Endpoint, "/")
 	url := endpoint + "/models"
-	if cfg.Provider == "ollama" {
+	if config.IsOllama(cfg.Provider) {
 		base := strings.TrimSuffix(endpoint, "/v1")
 		url = strings.TrimRight(base, "/") + "/api/tags"
 	} else if !strings.HasSuffix(endpoint, "/v1") {
@@ -640,4 +640,3 @@ func spaHandler(fileServer http.Handler) http.Handler {
 		fileServer.ServeHTTP(w, r)
 	})
 }
-

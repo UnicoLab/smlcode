@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/config"
 )
 
 // ClaudeCodeRunner optionally shells out to the Claude Code CLI for a scoped task.

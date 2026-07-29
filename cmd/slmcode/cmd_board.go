@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 func boardCmd() *cobra.Command {

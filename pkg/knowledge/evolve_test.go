@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 func TestEvolveWritesSkillsAndLearned(t *testing.T) {

@@ -39,6 +39,173 @@ function checklistProgress(t) {
   return [list.filter((x) => x.done).length, list.length];
 }
 
+const PROVIDER_PRESETS = [
+  { id: "omlx", label: "omlx (local)" },
+  { id: "ollama", label: "ollama" },
+  { id: "openai", label: "openai" },
+  { id: "lmstudio", label: "lmstudio" },
+  { id: "openrouter", label: "openrouter" },
+  { id: "vllm", label: "vllm" },
+  { id: "litellm", label: "litellm" },
+  { id: "together", label: "together" },
+  { id: "groq", label: "groq" },
+  { id: "deepseek", label: "deepseek" },
+  { id: "custom", label: "custom (OpenAI-compat)" },
+];
+
+/** Lightweight markdown → HTML for Studio docs (no CDN). */
+function renderMarkdown(src) {
+  const esc = (s) => String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => {
+    let t = esc(s);
+    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    return t;
+  };
+  const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  let inCode = false;
+  let codeBuf = [];
+  let listBuf = [];
+  const flushList = () => {
+    if (!listBuf.length) return;
+    out.push("<ul>" + listBuf.map((x) => "<li>" + inline(x) + "</li>").join("") + "</ul>");
+    listBuf = [];
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        out.push("<pre><code>" + esc(codeBuf.join("\n")) + "</code></pre>");
+        codeBuf = [];
+        inCode = false;
+      } else {
+        flushList();
+        inCode = true;
+      }
+      i++;
+      continue;
+    }
+    if (inCode) {
+      codeBuf.push(line);
+      i++;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      listBuf.push(line.replace(/^\s*[-*]\s+/, ""));
+      i++;
+      continue;
+    }
+    flushList();
+    if (/^###\s+/.test(line)) out.push("<h3>" + inline(line.replace(/^###\s+/, "")) + "</h3>");
+    else if (/^##\s+/.test(line)) out.push("<h2>" + inline(line.replace(/^##\s+/, "")) + "</h2>");
+    else if (/^#\s+/.test(line)) out.push("<h1>" + inline(line.replace(/^#\s+/, "")) + "</h1>");
+    else if (/^>\s?/.test(line)) out.push("<blockquote>" + inline(line.replace(/^>\s?/, "")) + "</blockquote>");
+    else if (/^---+$/.test(line.trim())) out.push("<hr/>");
+    else if (line.trim() === "") out.push("");
+    else out.push("<p>" + inline(line) + "</p>");
+    i++;
+  }
+  flushList();
+  if (inCode) out.push("<pre><code>" + esc(codeBuf.join("\n")) + "</code></pre>");
+  return out.join("\n");
+}
+
+function DepGraph({ tasks }) {
+  const list = tasks || [];
+  if (!list.length) return null;
+  const idIndex = {};
+  list.forEach((t, i) => { idIndex[t.id] = i; });
+  const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(list.length))));
+  const nodeW = 120;
+  const nodeH = 52;
+  const gapX = 36;
+  const gapY = 28;
+  const positions = list.map((_, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    return { x: 16 + col * (nodeW + gapX), y: 16 + row * (nodeH + gapY) };
+  });
+  const width = 16 + cols * (nodeW + gapX);
+  const rows = Math.ceil(list.length / cols);
+  const height = 16 + rows * (nodeH + gapY);
+  const edges = [];
+  list.forEach((t, i) => {
+    (t.depends_on || []).forEach((dep) => {
+      const j = idIndex[dep];
+      if (j == null) return;
+      const a = positions[j];
+      const b = positions[i];
+      edges.push({
+        x1: a.x + nodeW,
+        y1: a.y + nodeH / 2,
+        x2: b.x,
+        y2: b.y + nodeH / 2,
+        key: dep + "->" + t.id,
+      });
+    });
+  });
+  return (
+    <div className="dep-graph-flow" title="Task dependency graph">
+      <div className="dep-graph-label">Dependencies</div>
+      <svg className="dep-svg" width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMinYMin meet">
+        <defs>
+          <marker id="depArrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)" />
+          </marker>
+        </defs>
+        {edges.map((e) => (
+          <line key={e.key} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+            stroke="var(--accent)" strokeOpacity="0.55" strokeWidth="1.5" markerEnd="url(#depArrow)" />
+        ))}
+        {list.map((t, i) => {
+          const p = positions[i];
+          return (
+            <g key={t.id} className={"dep-flow-node " + (t.column || "")}>
+              <rect x={p.x} y={p.y} width={nodeW} height={nodeH} rx="8"
+                className={"dep-flow-rect " + (t.column || "")} />
+              <text x={p.x + 10} y={p.y + 20} className="dep-flow-id">{t.id}</text>
+              <text x={p.x + 10} y={p.y + 38} className="dep-flow-role">@{t.role || "worker"}</text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function MarkdownDocEditor({ value, onChange, onSave, title }) {
+  const [mode, setMode] = useState("split"); // edit | preview | split
+  return (
+    <>
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>{title}</h3>
+        <div className="row">
+          {["edit", "split", "preview"].map((m) => (
+            <button key={m} className={"sm" + (mode === m ? "" : " ghost")} onClick={() => setMode(m)}>{m}</button>
+          ))}
+          <button className="sm" onClick={onSave}>Save</button>
+        </div>
+      </div>
+      <p className="lead" style={{ fontSize: "0.78rem", marginTop: 0 }}>
+        Shared memory — save anytime; next agent wave picks it up.
+      </p>
+      <div className={"md-shell mode-" + mode}>
+        {mode !== "preview" && (
+          <textarea className="doc-editor" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+        )}
+        {mode !== "edit" && (
+          <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
+        )}
+      </div>
+    </>
+  );
+}
+
 function App() {
   const [health, setHealth] = useState(null);
   const [config, setConfig] = useState(null);
@@ -65,8 +232,18 @@ function App() {
   const [pinSkills, setPinSkills] = useState([]);
   const [skillDraft, setSkillDraft] = useState({ name: "", description: "", agents: "worker", body: "" });
   const [skillEdit, setSkillEdit] = useState(null);
+  const [activeTask, setActiveTask] = useState(null);
+  const [taskHistory, setTaskHistory] = useState([]);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [streamPaused, setStreamPaused] = useState(false);
+  const [fileRef, setFileRef] = useState("");
+  const liveEndRef = useRef(null);
+  const streamPausedRef = useRef(false);
+  const autoScrollRef = useRef(true);
   const selectedRef = useRef(null);
   selectedRef.current = selected;
+  streamPausedRef.current = streamPaused;
+  autoScrollRef.current = autoScroll;
 
   const showToast = (msg) => {
     setToast(msg);
@@ -133,7 +310,10 @@ function App() {
     es.onmessage = (msg) => {
       try {
         const e = JSON.parse(msg.data);
-        setEvents((prev) => [...prev.slice(-400), e]);
+        setEvents((prev) => {
+          if (streamPausedRef.current) return prev;
+          return [...prev.slice(-400), e];
+        });
         setPhase(e.phase || "idle");
         if (e.agent || e.kind === "agent_start" || e.kind === "agent_end" || e.kind === "output") {
           setLiveAgent({
@@ -144,6 +324,18 @@ function App() {
             message: e.message,
             output: e.output,
             time: e.time,
+          });
+          if (e.task_id) setActiveTask(e.task_id);
+          setTaskHistory((prev) => {
+            const row = {
+              id: e.task_id || e.phase,
+              agent: e.agent || e.phase,
+              kind: e.kind,
+              message: e.message,
+              scope: e.scope,
+              time: e.time || new Date().toISOString(),
+            };
+            return [...prev.slice(-80), row];
           });
         }
         // Don't mark running=true on every SSE replay (would flash READY→RUNNING after finished runs)
@@ -169,6 +361,13 @@ function App() {
       .then((d) => setDoc(d.content || ""))
       .catch((e) => setErr(String(e.message || e)));
   }, [tab]);
+
+  useEffect(() => {
+    if (!autoScrollRef.current || streamPausedRef.current) return;
+    if (liveEndRef.current) {
+      liveEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [events]);
 
   async function startRun() {
     setErr("");
@@ -259,7 +458,13 @@ function App() {
   async function saveConfig(patch) {
     const next = await api("/api/config", { method: "PUT", body: JSON.stringify({ ...config, ...patch }) });
     setConfig(next);
-    showToast("Config saved");
+    if (patch.provider || patch.endpoint || patch.model) {
+      try {
+        const mods = await api("/api/models");
+        setModels(Array.isArray(mods.models) ? mods.models : []);
+      } catch (_) { /* offline provider is fine */ }
+    }
+    showToast("Config saved — " + (next.provider || "?") + " / " + (next.model || "?"));
   }
 
   const byColumn = useMemo(() => {
@@ -301,9 +506,24 @@ function App() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Tell SLMCode what to do…  (@skill:name works)  Enter to run"
+            placeholder="Tell SLMCode what to do…  (@skill:name  @file:path/to.go)  Enter to run"
             aria-label="Task for SLMCode"
             onKeyDown={(e) => e.key === "Enter" && !running && query.trim() && startRun()}
+          />
+          <input
+            className="file-ref-input"
+            value={fileRef}
+            onChange={(e) => setFileRef(e.target.value)}
+            placeholder="@file…"
+            title="Add a file/folder reference to the query"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && fileRef.trim()) {
+                const ref = fileRef.trim().startsWith("@") ? fileRef.trim() : "@file:" + fileRef.trim();
+                setQuery((q) => (q ? q + " " : "") + ref);
+                setFileRef("");
+                showToast("Added " + ref);
+              }
+            }}
           />
           {!running ? (
             <button className="primary" disabled={!query.trim()} onClick={startRun} title="Start the pipeline">Run</button>
@@ -394,36 +614,112 @@ function App() {
                   ? "Agents are working — this updates in real time."
                   : "Press Run above. Progress, agent names, and file scope appear here."}
               </p>
-              {liveAgent && (
-                <div className="live-agent">
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <strong>@{liveAgent.agent || "…"}</strong>
-                    <span className="phase">{liveAgent.kind || "phase"}</span>
+
+              {/* Agent Status Dashboard */}
+              <div className="agent-status-dashboard">
+                {liveAgent && (
+                  <div className="agent-card">
+                    <div className="agent-card-header">
+                      <div className="agent-card-title">
+                        <div className="agent-icon">@{liveAgent.agent || "…"}</div>
+                        <span style={{ marginLeft: "0.5rem" }}>@{liveAgent.agent || "unknown"}</span>
+                      </div>
+                      <div className="agent-card-role">
+                        {liveAgent.kind || "phase"}
+                        {liveAgent.kind === "agent_start" ? (
+                          <span className="status-indicator running" style={{ marginLeft: "0.5rem" }}></span>
+                        ) : liveAgent.kind === "agent_end" ? (
+                          <span className="status-indicator succeeded" style={{ marginLeft: "0.5rem" }}></span>
+                        ) : (
+                          <span className="status-indicator idle" style={{ marginLeft: "0.5rem" }}></span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="agent-card-body">
+                      <div style={{ color: "var(--text)", marginBottom: "0.3rem" }}>
+                        <strong>Current Status:</strong> {liveAgent.message}
+                      </div>
+                      {liveAgent.task && (
+                        <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
+                          <strong>Task:</strong> {liveAgent.task}
+                        </div>
+                      )}
+                      {liveAgent.scope && (
+                        <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
+                          <strong>Scope:</strong> {liveAgent.scope}
+                        </div>
+                      )}
+                      {liveAgent.output && (
+                        <div>
+                          <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
+                            <strong>Output:</strong>
+                          </div>
+                          <pre className="output-box" style={{ marginTop: "0.3rem", maxHeight: "120px" }}>{liveAgent.output}</pre>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ color: "var(--muted)", marginTop: 4 }}>{liveAgent.message}</div>
-                  {liveAgent.task && <div className="id">{liveAgent.task}</div>}
-                  {liveAgent.scope && <div style={{ marginTop: 4 }}><span style={{ color: "var(--accent)" }}>scope</span> {liveAgent.scope}</div>}
-                  {liveAgent.output && <pre className="output-box" style={{ marginTop: 8, maxHeight: 180 }}>{liveAgent.output}</pre>}
-                </div>
-              )}
-              <ul className="event-list">
-                {events.slice().reverse().map((e, i) => (
-                  <li key={i}>
-                    <span className="phase">{e.kind || e.phase}</span>
-                    {e.agent ? <strong>@{e.agent} </strong> : null}
-                    {e.task_id ? <span className="id">{e.task_id} </span> : null}
-                    {e.message}
-                    {e.scope ? <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>scope: {e.scope}</div> : null}
-                    {e.output ? <pre className="mini-out">{e.output.slice(0, 500)}</pre> : null}
-                  </li>
-                ))}
-                {!events.length && (
-                  <li className="empty-state" style={{ listStyle: "none" }}>
-                    <strong>Waiting for a run</strong>
-                    <p>Type a task up top and press <em>Run</em>.</p>
-                  </li>
                 )}
-              </ul>
+              </div>
+
+              {/* Live stream — chronological, auto-scroll, pause */}
+              <div className="event-history">
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <h3 style={{ margin: 0 }}>Live stream</h3>
+                  <div className="row">
+                    <button className={"sm" + (autoScroll ? "" : " ghost")} onClick={() => setAutoScroll((v) => !v)} title="Auto-scroll to latest">
+                      {autoScroll ? "↓ Live scroll" : "Scroll paused"}
+                    </button>
+                    <button className={"sm" + (streamPaused ? "" : " ghost")} onClick={() => setStreamPaused((v) => !v)} title="Pause appending events">
+                      {streamPaused ? "▶ Resume" : "⏸ Pause"}
+                    </button>
+                    <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); }}>Clear</button>
+                  </div>
+                </div>
+                {taskHistory.length > 0 && (
+                  <div className="observability-strip">
+                    {taskHistory.slice(-8).map((h, i) => (
+                      <div key={i} className={"obs-chip " + (h.kind || "")} title={h.message}>
+                        <span className="obs-agent">@{h.agent || "?"}</span>
+                        <span className="obs-task">{h.id || "—"}</span>
+                        <span className="obs-kind">{h.kind || "phase"}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(board.tasks || []).length > 0 && <DepGraph tasks={board.tasks} />}
+                <ul className="event-list live-stream">
+                  {events.map((e, i) => (
+                    <li key={i} className={"event-item kind-" + (e.kind || e.phase || "phase")}>
+                      <div className="event-header">
+                        <span className="phase">{e.kind || e.phase}</span>
+                        {e.agent ? <strong className="agent-name">@{e.agent}</strong> : null}
+                        {e.task_id ? <span className="id">{e.task_id}</span> : null}
+                      </div>
+                      <div className="event-content">
+                        <div className="event-message">{e.message}</div>
+                        {e.scope ? (
+                          <div style={{ color: "var(--muted)", fontSize: "0.75rem", marginTop: "0.2rem" }}>
+                            {e.kind === "file_change" ? "file: " : "scope: "}{e.scope}
+                          </div>
+                        ) : null}
+                        {e.kind === "file_change" && e.output ? (
+                          <pre className="file-patch-card">{String(e.output).slice(0, 600)}{String(e.output).length > 600 ? "…" : ""}</pre>
+                        ) : e.output ? (
+                          <pre className="mini-out" style={{ marginTop: "0.3rem" }}>{String(e.output).slice(0, 400)}{String(e.output).length > 400 ? "…" : ""}</pre>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                  <li ref={liveEndRef} style={{ listStyle: "none", height: 1, margin: 0, padding: 0 }} />
+                  {!events.length && (
+                    <li className="empty-state" style={{ listStyle: "none" }}>
+                      <strong>Waiting for a run</strong>
+                      <p>Type a task up top and press <em>Run</em>. Live scroll follows the latest agent action.</p>
+                    </li>
+                  )}
+                </ul>
+              </div>
             </>
           )}
 
@@ -576,13 +872,34 @@ function App() {
                           }}
                           onDragEnd={() => { setDragging(""); setDragOver(""); }}
                         >
-                          <div className="id">{t.id} · @{t.role}</div>
+                          <div className="card-header">
+                            <div className="id">{t.id}</div>
+                            <div className="role-badge">@{t.role}</div>
+                          </div>
                           <strong>{t.title}</strong>
-                          {total > 0 && (
-                            <div style={{ color: "var(--muted)", marginTop: 3, fontSize: "0.72rem" }}>
-                              ✓ {done}/{total}
-                            </div>
-                          )}
+                          <div className="card-footer">
+                            {t.depends_on && t.depends_on.length > 0 && (
+                              <div className="dependencies">
+                                <span style={{ color: "var(--warn)", fontSize: "0.7rem" }}>deps: {t.depends_on.join(", ")}</span>
+                              </div>
+                            )}
+                            {total > 0 && (
+                              <div style={{ color: "var(--muted)", marginTop: "0.2rem", fontSize: "0.7rem" }}>
+                                ✓ {done}/{total} completed
+                              </div>
+                            )}
+                            {t.status && t.status !== "pending" && (
+                              <div style={{
+                                color: t.status === "done" ? "var(--success)" :
+                                       t.status === "failed" ? "var(--bad)" :
+                                       t.status === "in_progress" ? "var(--accent)" : "var(--warn)",
+                                fontSize: "0.7rem",
+                                marginTop: "0.2rem"
+                              }}>
+                                Status: {t.status}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -686,22 +1003,55 @@ function App() {
                 <p style={{ color: "var(--muted)" }}>Loading settings…</p>
               ) : (
               <div className="settings">
-                <h3>Model & quality</h3>
+                <h3>Model & provider</h3>
+                <p className="lead" style={{ fontSize: "0.75rem", marginTop: 0 }}>
+                  Any OpenAI-compatible endpoint works — oMLX, Ollama, LM Studio, cloud OpenAI, OpenRouter, vLLM, …
+                </p>
                 <label>Provider
-                  <select value={config.provider} onChange={(e) => saveConfig({ provider: e.target.value })}>
-                    <option value="omlx">omlx</option>
-                    <option value="ollama">ollama</option>
-                    <option value="openai">openai</option>
-                  </select>
-                </label>
-                <label>Model
-                  <select value={config.model || ""} onChange={(e) => saveConfig({ model: e.target.value })}>
-                    {[config.model, ...models.filter((m) => m && m !== config.model)].filter(Boolean).map((m) => (
-                      <option key={m} value={m}>{m}</option>
+                  <select
+                    value={PROVIDER_PRESETS.some((p) => p.id === config.provider) ? config.provider : "custom"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "custom") {
+                        const name = prompt("Provider name (OpenAI-compatible gateway id)", config.provider || "custom");
+                        if (name) saveConfig({ provider: name });
+                        return;
+                      }
+                      saveConfig({ provider: v });
+                    }}
+                  >
+                    {PROVIDER_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
                     ))}
                   </select>
                 </label>
-                <label>Endpoint<input defaultValue={config.endpoint} onBlur={(e) => saveConfig({ endpoint: e.target.value })} /></label>
+                {!PROVIDER_PRESETS.some((p) => p.id === config.provider) && (
+                  <label>Custom provider id
+                    <input defaultValue={config.provider} onBlur={(e) => e.target.value && saveConfig({ provider: e.target.value })} />
+                  </label>
+                )}
+                <label>Model
+                  <input
+                    list="model-list"
+                    defaultValue={config.model || ""}
+                    key={"model-" + (config.model || "")}
+                    onBlur={(e) => e.target.value && saveConfig({ model: e.target.value })}
+                    placeholder="model id served by your provider"
+                  />
+                  <datalist id="model-list">
+                    {[config.model, ...models.filter((m) => m && m !== config.model)].filter(Boolean).map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </label>
+                <label>Endpoint
+                  <input
+                    defaultValue={config.endpoint}
+                    key={"ep-" + (config.endpoint || "")}
+                    onBlur={(e) => saveConfig({ endpoint: e.target.value })}
+                    placeholder="http://127.0.0.1:8000/v1"
+                  />
+                </label>
                 <label>Backend
                   <select value={config.backend} onChange={(e) => saveConfig({ backend: e.target.value })}>
                     <option value="slmcode">slmcode specialists</option>
@@ -736,12 +1086,33 @@ function App() {
                     </select>
                   </label>
                 )}
-                <label>Think passes (quality)
+                <label>Think passes (planning depth)
                   <input type="number" min={1} max={5} defaultValue={config.think_passes} onBlur={(e) => saveConfig({ think_passes: Number(e.target.value) })} />
                 </label>
                 <label>Max parallel<input type="number" min={1} max={8} defaultValue={config.max_parallel} onBlur={(e) => saveConfig({ max_parallel: Number(e.target.value) })} /></label>
                 <label>Review retries<input type="number" min={0} max={5} defaultValue={config.max_retries} onBlur={(e) => saveConfig({ max_retries: Number(e.target.value) })} /></label>
                 <label>Context budget KB<input type="number" min={4} max={64} defaultValue={config.max_context_kb} onBlur={(e) => saveConfig({ max_context_kb: Number(e.target.value) })} /></label>
+                <h3 style={{ marginTop: 14 }}>QA gate</h3>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!config.qa_gate}
+                    onChange={(e) => saveConfig({ qa_gate: e.target.checked })}
+                  />
+                  Iterate until tests pass
+                </label>
+                <label>QA command
+                  <input
+                    defaultValue={config.qa_gate_command || ""}
+                    key={"qacmd-" + (config.qa_gate_command || "")}
+                    placeholder="auto (go test ./… -short, npm test, …)"
+                    onBlur={(e) => saveConfig({ qa_gate_command: e.target.value })}
+                  />
+                </label>
+                <label>QA max rounds
+                  <input type="number" min={1} max={8} defaultValue={config.qa_gate_max_rounds || 3}
+                    onBlur={(e) => saveConfig({ qa_gate_max_rounds: Number(e.target.value) })} />
+                </label>
                 <label>Permission
                   <select
                     value={config.permission || (config.dry_run ? "dry-run" : "auto")}
@@ -755,16 +1126,7 @@ function App() {
               </div>
               )
             ) : (
-              <>
-                <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-                  <h3 style={{ margin: 0 }}>{tab}</h3>
-                  <button className="sm" onClick={saveDoc}>Save</button>
-                </div>
-                <p className="lead" style={{ fontSize: "0.78rem", marginTop: 0 }}>
-                  Shared memory — save anytime; next agent wave picks it up.
-                </p>
-                <textarea className="doc-editor" value={doc} onChange={(e) => setDoc(e.target.value)} spellCheck={false} />
-              </>
+              <MarkdownDocEditor title={tab} value={doc} onChange={setDoc} onSave={saveDoc} />
             )}
           </div>
         </aside>
@@ -775,7 +1137,27 @@ function App() {
           <span className={"pulse" + (running ? " live" : "")} />
           {health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : "…"}
         </span>
-        <span>{running ? `● ${phase}` : "ready"}{counts.blocked ? ` · ${counts.blocked} blocked` : ""}</span>
+        <span className="footer-live">
+          {running ? `● ${phase}` : "ready"}
+          {liveAgent?.agent ? ` · @${liveAgent.agent}` : ""}
+          {activeTask ? ` · ${activeTask}` : ""}
+          {counts.doing ? ` · ${counts.doing} active` : ""}
+          {counts.done ? ` · ${counts.done} done` : ""}
+          {counts.blocked ? ` · ${counts.blocked} blocked` : ""}
+        </span>
+        <span className="footer-actions">
+          {running && (
+            <button className="sm danger" onClick={async () => {
+              try {
+                await api("/api/runs/stop", { method: "POST", body: "{}" });
+                setRunning(false);
+                showToast("Stopped");
+              } catch (e) {
+                setErr(String(e.message || e));
+              }
+            }}>Stop run</button>
+          )}
+        </span>
       </footer>
 
       {toast && <div className="toast">{toast}</div>}

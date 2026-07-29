@@ -4,10 +4,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	contextstore "github.com/piotrlaczkowski/slmcode/pkg/context"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 // Workspace is a lightweight handle for board/docs/skills without starting LLMs.

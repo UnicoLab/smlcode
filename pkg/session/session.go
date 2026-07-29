@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 // Session is a resumable run snapshot (Claude Code–style).
@@ -80,4 +80,55 @@ func List(slmDir string) ([]Session, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
 	return out, nil
+}
+
+// Archive writes a human-readable markdown snapshot under .slmcode/archives/
+// so completed queries keep a separate history thread per project.
+func Archive(slmDir, runID, query, summary string) (string, error) {
+	dir := filepath.Join(slmDir, "archives")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	if runID == "" {
+		runID = fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	stamp := time.Now().Format("20060102_150405")
+	path := filepath.Join(dir, fmt.Sprintf("%s_%s.md", stamp, sanitizeID(runID)))
+
+	// Bundle key docs for the archive thread.
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("# Archive %s\n\n", runID))
+	b.WriteString(fmt.Sprintf("**When:** %s\n\n", time.Now().Format(time.RFC3339)))
+	b.WriteString("## Query\n\n")
+	b.WriteString(strings.TrimSpace(query))
+	b.WriteString("\n\n## Summary\n\n")
+	b.WriteString(strings.TrimSpace(summary))
+	b.WriteString("\n\n")
+	for _, name := range []string{"PLAN.md", "TASKS.md", "MEMORY.md", "CONTEXT.md", "PROJECT.md"} {
+		data, err := os.ReadFile(filepath.Join(slmDir, name))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		body := string(data)
+		if len(body) > 12000 {
+			body = body[:12000] + "\n…\n"
+		}
+		b.WriteString("## " + name + "\n\n")
+		b.WriteString(body)
+		b.WriteString("\n\n")
+	}
+	return path, os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func sanitizeID(id string) string {
+	id = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, id)
+	if len(id) > 48 {
+		return id[:48]
+	}
+	return id
 }

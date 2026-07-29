@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 )
 
 // TestLiveOMLXPipeline runs a tiny real pipeline against local oMLX.

@@ -11,11 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/session"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/session"
 )
 
 func chatCmd() *cobra.Command {
@@ -45,11 +45,13 @@ Any other line runs the full SLM pipeline.`,
 			runLine := func(q string) error {
 				ctx, cancel := signalContext()
 				defer cancel()
-				h.Orchestrator.OnEvent(func(e orchestrator.Event) { cli.PrintEvent(e) })
+				status := cli.NewStatusTracker()
+				h.Orchestrator.OnEvent(func(e orchestrator.Event) { cli.PrintEventWithStatus(e, status) })
 				res, err := h.Run(ctx, q)
 				if err != nil {
 					return err
 				}
+				fmt.Println(status.Footer())
 				if res.Success {
 					fmt.Println(cli.Success(res.Summary))
 				} else {

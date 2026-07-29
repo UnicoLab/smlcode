@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/permissions"
+	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,12 +19,68 @@ const (
 	DefaultEndpoint = "http://127.0.0.1:8000/v1"
 	DefaultModel    = "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"
 
-	DefaultMaxRetries   = 2
-	DefaultMaxParallel  = 3
-	DefaultThinkPasses  = 2
-	DefaultMaxContextKB = 16
-	DefaultTaskTimeout  = 5 * time.Minute
+	DefaultMaxRetries   = 4
+	DefaultMaxParallel  = 2
+	DefaultThinkPasses  = 1
+	DefaultMaxContextKB = 32
+	DefaultTaskTimeout  = 12 * time.Minute
+	DefaultQAGateRounds = 3
 )
+
+// NormalizeProvider canonicalizes provider aliases.
+// Unknown names are kept (treated as OpenAI-compatible gateways).
+func NormalizeProvider(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	switch p {
+	case "", "default":
+		return DefaultProvider
+	case "mlx":
+		return "omlx"
+	case "openai-compatible", "openai_compat", "openai-compat", "openai_compatible":
+		return "openai"
+	case "lm-studio", "lm_studio":
+		return "lmstudio"
+	default:
+		return p
+	}
+}
+
+// IsOllama reports whether the provider uses the native Ollama API.
+func IsOllama(p string) bool {
+	return NormalizeProvider(p) == "ollama"
+}
+
+// IsOpenAICompat reports whether the provider speaks OpenAI Chat Completions.
+// Everything except Ollama is treated as OpenAI-compatible.
+func IsOpenAICompat(p string) bool {
+	return !IsOllama(p)
+}
+
+// DefaultEndpointFor returns a sensible base URL for well-known providers.
+func DefaultEndpointFor(provider string) string {
+	switch NormalizeProvider(provider) {
+	case "ollama":
+		return "http://127.0.0.1:11434"
+	case "lmstudio":
+		return "http://127.0.0.1:1234/v1"
+	case "openai":
+		return "https://api.openai.com/v1"
+	case "openrouter":
+		return "https://openrouter.ai/api/v1"
+	case "groq":
+		return "https://api.groq.com/openai/v1"
+	case "together":
+		return "https://api.together.xyz/v1"
+	case "deepseek":
+		return "https://api.deepseek.com/v1"
+	case "fireworks":
+		return "https://api.fireworks.ai/inference/v1"
+	case "vllm", "litellm", "custom":
+		return "http://127.0.0.1:8000/v1"
+	default: // omlx and unknown local gateways
+		return DefaultEndpoint
+	}
+}
 
 // Backend selects the execution engine.
 const (
@@ -42,7 +98,10 @@ const (
 type Config struct {
 	Root string `yaml:"root" json:"root"`
 
-	Provider string `yaml:"provider" json:"provider"` // omlx | ollama | openai
+	// Provider selects the LLM backend. Built-ins: omlx | ollama | openai |
+	// lmstudio | openrouter | vllm | litellm | together | groq | deepseek | …
+	// Any other name is treated as an OpenAI-compatible gateway (set endpoint).
+	Provider string `yaml:"provider" json:"provider"`
 	Endpoint string `yaml:"endpoint" json:"endpoint"`
 	APIKey   string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	Model    string `yaml:"model" json:"model"`
@@ -63,6 +122,11 @@ type Config struct {
 	MaxContextKB int           `yaml:"max_context_kb" json:"max_context_kb"`
 	ThinkPasses  int           `yaml:"think_passes" json:"think_passes"`
 	TaskTimeout  time.Duration `yaml:"task_timeout" json:"task_timeout"`
+
+	// QAGate runs an iterate-until-green test command after the board finishes.
+	QAGate          bool   `yaml:"qa_gate" json:"qa_gate"`
+	QAGateCommand   string `yaml:"qa_gate_command" json:"qa_gate_command"` // empty = auto-detect
+	QAGateMaxRounds int    `yaml:"qa_gate_max_rounds" json:"qa_gate_max_rounds"`
 
 	DryRun      bool `yaml:"dry_run" json:"dry_run"`
 	Verbose     bool `yaml:"verbose" json:"verbose"`
@@ -86,22 +150,24 @@ func Default(root string) *Config {
 		root, _ = os.Getwd()
 	}
 	return &Config{
-		Root:          root,
-		Provider:      DefaultProvider,
-		Endpoint:      DefaultEndpoint,
-		Model:         DefaultModel,
-		Backend:       BackendSLMCode,
-		Mode:          ModeFull,
-		Temperature:   0.2,
-		MaxTokens:     4096,
-		MaxRetries:    DefaultMaxRetries,
-		MaxParallel:   DefaultMaxParallel,
-		MaxContextKB:  DefaultMaxContextKB,
-		ThinkPasses:   DefaultThinkPasses,
-		TaskTimeout:   DefaultTaskTimeout,
-		Listen:        "127.0.0.1:7420",
-		ClaudeCodeBin: "claude",
-		Permission:    "auto",
+		Root:            root,
+		Provider:        DefaultProvider,
+		Endpoint:        DefaultEndpoint,
+		Model:           DefaultModel,
+		Backend:         BackendSLMCode,
+		Mode:            ModeFull,
+		Temperature:     0.2,
+		MaxTokens:       4096,
+		MaxRetries:      DefaultMaxRetries,
+		MaxParallel:     DefaultMaxParallel,
+		MaxContextKB:    DefaultMaxContextKB,
+		ThinkPasses:     DefaultThinkPasses,
+		TaskTimeout:     DefaultTaskTimeout,
+		QAGate:          true,
+		QAGateMaxRounds: DefaultQAGateRounds,
+		Listen:          "127.0.0.1:7420",
+		ClaudeCodeBin:   "claude",
+		Permission:      "auto",
 	}
 }
 
@@ -109,7 +175,7 @@ func (c *Config) SlmDir() string     { return filepath.Join(c.Root, DirName) }
 func (c *Config) ConfigPath() string { return filepath.Join(c.SlmDir(), "config.yaml") }
 func (c *Config) SkillsDir() string  { return filepath.Join(c.SlmDir(), "skills") }
 
-// ResolveAPIKey fills API key from env or ~/.omlx/settings.json when using omlx.
+// ResolveAPIKey fills API key from env or provider-specific stores.
 func (c *Config) ResolveAPIKey() {
 	if c.APIKey != "" {
 		return
@@ -118,18 +184,67 @@ func (c *Config) ResolveAPIKey() {
 		c.APIKey = v
 		return
 	}
-	if v := os.Getenv("OMLX_API_KEY"); v != "" {
-		c.APIKey = v
-		return
-	}
-	if c.Provider == "omlx" || c.Provider == "" {
+	p := NormalizeProvider(c.Provider)
+	switch p {
+	case "omlx":
+		if v := os.Getenv("OMLX_API_KEY"); v != "" {
+			c.APIKey = v
+			return
+		}
 		if k := readOmlxAPIKey(); k != "" {
 			c.APIKey = k
 		}
+	case "openai":
+		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	case "openrouter":
+		if v := os.Getenv("OPENROUTER_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	case "groq":
+		if v := os.Getenv("GROQ_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	case "together":
+		if v := os.Getenv("TOGETHER_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	case "deepseek":
+		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	default:
+		// Generic OpenAI-compat gateways often reuse OPENAI_API_KEY.
+		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+			c.APIKey = v
+			return
+		}
+		if v := os.Getenv("OMLX_API_KEY"); v != "" {
+			c.APIKey = v
+		}
 	}
-	if c.Provider == "openai" {
-		c.APIKey = os.Getenv("OPENAI_API_KEY")
+}
+
+// ApplyEnv overlays SLMCODE_* / OPENAI_BASE_URL env vars onto the config.
+// Call after Load (or Default) and before flag overrides.
+func (c *Config) ApplyEnv() {
+	if v := os.Getenv("SLMCODE_PROVIDER"); v != "" {
+		c.Provider = v
 	}
+	if v := os.Getenv("SLMCODE_MODEL"); v != "" {
+		c.Model = v
+	}
+	if v := os.Getenv("SLMCODE_ENDPOINT"); v != "" {
+		c.Endpoint = v
+	} else if v := os.Getenv("OPENAI_BASE_URL"); v != "" && IsOpenAICompat(c.Provider) {
+		c.Endpoint = v
+	}
+	if v := os.Getenv("SLMCODE_BACKEND"); v != "" {
+		c.Backend = v
+	}
+	normalize(c)
+	c.ResolveAPIKey()
 }
 
 func readOmlxAPIKey() string {
@@ -158,7 +273,7 @@ func Load(root string) (*Config, error) {
 	data, err := os.ReadFile(cfg.ConfigPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			cfg.ResolveAPIKey()
+			cfg.ApplyEnv()
 			return cfg, nil
 		}
 		return nil, err
@@ -170,7 +285,7 @@ func Load(root string) (*Config, error) {
 		cfg.Root = root
 	}
 	normalize(cfg)
-	cfg.ResolveAPIKey()
+	cfg.ApplyEnv()
 	return cfg, nil
 }
 
@@ -191,15 +306,9 @@ func (c *Config) Save() error {
 }
 
 func normalize(c *Config) {
-	if c.Provider == "" {
-		c.Provider = DefaultProvider
-	}
+	c.Provider = NormalizeProvider(c.Provider)
 	if c.Endpoint == "" {
-		if c.Provider == "ollama" {
-			c.Endpoint = "http://127.0.0.1:11434"
-		} else {
-			c.Endpoint = DefaultEndpoint
-		}
+		c.Endpoint = DefaultEndpointFor(c.Provider)
 	}
 	if c.Model == "" {
 		c.Model = DefaultModel
@@ -235,6 +344,9 @@ func normalize(c *Config) {
 	if c.TaskTimeout <= 0 {
 		c.TaskTimeout = DefaultTaskTimeout
 	}
+	if c.QAGateMaxRounds <= 0 {
+		c.QAGateMaxRounds = DefaultQAGateRounds
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7420"
 	}
@@ -251,21 +363,24 @@ func normalize(c *Config) {
 
 // Patch is a partial config update. Nil fields are left unchanged.
 type Patch struct {
-	Model        *string  `json:"model,omitempty"`
-	Provider     *string  `json:"provider,omitempty"`
-	Endpoint     *string  `json:"endpoint,omitempty"`
-	Backend      *string  `json:"backend,omitempty"`
-	Mode         *string  `json:"mode,omitempty"`
-	Specialist   *string  `json:"specialist,omitempty"`
-	PinnedSkills *[]string `json:"pinned_skills,omitempty"`
-	ThinkPasses  *int     `json:"think_passes,omitempty"`
-	MaxParallel  *int     `json:"max_parallel,omitempty"`
-	MaxRetries   *int     `json:"max_retries,omitempty"`
-	MaxContextKB *int     `json:"max_context_kb,omitempty"`
-	DryRun       *bool    `json:"dry_run,omitempty"`
-	Verbose      *bool    `json:"verbose,omitempty"`
-	Permission   *string  `json:"permission,omitempty"`
-	Listen       *string  `json:"listen,omitempty"`
+	Model           *string   `json:"model,omitempty"`
+	Provider        *string   `json:"provider,omitempty"`
+	Endpoint        *string   `json:"endpoint,omitempty"`
+	Backend         *string   `json:"backend,omitempty"`
+	Mode            *string   `json:"mode,omitempty"`
+	Specialist      *string   `json:"specialist,omitempty"`
+	PinnedSkills    *[]string `json:"pinned_skills,omitempty"`
+	ThinkPasses     *int      `json:"think_passes,omitempty"`
+	MaxParallel     *int      `json:"max_parallel,omitempty"`
+	MaxRetries      *int      `json:"max_retries,omitempty"`
+	MaxContextKB    *int      `json:"max_context_kb,omitempty"`
+	QAGate          *bool     `json:"qa_gate,omitempty"`
+	QAGateCommand   *string   `json:"qa_gate_command,omitempty"`
+	QAGateMaxRounds *int      `json:"qa_gate_max_rounds,omitempty"`
+	DryRun          *bool     `json:"dry_run,omitempty"`
+	Verbose         *bool     `json:"verbose,omitempty"`
+	Permission      *string   `json:"permission,omitempty"`
+	Listen          *string   `json:"listen,omitempty"`
 }
 
 // ApplyPatch merges a partial update and re-normalizes permission/dry-run.
@@ -273,10 +388,26 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.Model != nil && *p.Model != "" {
 		c.Model = *p.Model
 	}
+	prevProvider := NormalizeProvider(c.Provider)
+	prevDefaultEP := DefaultEndpointFor(prevProvider)
+	providerChanged := false
 	if p.Provider != nil && *p.Provider != "" {
-		c.Provider = *p.Provider
+		next := NormalizeProvider(*p.Provider)
+		if next != prevProvider {
+			providerChanged = true
+		}
+		c.Provider = next
 	}
-	if p.Endpoint != nil && *p.Endpoint != "" {
+	if providerChanged {
+		// Refresh endpoint unless the caller sent a non-default override.
+		explicit := p.Endpoint != nil && *p.Endpoint != "" &&
+			*p.Endpoint != prevDefaultEP && *p.Endpoint != c.Endpoint
+		if explicit {
+			c.Endpoint = *p.Endpoint
+		} else {
+			c.Endpoint = DefaultEndpointFor(c.Provider)
+		}
+	} else if p.Endpoint != nil && *p.Endpoint != "" {
 		c.Endpoint = *p.Endpoint
 	}
 	if p.Backend != nil && *p.Backend != "" {
@@ -302,6 +433,15 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.MaxContextKB != nil && *p.MaxContextKB > 0 {
 		c.MaxContextKB = *p.MaxContextKB
+	}
+	if p.QAGate != nil {
+		c.QAGate = *p.QAGate
+	}
+	if p.QAGateCommand != nil {
+		c.QAGateCommand = strings.TrimSpace(*p.QAGateCommand)
+	}
+	if p.QAGateMaxRounds != nil && *p.QAGateMaxRounds > 0 {
+		c.QAGateMaxRounds = *p.QAGateMaxRounds
 	}
 	if p.Verbose != nil {
 		c.Verbose = *p.Verbose

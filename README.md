@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.6-14b8a6?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.7-14b8a6?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -109,11 +109,43 @@ slmcode run --skill atomic-coding "Refactor helpers"
 slmcode config set dry_run false
 ```
 
+### Provider & model (any OpenAI-compatible endpoint)
+
+Defaults target local oMLX, but nothing is hard-wired. Switch freely via flags, env, config, or Studio Settings:
+
+```bash
+# OpenAI cloud
+slmcode run --provider openai --model gpt-4o-mini \
+  --endpoint https://api.openai.com/v1 --api-key "$OPENAI_API_KEY" "…"
+
+# Ollama
+slmcode run --provider ollama --model qwen2.5-coder:14b \
+  --endpoint http://127.0.0.1:11434 "…"
+
+# LM Studio / vLLM / any OpenAI-compat gateway
+slmcode run --provider lmstudio --model local-coder \
+  --endpoint http://127.0.0.1:1234/v1 "…"
+
+# Env overrides (applied on every command)
+export SLMCODE_PROVIDER=openrouter
+export SLMCODE_MODEL=anthropic/claude-3.5-sonnet
+export SLMCODE_ENDPOINT=https://openrouter.ai/api/v1
+export SLMCODE_API_KEY=…   # or OPENAI_API_KEY / provider-specific *_API_KEY
+
+# Persist in the project
+slmcode config set provider ollama
+slmcode config set model qwen2.5-coder:14b
+slmcode config set endpoint http://127.0.0.1:11434
+slmcode doctor               # shows active provider + model + reachability
+```
+
+`provider` may be any name: known presets (`omlx`, `ollama`, `openai`, `lmstudio`, `openrouter`, `vllm`, `litellm`, `together`, `groq`, `deepseek`, …) or a custom id. Non-Ollama providers use the OpenAI Chat Completions API at `endpoint` (auto-appends `/v1` when needed).
+
 ## CLI
 
 | Command | Purpose |
 |---------|---------|
-| `init` / `doctor` / `config` | Workspace + oMLX health |
+| `init` / `doctor` / `config` | Workspace + active provider/model health |
 | `run -v` | Full pipeline with live agent stream |
 | `chat` | Interactive REPL |
 | `board` / `watch` | Colored kanban |
@@ -128,18 +160,21 @@ slmcode config set dry_run false
 |-------|---------|
 | Query bar | Start / stop runs |
 | Pipeline strip | Live phases including coord / learn |
-| Live tab | Current **@agent**, **scope**, **output** |
+| Live tab | Current **@agent**, **scope**, **file patches**, **output** |
 | Kanban | Drag-and-drop; edit mid-run |
-| Docs | CONTEXT / MEMORY / SKILLS.md / PLAN… |
-| Settings | Model picker, think passes, parallel, dry-run |
+| Docs | Markdown edit / preview / split |
+| Settings | Provider + model + endpoint, QA gate, think passes |
 
 ## Develop & test
 
 ```bash
-make tidy && make test
-make install
-RUN_E2E=1 go test ./test/e2e/ -run TestLiveOMLX -timeout 45m -v
+make tidy && make test          # unit + race-friendly pkgs + Studio JS smoke
+make e2e                        # API/UI interaction + isolated board sandbox
+make install / make install-system
+RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
+
+Engine notes (0.5.7+): focus-file write allowlists (blocks out-of-scope `main.go`), lean worker context packs, smarter ready-task scheduling, evidence + scope gates, Studio Live HTTP/JS interaction tests.
 
 Local layout during development:
 
@@ -151,7 +186,7 @@ Local layout during development:
 ## Embed
 
 ```go
-import "github.com/piotrlaczkowski/slmcode/pkg/harness"
+import "github.com/UnicoLab/slmcode/pkg/harness"
 
 h, _ := harness.New("/path/to/project")
 _ = h.Init()

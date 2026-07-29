@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 // Evolved is the result of a knowledge write-back.
@@ -46,12 +46,92 @@ func Evolve(slmDir string, query string, board *plan.Board, lessonsMD string, sk
 	}
 	out.LearnedSkill = "skills/learned/SKILL.md"
 
+	proj := filepath.Join(slmDir, "PROJECT.md")
 	if note := projectNote(query, board); note != "" {
-		proj := filepath.Join(slmDir, "PROJECT.md")
 		_ = appendSection(proj, "Auto-learned", note)
 		out.ProjectNote = note
 	}
+	// Also merge durable key-path hints into the scaffold sections when still empty.
+	_ = enrichProjectScaffold(proj, query, board)
 	return out, nil
+}
+
+func enrichProjectScaffold(projPath, query string, board *plan.Board) error {
+	prev, err := os.ReadFile(projPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	body := string(prev)
+	if body == "" {
+		return nil
+	}
+	files := projectFiles(board)
+	if len(files) == 0 {
+		return nil
+	}
+	// Fill blank key-path table rows.
+	if strings.Contains(body, "| | |") || strings.Contains(body, "|  |  |") {
+		var rows strings.Builder
+		rows.WriteString("| Path | Role |\n|------|------|\n")
+		for i, f := range files {
+			if i >= 10 {
+				break
+			}
+			rows.WriteString(fmt.Sprintf("| %s | touched by recent run |\n", f))
+		}
+		body = replaceMDSection(body, "Key paths", rows.String())
+	}
+	if overviewEmpty(body) && strings.TrimSpace(query) != "" {
+		body = replaceMDSection(body, "Overview", firstLine(query))
+	}
+	return os.WriteFile(projPath, []byte(body), 0o644)
+}
+
+func projectFiles(board *plan.Board) []string {
+	if board == nil {
+		return nil
+	}
+	var files []string
+	seen := map[string]bool{}
+	for _, t := range board.Tasks {
+		t.Normalize()
+		if t.Column != plan.ColDone {
+			continue
+		}
+		for _, f := range t.Files {
+			if !seen[f] {
+				seen[f] = true
+				files = append(files, f)
+			}
+		}
+	}
+	return files
+}
+
+func overviewEmpty(body string) bool {
+	i := strings.Index(body, "## Overview")
+	if i < 0 {
+		return true
+	}
+	rest := body[i+len("## Overview"):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest) == ""
+}
+
+func replaceMDSection(md, heading, body string) string {
+	marker := "## " + heading
+	i := strings.Index(md, marker)
+	if i < 0 {
+		return strings.TrimRight(md, "\n") + "\n\n" + marker + "\n\n" + strings.TrimSpace(body) + "\n"
+	}
+	rest := md[i+len(marker):]
+	end := len(md)
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		end = i + len(marker) + j
+	}
+	return md[:i] + marker + "\n\n" + strings.TrimSpace(body) + "\n" + md[end:]
 }
 
 func renderSkillsIndex(list []skills.Skill, lessons string) string {

@@ -129,12 +129,16 @@ func (b *Board) AllDone() bool {
 	return !b.AgentWorkRemaining()
 }
 
-// FailedCount returns how many tasks failed / blocked.
+// FailedCount counts blocked tasks and escalated failures (error set while not done).
 func (b *Board) FailedCount() int {
 	n := 0
 	for _, t := range b.Tasks {
 		t.Normalize()
 		if t.Column == ColBlocked || t.Status == StatusFailed {
+			n++
+			continue
+		}
+		if t.Error != "" && t.Column != ColDone {
 			n++
 		}
 	}
@@ -180,7 +184,8 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		t.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
 			task.ID, escapePipe(task.Title), task.Column, task.Role, check, deps))
 	}
-	t.WriteString("\n## Details\n")
+	t.WriteString("\n## Details\n\n")
+	t.WriteString("_Lean view for SLM context. Full outputs live in `board.json` / Studio task drawer._\n")
 	for _, task := range b.Tasks {
 		task.Normalize()
 		t.WriteString(fmt.Sprintf("\n### %s — %s\n\n", task.ID, task.Title))
@@ -194,7 +199,7 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 			t.WriteString(fmt.Sprintf("- **Files:** %s\n", strings.Join(task.Files, ", ")))
 		}
 		if task.Acceptance != "" {
-			t.WriteString(fmt.Sprintf("- **Acceptance:** %s\n", task.Acceptance))
+			t.WriteString(fmt.Sprintf("- **Acceptance:** %s\n", truncateMD(task.Acceptance, 280)))
 		}
 		if len(task.Checklist) > 0 {
 			t.WriteString("\n#### Checklist\n\n")
@@ -206,31 +211,54 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 				t.WriteString(fmt.Sprintf("- %s %s (`%s`)\n", mark, c.Text, c.ID))
 			}
 		}
-		t.WriteString("\n")
-		t.WriteString(task.Description)
-		t.WriteString("\n")
+		desc := leanTaskDescription(task.Description)
+		if desc != "" {
+			t.WriteString("\n")
+			t.WriteString(truncateMD(desc, 500))
+			t.WriteString("\n")
+		}
 		if task.Notes != "" {
 			t.WriteString("\n#### Notes\n\n")
-			t.WriteString(task.Notes)
+			t.WriteString(truncateMD(task.Notes, 400))
 			t.WriteString("\n")
 		}
 		if task.Output != "" {
 			t.WriteString("\n#### Output\n\n")
-			t.WriteString(task.Output)
+			t.WriteString(truncateMD(task.Output, 400))
 			t.WriteString("\n")
 		}
 		if task.Review != "" {
 			t.WriteString("\n#### Review\n\n")
-			t.WriteString(task.Review)
+			t.WriteString(truncateMD(task.Review, 280))
 			t.WriteString("\n")
 		}
 		if task.Error != "" {
 			t.WriteString("\n#### Error\n\n")
-			t.WriteString(task.Error)
+			t.WriteString(truncateMD(task.Error, 280))
 			t.WriteString("\n")
 		}
 	}
 	return p.String(), t.String()
+}
+
+func leanTaskDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if idx := strings.Index(desc, "## Task instructions"); idx >= 0 {
+		desc = strings.TrimSpace(desc[idx+len("## Task instructions"):])
+	}
+	if strings.HasPrefix(desc, "# Scoped context") {
+		// Drop fat packs that used to bloat TASKS.md for every persist.
+		return ""
+	}
+	return desc
+}
+
+func truncateMD(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func escapePipe(s string) string {

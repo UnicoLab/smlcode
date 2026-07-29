@@ -12,10 +12,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	"github.com/piotrlaczkowski/slmcode/pkg/harness"
-	"github.com/piotrlaczkowski/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 )
 
 //go:embed all:ui
@@ -26,6 +26,7 @@ var (
 	flagModel       string
 	flagProvider    string
 	flagEndpoint    string
+	flagAPIKey      string
 	flagBackend     string
 	flagVerbose     bool
 	flagDryRun      bool
@@ -42,10 +43,15 @@ func main() {
 
 	root := &cobra.Command{
 		Use:   "slmcode",
-		Short: "SLM-first coding harness (oMLX · atomic tasks · live kanban)",
+		Short: "SLM-first coding harness (any OpenAI-compat LLM · atomic tasks · live kanban)",
 		Long: cli.Banner() + `
 ` + cli.Dim(`Designed for local SLMs: scoped context packs, markdown memory, multi-pass
 thinking, parallel specialists, and a live kanban you can edit while agents run.
+
+Point at any OpenAI-compatible endpoint (oMLX, Ollama, LM Studio, cloud OpenAI, …):
+  slmcode run --provider openai --model gpt-4o-mini --endpoint https://api.openai.com/v1 "…"
+  slmcode run --provider ollama --model qwen2.5-coder:14b "…"
+  SLMCODE_PROVIDER=lmstudio SLMCODE_MODEL=… slmcode run "…"
 
 Examples:
   slmcode init
@@ -65,9 +71,10 @@ Examples:
 	}
 
 	root.PersistentFlags().StringVar(&flagRoot, "root", "", "project root (default: cwd)")
-	root.PersistentFlags().StringVar(&flagModel, "model", "", "model id")
-	root.PersistentFlags().StringVar(&flagProvider, "provider", "", "omlx|ollama|openai")
-	root.PersistentFlags().StringVar(&flagEndpoint, "endpoint", "", "API endpoint")
+	root.PersistentFlags().StringVar(&flagModel, "model", "", "model id (any id your provider serves)")
+	root.PersistentFlags().StringVar(&flagProvider, "provider", "", "omlx|ollama|openai|lmstudio|openrouter|vllm|… (any OpenAI-compat name)")
+	root.PersistentFlags().StringVar(&flagEndpoint, "endpoint", "", "API base URL (e.g. http://127.0.0.1:1234/v1)")
+	root.PersistentFlags().StringVar(&flagAPIKey, "api-key", "", "API key (or SLMCODE_API_KEY / OPENAI_API_KEY)")
 	root.PersistentFlags().StringVar(&flagBackend, "backend", "", "slmcode|claude-code")
 	root.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose agent logs")
 	root.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "do not write code files")
@@ -152,14 +159,25 @@ func openHarness() (*harness.Harness, error) {
 }
 
 func applyFlags(c *config.Config) {
+	c.ApplyEnv()
+	providerChanged := false
+	if flagProvider != "" {
+		next := config.NormalizeProvider(flagProvider)
+		if next != config.NormalizeProvider(c.Provider) {
+			providerChanged = true
+		}
+		c.Provider = next
+	}
 	if flagModel != "" {
 		c.Model = flagModel
 	}
-	if flagProvider != "" {
-		c.Provider = flagProvider
-	}
 	if flagEndpoint != "" {
 		c.Endpoint = flagEndpoint
+	} else if providerChanged {
+		c.Endpoint = config.DefaultEndpointFor(c.Provider)
+	}
+	if flagAPIKey != "" {
+		c.APIKey = flagAPIKey
 	}
 	if flagBackend != "" {
 		c.Backend = flagBackend

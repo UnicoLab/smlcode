@@ -59,7 +59,8 @@ func DiscoverRelevantFiles(root, query, exploration string) []string {
 		}
 		return nil
 	})
-	return uniq(found)
+	// Never advertise paths that are not on disk (SLMs otherwise invent main.go).
+	return FilterExisting(root, uniq(found))
 }
 
 func queryTokens(query string) []string {

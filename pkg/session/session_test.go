@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
 func TestSaveLoadList(t *testing.T) {

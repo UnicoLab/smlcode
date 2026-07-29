@@ -8,15 +8,21 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/piotrlaczkowski/slmcode/pkg/permissions"
 )
+
+// FileChangeFunc is invoked after a successful (or staged) write/edit/patch.
+// kind is write|edit|patch|dry-run|review; detail is a short human summary / snippet.
+type FileChangeFunc func(path, kind, detail string)
 
 // ToolOpts configures workspace tool safety (Claude Code–style permissions).
 type ToolOpts struct {
-	DryRun     bool
-	Permission string // auto | dry-run | review
-	SlmDir     string
+	DryRun       bool
+	Permission   string // auto | dry-run | review
+	SlmDir       string
+	OnFileChange FileChangeFunc
+	Focus        *FocusGuard // optional anti-wander write allowlist
 }
 
 // RegisterCodingTools adds workspace-aware file, shell, and git tools that
@@ -35,7 +41,10 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 	if opts.DryRun {
 		perm = permissions.ModeDryRun
 	}
-	ws := &Workspace{Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm, SlmDir: opts.SlmDir}
+	ws := &Workspace{
+		Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm,
+		SlmDir: opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
+	}
 
 	defs := []tools.Tool{
 		tools.NewGenericTool(
@@ -65,17 +74,30 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		),
 		tools.NewGenericTool(
 			"ws_edit",
-			"Replace old_str with new_str in a workspace file (exact match).",
+			"Replace old_str with new_str in a workspace file (exact match). Prefer small patches.",
 			ws.editFile,
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"path":     map[string]interface{}{"type": "string"},
-					"old_str":  map[string]interface{}{"type": "string"},
-					"new_str":  map[string]interface{}{"type": "string"},
+					"path":        map[string]interface{}{"type": "string"},
+					"old_str":     map[string]interface{}{"type": "string"},
+					"new_str":     map[string]interface{}{"type": "string"},
 					"replace_all": map[string]interface{}{"type": "boolean"},
 				},
 				"required": []string{"path", "old_str", "new_str"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_patch",
+			"Apply a small unified-diff style patch (---/+++/@@ hunks) or a SEARCH/REPLACE block to a file. Prefer over full rewrites for SLMs.",
+			ws.patchFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":  map[string]interface{}{"type": "string", "description": "Target file (relative)"},
+					"patch": map[string]interface{}{"type": "string", "description": "Unified diff or <<<<<<< SEARCH / ======= / >>>>>>> REPLACE block"},
+				},
+				"required": []string{"path", "patch"},
 			},
 		),
 		tools.NewGenericTool(
@@ -159,10 +181,25 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 
 // Workspace is the root-jailed project filesystem.
 type Workspace struct {
-	Root       string
-	DryRun     bool
-	Permission string
-	SlmDir     string
+	Root         string
+	DryRun       bool
+	Permission   string
+	SlmDir       string
+	OnFileChange FileChangeFunc
+	Focus        *FocusGuard
+}
+
+func (w *Workspace) checkFocus(path string) error {
+	if w == nil || w.Focus == nil {
+		return nil
+	}
+	return w.Focus.Check(path)
+}
+
+func (w *Workspace) notify(path, kind, detail string) {
+	if w != nil && w.OnFileChange != nil {
+		w.OnFileChange(path, kind, detail)
+	}
 }
 
 func (w *Workspace) guardWrite(path, kind, content string) (string, bool, error) {
@@ -223,7 +260,15 @@ func (w *Workspace) writeFile(_ context.Context, args map[string]interface{}) (i
 	if err != nil {
 		return nil, err
 	}
+	if err := w.checkFocus(path); err != nil {
+		return nil, err
+	}
 	if msg, stop, err := w.guardWrite(path, "write", content); stop {
+		kind := "review"
+		if strings.HasPrefix(msg, "dry-run:") {
+			kind = "dry-run"
+		}
+		w.notify(path, kind, truncateSnippet(content, 400))
 		return msg, err
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -232,7 +277,9 @@ func (w *Workspace) writeFile(_ context.Context, args map[string]interface{}) (i
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
-	return fmt.Sprintf("wrote %s (%d bytes)", path, len(content)), nil
+	msg := fmt.Sprintf("wrote %s (%d bytes)", path, len(content))
+	w.notify(path, "write", truncateSnippet(content, 400))
+	return msg, nil
 }
 
 func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
@@ -242,6 +289,9 @@ func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (in
 	replaceAll, _ := args["replace_all"].(bool)
 	abs, err := w.resolve(path)
 	if err != nil {
+		return nil, err
+	}
+	if err := w.checkFocus(path); err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(abs)
@@ -260,16 +310,66 @@ func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (in
 	} else {
 		next = strings.Replace(text, oldStr, newStr, 1)
 	}
+	snippet := diffSnippet(oldStr, newStr)
 	if msg, stop, err := w.guardWrite(path, "edit", next); stop {
 		if msg != "" && strings.HasPrefix(msg, "dry-run:") {
-			return fmt.Sprintf("dry-run: would edit %s (%d replacement(s))", path, count), err
+			out := fmt.Sprintf("dry-run: would edit %s (%d replacement(s))", path, count)
+			w.notify(path, "dry-run", snippet)
+			return out, err
 		}
+		w.notify(path, "review", snippet)
 		return msg, err
 	}
 	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
 		return nil, err
 	}
-	return fmt.Sprintf("edited %s (%d replacement(s))", path, count), nil
+	msg := fmt.Sprintf("edited %s (%d replacement(s))", path, count)
+	w.notify(path, "edit", snippet)
+	return msg, nil
+}
+
+func (w *Workspace) patchFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	patch, _ := args["patch"].(string)
+	if strings.TrimSpace(patch) == "" {
+		return nil, fmt.Errorf("patch required")
+	}
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.checkFocus(path); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		// Allow creating new files via patch when missing and patch is SEARCH empty.
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		data = nil
+	}
+	next, summary, err := ApplyPatch(string(data), patch)
+	if err != nil {
+		return nil, err
+	}
+	if msg, stop, err := w.guardWrite(path, "patch", next); stop {
+		kind := "review"
+		if strings.HasPrefix(msg, "dry-run:") {
+			kind = "dry-run"
+		}
+		w.notify(path, kind, summary)
+		return msg, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
+		return nil, err
+	}
+	msg := fmt.Sprintf("patched %s (%s)", path, summary)
+	w.notify(path, "patch", summary)
+	return msg, nil
 }
 
 func (w *Workspace) listDir(_ context.Context, args map[string]interface{}) (interface{}, error) {
@@ -428,7 +528,7 @@ func (w *Workspace) hasGit() bool {
 // ToolNames returns the coding tool names for agent config.
 func ToolNames() []string {
 	return []string{
-		"ws_read", "ws_write", "ws_edit", "ws_list", "ws_glob", "ws_grep",
+		"ws_read", "ws_write", "ws_edit", "ws_patch", "ws_list", "ws_glob", "ws_grep",
 		"ws_shell", "git_status", "git_diff",
 	}
 }

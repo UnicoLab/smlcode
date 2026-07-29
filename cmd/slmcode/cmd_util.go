@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/cli"
-	"github.com/piotrlaczkowski/slmcode/pkg/config"
-	"github.com/piotrlaczkowski/slmcode/pkg/plan"
-	"github.com/piotrlaczkowski/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
 func skillsCmd() *cobra.Command {
@@ -195,6 +195,9 @@ func configCmd() *cobra.Command {
 			cli.KeyVal("max_parallel", fmt.Sprintf("%d", c.MaxParallel))
 			cli.KeyVal("max_retries", fmt.Sprintf("%d", c.MaxRetries))
 			cli.KeyVal("max_context_kb", fmt.Sprintf("%d", c.MaxContextKB))
+			cli.KeyVal("qa_gate", fmt.Sprintf("%v", c.QAGate))
+			cli.KeyVal("qa_gate_command", c.QAGateCommand)
+			cli.KeyVal("qa_gate_max_rounds", fmt.Sprintf("%d", c.QAGateMaxRounds))
 			cli.KeyVal("permission", c.Permission)
 			cli.KeyVal("dry_run", fmt.Sprintf("%v", c.DryRun))
 			cli.KeyVal("listen", c.Listen)
@@ -204,7 +207,7 @@ func configCmd() *cobra.Command {
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "set [key] [value]",
-		Short: "Set model|provider|backend|mode|specialist|pinned_skills|permission|…",
+		Short: "Set model|provider|endpoint|backend|qa_gate|mode|specialist|permission|…",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
@@ -217,7 +220,11 @@ func configCmd() *cobra.Command {
 			case "model":
 				c.Model = v
 			case "provider":
-				c.Provider = v
+				next := config.NormalizeProvider(v)
+				if next != config.NormalizeProvider(c.Provider) && flagEndpoint == "" {
+					c.Endpoint = config.DefaultEndpointFor(next)
+				}
+				c.Provider = next
 			case "endpoint":
 				c.Endpoint = v
 			case "backend":
@@ -243,6 +250,12 @@ func configCmd() *cobra.Command {
 				fmt.Sscanf(v, "%d", &c.MaxRetries)
 			case "max_context_kb", "context_kb":
 				fmt.Sscanf(v, "%d", &c.MaxContextKB)
+			case "qa_gate":
+				c.QAGate = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || strings.EqualFold(v, "on")
+			case "qa_gate_command", "qa_cmd":
+				c.QAGateCommand = v
+			case "qa_gate_max_rounds", "qa_rounds":
+				fmt.Sscanf(v, "%d", &c.QAGateMaxRounds)
 			case "dry_run", "dry-run":
 				c.DryRun = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 				if c.DryRun {
@@ -271,7 +284,7 @@ func configCmd() *cobra.Command {
 func doctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Check oMLX/Ollama, workspace, board, skills",
+		Short: "Check active provider/model, LLM reachability, workspace, board, skills",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor()
 		},
@@ -285,9 +298,14 @@ func runDoctor() error {
 	}
 	cli.Header("Doctor")
 	cli.KeyVal("root", ws.Config.Root)
+	cli.KeyVal("provider", ws.Config.Provider)
+	cli.KeyVal("model", ws.Config.Model)
+	cli.KeyVal("endpoint", ws.Config.Endpoint)
+	cli.KeyVal("backend", ws.Config.Backend)
 	cli.KeyVal("permission", ws.Config.Permission)
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
+	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
 	if _, err := os.Stat(ws.Config.SlmDir()); err != nil {
 		fmt.Println(cli.Warn(".slmcode missing — run slmcode init"))
 	} else {
@@ -300,8 +318,9 @@ func runDoctor() error {
 	endpoint := ws.Config.Endpoint
 	ws.Config.ResolveAPIKey()
 	url := strings.TrimRight(endpoint, "/") + "/models"
-	if ws.Config.Provider == "ollama" {
-		url = strings.TrimRight(ws.Config.Endpoint, "/") + "/api/tags"
+	if config.IsOllama(ws.Config.Provider) {
+		base := strings.TrimSuffix(strings.TrimRight(ws.Config.Endpoint, "/"), "/v1")
+		url = strings.TrimRight(base, "/") + "/api/tags"
 	} else if !strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/v1") {
 		url = strings.TrimRight(endpoint, "/") + "/v1/models"
 	}
@@ -313,14 +332,20 @@ func runDoctor() error {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println(cli.Error(fmt.Sprintf("LLM unreachable at %s: %v", url, err)))
-		fmt.Println(cli.Dim("  tip: omlx start   or   ollama serve"))
+		fmt.Println(cli.Dim("  tip: start your provider, or override with --provider / --endpoint / --model"))
+		fmt.Println(cli.Dim("  examples: omlx start · ollama serve · LM Studio local server"))
 	} else {
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			fmt.Println(cli.Success(fmt.Sprintf("LLM ok (%s) status=%d", ws.Config.Provider, resp.StatusCode)))
+			fmt.Println(cli.Success(fmt.Sprintf("LLM ok — %s / %s (HTTP %d)", ws.Config.Provider, ws.Config.Model, resp.StatusCode)))
 		} else {
 			fmt.Println(cli.Warn(fmt.Sprintf("LLM responded %d at %s", resp.StatusCode, url)))
 		}
+	}
+	if ws.Config.APIKey == "" && !config.IsOllama(ws.Config.Provider) && ws.Config.Provider != "omlx" && ws.Config.Provider != "lmstudio" {
+		fmt.Println(cli.Warn("api_key empty — set SLMCODE_API_KEY or OPENAI_API_KEY if the provider requires auth"))
+	} else if ws.Config.APIKey != "" {
+		fmt.Println(cli.Success("api_key present"))
 	}
 	sk, _ := ws.Skills.List()
 	fmt.Println(cli.Success(fmt.Sprintf("%d skills loaded", len(sk))))

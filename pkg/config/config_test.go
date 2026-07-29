@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/piotrlaczkowski/slmcode/pkg/permissions"
+	"github.com/UnicoLab/slmcode/pkg/permissions"
 )
 
 func TestApplyPatchPartialDoesNotClearDryRun(t *testing.T) {
@@ -70,5 +70,51 @@ func TestNormalizePermissionFromYAML(t *testing.T) {
 	}
 	if !loaded.DryRun || loaded.Permission != permissions.ModeDryRun {
 		t.Fatalf("load sync: dry=%v perm=%s", loaded.DryRun, loaded.Permission)
+	}
+}
+
+func TestProviderModelSelection(t *testing.T) {
+	c := Default(t.TempDir())
+	prov := "lmstudio"
+	model := "local-coder"
+	c.ApplyPatch(Patch{Provider: &prov, Model: &model})
+	if c.Provider != "lmstudio" {
+		t.Fatalf("provider=%s", c.Provider)
+	}
+	if c.Model != model {
+		t.Fatalf("model=%s", c.Model)
+	}
+	if c.Endpoint != DefaultEndpointFor("lmstudio") {
+		t.Fatalf("endpoint=%s", c.Endpoint)
+	}
+
+	openai := "openai-compatible"
+	ep := "https://api.openai.com/v1"
+	c.ApplyPatch(Patch{Provider: &openai, Endpoint: &ep})
+	if c.Provider != "openai" {
+		t.Fatalf("normalized provider=%s", c.Provider)
+	}
+	if c.Endpoint != ep {
+		t.Fatalf("explicit endpoint overwritten: %s", c.Endpoint)
+	}
+}
+
+func TestApplyEnvProviderModel(t *testing.T) {
+	t.Setenv("SLMCODE_PROVIDER", "ollama")
+	t.Setenv("SLMCODE_MODEL", "qwen2.5-coder:14b")
+	t.Setenv("SLMCODE_ENDPOINT", "http://127.0.0.1:11434")
+	c := Default(t.TempDir())
+	c.ApplyEnv()
+	if c.Provider != "ollama" || c.Model != "qwen2.5-coder:14b" || c.Endpoint != "http://127.0.0.1:11434" {
+		t.Fatalf("env overlay failed: %+v", c)
+	}
+}
+
+func TestDefaultEndpointFor(t *testing.T) {
+	if DefaultEndpointFor("openai") != "https://api.openai.com/v1" {
+		t.Fatal("openai")
+	}
+	if DefaultEndpointFor("ollama") != "http://127.0.0.1:11434" {
+		t.Fatal("ollama")
 	}
 }

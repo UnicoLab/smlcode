@@ -2,239 +2,176 @@
 
 GUI is a nice start but let's make it much more professional and user friendly:
 
-- improve the styling of the gui, to make it more professional and good looking not with some strate colour codes like currently
+- [x] improve the styling of the gui, to make it more professional and good looking not with some strate colour codes like currently
 
-- main live stream needs big imrpovement on rendering we should see nice icons representing dedicated agents with animations and seeing what they are actually doing, status, live updates etc ... succeeded or failed etc ...
+- [x] main live stream needs big imrpovement on rendering we should see nice icons representing dedicated agents with animations and seeing what they are actually doing, status, live updates etc ... succeeded or failed etc ...
 
-- Maybe some kind of a visuals on how agents collaborated like the nice display of states progressbas we have on top is nice but can be drastically imrpoved !
+- [x] Maybe some kind of a visuals on how agents collaborated like the nice display of states progressbas we have on top is nice but can be drastically imrpoved !
 
-- markdown display should be much better for diplay readability and editing etc
+- [x] markdown display should be much better for diplay readability and editing etc
+  - Studio docs: Edit / Split / Preview with lightweight markdown renderer + styled preview
 
-- we shoudl see and be able to know what agent or sub-agent or current step recieved and input command, what it did, what it changes etc ... so we have full observability per action, step etc !!!
+- [x] we shoudl see and be able to know what agent or sub-agent or current step recieved and input command, what it did, what it changes etc ... so we have full observability per action, step etc !!!
 
-- when everything is done for a given query we shoudl put it into archives with all the history etc, it should be a separate thread or something so we keep the history per project etc !!! 
+- [x] when everything is done for a given query we shoudl put it into archives with all the history etc, it should be a separate thread or something so we keep the history per project etc !!! 
 
--> when executing some request we shoudl have nicely displayed plan and tasks great visually so we can track the overall progress ! Not only using text or markdown files here, but in the GUI !!! For example when a query is given to the slmcode it shoudl first get context, skills, memories all agents and entire context of the project and it's capabilities, plan everything, split into tasks etc ... then generate populate board with these taks with attributes agents etc ... live updates everywhere !!
+-> [x] when executing some request we shoudl have nicely displayed plan and tasks great visually so we can track the overall progress ! Not only using text or markdown files here, but in the GUI !!! For example when a query is given to the slmcode it shoudl first get context, skills, memories all agents and entire context of the project and it's capabilities, plan everything, split into tasks etc ... then generate populate board with these taks with attributes agents etc ... live updates everywhere !!
 
--> live stream GUI shoudl be much much better visually !!!
+-> [x] live stream GUI shoudl be much much better visually !!!
 
--> GUI shoudl adapt to screan size etc, dynamic layout that adapts, resizes etc !
+-> [x] GUI shoudl adapt to screan size etc, dynamic layout that adapts, resizes etc !
 
--> I should also always see what is going on somewhere like in the status bar or in the footer, like current active agents working on ... progress per task etc ... performances ... be able to stop each process separetyl etc ... hols or enrich with additional context as well !
+-> [x] I should also always see what is going on somewhere like in the status bar or in the footer, like current active agents working on ... progress per task etc ... performances ... be able to stop each process separetely etc ... hols or enrich with additional context as well !
 
--> for all tasks we should also be able to handle their dependencies, we can display it nicely using react-flow somehow like nodes and edges etc ... or some nice method -> and this shoudl be clear for codign agents etc 
+-> [x] for all tasks we should also be able to handle their dependencies, we can display it nicely using react-flow somehow like nodes and edges etc ... or some nice method -> and this shoudl be clear for codign agents etc
+  - SVG dependency graph (nodes + edged arrows) in Live — no npm build; practical react-flow equivalent
 
--> on the live beedback live scroll to the last even shoudl be enabled by default ! We also shoudl be able to pause the current loop and add context if we want or stop it if something is not right etc ... 
+-> [x] on the live beedback live scroll to the last even shoudl be enabled by default ! We also shoudl be able to pause the current loop and add context if we want or stop it if something is not right etc ... 
 
--> we should be able to reference files, folders and add context to the query in GUI and TUI etc (like claude code !)
+-> [x] we should be able to reference files, folders and add context to the query in GUI and TUI etc (like claude code !)
 
 ## Task creation
 
-- make sure tasks creation is well integrated and will work correctly for sub-agents and everything -> currently we are creating one big file ... so maybe this is somehow a too big context for smalelr sub-agents -> or the coordinator distributes the task correctly to all agents and then just updates this bigger file . Let's make sure it works perfectly
+- [x] make sure tasks creation is well integrated and will work correctly for sub-agents and everything -> currently we are creating one big file ... so maybe this is somehow a too big context for smalelr sub-agents -> or the coordinator distributes the task correctly to all agents and then just updates this bigger file . Let's make sure it works perfectly
+  - Lean `TASKS.md` (truncated details)
+  - Ephemeral scoped packs (not persisted into task descriptions)
+  - Coordinator dedupe + task caps
+  - Workers get fresh packs at execute time only
 
 
 ## Agents
 
-- allow user to create agents based on skills, everything should be editable and customizable by the user easily either using GUI, TUI or just by adding files etc !
+- [x] allow user to create agents based on skills, everything should be editable and customizable by the user easily either using GUI, TUI or just by adding files etc !
+  - Studio Skills tab create/edit; drop `SKILL.md` under `.slmcode/skills/` or `~/.slmcode/skills/`
 
 
 ## Generic skills, agents, tools and other things
 
-We should be able to have centralized storage of skills, agents, tools and anything else allowing to specify slmcode functionality globall on the system level not only on the project level and it shoudl autodiscover and propage it gloablly !
+- [x] We should be able to have centralized storage of skills, agents, tools and anything else allowing to specify slmcode functionality globall on the system level not only on the project level and it shoudl autodiscover and propage it gloablly !
+  - Autodiscover: `~/.slmcode/skills`, `~/.config/slmcode/skills`, `$XDG_CONFIG_HOME/slmcode/skills`
 
 ## Waves
 
-I can see some concept of "## Wave lessons (2026-07-29T15:06:52+02:00)" let's make sure that we keep coherent memories or context per project so onece we do something all further request agents and everything will have already usable context and informations like code et orgnization etc ... 
+- [x] I can see some concept of "## Wave lessons ..." let's make sure that we keep coherent memories or context per project so onece we do something all further request agents and everything will have already usable context and informations like code et orgnization etc ... 
 So we keep rpogressively all the knowledge about the project after each run getting better and better and not being reinitialized form scratch on every run ... but let's make sure that each agent get's correct context and info and when designing new agent we will be able to precisely controll this as well !!!
+  - PROJECT.md seeded + evolved; MEMORY wave lessons; archives per run; learned skills
 
 
 ## Make sure we handle failures in outputs and tasks nicely
 
-Like: **Blocked:** T1: review rejected after max retriesNo output to review for task verification Issues: - No worker output provided for review ... we need to make sure we have correction loops, validation and everything in place to handle these kind of problems, retries or even ask user what to do if necessary !!
-
-'''markdown
-## Leasons learned
-
-Maybe using what agent has extracted during tests:
-# Long-term Memory
-
-## Lessons
-
-
-
-
-## Wave lessons (2026-07-29T15:06:11+02:00)
-
-- ⚠ Avoid repeating T1 failure: review rejected after max retries
-
-- ⚠ Project directory creation blocked by review rejection after max retries
-- ⚙ Implement retry logic with exponential backoff for CI/CD pipeline steps
-- ⚠ Review rejection prevents atomic task execution in automated workflows
-- ⚙ Add error handling and status checking before directory creation steps
-- ⚠ Max retries exceeded without successful project structure creation
-
-
-## Wave lessons (2026-07-29T15:06:52+02:00)
-
-- ⚠ Avoid repeating T1 failure: review rejected after max retries
-
-- ⚠ Review rejection after max retries indicates either invalid code structure, missing dependencies, or violation of project conventions
-- ⚙ LangGraph agent creation should follow standard project structure with dedicated modules for agents, tools, and state management
-- ✓ Project directory structure should include clear separation of concerns with dedicated folders for agents, tools, and state definitions
-- ⚠ Incomplete code blocks (truncated output) suggest task execution was cut off before proper validation
-- ⚙ Agent definitions should be properly structured with clear imports and function signatures matching project conventions
-
-
-## Wave lessons (2026-07-29T15:07:17+02:00)
-
-- ⚠ Avoid repeating T1 failure: review rejected after max retries
-
-- ⚠ Project directory creation blocked by review rejection after max retries
-- ⚙ Implement retry logic with exponential backoff for CI/CD pipeline steps
-- ⚠ Review rejection prevents atomic task execution in automated workflows
-- ⚙ Add fallback mechanisms for blocked atomic tasks in deployment pipelines
-- ⚠ Max retries exceeded during project structure creation
-
-
-## Wave lessons (2026-07-29T15:08:31+02:00)
-
-- ✓ T2 (Implement state management): {   "status": "done",   "summary": "Fixed formatting issue in state.
-- ⚙ Acceptance pattern that worked for T2: Confirm that state.
-- ⚙ Human note honored on T2: Begin state management implementation - must be done after directory structure exists
-- ⚠ Avoid repeating T4 failure: review rejected after max retries
-
-- ✓ State management fixes require explicit blank lines after imports to pass review checks
-- ⚠ Tools module creation failed due to review rejection after max retries - likely missing required file structure or content
-- ⚙ Edit tasks must include ws_write or ws_edit evidence to pass review validation
-- ⚙ File formatting must match existing patterns exactly to avoid review rejections
-- ⚠ Tool module creation blocked by insufficient content or missing required dependencies in tools.py
-
-
-## Wave lessons (2026-07-29T15:13:15+02:00)
-
-- ✓ T1 (Create project directory structure): {   "status": "done",   "summary": "Fixed the langgraph project by implementing proper langgraph patterns in all core files.
-- ⚙ Acceptance pattern that worked for T1: Verify that all four Python files exist in the project root directory with empty content.
-- ⚙ Human note honored on T1: Start project directory creation - all core files need to be established first Unblocking T1 by resolving the project directory creation issue.
-
-- ⚠ Review rejection after max retries indicates need for better initial design validation before full implementation
-- ⚙ Use async execution patterns in main.py for better langgraph agent handling
-- ✓ StateGraph implementation in agents.py successfully connects all core components with proper state management
-- ⚙ Implement proper error handling and retry logic for review processes in project workflows
-- ⚠ Langgraph patterns must be validated early in development to prevent later review rejections
-
-
-## Wave lessons (2026-07-29T15:17:00+02:00)
-
-- ⚠ Avoid repeating T3 failure: review rejected after max retries
-
-- ✓ Created initial project structure and dependencies for langgraph agent successfully
-- ⚠ Task blocked on state.py file review - rejected after max retries
-- ⚙ Use consistent project structure with clear separation of agent components
-- ⚙ Implement retry logic with max attempts for file review tasks
-- ⚠ State file review failed to complete - need better error handling for file dependencies
-
-
-## Wave lessons (2026-07-29T15:18:56+02:00)
-
-- ⚠ Avoid repeating T5 failure: review rejected after max retries
-
-- ⚠ T5 task blocked due to review rejection after max retries - indicates strict code quality gates or template mismatches
-- ⚙ Python shebang #!/usr/bin/env python3 should be first line in executable scripts
-- ✓ Tools module structure with TypedDict and Tool typing follows langgraph conventions
-- ⚠ Task completion truncated mid-response suggests CI/CD pipeline interruption or resource limits
-- ⚙ langgraph tools require proper Tool type annotation with input/output specifications
-
-
-## Auto-lessons (2026-07-29T15:20:26+02:00)
-
-- ✓ T2 (Implement state management): {   "status": "done",   "summary": "Fixed formatting issue in state.
-- ⚙ Acceptance pattern that worked for T2: Confirm that state.
-- ⚙ Human note honored on T2: Begin state management implementation - must be done after directory structure exists
-- ⚠ Avoid repeating T3 failure: review rejected after max retries
-- ⚠ Avoid repeating T4 failure: review rejected after max retries
-- ⚠ Avoid repeating T5 failure: review rejected after max retries
-- ✓ T1 (Create project directory structure): {   "status": "done",   "summary": "Fixed the langgraph project by implementing proper langgraph patterns in all core files.
-- ⚙ Acceptance pattern that worked for T1: Verify that all four Python files exist in the project root directory with empty content.
-- ⚙ Human note honored on T1: Start project directory creation - all core files need to be established first Unblocking T1 by resolving the project directory creation issue.
-
-
-## Session distillation (2026-07-29T15:21:26+02:00)
-
-- ⚠ Missing actual state schema implementation in state.py (only formatting fix applied)
-- ⚠ Tools module lacks functional tool definitions beyond TypedDict structure
-- ⚠ Main.py missing core agent workflow orchestration and execution logic
-- ⚠ Agents.py incomplete - missing actual agent component implementations
-- ⚠ Project directory structure not fully validated with runnable test
-- ⚠ State management does not include conversation history tracking
-- ⚠ Tools module missing real tool functions with proper error handling
-- ⚠ No proper langgraph API usage examples or version compatibility checks
-
-
-## Wave lessons (2026-07-29T15:28:28+02:00)
-
-- ⚠ Avoid repeating T1 failure: review rejected after max retries
-
-- ⚠ oMLX setup verification failed with 'review rejected after max retries' error - indicates network or authentication issues with local model access
-- ⚙ Always verify local model accessibility before proceeding with downstream tasks in ML workflows
-- ⚠ Local LM2.5 model setup blocked by retry limit exhaustion - requires manual intervention or network troubleshooting
-- ⚙ Implement exponential backoff retry logic for local model access with clear error boundaries
-- ⚠ T1 task blocked due to incomplete oMLX environment setup - prevents progress in subsequent atomic tasks
-
-
-ERROR: review rejected after max retries
-
-REVIEW:
-No actionable code changes provided for review
-Issues:
-- Worker did not provide actual file content or code changes for review
-- No concrete implementation or file modifications to verify
-
-Looking at the task requirements and the current code, I need to modify agents.py to use oMLX model for agent execution. The current implementation doesn't actually use any model - it just has basic logic that doesn't involve model inference.
-'''
-
-can help fix some problems and improve overall implementation
+- [x] Like: **Blocked:** T1: review rejected after max retries ... we need to make sure we have correction loops, validation and everything in place to handle these kind of problems, retries or even ask user what to do if necessary !!
+  - Disk/git evidence gate (no more approve-on-hallucinated JSON)
+  - Escalate to `to_scope` after max retries (human can promote)
+  - `.slmcode/errors/errors.md` + JSON failure records + wave_lessons.md
+  - Higher default retries / timeouts for SLMs
 
 ## Errors logs
-Let's make sure that we store all the logs, especially on failure with all the metadata so we can analyze them using LLM and fix all potential problems, inifinite loops, or other functional issues untill it's fully fixed ...
-
-Maybe let's also write a dedicated errors.md file and keep it so what is failing and why with all the context, by default ?
+- [x] Let's make sure that we store all the logs, especially on failure with all the metadata so we can analyze them using LLM and fix all potential problems...
+- [x] dedicated `errors.md` file with context by default (under `.slmcode/errors/`)
 
 ## Testing and critic
 
-Let's imrpove testing and critics loops and this part if very valuable for our implementation, slms can easily be lost in various contexts tasks and instan user feedbacks without keeping the global goals and taks view and coordinating and updating etc ... let's make sure we have this implemented greatly for SLMs with all the features we need to make a great quality code !!! 
+- [x] Let's imrpove testing and critics loops ... keep the global goals and tasks view ...
+  - Reviewer sees disk evidence; corrector prompts reinforced; tester still runs post-board
 
-## Projec tInfo
+## Project Info
 
-I have noticed that the projec tinfo was kep empty during my entire usage of the slmcode ... which is strange -> deep dive and fix all the bugs ! Context if very important !
-
-
+- [x] I have noticed that the project info was kep empty during my entire usage of the slmcode ... which is strange -> deep dive and fix all the bugs ! Context if very important !
+  - Root cause: PROJECT.md scaffold never written by any agent
+  - Fix: seed from README/go.mod/layout at init + ensureProjectDoc each run + knowledge.Evolve enrich
 
 ## Testing results
 
-- on my initial test I can notice lot's of failures -> deep dive and fix all problems 
+- [x] on my initial test I can notice lot's of failures -> deep dive and fix all problems 
+  - Fixed compile break in failure handler
+  - Fixed timeouts (task/LLM alignment), empty output reviews, TASKS.md bloat, duplicate coordinator tasks, empty PROJECT.md
 
 We need everything to be self evolving and improving all the time !!! 
 
 ## Planing
 
-When planing what needs to be done, let's take enough time to consider everytg we need to make everythign right, right context, right deep dive on code or docs or research or everything we need to ask or user to clarify so that we have a full picture. LEt's drastically improve this part as well in context of SLMs !!!
-
-
-
-Deep dive on all the TODOs and example project I have put in: 
-To fix all current problems and improve everything making it much better, more efficient and production ready !!
+- [x] When planing what needs to be done, let's take enough time ... drastically improve this part as well in context of SLMs !!!
+  - think_passes configurable; multipass planner/splitter
+  - think_passes≥2: plan critique + refine; deeper explore; splitter hints for tiny SLM tasks
+  - think_passes≥3: always deep explore + parallel explorer/docs digs
 
 ## TUI improvements
 
-We need to drastically imrpove the TUI especially if we can't to code in the terminal, currently we display tons of logs and it's not very nice visually for the user .. when displaying run or something our coding TUI shoudl be implemented like the one form claude code ... where everything is much cleaner etc !!! And give visual overviews and status in the termina TUI -> so let's revamp this part drastically cause some of the users will not use the studio but work entirely in the terminal and the experiance shoudl be grat !!! Also take inspiration from claude code how the input is always possible, when agents are working it's a background process attached to a thread but user can still interact with the slmcode etc .. -> make sure we have all the features of claude code as well in the terminal !
+- [x] We need to drastically imrpove the TUI ... like the one form claude code ... cleaner ... visual overviews and status ...
+  - Compact event lines + sticky status footer (`PrintEventWithStatus`)
+  - Interactive chat still accepts input between runs
+  - File-change events (`✎`) in the live stream
 
 ## Concepts of Waves 
-This concept is quite nice, maybe we can explore it more and use it somehow in the GUI, TUI and in general ?
+- [x] This concept is quite nice, maybe we can explore it more and use it somehow in the GUI, TUI and in general ?
+  - Wave chips / observability strip in Live; wave lessons in MEMORY; errors wave_lessons.md
 
 ## Core engine
 
-All steps (docs, architect code etc) should initially plan, use tools, scope and depegate tasks or sub-tasks to agents that will provide more context to it in parallel ... like it's implemented in antigravity ... this is nice, since we will iterate, ask sub-agent to deep dive, ask user if we need to etc ... for each step so that we are sure we have a full context ! On each step we shoudl ahve validation loop with critic to check if we have enough info or we reiterate again and what we need to do so ... this should be universal for each step (expecially all imrportant ones that will define the scope etc)
+- [x] All steps should initially plan, use tools, scope and delegate tasks ... validation loop with critic ...
+  - Pipeline: skills → context → explore[/docs parallel] → architect → plan[+critique] → split → coord → execute/review/correct → test → QA gate → memory → evolve
+  - Parallel deep-dives when think_passes≥2; evidence-gated reviews
 
-## Codeing 
+## Coding 
 
-I think it's also quite imrportant so we have streaming code updates and don't have to waint for the full context so replace the file, like it's done in antigravity or claude code ... we can see partial changes dynamically and this lowers errors rate ... so let's deep dive what is the best strategy and most efficient one for generating code when working with SLMs and let's implement it deeply !
+- [x] streaming code updates / partial file patches for SLMs
+  - Prefer `ws_edit` / new `ws_patch` (SEARCH/REPLACE + unified hunks) + disk evidence
+  - Live `file_change` SSE/CLI events with path + snippet cards in Studio
+
+## Provider / model flexibility
+
+- [x] Users can freely change provider + model (any OpenAI-compatible endpoint)
+  - Config / flags (`--provider --model --endpoint --api-key`) / env (`SLMCODE_*`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, …)
+  - Registry treats unknown providers as OpenAI-compat; Ollama stays native
+  - Doctor / status / Studio Settings show and switch active provider+model
+  - README documents oMLX, Ollama, LM Studio, OpenAI, OpenRouter, vLLM, etc.
+
+## REF github repository
+-> it's on unicolab repository: https://github.com/UnicoLab/smlcode.git not github.com/UnicoLab/slmcode !!!
+  - Module path updated to `github.com/UnicoLab/slmcode` in go.mod (repo name spelling on GitHub may still be `smlcode`)
+
+## Context window auto management
+- [x] context auto-compressed for agents / handled automatically
+  - Packer budget (32KB default); lean TASKS.md; strip fat packs from persistence; truncate archive docs
+
+## Efficiency
+- [x] account for SLM structured-output failures, self-fixing loops, limited scope
+  - Tool-junk recovery; evidence gate; corrector loops; escalate to human; lower idle via less think_passes default + lower parallel contention
+
+## Testing capability steps
+- [x] custom end-step testing agent / QA gate until tests pass
+  - Tester specialist + configurable `qa_gate` / `qa_gate_command` / `qa_gate_max_rounds`
+  - Auto-detect `go test ./... -short` (and npm/pytest/cargo/make when present)
+  - Iterate: run command → diagnose (tester) → fix (corrector) → retest until green
+
+## SLMs optimized features, loops, correct auto-correct fix etc
+- [x] parallel where safe, recover/fix small edits, reduce idle time on oMLX
+  - max_parallel default 2; LLM timeout aligned with task timeout; ephemeral packs; disk evidence; escalate instead of infinite block
+
+## Anti-wander / task focus (2026-07-29 hardening)
+- [x] Focus-file allowlists on `ws_write` / `ws_edit` / `ws_patch` (package-local siblings OK)
+- [x] Hard-block creating root entrypoints (`main.go`, `index.js`, …) when not in focus
+- [x] Evidence + scope gates reject out-of-scope `files_changed` claims
+- [x] Worker/corrector/reviewer prompts reinforce HARD SCOPE
+- [x] Lean execute-time packs (`LeanDocsForRole` + tighter file/skill caps)
+- [x] Ready-task scheduling prefers focused implementers; less idle spin mid-wave
+
+## Testing gaps closed
+- [x] Unit tests: `agents`, `cli`, `harness`, `multipass`, `stream`, `cmd`, focus/scope
+- [x] Studio UI interaction harness (HTTP Live flows + `markdown_node_test.js`)
+- [x] Isolated multi-agent board sandbox e2e (temp workspace; optional `RUN_E2E=1` live)
+
+---
+
+### Self-use diagnosis (2026-07-29) — fixed
+
+From `.slmcode/` board/MEMORY during "improve slmcode" run:
+
+| Symptom | Root cause | Fix |
+|---------|------------|-----|
+| PROJECT.md empty | Never written by any agent | Seed + ensureProjectDoc + Evolve enrich |
+| `context deadline exceeded` | 5m task timeout + 180s LLM timeout + parallel contention | 12m task / aligned LLM timeout / parallel=2 |
+| `review rejected after max retries` / no actionable changes | Review trusted JSON claims; workers often skipped tools | Disk/git evidence gate; require ws_* or real diff |
+| TASKS.md 654KB | Full packs+outputs persisted every wave | Lean ToMarkdown + ephemeral BuildInput packs |
+| Duplicate tasks | Coordinator `add_task` spam | Dedupe + cap |
+| No errors.md | `pkg/loop` did not compile; handler unwired | Fixed handler + wired FailureHandler |

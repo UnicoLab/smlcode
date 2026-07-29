@@ -17,6 +17,7 @@ type TaskPack struct {
 	Files      map[string]string `json:"files"`
 	Skills     string            `json:"skills,omitempty"`
 	BudgetUsed int               `json:"budget_used"`
+	LeanFiles  bool              `json:"-"` // tighter per-file caps for workers
 }
 
 // Packer builds incremental, budgeted context packs from markdown + file excerpts.
@@ -45,7 +46,21 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	}
 	budget := p.MaxBytes
 	used := 0
+	lean := isLeanRole(role)
+	pack.LeanFiles = lean
 
+	fileLimit := 8000
+	docLimit := 0 // 0 = only budget
+	skillCap := budget
+	if lean {
+		// Faster SLM inference: tighter excerpts + smaller docs/skills.
+		if budget > 24*1024 {
+			budget = 24 * 1024
+		}
+		fileLimit = 3500
+		docLimit = 2500
+		skillCap = 1200
+	}
 	take := func(label, content string, dest map[string]string, fileCap bool) {
 		content = strings.TrimSpace(content)
 		if content == "" || budget-used < 256 {
@@ -55,8 +70,11 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 		if len(content) > max {
 			content = content[:max] + "\n...[truncated]"
 		}
-		if fileCap && len(content) > 8000 {
-			content = content[:8000] + "\n...[truncated]"
+		if fileCap && len(content) > fileLimit {
+			content = content[:fileLimit] + "\n...[truncated]"
+		}
+		if !fileCap && docLimit > 0 && len(content) > docLimit {
+			content = content[:docLimit] + "\n...[truncated]"
 		}
 		dest[label] = content
 		used += len(content)
@@ -84,8 +102,12 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 
 	if skillsMarkdown != "" && budget-used > 256 {
 		sk := skillsMarkdown
-		if len(sk) > budget-used {
-			sk = sk[:budget-used]
+		cap := budget - used
+		if skillCap > 0 && skillCap < cap {
+			cap = skillCap
+		}
+		if len(sk) > cap {
+			sk = sk[:cap] + "\n...[truncated]"
 		}
 		pack.Skills = sk
 		used += len(sk)
@@ -93,6 +115,15 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 
 	pack.BudgetUsed = used
 	return pack, nil
+}
+
+func isLeanRole(role string) bool {
+	switch role {
+	case "worker", "corrector", "deep", "reviewer", "tester":
+		return true
+	default:
+		return false
+	}
 }
 
 // Render turns a pack into a prompt section for a specialist.
@@ -146,5 +177,19 @@ func DefaultDocsForRole(role string) []string {
 		return []string{DocMemory, DocPlan, DocTasks}
 	default:
 		return []string{DocQuery, DocContext}
+	}
+}
+
+// LeanDocsForRole returns a minimal doc set for execute-time worker packs.
+func LeanDocsForRole(role string) []string {
+	switch role {
+	case "worker", "corrector", "deep":
+		return []string{DocQuery, DocContext}
+	case "reviewer":
+		return []string{DocQuery}
+	case "tester":
+		return []string{DocProject}
+	default:
+		return DefaultDocsForRole(role)
 	}
 }

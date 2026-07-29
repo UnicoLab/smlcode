@@ -1,0 +1,9 @@
+bin/
+dist/
+.slmcode/
+*.exe
+.DS_Store
+web/node_modules/
+web/dist/
+.env
+.env.*

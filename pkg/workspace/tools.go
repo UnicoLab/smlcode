@@ -1,0 +1,434 @@
+package workspace
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
+	"github.com/piotrlaczkowski/slmcode/pkg/permissions"
+)
+
+// ToolOpts configures workspace tool safety (Claude Code–style permissions).
+type ToolOpts struct {
+	DryRun     bool
+	Permission string // auto | dry-run | review
+	SlmDir     string
+}
+
+// RegisterCodingTools adds workspace-aware file, shell, and git tools that
+// work with real source trees (including .go and other code extensions).
+func RegisterCodingTools(reg *tools.ToolRegistry, root string, dryRun bool) error {
+	return RegisterCodingToolsOpts(reg, root, ToolOpts{DryRun: dryRun, Permission: permissions.ModeAuto})
+}
+
+// RegisterCodingToolsOpts is the full registration entrypoint.
+func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	perm := permissions.Normalize(opts.Permission)
+	if opts.DryRun {
+		perm = permissions.ModeDryRun
+	}
+	ws := &Workspace{Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm, SlmDir: opts.SlmDir}
+
+	defs := []tools.Tool{
+		tools.NewGenericTool(
+			"ws_read",
+			"Read a file from the project workspace. Path is relative to project root.",
+			ws.readFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string", "description": "Relative file path"},
+				},
+				"required": []string{"path"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_write",
+			"Write/overwrite a file in the project workspace.",
+			ws.writeFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":    map[string]interface{}{"type": "string"},
+					"content": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"path", "content"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_edit",
+			"Replace old_str with new_str in a workspace file (exact match).",
+			ws.editFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":     map[string]interface{}{"type": "string"},
+					"old_str":  map[string]interface{}{"type": "string"},
+					"new_str":  map[string]interface{}{"type": "string"},
+					"replace_all": map[string]interface{}{"type": "boolean"},
+				},
+				"required": []string{"path", "old_str", "new_str"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_list",
+			"List files/directories under a workspace path.",
+			ws.listDir,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string", "description": "Relative directory (default .)"},
+				},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_glob",
+			"Glob files under the workspace (e.g. **/*.go).",
+			ws.glob,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"pattern": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"pattern"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_grep",
+			"Search file contents in the workspace with a substring or simple pattern.",
+			ws.grep,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"pattern": map[string]interface{}{"type": "string"},
+					"glob":    map[string]interface{}{"type": "string", "description": "Optional file glob, e.g. *.go"},
+					"path":    map[string]interface{}{"type": "string", "description": "Subdirectory to search"},
+				},
+				"required": []string{"pattern"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_shell",
+			"Run a shell command in the project root. Prefer tests/build over destructive ops.",
+			ws.shell,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"command": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"command"},
+			},
+		),
+		tools.NewGenericTool(
+			"git_status",
+			"Show git status --short in the project.",
+			ws.gitStatus,
+			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		),
+		tools.NewGenericTool(
+			"git_diff",
+			"Show git diff (optionally for a path).",
+			ws.gitDiff,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string"},
+				},
+			},
+		),
+	}
+
+	for _, t := range defs {
+		if err := reg.RegisterTool(t); err != nil {
+			// Ignore duplicates if registry already has the name
+			if !strings.Contains(err.Error(), "already") {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Workspace is the root-jailed project filesystem.
+type Workspace struct {
+	Root       string
+	DryRun     bool
+	Permission string
+	SlmDir     string
+}
+
+func (w *Workspace) guardWrite(path, kind, content string) (string, bool, error) {
+	switch permissions.Normalize(w.Permission) {
+	case permissions.ModeDryRun:
+		return fmt.Sprintf("dry-run: would %s %s (%d bytes)", kind, path, len(content)), true, nil
+	case permissions.ModeReview:
+		if w.SlmDir == "" {
+			w.SlmDir = filepath.Join(w.Root, ".slmcode")
+		}
+		p, err := permissions.RecordPending(w.SlmDir, path, kind, content)
+		if err != nil {
+			return "", true, err
+		}
+		return fmt.Sprintf("review: staged %s → %s (run `slmcode apply`)", path, filepath.Base(p)), true, nil
+	default:
+		return "", false, nil
+	}
+}
+
+func (w *Workspace) resolve(rel string) (string, error) {
+	if rel == "" {
+		rel = "."
+	}
+	rel = filepath.Clean(rel)
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path escapes workspace: %s", rel)
+	}
+	abs := filepath.Join(w.Root, rel)
+	abs = filepath.Clean(abs)
+	if abs != w.Root && !strings.HasPrefix(abs, w.Root+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes workspace: %s", rel)
+	}
+	return abs, nil
+}
+
+func (w *Workspace) readFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	const max = 100_000
+	if len(data) > max {
+		return string(data[:max]) + "\n...[truncated]", nil
+	}
+	return string(data), nil
+}
+
+func (w *Workspace) writeFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	content, _ := args["content"].(string)
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if msg, stop, err := w.guardWrite(path, "write", content); stop {
+		return msg, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		return nil, err
+	}
+	return fmt.Sprintf("wrote %s (%d bytes)", path, len(content)), nil
+}
+
+func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	oldStr, _ := args["old_str"].(string)
+	newStr, _ := args["new_str"].(string)
+	replaceAll, _ := args["replace_all"].(bool)
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	if !strings.Contains(text, oldStr) {
+		return nil, fmt.Errorf("old_str not found in %s", path)
+	}
+	var next string
+	count := 1
+	if replaceAll {
+		count = strings.Count(text, oldStr)
+		next = strings.ReplaceAll(text, oldStr, newStr)
+	} else {
+		next = strings.Replace(text, oldStr, newStr, 1)
+	}
+	if msg, stop, err := w.guardWrite(path, "edit", next); stop {
+		if msg != "" && strings.HasPrefix(msg, "dry-run:") {
+			return fmt.Sprintf("dry-run: would edit %s (%d replacement(s))", path, count), err
+		}
+		return msg, err
+	}
+	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
+		return nil, err
+	}
+	return fmt.Sprintf("edited %s (%d replacement(s))", path, count), nil
+}
+
+func (w *Workspace) listDir(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	if path == "" {
+		path = "."
+	}
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			name += "/"
+		}
+		lines = append(lines, name)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func (w *Workspace) glob(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	pattern, _ := args["pattern"].(string)
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern required")
+	}
+	// Walk from root and match
+	var matches []string
+	_ = filepath.WalkDir(w.Root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			if d != nil && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, _ := filepath.Rel(w.Root, path)
+		ok, _ := filepath.Match(pattern, rel)
+		if !ok {
+			ok, _ = filepath.Match(pattern, filepath.Base(rel))
+		}
+		// Support **/*.ext style loosely
+		if !ok && strings.HasPrefix(pattern, "**/") {
+			ok, _ = filepath.Match(strings.TrimPrefix(pattern, "**/"), filepath.Base(rel))
+			if !ok {
+				ok, _ = filepath.Match(strings.TrimPrefix(pattern, "**/"), rel)
+			}
+		}
+		if ok {
+			matches = append(matches, rel)
+			if len(matches) >= 200 {
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return strings.Join(matches, "\n"), nil
+}
+
+func (w *Workspace) grep(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	pattern, _ := args["pattern"].(string)
+	globFilter, _ := args["glob"].(string)
+	sub, _ := args["path"].(string)
+	base := w.Root
+	if sub != "" {
+		var err error
+		base, err = w.resolve(sub)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var hits []string
+	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			if d != nil && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if globFilter != "" {
+			ok, _ := filepath.Match(globFilter, d.Name())
+			if !ok {
+				return nil
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) > 500_000 {
+			return nil
+		}
+		rel, _ := filepath.Rel(w.Root, path)
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, pattern) {
+				hits = append(hits, fmt.Sprintf("%s:%d:%s", rel, i+1, strings.TrimSpace(line)))
+				if len(hits) >= 50 {
+					return filepath.SkipAll
+				}
+			}
+		}
+		return nil
+	})
+	if len(hits) == 0 {
+		return "no matches", nil
+	}
+	return strings.Join(hits, "\n"), nil
+}
+
+func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	command, _ := args["command"].(string)
+	if strings.TrimSpace(command) == "" {
+		return nil, fmt.Errorf("command required")
+	}
+	if w.DryRun {
+		return "dry-run: " + command, nil
+	}
+	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+	cmd.Dir = w.Root
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if len(text) > 80_000 {
+		text = text[:80_000] + "\n...[truncated]"
+	}
+	if err != nil {
+		return fmt.Sprintf("exit error: %v\n%s", err, text), nil
+	}
+	return text, nil
+}
+
+func (w *Workspace) gitStatus(ctx context.Context, _ map[string]interface{}) (interface{}, error) {
+	if !w.hasGit() {
+		return "not a git repository", nil
+	}
+	return w.shell(ctx, map[string]interface{}{"command": "git status --short"})
+}
+
+func (w *Workspace) gitDiff(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	if !w.hasGit() {
+		return "not a git repository — no diff", nil
+	}
+	path, _ := args["path"].(string)
+	cmd := "git diff --"
+	if path != "" {
+		cmd += " " + path
+	}
+	return w.shell(ctx, map[string]interface{}{"command": cmd})
+}
+
+func (w *Workspace) hasGit() bool {
+	_, err := os.Stat(filepath.Join(w.Root, ".git"))
+	return err == nil
+}
+
+// ToolNames returns the coding tool names for agent config.
+func ToolNames() []string {
+	return []string{
+		"ws_read", "ws_write", "ws_edit", "ws_list", "ws_glob", "ws_grep",
+		"ws_shell", "git_status", "git_diff",
+	}
+}

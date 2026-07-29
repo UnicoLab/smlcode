@@ -46,6 +46,28 @@ func TestAlreadySatisfiedDocComment(t *testing.T) {
 	}
 }
 
+func TestAlreadySatisfiedCreateNotImplement(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\n"), 0o644)
+	// Existing file + "implement" must NOT count as satisfied (needs write evidence).
+	edit := plan.Task{
+		ID: "T1", Title: "Edit hello", Description: "implement comment",
+		Files: []string{"hello.go"}, Acceptance: "file updated",
+	}
+	if alreadySatisfied(dir, edit) {
+		t.Fatal("implement/edit must not be alreadySatisfied merely because file exists")
+	}
+	create := plan.Task{
+		ID: "T2", Title: "Create agent module", Description: "scaffold src/lg_agent/graph.py",
+		Files: []string{"src/lg_agent/graph.py"}, Acceptance: "file created",
+	}
+	_ = os.MkdirAll(filepath.Join(dir, "src", "lg_agent"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"), []byte("def create_graph():\n    pass\n"), 0o644)
+	if !alreadySatisfied(dir, create) {
+		t.Fatal("expected alreadySatisfied for scaffold create when file exists")
+	}
+}
+
 func TestReviewBaselineUsesPreWaveSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "hello.go")
@@ -86,6 +108,21 @@ func TestEvidenceOKRequiresDiskOrTool(t *testing.T) {
 	_ = os.WriteFile(target, []byte("package main\n// hi\n"), 0o644)
 	if ok, why := r.evidenceOK(task, baseline); !ok {
 		t.Fatalf("expected pass after disk change: %s", why)
+	}
+}
+
+func TestEvidenceOKCreateSatisfiedWithoutDelta(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\nname=\"lg-agent\"\n"), 0o644)
+	r := &Runner{Root: dir}
+	task := plan.Task{
+		ID: "T1", Title: "Create pyproject.toml", Description: "scaffold deps",
+		Acceptance: "pyproject.toml exists", Files: []string{"pyproject.toml"},
+		Output: "I can see there's already a pyproject.toml file",
+	}
+	baseline := map[string]string{"pyproject.toml": fileFingerprint(filepath.Join(dir, "pyproject.toml"))}
+	if ok, why := r.evidenceOK(task, baseline); !ok {
+		t.Fatalf("create file already on disk should pass: %s", why)
 	}
 }
 

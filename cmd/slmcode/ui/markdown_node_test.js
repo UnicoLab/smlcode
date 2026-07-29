@@ -17,6 +17,9 @@ const markers = [
   "file_change",
   "autoScroll",
   "MarkdownDocEditor",
+  "slmcode-theme",
+  "toggleTheme",
+  "data-theme",
 ];
 for (const m of markers) {
   if (!src.includes(m)) {

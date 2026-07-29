@@ -6,6 +6,21 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 )
 
+func TestApplyPatchIgnoresRedactedAPIKey(t *testing.T) {
+	c := Default(t.TempDir())
+	c.APIKey = "real-secret"
+	redacted := "***"
+	c.ApplyPatch(Patch{APIKey: &redacted})
+	if c.APIKey != "real-secret" {
+		t.Fatalf("redacted key overwrote secret: %q", c.APIKey)
+	}
+	next := "new-secret"
+	c.ApplyPatch(Patch{APIKey: &next})
+	if c.APIKey != "new-secret" {
+		t.Fatalf("api_key=%q", c.APIKey)
+	}
+}
+
 func TestApplyPatchPartialDoesNotClearDryRun(t *testing.T) {
 	c := Default(t.TempDir())
 	c.DryRun = true

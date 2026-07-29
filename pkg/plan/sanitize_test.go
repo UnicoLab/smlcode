@@ -25,6 +25,24 @@ func TestSanitizeTasksCollapsesTiny(t *testing.T) {
 	}
 }
 
+func TestSanitizeTasksKeepsGreenfieldAtomic(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Title: "Create pyproject.toml", Role: RoleWorker, Files: []string{"pyproject.toml"}},
+		{ID: "T2", Title: "Create README.md", Role: RoleWorker, Files: []string{"README.md"}},
+		{ID: "T3", Title: "Create graph.py", Role: RoleWorker, Files: []string{"src/lg_agent/graph.py"}},
+		{ID: "T4", Title: "Create tools.py", Role: RoleWorker, Files: []string{"src/lg_agent/tools.py"}},
+		{ID: "T5", Title: "Create llm.py", Role: RoleWorker, Files: []string{"src/lg_agent/llm.py"}},
+		{ID: "T6", Title: "Create main.py", Role: RoleWorker, Files: []string{"src/lg_agent/main.py"}},
+		{ID: "T7", Title: "Create tests", Role: RoleWorker, Files: []string{"tests/test_graph.py"}},
+		{ID: "T8", Title: "Create __init__", Role: RoleWorker, Files: []string{"src/lg_agent/__init__.py"}},
+	}
+	q := "Create a minimal Python LangGraph agent project MVP with pyproject.toml and src/lg_agent/"
+	out := SanitizeTasks(tasks, "", q)
+	if len(out) < 6 {
+		t.Fatalf("greenfield must not collapse to mega-task, got %d: %+v", len(out), out)
+	}
+}
+
 func TestSanitizeTasksDropsHallucinatedPaths(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "math.go"), []byte("package main\nfunc Add(a,b int) int { return a+b }\n"), 0o644); err != nil {
@@ -48,6 +66,27 @@ func TestReconcileFiles(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644)
 	got := ReconcileFiles(root, []string{"missing/x.go"}, []string{"a.go"})
 	if len(got) != 1 || got[0] != "a.go" {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestReconcileFilesKeepsGreenfieldCreates(t *testing.T) {
+	root := t.TempDir()
+	got := ReconcileFiles(root, []string{"src/lg_agent/graph.py", "pyproject.toml"}, nil)
+	if len(got) < 2 {
+		t.Fatalf("expected create targets kept, got %v", got)
+	}
+}
+
+func TestInferCreateFiles(t *testing.T) {
+	got := InferCreateFiles("Create src/lg_agent/graph.py with StateGraph")
+	found := false
+	for _, f := range got {
+		if f == "src/lg_agent/graph.py" {
+			found = true
+		}
+	}
+	if !found {
 		t.Fatalf("%v", got)
 	}
 }

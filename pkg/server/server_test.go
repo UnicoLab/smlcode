@@ -2,12 +2,16 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
@@ -111,6 +115,100 @@ func TestHealth(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestBoardNeverNullTasks(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/board", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	tasks, ok := out["tasks"].([]interface{})
+	if !ok {
+		t.Fatalf("tasks should be array, got %T %v", out["tasks"], out["tasks"])
+	}
+	if tasks == nil {
+		t.Fatal("tasks null")
+	}
+}
+
+func TestSSESendsConnected(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+	// Give handler time to write hello
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	body := rec.Body.String()
+	if !strings.Contains(body, "studio api connected") && !strings.Contains(body, `"kind":"connected"`) {
+		t.Fatalf("missing connected event: %s", body)
+	}
+}
+
+func TestArchivesAPI(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(h.Config.SlmDir(), "archives")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := "20260730_120000_run-demo.md"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("# Archive\n\nhello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/archives", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/archives/"+name, nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "hello") {
+		t.Fatalf("missing content: %s", rec.Body.String())
 	}
 }
 

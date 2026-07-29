@@ -38,6 +38,29 @@ func TestFocusGuardAllowAndBlock(t *testing.T) {
 	}
 }
 
+func TestFocusGuardScaffoldGreenfield(t *testing.T) {
+	g := NewFocusGuard()
+	g.SetWave([][]string{{"pyproject.toml"}})
+	if !g.Allow("pyproject.toml") {
+		t.Fatal("manifest should allow")
+	}
+	for _, p := range []string{
+		"src/lg_agent/__init__.py",
+		"src/lg_agent/graph.py",
+		"tests/test_graph.py",
+		"README.md",
+		"main.py",
+	} {
+		if !g.Allow(p) {
+			t.Fatalf("scaffold should allow %s", p)
+		}
+	}
+	// Unrelated wander still blocked.
+	if g.Allow("vendor/secret.bin") {
+		t.Fatal("unrelated path must stay blocked")
+	}
+}
+
 func TestWorkspaceFocusBlocksWrite(t *testing.T) {
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "pkg/hello"), 0o755)

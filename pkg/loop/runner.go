@@ -166,11 +166,11 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	}
 	r.persist(board)
 
-	// Constrain writes to the union of this wave's focus files.
+	// Constrain writes to the union of this wave's focus files (+ paths from task text).
 	if r.Focus != nil {
 		lists := make([][]string, 0, len(wave))
 		for _, t := range wave {
-			lists = append(lists, t.Files)
+			lists = append(lists, expandTaskFocus(t))
 		}
 		r.Focus.SetWave(lists)
 		defer r.Focus.Clear()
@@ -319,12 +319,14 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		review := plan.ParseReviewJSON(reviewRaw)
 		// SLM fallback: reviewers are often overly skeptical; trust clear worker
 		// completion + write/disk evidence, or acceptance already met on disk
-		// (e.g. explorer pre-applied a tiny doc-comment change).
+		// (e.g. create/scaffold file already written on a prior attempt).
 		if !review.Approved {
 			done := plan.WorkerLooksComplete(current.Output) || workerReportedDone(current.Output)
 			satisfied := alreadySatisfied(r.Root, current)
 			hasEvidence := r.hasRealWriteEvidence(current, baseline) || hasToolWriteEvidence(current.Output)
-			if done && (looksLikeBrokenReview(reviewRaw) || hasEvidence || satisfied) {
+			// Disk acceptance alone is enough — workers often "read then claim done"
+			// without JSON status=done after a sibling task already wrote the file.
+			if satisfied || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 				review.Approved = true
 				review.Score = 80
 				switch {
@@ -631,10 +633,12 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 			return false, "all task target files are missing on disk (hallucinated paths)"
 		}
 	}
+	// Create/scaffold (or doc-comment) already on disk → accept even without a
+	// fresh baseline delta (common when a prior attempt or sibling wrote the file).
+	if alreadySatisfied(r.Root, t) {
+		return true, ""
+	}
 	if looksLikeEditTask(t) {
-		if alreadySatisfied(r.Root, t) {
-			return true, ""
-		}
 		if r.hasRealWriteEvidence(t, baseline) {
 			return true, ""
 		}
@@ -649,10 +653,11 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 // scopeOK rejects wander: claimed or newly created files outside task focus.
 func (r *Runner) scopeOK(t plan.Task) string {
 	claimed := parseFilesChanged(t.Output)
-	// Build a task-local guard from focus files.
+	// Build a task-local guard from expanded focus (includes scaffold paths).
 	g := workspace.NewFocusGuard()
-	if len(t.Files) > 0 {
-		g.SetWave([][]string{t.Files})
+	focus := expandTaskFocus(t)
+	if len(focus) > 0 {
+		g.SetWave([][]string{focus})
 	}
 	if bad := g.OutOfScopeFiles(claimed); len(bad) > 0 {
 		return "out-of-scope files_changed: " + strings.Join(bad, ", ")
@@ -691,6 +696,41 @@ func (r *Runner) scopeOK(t plan.Task) string {
 		}
 	}
 	return ""
+}
+
+// expandTaskFocus merges declared files with path-like mentions in the task text
+// so greenfield scaffolding (src/pkg/…) is not blocked by a single-manifest focus.
+func expandTaskFocus(t plan.Task) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		p = strings.TrimPrefix(p, "./")
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, f := range t.Files {
+		add(f)
+	}
+	blob := t.Title + "\n" + StripScopedPack(t.Description) + "\n" + t.Acceptance
+	for _, f := range plan.ExtractFilePaths(blob) {
+		add(f)
+	}
+	// Common greenfield directories when the task is clearly creating a project.
+	lower := strings.ToLower(blob)
+	if strings.Contains(lower, "create") || strings.Contains(lower, "scaffold") ||
+		strings.Contains(lower, "pyproject") || strings.Contains(lower, "langgraph") ||
+		strings.Contains(lower, "new project") || strings.Contains(lower, "mvp") {
+		add("src/")
+		add("tests/")
+		add("README.md")
+		add("pyproject.toml")
+		add("main.py")
+	}
+	return out
 }
 
 // scheduleReady orders ready tasks for better parallel utilization:
@@ -887,7 +927,37 @@ func fileFingerprint(path string) string {
 }
 
 func alreadySatisfied(root string, t plan.Task) bool {
-	blob := strings.ToLower(t.Title + " " + t.Description + " " + t.Acceptance)
+	if root == "" {
+		return false
+	}
+	blob := strings.ToLower(t.Title + " " + StripScopedPack(t.Description) + " " + t.Acceptance)
+	// Create/scaffold tasks: acceptance met when the task's declared files exist.
+	// Use t.Files only (not expandTaskFocus) so scaffold prefixes don't inflate "needed".
+	// Keep this narrow — "implement"/"write"/"edit" still need real write evidence.
+	if strings.Contains(blob, "create") || strings.Contains(blob, "scaffold") ||
+		strings.Contains(blob, "initialize") || strings.Contains(blob, "greenfield") {
+		targets := t.Files
+		if len(targets) == 0 {
+			targets = plan.InferCreateFiles(blob)
+		}
+		present, needed := 0, 0
+		for _, f := range targets {
+			if strings.HasSuffix(f, "/") || f == "src" || f == "tests" {
+				continue
+			}
+			needed++
+			if !plan.FileExists(root, f) {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(root, f))
+			if err == nil && info.Size() > 0 {
+				present++
+			}
+		}
+		if needed > 0 && present >= needed {
+			return true
+		}
+	}
 	if !(strings.Contains(blob, "doc comment") || strings.Contains(blob, "comment")) {
 		return false
 	}

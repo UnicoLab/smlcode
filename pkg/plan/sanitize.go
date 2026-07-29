@@ -71,13 +71,18 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 			}
 			files = append(files, f)
 		}
-		if root != "" {
-			files = FilterExisting(root, files)
-		}
+		// Keep planned create targets even when they do not exist yet (greenfield).
+		// Only fall back to discovered files when the task listed nothing useful.
 		if len(files) == 0 && len(known) > 0 {
 			files = append(files, known...)
 		}
 		tasks[i].Files = ReconcileFiles(root, files, known)
+		// Infer focus files from title/description for create/scaffold tasks.
+		if len(tasks[i].Files) == 0 || onlyRootManifest(tasks[i].Files) {
+			if inferred := InferCreateFiles(tasks[i].Title + " " + tasks[i].Description + " " + tasks[i].Acceptance); len(inferred) > 0 {
+				tasks[i].Files = uniq(append(inferred, tasks[i].Files...))
+			}
+		}
 	}
 
 	if shouldCollapse(tasks, query) {
@@ -116,19 +121,93 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 	return tasks
 }
 
+func onlyRootManifest(files []string) bool {
+	if len(files) == 0 {
+		return true
+	}
+	for _, f := range files {
+		base := strings.ToLower(filepath.Base(f))
+		switch base {
+		case "pyproject.toml", "package.json", "go.mod", "cargo.toml", "readme.md", "requirements.txt":
+			if strings.Contains(f, "/") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// InferCreateFiles pulls intended create paths from free text (titles like
+// "Create src/lg_agent/graph.py").
+func InferCreateFiles(text string) []string {
+	found := ExtractFilePaths(text)
+	lower := strings.ToLower(text)
+	// Heuristics for common scaffold names mentioned without extensions in some titles.
+	if strings.Contains(lower, "graph.py") {
+		found = append(found, "src/lg_agent/graph.py")
+	}
+	if strings.Contains(lower, "tools.py") {
+		found = append(found, "src/lg_agent/tools.py")
+	}
+	if strings.Contains(lower, "llm.py") {
+		found = append(found, "src/lg_agent/llm.py")
+	}
+	if strings.Contains(lower, "__init__.py") {
+		found = append(found, "src/lg_agent/__init__.py")
+	}
+	if strings.Contains(lower, "test_graph.py") || (strings.Contains(lower, "pytest") && strings.Contains(lower, "test")) {
+		found = append(found, "tests/test_graph.py")
+	}
+	if strings.Contains(lower, "readme") {
+		found = append(found, "README.md")
+	}
+	if strings.Contains(lower, "main.py") || strings.Contains(lower, "entrypoint") {
+		found = append(found, "main.py", "src/lg_agent/main.py")
+	}
+	if strings.Contains(lower, "pyproject") {
+		found = append(found, "pyproject.toml")
+	}
+	return uniq(found)
+}
+
 func shouldCollapse(tasks []Task, query string) bool {
 	if len(tasks) <= 1 {
 		return false
 	}
 	q := strings.ToLower(query)
+	// Never collapse greenfield / multi-file scaffold work into one mega-task.
+	// "minimal MVP" projects still need atomic file tasks for SLMs.
+	if strings.Contains(q, "scaffold") || strings.Contains(q, "greenfield") ||
+		strings.Contains(q, "project") || strings.Contains(q, "package") ||
+		strings.Contains(q, "pyproject") || strings.Contains(q, "langgraph") ||
+		strings.Contains(q, "create a ") || strings.Contains(q, "src/") ||
+		strings.Contains(q, "tests/") || countDistinctCreatePaths(tasks) >= 3 {
+		return false
+	}
 	tiny := strings.Contains(q, "tiny") || strings.Contains(q, "doc comment") ||
-		strings.Contains(q, "one-line") || strings.Contains(q, "minimal") ||
+		strings.Contains(q, "one-line") ||
 		(strings.Contains(q, "add") && strings.Contains(q, "comment"))
 	if !tiny {
 		return false
 	}
 	// Tiny request → single worker task (avoid research chains)
 	return true
+}
+
+func countDistinctCreatePaths(tasks []Task) int {
+	seen := map[string]bool{}
+	for _, t := range tasks {
+		for _, f := range t.Files {
+			f = strings.TrimSpace(f)
+			if f == "" {
+				continue
+			}
+			seen[f] = true
+		}
+	}
+	return len(seen)
 }
 
 func collapseToWorker(tasks []Task, known []string, query string) []Task {

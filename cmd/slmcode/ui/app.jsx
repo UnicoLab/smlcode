@@ -6,7 +6,17 @@ async function api(path, opts = {}) {
     ...opts,
   });
   if (!res.ok) throw new Error((await res.text()) || res.statusText);
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    const text = await res.text();
+    throw new Error("expected JSON from " + path + ", got: " + text.slice(0, 80));
+  }
   return res.json();
+}
+
+function normalizeBoard(b) {
+  const tasks = Array.isArray(b?.tasks) ? b.tasks : [];
+  return { ...(b || {}), tasks, plan: b?.plan || {} };
 }
 
 const COLUMNS = [
@@ -21,6 +31,31 @@ const COLUMNS = [
 
 const ROLES = ["worker", "deep", "explorer", "docs", "architect", "reviewer", "corrector", "tester", "context", "coordinator"];
 const PIPE = ["init", "skills", "context", "explore", "docs", "architect", "plan", "split", "coord", "execute", "learn", "test", "memory", "done"];
+
+function agentRoleClass(name) {
+  const n = String(name || "").toLowerCase().replace(/^@/, "");
+  if (n.includes("review")) return "role-reviewer";
+  if (n.includes("correct")) return "role-corrector";
+  if (n.includes("explor") || n.includes("docs")) return "role-explorer";
+  if (n.includes("test") || n.includes("qa")) return "role-tester";
+  if (n.includes("plan") || n.includes("arch") || n.includes("split")) return "role-planner";
+  if (n.includes("coord")) return "role-coordinator";
+  return "role-worker";
+}
+
+function AgentAvatar({ agent, size }) {
+  const name = String(agent || "?").replace(/^@/, "");
+  const initials = name.slice(0, 2).toUpperCase() || "??";
+  return (
+    <span
+      className={"agent-avatar " + agentRoleClass(name)}
+      style={size ? { width: size, height: size, fontSize: Math.max(9, size * 0.36) } : undefined}
+      title={"@" + name}
+    >
+      {initials}
+    </span>
+  );
+}
 
 const DOC_TABS = [
   { id: "CONTEXT.md", label: "Context" },
@@ -206,6 +241,17 @@ function MarkdownDocEditor({ value, onChange, onSave, title }) {
   );
 }
 
+function readStoredTheme() {
+  try {
+    const t = localStorage.getItem("slmcode-theme");
+    if (t === "light" || t === "dark") return t;
+  } catch (_) {}
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return "light";
+}
+
 function App() {
   const [health, setHealth] = useState(null);
   const [config, setConfig] = useState(null);
@@ -237,13 +283,28 @@ function App() {
   const [autoScroll, setAutoScroll] = useState(true);
   const [streamPaused, setStreamPaused] = useState(false);
   const [fileRef, setFileRef] = useState("");
+  const [theme, setTheme] = useState(readStoredTheme);
+  const [injectNote, setInjectNote] = useState("");
+  const [archives, setArchives] = useState([]);
+  const [archiveView, setArchiveView] = useState(null);
+  const [apiConnected, setApiConnected] = useState(false);
+  const [sseConnected, setSseConnected] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
   const liveEndRef = useRef(null);
   const streamPausedRef = useRef(false);
   const autoScrollRef = useRef(true);
   const selectedRef = useRef(null);
+  const esRef = useRef(null);
   selectedRef.current = selected;
   streamPausedRef.current = streamPaused;
   autoScrollRef.current = autoScroll;
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("slmcode-theme", theme); } catch (_) {}
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
   const showToast = (msg) => {
     setToast(msg);
@@ -251,12 +312,21 @@ function App() {
   };
 
   const refreshBoard = useCallback(async () => {
-    const b = await api("/api/board");
+    const b = normalizeBoard(await api("/api/board"));
     setBoard(b);
     const cur = selectedRef.current;
     if (cur) {
       const t = (b.tasks || []).find((x) => x.id === cur.id);
       if (t) setSelected(t);
+    }
+  }, []);
+
+  const refreshArchives = useCallback(async () => {
+    try {
+      const list = await api("/api/archives");
+      setArchives(Array.isArray(list) ? list : []);
+    } catch (_) {
+      setArchives([]);
     }
   }, []);
 
@@ -271,6 +341,7 @@ function App() {
         api("/api/agents").catch(() => []),
       ]);
       setHealth(h);
+      setApiConnected(!!h?.ok);
       setConfig(c);
       setSkills(Array.isArray(sk) ? sk : []);
       setModels(Array.isArray(mods.models) ? mods.models : []);
@@ -279,17 +350,47 @@ function App() {
       if (c?.specialist) setRunSpecialist(c.specialist);
       if (Array.isArray(c?.pinned_skills)) setPinSkills(c.pinned_skills);
       setRunning(!!(h.running || latest.running));
-      if (Array.isArray(latest.events)) setEvents(latest.events);
+      if (Array.isArray(latest.events)) {
+        setEvents(latest.events.filter((e) => e && e.kind !== "connected"));
+      }
       if (latest.events?.length) {
         const last = latest.events[latest.events.length - 1];
-        if (last?.phase) setPhase(last.phase);
+        if (last?.phase && last.phase !== "idle") setPhase(last.phase);
       }
       await refreshBoard();
+      await refreshArchives();
       setErr("");
+    } catch (e) {
+      setApiConnected(false);
+      setErr("API unreachable: " + String(e.message || e));
+    }
+  }, [refreshBoard, refreshArchives]);
+
+  async function injectContext() {
+    const note = injectNote.trim();
+    if (!note) return;
+    try {
+      const cur = await api("/api/docs/SCRATCH.md");
+      const stamp = new Date().toISOString();
+      const next = (cur.content || "") + "\n\n## Injected context (" + stamp + ")\n\n" + note + "\n";
+      await api("/api/docs/SCRATCH.md", { method: "PUT", body: JSON.stringify({ content: next }) });
+      setInjectNote("");
+      showToast("Context injected into SCRATCH.md");
+      if (tab === "SCRATCH.md") setDoc(next);
     } catch (e) {
       setErr(String(e.message || e));
     }
-  }, [refreshBoard]);
+  }
+
+  async function openArchive(name) {
+    try {
+      const a = await api("/api/archives/" + encodeURIComponent(name));
+      setArchiveView(a);
+      setNav("archives");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
 
   useEffect(() => {
     refresh();
@@ -306,53 +407,87 @@ function App() {
   }, [refresh, refreshBoard, tab]);
 
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.onmessage = (msg) => {
-      try {
-        const e = JSON.parse(msg.data);
-        setEvents((prev) => {
-          if (streamPausedRef.current) return prev;
-          return [...prev.slice(-400), e];
-        });
-        setPhase(e.phase || "idle");
-        if (e.agent || e.kind === "agent_start" || e.kind === "agent_end" || e.kind === "output") {
-          setLiveAgent({
-            agent: e.agent || e.phase,
-            kind: e.kind,
-            task: e.task_id,
-            scope: e.scope,
-            message: e.message,
-            output: e.output,
-            time: e.time,
+    let closed = false;
+    let retry = 0;
+    let timer = null;
+
+    const attach = () => {
+      if (closed) return;
+      if (esRef.current) {
+        try { esRef.current.close(); } catch (_) {}
+      }
+      const es = new EventSource("/api/events");
+      esRef.current = es;
+      es.addEventListener("connected", (msg) => {
+        setSseConnected(true);
+        setApiConnected(true);
+        retry = 0;
+        try {
+          const e = JSON.parse(msg.data);
+          if (e?.message) showToast(e.message);
+        } catch (_) {}
+      });
+      es.onmessage = (msg) => {
+        setSseConnected(true);
+        setApiConnected(true);
+        retry = 0;
+        try {
+          const e = JSON.parse(msg.data);
+          if (!e || e.kind === "connected") return;
+          setEvents((prev) => {
+            if (streamPausedRef.current) return prev;
+            return [...prev.slice(-400), e];
           });
-          if (e.task_id) setActiveTask(e.task_id);
-          setTaskHistory((prev) => {
-            const row = {
-              id: e.task_id || e.phase,
+          if (e.phase) setPhase(e.phase);
+          if (e.agent || e.kind === "agent_start" || e.kind === "agent_end" || e.kind === "output" || e.kind === "file_change") {
+            setLiveAgent({
               agent: e.agent || e.phase,
               kind: e.kind,
-              message: e.message,
+              task: e.task_id,
               scope: e.scope,
-              time: e.time || new Date().toISOString(),
-            };
-            return [...prev.slice(-80), row];
-          });
-        }
-        // Don't mark running=true on every SSE replay (would flash READY→RUNNING after finished runs)
-        if (e.phase === "done" || e.phase === "error") {
-          setRunning(false);
-          showToast(e.phase === "done" ? "Run finished" : (e.message || "Run error"));
-          refresh();
-        } else if (e.kind === "agent_start" || e.phase === "init" || e.phase === "execute") {
-          setRunning(true);
-        }
-        refreshBoard();
-      } catch (_) {}
+              message: e.message,
+              output: e.output,
+              time: e.time,
+            });
+            if (e.task_id) setActiveTask(e.task_id);
+            setTaskHistory((prev) => {
+              const row = {
+                id: e.task_id || e.phase,
+                agent: e.agent || e.phase,
+                kind: e.kind,
+                message: e.message,
+                scope: e.scope,
+                time: e.time || new Date().toISOString(),
+              };
+              return [...prev.slice(-80), row];
+            });
+          }
+          if (e.phase === "done" || e.phase === "error" || e.kind === "run_end" || e.kind === "run_stop") {
+            setRunning(false);
+            showToast(e.phase === "error" ? (e.message || "Run error") : (e.message || "Run finished"));
+            refresh();
+          } else if (e.kind === "run_start" || e.kind === "agent_start" || e.phase === "init" || e.phase === "execute") {
+            setRunning(true);
+          }
+          refreshBoard();
+        } catch (_) {}
+      };
+      es.onerror = () => {
+        setSseConnected(false);
+        try { es.close(); } catch (_) {}
+        if (closed) return;
+        const wait = Math.min(8000, 500 * Math.pow(2, retry++));
+        timer = setTimeout(attach, wait);
+      };
     };
-    es.onerror = () => {
-      // keep UI usable if SSE drops; poll will refresh running state
+    attach();
+    return () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      if (esRef.current) {
+        try { esRef.current.close(); } catch (_) {}
+      }
     };
-    return () => es.close();
   }, [refresh, refreshBoard]);
 
   useEffect(() => {
@@ -456,15 +591,22 @@ function App() {
   }
 
   async function saveConfig(patch) {
-    const next = await api("/api/config", { method: "PUT", body: JSON.stringify({ ...config, ...patch }) });
+    // Send only patch keys — never round-trip Public() config (api_key "***", etc.).
+    const body = { ...patch };
+    Object.keys(body).forEach((k) => {
+      if (body[k] === undefined || body[k] === null) delete body[k];
+    });
+    const next = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
     setConfig(next);
-    if (patch.provider || patch.endpoint || patch.model) {
+    setApiConnected(true);
+    if (patch.provider || patch.endpoint || patch.model || patch.api_key) {
       try {
         const mods = await api("/api/models");
         setModels(Array.isArray(mods.models) ? mods.models : []);
       } catch (_) { /* offline provider is fine */ }
     }
     showToast("Config saved — " + (next.provider || "?") + " / " + (next.model || "?"));
+    await refresh();
   }
 
   const byColumn = useMemo(() => {
@@ -494,9 +636,11 @@ function App() {
   const NAV = [
     { id: "board", label: "Board", tip: "Tasks" },
     { id: "run", label: "Live", tip: "Agent stream" },
+    { id: "archives", label: "Archives", tip: "Past runs" },
     { id: "agents", label: "Agents", tip: "Specialists" },
     { id: "skills", label: "Skills", tip: "Knowledge" },
   ];
+  const boardPct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
 
   return (
     <div className="app">
@@ -555,6 +699,15 @@ function App() {
         <div className="meta" title={config?.model}>
           {config ? `${config.provider} · ${String(config.model || "").split("/").pop()}` : "…"}
         </div>
+        <button
+          type="button"
+          className="theme-toggle ghost sm"
+          onClick={toggleTheme}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          aria-label="Toggle color theme"
+        >
+          {theme === "dark" ? "Light" : "Dark"}
+        </button>
       </header>
 
       <div className="pipeline" title="Pipeline progress">
@@ -564,6 +717,17 @@ function App() {
             <span className={"pipe-step" + (phase === p ? " active" : "") + (phaseIdx > i ? " done" : "")}>{p}</span>
           </React.Fragment>
         ))}
+      </div>
+
+      <div className={"conn-strip" + (apiConnected && sseConnected ? " ok" : apiConnected ? " warn" : " bad")}>
+        <span className={"pulse" + (apiConnected ? " live" : "")} />
+        <strong>{apiConnected ? "API connected" : "API offline"}</strong>
+        <span>· SSE {sseConnected ? "live" : "reconnecting…"}</span>
+        <span>· {health?.provider || "…"} / {String(health?.model || "").split("/").pop() || "…"}</span>
+        <span className="conn-root" title={health?.root || ""}>{health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : ""}</span>
+        {!apiConnected && (
+          <button className="sm ghost" onClick={() => refresh()}>Retry</button>
+        )}
       </div>
 
       {!running && counts.total === 0 && !query && (
@@ -615,54 +779,56 @@ function App() {
                   : "Press Run above. Progress, agent names, and file scope appear here."}
               </p>
 
-              {/* Agent Status Dashboard */}
               <div className="agent-status-dashboard">
                 {liveAgent && (
                   <div className="agent-card">
                     <div className="agent-card-header">
                       <div className="agent-card-title">
-                        <div className="agent-icon">@{liveAgent.agent || "…"}</div>
-                        <span style={{ marginLeft: "0.5rem" }}>@{liveAgent.agent || "unknown"}</span>
+                        <AgentAvatar agent={liveAgent.agent} />
+                        <div>
+                          <strong>@{liveAgent.agent || "unknown"}</strong>
+                          <div className="agent-card-role">{liveAgent.kind || "phase"}</div>
+                        </div>
                       </div>
                       <div className="agent-card-role">
-                        {liveAgent.kind || "phase"}
                         {liveAgent.kind === "agent_start" ? (
-                          <span className="status-indicator running" style={{ marginLeft: "0.5rem" }}></span>
+                          <span className="status-indicator running" />
                         ) : liveAgent.kind === "agent_end" ? (
-                          <span className="status-indicator succeeded" style={{ marginLeft: "0.5rem" }}></span>
+                          <span className="status-indicator succeeded" />
                         ) : (
-                          <span className="status-indicator idle" style={{ marginLeft: "0.5rem" }}></span>
+                          <span className="status-indicator idle" />
                         )}
                       </div>
                     </div>
                     <div className="agent-card-body">
-                      <div style={{ color: "var(--text)", marginBottom: "0.3rem" }}>
-                        <strong>Current Status:</strong> {liveAgent.message}
+                      <div><strong>Status</strong> — {liveAgent.message}</div>
+                      <div className="meta-row">
+                        {liveAgent.task ? <span><strong>Task</strong> {liveAgent.task}</span> : null}
+                        {liveAgent.scope ? <span><strong>Scope</strong> {liveAgent.scope}</span> : null}
                       </div>
-                      {liveAgent.task && (
-                        <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
-                          <strong>Task:</strong> {liveAgent.task}
-                        </div>
-                      )}
-                      {liveAgent.scope && (
-                        <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
-                          <strong>Scope:</strong> {liveAgent.scope}
-                        </div>
-                      )}
-                      {liveAgent.output && (
-                        <div>
-                          <div style={{ color: "var(--muted)", marginBottom: "0.3rem" }}>
-                            <strong>Output:</strong>
-                          </div>
-                          <pre className="output-box" style={{ marginTop: "0.3rem", maxHeight: "120px" }}>{liveAgent.output}</pre>
-                        </div>
-                      )}
+                      {liveAgent.output ? (
+                        <pre className="output-box" style={{ maxHeight: 120 }}>{liveAgent.output}</pre>
+                      ) : null}
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Live stream — chronological, auto-scroll, pause */}
+              <div className="inject-box">
+                <strong>Enrich context</strong>
+                <div className="lead" style={{ margin: "0.2rem 0 0" }}>
+                  Append notes to SCRATCH.md — workers pick them up on the next step.
+                </div>
+                <textarea
+                  value={injectNote}
+                  onChange={(e) => setInjectNote(e.target.value)}
+                  placeholder="Add constraints, paths, or corrections…"
+                />
+                <button className="sm secondary" disabled={!injectNote.trim()} onClick={injectContext}>
+                  Inject context
+                </button>
+              </div>
+
               <div className="event-history">
                 <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
                   <h3 style={{ margin: 0 }}>Live stream</h3>
@@ -671,7 +837,7 @@ function App() {
                       {autoScroll ? "↓ Live scroll" : "Scroll paused"}
                     </button>
                     <button className={"sm" + (streamPaused ? "" : " ghost")} onClick={() => setStreamPaused((v) => !v)} title="Pause appending events">
-                      {streamPaused ? "▶ Resume" : "⏸ Pause"}
+                      {streamPaused ? "Resume" : "Pause"}
                     </button>
                     <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); }}>Clear</button>
                   </div>
@@ -680,6 +846,7 @@ function App() {
                   <div className="observability-strip">
                     {taskHistory.slice(-8).map((h, i) => (
                       <div key={i} className={"obs-chip " + (h.kind || "")} title={h.message}>
+                        <AgentAvatar agent={h.agent} size={18} />
                         <span className="obs-agent">@{h.agent || "?"}</span>
                         <span className="obs-task">{h.id || "—"}</span>
                         <span className="obs-kind">{h.kind || "phase"}</span>
@@ -691,23 +858,28 @@ function App() {
                 <ul className="event-list live-stream">
                   {events.map((e, i) => (
                     <li key={i} className={"event-item kind-" + (e.kind || e.phase || "phase")}>
-                      <div className="event-header">
-                        <span className="phase">{e.kind || e.phase}</span>
-                        {e.agent ? <strong className="agent-name">@{e.agent}</strong> : null}
-                        {e.task_id ? <span className="id">{e.task_id}</span> : null}
+                      <div className="event-avatar">
+                        <AgentAvatar agent={e.agent || e.phase} size={28} />
                       </div>
-                      <div className="event-content">
-                        <div className="event-message">{e.message}</div>
-                        {e.scope ? (
-                          <div style={{ color: "var(--muted)", fontSize: "0.75rem", marginTop: "0.2rem" }}>
-                            {e.kind === "file_change" ? "file: " : "scope: "}{e.scope}
-                          </div>
-                        ) : null}
-                        {e.kind === "file_change" && e.output ? (
-                          <pre className="file-patch-card">{String(e.output).slice(0, 600)}{String(e.output).length > 600 ? "…" : ""}</pre>
-                        ) : e.output ? (
-                          <pre className="mini-out" style={{ marginTop: "0.3rem" }}>{String(e.output).slice(0, 400)}{String(e.output).length > 400 ? "…" : ""}</pre>
-                        ) : null}
+                      <div className="event-body">
+                        <div className="event-header">
+                          <span className="phase">{e.kind || e.phase}</span>
+                          {e.agent ? <strong className="agent-name">@{e.agent}</strong> : null}
+                          {e.task_id ? <span className="id">{e.task_id}</span> : null}
+                        </div>
+                        <div className="event-content">
+                          <div className="event-message">{e.message}</div>
+                          {e.scope ? (
+                            <div style={{ color: "var(--muted)", fontSize: "0.75rem", marginTop: "0.2rem" }}>
+                              {e.kind === "file_change" ? "file: " : "scope: "}{e.scope}
+                            </div>
+                          ) : null}
+                          {e.kind === "file_change" && e.output ? (
+                            <pre className="file-patch-card">{String(e.output).slice(0, 600)}{String(e.output).length > 600 ? "…" : ""}</pre>
+                          ) : e.output ? (
+                            <pre className="mini-out" style={{ marginTop: "0.3rem" }}>{String(e.output).slice(0, 400)}{String(e.output).length > 400 ? "…" : ""}</pre>
+                          ) : null}
+                        </div>
                       </div>
                     </li>
                   ))}
@@ -719,6 +891,53 @@ function App() {
                     </li>
                   )}
                 </ul>
+              </div>
+            </>
+          )}
+
+          {nav === "archives" && (
+            <>
+              <h2>Archives</h2>
+              <p className="lead">Completed runs are saved as history threads under <code>.slmcode/archives/</code>.</p>
+              <div className="split-panels">
+                <div className="panel-box">
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <h3 style={{ margin: 0 }}>Past runs ({archives.length})</h3>
+                    <button className="sm ghost" onClick={refreshArchives}>Refresh</button>
+                  </div>
+                  {!archives.length ? (
+                    <div className="empty-state" style={{ marginTop: 10 }}>
+                      <strong>No archives yet</strong>
+                      <p>Finish a Run — each completed query is archived automatically.</p>
+                    </div>
+                  ) : (
+                    <ul className="archive-list" style={{ marginTop: 10 }}>
+                      {archives.map((a) => (
+                        <li
+                          key={a.name}
+                          className={archiveView?.name === a.name ? "active" : ""}
+                          onClick={() => openArchive(a.name)}
+                        >
+                          <div className="name">{a.name}</div>
+                          <div className="when">{a.modified || a.size ? ((a.modified || "") + (a.size ? " · " + a.size + " B" : "")) : ""}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="panel-box">
+                  {archiveView ? (
+                    <>
+                      <h3>{archiveView.name}</h3>
+                      <div className="md-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(archiveView.content || "") }} />
+                    </>
+                  ) : (
+                    <div className="empty-state">
+                      <strong>Select an archive</strong>
+                      <p>Open a finished run to review query, plan, and memory snapshot.</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -830,6 +1049,12 @@ function App() {
                 </div>
               </div>
               {board.plan?.summary && <p className="lead" style={{ marginTop: 0 }}>{board.plan.summary}</p>}
+              {counts.total > 0 && (
+                <div className="board-progress">
+                  <div className="progress-bar"><span style={{ width: boardPct + "%" }} /></div>
+                  <span className="pct">{counts.done}/{counts.total} · {boardPct}%</span>
+                </div>
+              )}
 
               {counts.total === 0 && (
                 <div className="empty-state">
@@ -1052,6 +1277,21 @@ function App() {
                     placeholder="http://127.0.0.1:8000/v1"
                   />
                 </label>
+                <label>API key (optional — leave blank to keep current / env / oMLX store)
+                  <input
+                    type="password"
+                    value={apiKeyDraft}
+                    onChange={(e) => setApiKeyDraft(e.target.value)}
+                    onBlur={() => {
+                      if (apiKeyDraft.trim()) {
+                        saveConfig({ api_key: apiKeyDraft.trim() });
+                        setApiKeyDraft("");
+                      }
+                    }}
+                    placeholder={config.api_key === "***" ? "•••• saved" : "not set"}
+                    autoComplete="off"
+                  />
+                </label>
                 <label>Backend
                   <select value={config.backend} onChange={(e) => saveConfig({ backend: e.target.value })}>
                     <option value="slmcode">slmcode specialists</option>
@@ -1134,7 +1374,8 @@ function App() {
 
       <footer className="bottom">
         <span>
-          <span className={"pulse" + (running ? " live" : "")} />
+          <span className={"pulse" + (running || sseConnected ? " live" : "")} />
+          {apiConnected ? "api ok" : "api down"} · {sseConnected ? "sse ok" : "sse down"} ·{" "}
           {health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : "…"}
         </span>
         <span className="footer-live">
@@ -1144,6 +1385,7 @@ function App() {
           {counts.doing ? ` · ${counts.doing} active` : ""}
           {counts.done ? ` · ${counts.done} done` : ""}
           {counts.blocked ? ` · ${counts.blocked} blocked` : ""}
+          {typeof health?.events === "number" ? ` · ${health.events} events` : ""}
         </span>
         <span className="footer-actions">
           {running && (

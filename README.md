@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.7-14b8a6?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.8-0f6e8c?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -174,7 +174,7 @@ make install / make install-system
 RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
 
-Engine notes (0.5.7+): focus-file write allowlists (blocks out-of-scope `main.go`), lean worker context packs, smarter ready-task scheduling, evidence + scope gates, Studio Live HTTP/JS interaction tests.
+Engine notes (0.5.8+): focus allowlists with greenfield scaffold support, create-path reconciliation, lean worker packs, Studio professional light/dark themes.
 
 Local layout during development:
 

@@ -9,11 +9,16 @@ import (
 
 // FocusGuard constrains workspace writes to task focus files / packages.
 // Safe for concurrent waves: SetWave replaces the active allowlist atomically.
+//
+// Greenfield / scaffold mode: when focus includes root project files
+// (pyproject.toml, package.json, …) or explicit directory prefixes (src/),
+// new package trees may be created without treating that as wander.
 type FocusGuard struct {
-	mu      sync.RWMutex
-	enabled bool
-	files   map[string]struct{} // exact relative paths
-	dirs    map[string]struct{} // package/dir prefixes derived from files
+	mu        sync.RWMutex
+	enabled   bool
+	scaffold  bool // allow creating project tree files
+	files     map[string]struct{}
+	dirs      map[string]struct{}
 }
 
 // NewFocusGuard returns an inactive guard (all writes allowed until SetWave).
@@ -32,6 +37,7 @@ func (g *FocusGuard) Clear() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.enabled = false
+	g.scaffold = false
 	g.files = map[string]struct{}{}
 	g.dirs = map[string]struct{}{}
 }
@@ -46,20 +52,35 @@ func (g *FocusGuard) SetWave(focusLists [][]string) {
 	defer g.mu.Unlock()
 	g.files = map[string]struct{}{}
 	g.dirs = map[string]struct{}{}
+	g.scaffold = false
 	for _, list := range focusLists {
 		for _, f := range list {
 			f = normalizeRel(f)
 			if f == "" || f == "." {
 				continue
 			}
+			// Trailing slash or bare dir name → directory allow.
+			if strings.HasSuffix(f, "/") || !strings.Contains(filepath.Base(f), ".") {
+				g.dirs[strings.TrimSuffix(f, "/")] = struct{}{}
+				continue
+			}
 			g.files[f] = struct{}{}
 			dir := filepath.ToSlash(filepath.Dir(f))
 			if dir != "" && dir != "." {
 				g.dirs[dir] = struct{}{}
+			} else if isRootProjectFile(f) {
+				// Root manifest ⇒ greenfield scaffold (src/, tests/, README, …).
+				g.scaffold = true
+				g.dirs["src"] = struct{}{}
+				g.dirs["tests"] = struct{}{}
+				g.dirs["test"] = struct{}{}
+				g.dirs["lib"] = struct{}{}
+				g.dirs["app"] = struct{}{}
+				g.dirs["pkg"] = struct{}{}
 			}
 		}
 	}
-	g.enabled = len(g.files) > 0
+	g.enabled = len(g.files) > 0 || len(g.dirs) > 0
 }
 
 // Enabled reports whether writes are constrained.
@@ -86,7 +107,6 @@ func (g *FocusGuard) Allow(path string) bool {
 	if path == "" {
 		return false
 	}
-	// Always allow .slmcode memory / pending.
 	if path == ".slmcode" || strings.HasPrefix(path, ".slmcode/") {
 		return true
 	}
@@ -97,11 +117,13 @@ func (g *FocusGuard) Allow(path string) bool {
 	if _, ok := g.dirs[dir]; ok {
 		return true
 	}
-	// Nested under an allowed package prefix.
 	for d := range g.dirs {
 		if path == d || strings.HasPrefix(path, d+"/") {
 			return true
 		}
+	}
+	if g.scaffold && isScaffoldPath(path) {
+		return true
 	}
 	return false
 }
@@ -156,4 +178,38 @@ func isEntrypointName(base string) bool {
 	default:
 		return false
 	}
+}
+
+func isRootProjectFile(path string) bool {
+	if strings.Contains(path, "/") {
+		return false
+	}
+	switch strings.ToLower(path) {
+	case "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
+		"package.json", "cargo.toml", "go.mod", "pom.xml", "build.gradle",
+		"readme.md", "makefile", "cmakelists.txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func isScaffoldPath(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case "readme.md", "pyproject.toml", "requirements.txt", "setup.py",
+		"package.json", "go.mod", "makefile", ".env.example", "license",
+		"license.md", "conftest.py", "pytest.ini", "tox.ini", ".gitignore":
+		return true
+	}
+	// main.py at project root is OK for Python MVP entrypoints during scaffold.
+	if !strings.Contains(path, "/") && base == "main.py" {
+		return true
+	}
+	for _, prefix := range []string{"src/", "tests/", "test/", "lib/", "app/", "pkg/"} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }

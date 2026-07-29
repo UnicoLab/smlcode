@@ -366,6 +366,7 @@ type Patch struct {
 	Model           *string   `json:"model,omitempty"`
 	Provider        *string   `json:"provider,omitempty"`
 	Endpoint        *string   `json:"endpoint,omitempty"`
+	APIKey          *string   `json:"api_key,omitempty"`
 	Backend         *string   `json:"backend,omitempty"`
 	Mode            *string   `json:"mode,omitempty"`
 	Specialist      *string   `json:"specialist,omitempty"`
@@ -409,6 +410,13 @@ func (c *Config) ApplyPatch(p Patch) {
 		}
 	} else if p.Endpoint != nil && *p.Endpoint != "" {
 		c.Endpoint = *p.Endpoint
+	}
+	if p.APIKey != nil {
+		key := strings.TrimSpace(*p.APIKey)
+		// Ignore redacted placeholder from Public() round-trips.
+		if key != "" && key != "***" {
+			c.APIKey = key
+		}
 	}
 	if p.Backend != nil && *p.Backend != "" {
 		c.Backend = *p.Backend

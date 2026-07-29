@@ -73,15 +73,62 @@ func FilterExisting(root string, files []string) []string {
 	return uniq(out)
 }
 
-// ReconcileFiles drops hallucinated paths and falls back to discovered real files.
+// ReconcileFiles keeps claimed paths when they exist or look like intentional
+// greenfield creates. Hallucinated missing paths fall back to discovered files.
 func ReconcileFiles(root string, claimed, discovered []string) []string {
-	real := FilterExisting(root, claimed)
-	if len(real) > 0 {
-		return real
+	var planned []string
+	for _, f := range claimed {
+		f = strings.TrimSpace(f)
+		if f == "" || strings.Contains(f, "..") || strings.HasPrefix(f, "/") {
+			continue
+		}
+		planned = append(planned, filepath.ToSlash(filepath.Clean(f)))
+	}
+	planned = uniq(planned)
+	if len(planned) > 0 {
+		existing := FilterExisting(root, planned)
+		var missing []string
+		seen := map[string]bool{}
+		for _, f := range existing {
+			seen[f] = true
+		}
+		for _, f := range planned {
+			if !seen[f] {
+				missing = append(missing, f)
+			}
+		}
+		out := append([]string{}, existing...)
+		for _, f := range missing {
+			if isGreenfieldCreatePath(f) {
+				out = append(out, f)
+			}
+		}
+		if len(out) > 0 {
+			return uniq(out)
+		}
 	}
 	fallback := FilterExisting(root, discovered)
 	if len(fallback) > 0 {
 		return fallback
 	}
 	return FilterExisting(root, ListWorkspaceFiles(root, 12))
+}
+
+// Keep testable helper name used by greenfield sanitize paths.
+func looksLikeCreateTarget(f string) bool { return isGreenfieldCreatePath(f) }
+
+func isGreenfieldCreatePath(f string) bool {
+	f = strings.ToLower(strings.TrimSpace(f))
+	if f == "" || strings.Contains(f, "path/to") || strings.Contains(f, "placeholder") {
+		return false
+	}
+	base := filepath.Base(f)
+	switch base {
+	case "pyproject.toml", "requirements.txt", "setup.py", "package.json", "go.mod",
+		"cargo.toml", "readme.md", "main.py", "conftest.py":
+		return true
+	}
+	return strings.HasPrefix(f, "src/") || strings.HasPrefix(f, "tests/") ||
+		strings.HasPrefix(f, "test/") || strings.HasPrefix(f, "lib/") ||
+		strings.HasPrefix(f, "app/")
 }

@@ -1,6 +1,6 @@
 MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.5.7
+VERSION ?= 0.5.8
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -15,13 +15,21 @@ SYSTEM_PREFIX := $(shell \
 	elif [ -d /opt/homebrew/bin ]; then echo /opt/homebrew; \
 	else echo /usr/local; fi)
 
-.PHONY: tidy build install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
+.PHONY: tidy build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
 
 tidy:
 	@test -d "$(GOLANGGRAPH)" || (echo "GoLangGraph not found at $(GOLANGGRAPH)"; exit 1)
 	go mod tidy
 
-build: tidy
+# Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed (no npm bundle step).
+# Always rebuild the Go binary after UI edits so the served assets match.
+ui-check:
+	@test -f cmd/slmcode/ui/styles.css && test -f cmd/slmcode/ui/app.jsx && test -f cmd/slmcode/ui/index.html
+	@grep -q 'data-theme' cmd/slmcode/ui/styles.css
+	@grep -q 'slmcode-theme' cmd/slmcode/ui/app.jsx
+	@echo "ui-check: OK (embedded by go:embed all:ui)"
+
+build: tidy ui-check
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) ./cmd/slmcode
 
 # Default: user install (~/.local/bin)

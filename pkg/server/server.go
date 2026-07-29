@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +43,34 @@ func New(h *harness.Harness, ui fs.FS) *Server {
 		ui:   ui,
 		subs: map[chan orchestrator.Event]struct{}{},
 	}
+	s.wireOrchestratorEvents()
 	s.routes()
 	return s
+}
+
+// wireOrchestratorEvents keeps Studio SSE subscribed across config rebuilds.
+func (s *Server) wireOrchestratorEvents() {
+	if s.h == nil || s.h.Orchestrator == nil {
+		return
+	}
+	s.h.Orchestrator.OnEvent(func(e orchestrator.Event) {
+		s.emit(e)
+	})
+}
+
+func (s *Server) emit(e orchestrator.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, e)
+	if len(s.events) > 800 {
+		s.events = s.events[len(s.events)-800:]
+	}
+	for ch := range s.subs {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
 }
 
 func (s *Server) Handler() http.Handler { return withCORS(s.mux) }
@@ -77,6 +105,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/agents", s.handleAgents)
+	s.mux.HandleFunc("GET /api/archives", s.handleListArchives)
+	s.mux.HandleFunc("GET /api/archives/{name}", s.handleGetArchive)
 
 	if s.ui != nil {
 		fileServer := http.FileServer(http.FS(s.ui))
@@ -85,13 +115,20 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	running := s.running
+	nEvents := len(s.events)
+	s.mu.Unlock()
 	writeJSON(w, map[string]interface{}{
 		"ok":       true,
+		"api":      "ok",
+		"ui":       "embedded",
 		"provider": s.h.Config.Provider,
 		"model":    s.h.Config.Model,
 		"backend":  s.h.Config.Backend,
 		"root":     s.h.Config.Root,
-		"running":  s.running,
+		"running":  running,
+		"events":   nEvents,
 	})
 }
 
@@ -111,13 +148,15 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	// Rebuild orchestrator with new settings (tools pick up permission/dry-run)
+	// Rebuild orchestrator with new settings (tools pick up permission/dry-run),
+	// but never drop the Studio SSE fan-out — re-wire OnEvent after swap.
 	orch, err := orchestrator.New(c)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	s.h.Orchestrator = orch
+	s.wireOrchestratorEvents()
 	writeJSON(w, c.Public())
 }
 
@@ -159,13 +198,21 @@ func (s *Server) handlePutDoc(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetBoard(w http.ResponseWriter, r *http.Request) {
 	_ = s.h.Orchestrator.Board().Load()
 	b := s.h.Orchestrator.Board().Snapshot()
+	tasks := b.Tasks
+	if tasks == nil {
+		tasks = []plan.Task{}
+	}
+	byCol := b.ByColumn()
+	for _, col := range plan.Columns() {
+		if byCol[col] == nil {
+			byCol[col] = []plan.Task{}
+		}
+	}
 	writeJSON(w, map[string]interface{}{
-		"plan":    b.Plan,
-		"tasks":   b.Tasks,
-		"columns": plan.Columns(),
-		"by_column": func() map[string][]plan.Task {
-			return b.ByColumn()
-		}(),
+		"plan":      b.Plan,
+		"tasks":     tasks,
+		"columns":   plan.Columns(),
+		"by_column": byCol,
 	})
 }
 
@@ -420,16 +467,10 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		s.h.Config.PinnedSkills = pins
 	}
 
-	s.h.Orchestrator.OnEvent(func(e orchestrator.Event) {
-		s.mu.Lock()
-		s.events = append(s.events, e)
-		for ch := range s.subs {
-			select {
-			case ch <- e:
-			default:
-			}
-		}
-		s.mu.Unlock()
+	// Ensure SSE stays wired for this run (config rebuilds call wireOrchestratorEvents too).
+	s.wireOrchestratorEvents()
+	s.emit(orchestrator.Event{
+		Phase: "init", Kind: "run_start", Message: "run started", Time: time.Now(),
 	})
 
 	go func() {
@@ -445,6 +486,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		if res != nil {
 			s.lastRes = res
 		}
+		s.mu.Unlock()
 		phase := "done"
 		msg := "finished"
 		if err != nil {
@@ -453,15 +495,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		} else if res != nil {
 			msg = res.Summary
 		}
-		e := orchestrator.Event{Phase: phase, Message: msg, Time: time.Now()}
-		s.events = append(s.events, e)
-		for ch := range s.subs {
-			select {
-			case ch <- e:
-			default:
-			}
-		}
-		s.mu.Unlock()
+		s.emit(orchestrator.Event{Phase: phase, Kind: "run_end", Message: msg, Time: time.Now()})
 	}()
 
 	writeJSON(w, map[string]string{"status": "started", "query": req.Query})
@@ -469,16 +503,29 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	s.h.Orchestrator.Stop()
+	s.mu.Lock()
+	was := s.running
+	s.running = false
+	s.mu.Unlock()
+	if was {
+		s.emit(orchestrator.Event{
+			Phase: "done", Kind: "run_stop", Message: "run stopped by user", Time: time.Now(),
+		})
+	}
 	writeJSON(w, map[string]string{"status": "stopping"})
 }
 
 func (s *Server) handleLatestRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	events := s.events
+	if events == nil {
+		events = []orchestrator.Event{}
+	}
 	writeJSON(w, map[string]interface{}{
 		"running": s.running,
 		"result":  s.lastRes,
-		"events":  s.events,
+		"events":  events,
 	})
 }
 
@@ -491,17 +538,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := make(chan orchestrator.Event, 32)
+	ch := make(chan orchestrator.Event, 64)
 	s.mu.Lock()
 	s.subs[ch] = struct{}{}
-	// replay
-	for _, e := range s.events {
-		select {
-		case ch <- e:
-		default:
-		}
-	}
+	replay := append([]orchestrator.Event(nil), s.events...)
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -510,11 +552,30 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		close(ch)
 	}()
 
+	// Immediate hello so the UI can show "API connected" without waiting for a run.
+	hello := orchestrator.Event{
+		Phase: "idle", Kind: "connected", Message: "studio api connected", Time: time.Now(),
+	}
+	data, _ := json.Marshal(hello)
+	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", data)
+	flusher.Flush()
+	for _, e := range replay {
+		data, _ := json.Marshal(e)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+	}
+	flusher.Flush()
+
 	notify := r.Context().Done()
+	ticker := time.NewTicker(12 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-notify:
 			return
+		case <-ticker.C:
+			// Comment heartbeats keep proxies/browsers from idle-closing the stream.
+			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
+			flusher.Flush()
 		case e, ok := <-ch:
 			if !ok {
 				return
@@ -593,6 +654,67 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, agents.PublicSpecs())
+}
+
+func (s *Server) archivesDir() string {
+	return filepath.Join(s.h.Config.SlmDir(), "archives")
+}
+
+func (s *Server) handleListArchives(w http.ResponseWriter, r *http.Request) {
+	dir := s.archivesDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, []any{})
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	type item struct {
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		Modified string `json:"modified"`
+	}
+	var out []item
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, item{
+			Name:     e.Name(),
+			Size:     info.Size(),
+			Modified: info.ModTime().UTC().Format(time.RFC3339),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Modified > out[j].Modified })
+	if out == nil {
+		out = []item{}
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleGetArchive(w http.ResponseWriter, r *http.Request) {
+	name := filepath.Base(r.PathValue("name"))
+	if name == "." || name == ".." || !strings.HasSuffix(strings.ToLower(name), ".md") {
+		http.Error(w, "invalid archive name", 400)
+		return
+	}
+	path := filepath.Join(s.archivesDir(), name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]string{"name": name, "content": string(data)})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

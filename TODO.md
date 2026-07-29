@@ -161,6 +161,38 @@ We need everything to be self evolving and improving all the time !!!
 - [x] Studio UI interaction harness (HTTP Live flows + `markdown_node_test.js`)
 - [x] Isolated multi-agent board sandbox e2e (temp workspace; optional `RUN_E2E=1` live)
 
+## Studio theme revamp (0.5.8)
+- [x] Professional light + dark themes via `data-theme` CSS variables (slate/teal accent)
+- [x] Theme toggle in topbar with `localStorage` persistence (`slmcode-theme`)
+- [x] Removed garish glow / neon gradients; clean surfaces, readable contrast
+- [x] Agent avatars + Live observability polish; board progress bar; inject-context box
+- [x] Archives view in Studio (`GET /api/archives`) — finished runs as history threads
+- [x] `make ui-check` + `make build` embeds latest `cmd/slmcode/ui/` via `go:embed`
+
+## Greenfield / anti-wander hardening (from LangGraph temp e2e)
+- [x] Focus guard allows scaffold trees when root manifests (pyproject.toml, …) are in focus
+- [x] `ReconcileFiles` keeps planned create paths under `src/` / `tests/` (no longer strips them)
+- [x] Infer per-task focus files from titles for create/scaffold work
+- [x] Create-task acceptance when declared files exist on disk (avoid false review rejects)
+- [x] Do not collapse multi-file / greenfield / “minimal project” splits into one mega-task
+
+---
+
+## Production gate checklist (2026-07-30)
+- [x] TODO items audited — features implemented (archives UI was the remaining GUI gap)
+- [x] LangGraph temp-dir e2e green (`/tmp/slmcode-lg-ONOoTB` — 8/8 tasks, full MVP tree)
+- [x] Studio UI↔API wiring hardened (SSE connected+heartbeat, patch-only config, connection strip, never-null board)
+- [x] Studio UI visually verified (light + dark) from embedded binary (`conn-strip`, no `bgDrift`)
+- [ ] Single commit → push → `make install-system` → `slmcode version`
+
+## Studio ↔ backend wiring (was missing / broken in practice)
+- [x] SSE emits immediate `connected` event + keepalive pings (Live no longer looks dead)
+- [x] Config PUT accepts partial Patch only from UI (no `api_key: "***"` round-trip)
+- [x] Config rebuild re-wires orchestrator `OnEvent` so Live keeps streaming
+- [x] Stop run clears `running` + emits `run_stop`; board/latest never return null arrays
+- [x] Connection strip + footer show API/SSE status; SSE auto-reconnects
+- [x] Settings can set API key (ignored when blank / `***`)
+
 ---
 
 ### Self-use diagnosis (2026-07-29) — fixed

@@ -26,6 +26,8 @@ GUI is a nice start but let's make it much more professional and user friendly:
 
 -> on the live beedback live scroll to the last even shoudl be enabled by default ! We also shoudl be able to pause the current loop and add context if we want or stop it if something is not right etc ... 
 
+-> we should be able to reference files, folders and add context to the query in GUI and TUI etc (like claude code !)
+
 ## Task creation
 
 - make sure tasks creation is well integrated and will work correctly for sub-agents and everything -> currently we are creating one big file ... so maybe this is somehow a too big context for smalelr sub-agents -> or the coordinator distributes the task correctly to all agents and then just updates this bigger file . Let's make sure it works perfectly
@@ -225,3 +227,14 @@ To fix all current problems and improve everything making it much better, more e
 ## TUI improvements
 
 We need to drastically imrpove the TUI especially if we can't to code in the terminal, currently we display tons of logs and it's not very nice visually for the user .. when displaying run or something our coding TUI shoudl be implemented like the one form claude code ... where everything is much cleaner etc !!! And give visual overviews and status in the termina TUI -> so let's revamp this part drastically cause some of the users will not use the studio but work entirely in the terminal and the experiance shoudl be grat !!! Also take inspiration from claude code how the input is always possible, when agents are working it's a background process attached to a thread but user can still interact with the slmcode etc .. -> make sure we have all the features of claude code as well in the terminal !
+
+## Concepts of Waves 
+This concept is quite nice, maybe we can explore it more and use it somehow in the GUI, TUI and in general ?
+
+## Core engine
+
+All steps (docs, architect code etc) should initially plan, use tools, scope and depegate tasks or sub-tasks to agents that will provide more context to it in parallel ... like it's implemented in antigravity ... this is nice, since we will iterate, ask sub-agent to deep dive, ask user if we need to etc ... for each step so that we are sure we have a full context ! On each step we shoudl ahve validation loop with critic to check if we have enough info or we reiterate again and what we need to do so ... this should be universal for each step (expecially all imrportant ones that will define the scope etc)
+
+## Codeing 
+
+I think it's also quite imrportant so we have streaming code updates and don't have to waint for the full context so replace the file, like it's done in antigravity or claude code ... we can see partial changes dynamically and this lowers errors rate ... so let's deep dive what is the best strategy and most efficient one for generating code when working with SLMs and let's implement it deeply !

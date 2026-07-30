@@ -21,6 +21,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
@@ -105,8 +106,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/agents", s.handleAgents)
+	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
+	s.mux.HandleFunc("PUT /api/agents/{id}", s.handlePutAgent)
+	s.mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 	s.mux.HandleFunc("GET /api/archives", s.handleListArchives)
 	s.mux.HandleFunc("GET /api/archives/{name}", s.handleGetArchive)
+	s.mux.HandleFunc("GET /api/queries", s.handleListQueries)
+	s.mux.HandleFunc("GET /api/queries/{id}", s.handleGetQuery)
 
 	if s.ui != nil {
 		fileServer := http.FileServer(http.FS(s.ui))
@@ -652,8 +659,105 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"models": names, "current": cfg.Model})
 }
 
+func (s *Server) agentDirs() []string {
+	return append([]string{s.h.Config.AgentsDir()}, agents.GlobalAgentRoots()...)
+}
+
+func (s *Server) loadCustomAgents() []agents.CustomSpec {
+	list, _ := agents.LoadCustomSpecs(s.agentDirs()...)
+	return list
+}
+
+func (s *Server) rebuildOrchestrator() error {
+	orch, err := orchestrator.New(s.h.Config)
+	if err != nil {
+		return err
+	}
+	s.h.Orchestrator = orch
+	s.wireOrchestratorEvents()
+	return nil
+}
+
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, agents.PublicSpecs())
+	writeJSON(w, agents.PublicSpecsWithCustom(s.loadCustomAgents()))
+}
+
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	for _, a := range agents.PublicSpecsWithCustom(s.loadCustomAgents()) {
+		if aid, _ := a["id"].(string); aid == id {
+			writeJSON(w, a)
+			return
+		}
+	}
+	http.Error(w, "not found", 404)
+}
+
+func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var req agents.CustomSpec
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	path, err := agents.WriteCustom(s.h.Config.AgentsDir(), req)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	got, err := agents.ReadCustomFile(path)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, "saved but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, got)
+}
+
+func (s *Server) handlePutAgent(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	var req agents.CustomSpec
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		req.ID = id
+	}
+	if strings.ToLower(req.ID) != id {
+		http.Error(w, "id mismatch", 400)
+		return
+	}
+	path, err := agents.WriteCustom(s.h.Config.AgentsDir(), req)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	got, err := agents.ReadCustomFile(path)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, "saved but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, got)
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	if err := agents.DeleteCustom(s.h.Config.AgentsDir(), id); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, "deleted but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]string{"ok": "true", "deleted": id})
 }
 
 func (s *Server) archivesDir() string {
@@ -715,6 +819,70 @@ func (s *Server) handleGetArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"name": name, "content": string(data)})
+}
+
+func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
+	dir := session.QueriesDir(s.h.Config.SlmDir())
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, []any{})
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	type item struct {
+		ID        string `json:"id"`
+		Query     string `json:"query"`
+		Success   bool   `json:"success"`
+		Summary   string `json:"summary,omitempty"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	var out []item
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		t, err := session.LoadTurn(s.h.Config.SlmDir(), e.Name())
+		if err != nil {
+			continue
+		}
+		out = append(out, item{
+			ID: t.ID, Query: t.Query, Success: t.Success,
+			Summary: t.Summary, UpdatedAt: t.UpdatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	if out == nil {
+		out = []item{}
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleGetQuery(w http.ResponseWriter, r *http.Request) {
+	id := filepath.Base(r.PathValue("id"))
+	if id == "." || id == ".." || id == "" {
+		http.Error(w, "invalid query id", 400)
+		return
+	}
+	t, err := session.LoadTurn(s.h.Config.SlmDir(), id)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	sum, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "summary.md"))
+	planMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "PLAN.md"))
+	tasksMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "TASKS.md"))
+	writeJSON(w, map[string]interface{}{
+		"id": t.ID, "query": t.Query, "success": t.Success,
+		"summary": t.Summary, "updated_at": t.UpdatedAt, "board": t.Board,
+		"summary_md": string(sum), "plan_md": string(planMD), "tasks_md": string(tasksMD),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

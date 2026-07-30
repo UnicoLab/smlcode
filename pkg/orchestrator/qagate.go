@@ -17,9 +17,10 @@ import (
 
 // runQAGate iterates a project test command until green or max rounds.
 // On failure it asks the tester/corrector specialists to fix, then re-runs.
-func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.Board) {
+// Returns true when the gate ends red (caller should rewrite plan/tasks).
+func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.Board) bool {
 	if o == nil || o.cfg == nil || !o.cfg.QAGate {
-		return
+		return false
 	}
 	cmd := strings.TrimSpace(o.cfg.QAGateCommand)
 	if cmd == "" {
@@ -27,7 +28,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 	}
 	if cmd == "" {
 		o.emit("test", "qa_gate: no auto test command — set qa_gate_command", "")
-		return
+		return false
 	}
 	max := o.cfg.QAGateMaxRounds
 	if max <= 0 {
@@ -36,7 +37,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 	for round := 1; round <= max; round++ {
 		if err := ctx.Err(); err != nil {
-			return
+			return true
 		}
 		o.emitFull("test", stream.KindAgentStart, "qa", "",
 			fmt.Sprintf("qa_gate %d/%d: %s", round, max, cmd), "", "")
@@ -44,7 +45,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		if err == nil {
 			_ = o.store.Append(contextstore.DocScratch, "QA gate", fmt.Sprintf("GREEN round %d\n\n%s", round, truncate(out, 2000)))
 			o.emitFull("test", stream.KindAgentEnd, "qa", "", "qa_gate green", "", truncate(out, 800))
-			return
+			return false
 		}
 		failText := strings.TrimSpace(out + "\n" + err.Error())
 		_ = o.store.Append(contextstore.DocScratch, "QA gate failure",
@@ -65,7 +66,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 				}
 				o.persistBoard(board)
 			}
-			return
+			return true
 		}
 
 		// Ask tester to diagnose, then corrector-style worker to fix.
@@ -89,6 +90,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 			o.emitFull("test", stream.KindOutput, plan.RoleCorrector, "", "qa fix output", "", truncate(fixOut, 1000))
 		}
 	}
+	return true
 }
 
 func detectQACommand(root string) string {

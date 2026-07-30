@@ -70,11 +70,14 @@ Then from **any** project:
 
 ```bash
 cd ~/any-repo
+slmcode                      # premium TUI (default; also: slmcode tui)
 slmcode init
 slmcode run -v "fix the bug"
-slmcode chat                 # interactive REPL
+slmcode chat                 # classic REPL
 slmcode studio               # http://127.0.0.1:7420
 ```
+
+> Docs sometimes spell the project **smlcode** — the installed binary is **`slmcode`**.
 
 ### Update
 

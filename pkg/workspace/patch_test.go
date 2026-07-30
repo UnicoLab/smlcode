@@ -35,3 +35,14 @@ func TestApplyPatchNotFound(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestApplyPatchRejectsJunk(t *testing.T) {
+	_, _, err := ApplyPatch("hello", "Here is the patch: please update the file somehow")
+	if err == nil {
+		t.Fatal("expected junk reject")
+	}
+	_, _, err = ApplyPatch("hello", "--- a/a\n+++ b/a\n+x\n--- a/b\n+++ b/b\n+y\n")
+	if err == nil {
+		t.Fatal("expected multi-file reject")
+	}
+}

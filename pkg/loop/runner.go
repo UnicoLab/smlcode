@@ -293,49 +293,81 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			return fmt.Errorf("missing task %s", t.ID)
 		}
 
-		r.fire("agent_start", plan.RoleReviewer, current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
-		results, err := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-			AgentID: plan.RoleReviewer, Input: formatReviewPrompt(current),
-			Timeout: r.Timeout, ShareState: true,
-		}}, r.Shared)
-		if err != nil && len(results) == 0 {
-			current.MoveTo(plan.ColBlocked)
-			current.Error = err.Error()
-			board.UpdateTask(current)
-			r.persist(board)
-			if r.FailureHandler != nil {
-				_ = r.FailureHandler.ReportTaskFailure(board, current, err, attempt)
-			}
-			return err
-		}
-
+		// Fast path: skip reviewer LLM when disk/acceptance evidence is already clear.
+		// Prevents SLM hangs after a successful write (live multi-turn lesson).
 		reviewRaw := ""
-		if len(results) > 0 {
-			reviewRaw = outputString(results[0])
-			if results[0].Error != nil && reviewRaw == "" {
-				reviewRaw = results[0].Error.Error()
+		review := plan.ReviewResult{}
+		satisfied := alreadySatisfied(r.Root, current)
+		diskWrite := r.hasRealWriteEvidence(current, baseline)
+		toolWrite := hasToolWriteEvidence(current.Output)
+		diskSection := hasDiskEvidenceSection(current.Output)
+		done := plan.WorkerLooksComplete(current.Output) || workerReportedDone(current.Output)
+		hasEvidence := diskWrite || toolWrite || diskSection
+		fastPath := (satisfied || diskWrite || diskSection) && r.scopeOK(current) == ""
+		if fastPath {
+			review.Approved = true
+			review.Score = 85
+			if satisfied && !hasEvidence {
+				review.Summary = "auto-approved: acceptance already satisfied on disk"
+			} else {
+				review.Summary = "auto-approved: disk write evidence on focus files"
+			}
+			r.Log("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
+		} else {
+			r.fire("agent_start", plan.RoleReviewer, current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
+			results, err := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+				AgentID: plan.RoleReviewer, Input: formatReviewPrompt(current),
+				Timeout: r.Timeout, ShareState: true,
+			}}, r.Shared)
+			if err != nil && len(results) == 0 {
+				current.MoveTo(plan.ColBlocked)
+				current.Error = err.Error()
+				board.UpdateTask(current)
+				r.persist(board)
+				if r.FailureHandler != nil {
+					_ = r.FailureHandler.ReportTaskFailure(board, current, err, attempt)
+				}
+				return err
+			}
+			if len(results) > 0 {
+				reviewRaw = outputString(results[0])
+				if results[0].Error != nil && reviewRaw == "" {
+					reviewRaw = results[0].Error.Error()
+				}
+			}
+			review = plan.ParseReviewJSON(reviewRaw)
+			// SLM fallback: trust clear worker completion + tool/disk evidence.
+			if !review.Approved {
+				if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
+					review.Approved = true
+					review.Score = 80
+					switch {
+					case satisfied && !hasEvidence:
+						review.Summary = "auto-approved: acceptance already satisfied on disk"
+					case diskSection || diskWrite:
+						review.Summary = "auto-approved: disk write evidence on focus files"
+					default:
+						review.Summary = "auto-approved: worker completion + write evidence"
+					}
+					review.Issues = nil
+				}
 			}
 		}
-		review := plan.ParseReviewJSON(reviewRaw)
-		// SLM fallback: reviewers are often overly skeptical; trust clear worker
-		// completion + write/disk evidence, or acceptance already met on disk
-		// (e.g. create/scaffold file already written on a prior attempt).
-		if !review.Approved {
-			done := plan.WorkerLooksComplete(current.Output) || workerReportedDone(current.Output)
-			satisfied := alreadySatisfied(r.Root, current)
-			hasEvidence := r.hasRealWriteEvidence(current, baseline) || hasToolWriteEvidence(current.Output)
-			// Disk acceptance alone is enough — workers often "read then claim done"
-			// without JSON status=done after a sibling task already wrote the file.
-			if satisfied || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
-				review.Approved = true
-				review.Score = 80
-				switch {
-				case satisfied && !hasEvidence:
-					review.Summary = "auto-approved: acceptance already satisfied on disk"
-				default:
-					review.Summary = "auto-approved: worker completion + write evidence"
+		// Tester gate: never accept "does not work" / passed:false / empty finalize as done.
+		if review.Approved && strings.EqualFold(current.Role, plan.RoleTester) {
+			tr := plan.ParseTesterJSON(current.Output)
+			if !tr.Passed {
+				review.Approved = false
+				review.Score = 0
+				why := "tester reported failure"
+				if len(tr.Failures) > 0 {
+					why = tr.Failures[0]
+				} else if tr.Summary != "" {
+					why = tr.Summary
 				}
-				review.Issues = nil
+				review.Summary = "rejected by tester gate: " + why
+				review.Issues = append([]string{why}, review.Issues...)
+				r.Log("%s tester gate blocked approval: %s", current.ID, why)
 			}
 		}
 		// Evidence gate: never mark done when targets are missing or no write occurred.
@@ -359,9 +391,13 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			current.Review += "\nIssues:\n- " + strings.Join(review.Issues, "\n- ")
 		}
 
+		endOut := truncate(reviewRaw, 600)
+		if endOut == "" {
+			endOut = review.Summary
+		}
 		r.fire("agent_end", plan.RoleReviewer, current.ID,
 			fmt.Sprintf("review approved=%v score=%d", review.Approved, review.Score),
-			"", truncate(reviewRaw, 600))
+			"", endOut)
 
 		if review.Approved {
 			mergeFilesChanged(&current)
@@ -443,6 +479,8 @@ func formatWorkerPrompt(t plan.Task) string {
 		b.WriteString("\n## Focus files (HARD SCOPE)\nOnly edit these paths or files in the same package directory:\n- ")
 		b.WriteString(strings.Join(t.Files, "\n- "))
 		b.WriteString("\nDo NOT create main.go / index.js / other entrypoints unless listed above.\n")
+		b.WriteString("Do NOT add extra helper files or unrelated functions — only what acceptance requires.\n")
+		b.WriteString("If ws_patch fails, re-read the file and retry a minimal SEARCH/REPLACE; never invent new root files.\n")
 	}
 	if t.Acceptance != "" {
 		b.WriteString("\nAcceptance criteria:\n")
@@ -506,7 +544,7 @@ Rules:
 - Reject if output is only claims/JSON with no tool or disk evidence for edit tasks.
 - Reject if files_changed includes paths outside focus scope (especially unwanted main.go).
 - @explorer: approve if a real file path was found.
-- @tester: approve if verification looks reasonable.
+- @tester: approve ONLY when output JSON has "passed":true (or clear command success). Reject if passed:false, failures listed, or "does not work".
 - Reject only if work is clearly missing or out of scope.
 `, t.ID, t.Title, t.Role, t.Acceptance, truncate(t.Output, 3500))
 }
@@ -798,6 +836,9 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 	if hasToolWriteEvidence(t.Output) {
 		return true
 	}
+	if hasDiskEvidenceSection(t.Output) {
+		return true
+	}
 	if r.Root == "" {
 		return false
 	}
@@ -807,14 +848,35 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 		return true
 	}
 	// Content hash changes vs baseline.
+	delta := false
 	for _, f := range t.Files {
 		cur := fileFingerprint(filepath.Join(r.Root, f))
 		prev := baseline[f]
 		if cur != "" && prev != "" && cur != prev {
-			return true
+			delta = true
+			break
 		}
 		if prev == "" && cur != "" && plan.FileExists(r.Root, f) {
 			// Newly created file.
+			delta = true
+			break
+		}
+	}
+	if delta {
+		return true
+	}
+	// Ambiguous baseline (empty / missing / matches current after a late snapshot):
+	// trust git dirty on focus files or disk evidence section already checked above.
+	if baselineAmbiguous(baseline, t) {
+		if focusGitDirty(r.gitChangedFiles(), t.Files) {
+			return true
+		}
+		// Focus file present + edit task with any write-looking output → trust disk.
+		if looksLikeEditTask(t) && focusFilesPresent(r.Root, t.Files) &&
+			(strings.Contains(strings.ToLower(t.Output), "edited ") ||
+				strings.Contains(strings.ToLower(t.Output), "wrote ") ||
+				strings.Contains(strings.ToLower(t.Output), "patched ") ||
+				strings.Contains(strings.ToLower(t.Output), "dry-run: would")) {
 			return true
 		}
 	}
@@ -826,10 +888,64 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 	if len(t.Files) == 0 {
 		return true
 	}
+	return focusGitDirty(changed, t.Files)
+}
+
+func hasDiskEvidenceSection(output string) bool {
+	lower := strings.ToLower(output)
+	if !strings.Contains(lower, "## disk evidence") {
+		return false
+	}
+	return strings.Contains(lower, "modified:") ||
+		strings.Contains(lower, "created/present:") ||
+		strings.Contains(lower, "git dirty:") ||
+		strings.Contains(lower, "pending:")
+}
+
+func baselineAmbiguous(baseline map[string]string, t plan.Task) bool {
+	if len(t.Files) == 0 {
+		return true
+	}
+	if baseline == nil || len(baseline) == 0 {
+		return true
+	}
+	missing := 0
 	for _, f := range t.Files {
+		if _, ok := baseline[f]; !ok {
+			missing++
+		}
+	}
+	return missing == len(t.Files)
+}
+
+func focusFilesPresent(root string, files []string) bool {
+	if root == "" || len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if plan.FileExists(root, f) {
+			return true
+		}
+	}
+	return false
+}
+
+func focusGitDirty(changed, focus []string) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	if len(focus) == 0 {
+		return true
+	}
+	for _, f := range focus {
 		f = filepath.ToSlash(f)
+		base := strings.ToLower(filepath.Base(f))
 		for _, c := range changed {
+			c = filepath.ToSlash(c)
 			if c == f || strings.HasSuffix(c, "/"+f) || strings.HasSuffix(f, "/"+c) {
+				return true
+			}
+			if base != "" && strings.ToLower(filepath.Base(c)) == base {
 				return true
 			}
 		}

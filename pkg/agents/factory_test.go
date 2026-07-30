@@ -50,7 +50,13 @@ func TestWorkerPromptAntiWander(t *testing.T) {
 	if !strings.Contains(PromptWorker, "main.go") {
 		t.Fatal("worker prompt should mention main.go ban")
 	}
+	if !strings.Contains(PromptWorker, "ANTI-WANDER") {
+		t.Fatal("worker prompt missing ANTI-WANDER")
+	}
 	if !strings.Contains(PromptReviewer, "out of focus") && !strings.Contains(PromptReviewer, "outside focus") {
 		t.Fatal("reviewer should reject out-of-focus paths")
+	}
+	if !strings.Contains(PromptReviewer, "Disk evidence") {
+		t.Fatal("reviewer should trust Disk evidence")
 	}
 }

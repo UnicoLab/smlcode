@@ -15,6 +15,8 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/session"
 )
 
 func TestPutConfigPartialPreservesDryRun(t *testing.T) {
@@ -100,6 +102,65 @@ func TestPutConfigSetsPermission(t *testing.T) {
 	}
 	if h.Config.DryRun || h.Config.Permission != permissions.ModeAuto {
 		t.Fatalf("clear: dry=%v perm=%s", h.Config.DryRun, h.Config.Permission)
+	}
+}
+
+func TestAgentsCRUD(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+
+	body := []byte(`{"id":"night-auditor","title":"Night Auditor","description":"quiet review","system_prompt":"Audit carefully.","skills":["atomic-coding"],"tools":true,"provider":"ollama","model":"qwen2.5-coder:14b"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(h.Config.AgentsDir(), "night-auditor.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("list %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "night-auditor") {
+		t.Fatalf("list missing custom agent: %s", rec.Body.String())
+	}
+
+	upd := []byte(`{"id":"night-auditor","title":"Night Auditor v2","system_prompt":"Audit v2.","tools":false}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/agents/night-auditor", bytes.NewReader(upd))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("put %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/agents/night-auditor", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("delete %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(h.Config.AgentsDir(), "night-auditor.yaml")); !os.IsNotExist(err) {
+		t.Fatal("expected file removed")
+	}
+
+	// Cannot delete built-in
+	req = httptest.NewRequest(http.MethodDelete, "/api/agents/worker", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code == 200 {
+		t.Fatal("must not delete built-in worker")
 	}
 }
 
@@ -209,6 +270,46 @@ func TestArchivesAPI(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "hello") {
 		t.Fatalf("missing content: %s", rec.Body.String())
+	}
+}
+
+func TestQueriesAPI(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := session.BeginTurn(h.Config.SlmDir(), "run-q1", "scope me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := plan.Board{
+		QueryID: turn.ID, Query: turn.Query,
+		Plan:  plan.Plan{Summary: "scoped"},
+		Tasks: []plan.Task{{ID: "T1", Title: "do", Column: plan.ColDone}},
+	}
+	board.Tasks[0].Normalize()
+	_ = session.SaveTurnBoard(h.Config.SlmDir(), turn, board)
+	_, _ = session.WriteTurnSummary(h.Config.SlmDir(), turn, board, "lesson")
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/queries", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "run-q1") {
+		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/queries/run-q1", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "scope me") {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "summary_md") {
+		t.Fatalf("expected summary_md: %s", rec.Body.String())
 	}
 }
 

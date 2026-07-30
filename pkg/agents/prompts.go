@@ -75,7 +75,8 @@ After tools, finish with STRICT JSON only (never end on a tool call):
 }`
 
 const PromptPlanner = `You are a planning specialist for SLM coding agents.
-Create a concise plan for the user query using the exploration notes.
+Create a brand-new concise plan for THIS user query only.
+Prior query summaries (if present) are project knowledge — do NOT continue or patch an old plan.
 Return STRICT JSON:
 {
   "summary": "one paragraph",
@@ -87,6 +88,7 @@ Return STRICT JSON:
 No prose outside JSON. Max 8 steps.`
 
 const PromptTaskSplitter = `You split a plan into atomic tasks sized for a ~30B SLM (one concern each).
+Produce a FRESH task list for THIS query only — do not keep or update prior-query tasks.
 Return STRICT JSON:
 {
   "tasks": [
@@ -114,6 +116,9 @@ const PromptWorker = `You are an implementation worker. Complete ONE atomic task
 Use workspace tools (ws_read, ws_edit, ws_patch, ws_write, ws_grep, ws_find). Prefer small ws_edit/ws_patch over full rewrites.
 HARD SCOPE: only edit listed focus files or siblings in the same package directory.
 Never create root main.go / index.js / app.ts unless that exact path is in focus files.
+ANTI-WANDER: do NOT add extra helpers, files, packages, or refactors outside the acceptance criteria.
+If a patch fails (SEARCH not found / unrecognized format), STOP inventing new files — re-read the focus file and retry a minimal SEARCH/REPLACE.
+Keep patches tiny and valid. Never invent paths.
 After tools succeed, you MUST finish with STRICT JSON (never end on a tool call):
 {
   "status": "done|blocked",
@@ -125,7 +130,8 @@ If dry-run observations appear, that still counts as done. No prose outside the 
 
 const PromptReviewer = `You review ONE atomic task result. Do NOT call tools. Do NOT invent function calls.
 Judge from the worker output JSON, acceptance text, and any "## Disk evidence" section.
-Approve when worker status is "done" AND there is real write evidence (ws_edit/ws_patch/ws_write tool result, dry-run would edit/write, or Disk evidence showing modified/created files).
+Approve when there is real write evidence (ws_edit/ws_patch/ws_write tool result, dry-run would edit/write, OR Disk evidence showing modified/created files) — even if worker JSON omitted status=done.
+When Disk evidence lists modified/created focus files, APPROVE (baseline may be ambiguous).
 Reject when the worker only claims "files_changed" in JSON with no tool/disk evidence.
 Reject when files_changed includes paths outside focus (especially unwanted main.go / entrypoints).
 Reject only for clear missing work or wrong scope otherwise.
@@ -135,6 +141,7 @@ Return STRICT JSON only:
 const PromptCorrector = `You fix issues found by the reviewer for ONE task.
 Use workspace tools. Address every listed issue without expanding scope.
 HARD SCOPE: only edit focus files / same package. Never create unrelated entrypoints.
+ANTI-WANDER: no extra functions/files. If a previous patch failed, re-read the file and apply a correct SEARCH/REPLACE.
 When finished return STRICT JSON:
 {
   "status": "done|blocked",
@@ -146,12 +153,16 @@ No prose outside JSON.`
 
 const PromptTester = `You verify the work for ONE task or the whole change set.
 Prefer running project test/build commands via ws_shell when available.
+If anything does not work, you MUST set passed=false and list concrete failures.
+Never mark passed=true when acceptance is unmet, files are placeholders, or commands fail.
+Never return empty output — always emit the JSON object below.
+When failing, cite concrete task IDs (T1, T2, …) and file paths in failures[] so corrective reopen stays narrow.
 Return STRICT JSON:
 {
   "passed": true|false,
   "commands": ["..."],
   "summary": "...",
-  "failures": ["..."]
+  "failures": ["T3: agent.py still placeholder", "..."]
 }
 No prose outside JSON.`
 

@@ -278,6 +278,13 @@ function App() {
   const [pinSkills, setPinSkills] = useState([]);
   const [skillDraft, setSkillDraft] = useState({ name: "", description: "", agents: "worker", body: "" });
   const [skillEdit, setSkillEdit] = useState(null);
+  const emptyAgentDraft = () => ({
+    id: "", title: "", description: "", system_prompt: "",
+    skills: [], model: "", provider: "", tools: true,
+    max_iter: 10, temperature: 0.2, max_tokens: 2048,
+  });
+  const [agentDraft, setAgentDraft] = useState(emptyAgentDraft);
+  const [agentEdit, setAgentEdit] = useState(null);
   const [activeTask, setActiveTask] = useState(null);
   const [taskHistory, setTaskHistory] = useState([]);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -287,6 +294,9 @@ function App() {
   const [injectNote, setInjectNote] = useState("");
   const [archives, setArchives] = useState([]);
   const [archiveView, setArchiveView] = useState(null);
+  const [queries, setQueries] = useState([]);
+  const [queryView, setQueryView] = useState(null);
+  const [queryDocTab, setQueryDocTab] = useState("summary");
   const [apiConnected, setApiConnected] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState("");
@@ -330,6 +340,15 @@ function App() {
     }
   }, []);
 
+  const refreshQueries = useCallback(async () => {
+    try {
+      const list = await api("/api/queries");
+      setQueries(Array.isArray(list) ? list : []);
+    } catch (_) {
+      setQueries([]);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const [h, c, sk, latest, mods, ag] = await Promise.all([
@@ -359,12 +378,13 @@ function App() {
       }
       await refreshBoard();
       await refreshArchives();
+      await refreshQueries();
       setErr("");
     } catch (e) {
       setApiConnected(false);
       setErr("API unreachable: " + String(e.message || e));
     }
-  }, [refreshBoard, refreshArchives]);
+  }, [refreshBoard, refreshArchives, refreshQueries]);
 
   async function injectContext() {
     const note = injectNote.trim();
@@ -387,6 +407,17 @@ function App() {
       const a = await api("/api/archives/" + encodeURIComponent(name));
       setArchiveView(a);
       setNav("archives");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  async function openQuery(id) {
+    try {
+      const q = await api("/api/queries/" + encodeURIComponent(id));
+      setQueryView(q);
+      setQueryDocTab("summary");
+      setNav("queries");
     } catch (e) {
       setErr(String(e.message || e));
     }
@@ -547,6 +578,67 @@ function App() {
     showToast("Skill created — use @skill:" + name.toLowerCase().replace(/\s+/g, "-"));
   }
 
+  async function createAgent() {
+    if (!agentDraft.id.trim()) return;
+    try {
+      await api("/api/agents", {
+        method: "POST",
+        body: JSON.stringify({
+          ...agentDraft,
+          id: agentDraft.id.trim().toLowerCase(),
+          skills: Array.isArray(agentDraft.skills) ? agentDraft.skills : [],
+          max_iter: Number(agentDraft.max_iter) || 10,
+          temperature: Number(agentDraft.temperature) || 0.2,
+          max_tokens: Number(agentDraft.max_tokens) || 2048,
+        }),
+      });
+      setAgentDraft(emptyAgentDraft());
+      await refresh();
+      showToast("Custom agent @" + agentDraft.id.trim().toLowerCase() + " created");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  async function saveAgentEdit() {
+    if (!agentEdit?.id) return;
+    try {
+      await api("/api/agents/" + encodeURIComponent(agentEdit.id), {
+        method: "PUT",
+        body: JSON.stringify({
+          ...agentEdit,
+          skills: Array.isArray(agentEdit.skills) ? agentEdit.skills : [],
+          max_iter: Number(agentEdit.max_iter) || 10,
+          temperature: Number(agentEdit.temperature) || 0.2,
+          max_tokens: Number(agentEdit.max_tokens) || 2048,
+        }),
+      });
+      setAgentEdit(null);
+      await refresh();
+      showToast("Agent @" + agentEdit.id + " saved");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  async function deleteAgent(id) {
+    if (!id || !confirm("Delete custom agent @" + id + "?")) return;
+    try {
+      await api("/api/agents/" + encodeURIComponent(id), { method: "DELETE" });
+      if (agentEdit?.id === id) setAgentEdit(null);
+      await refresh();
+      showToast("Deleted @" + id);
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  function toggleAgentSkill(target, setTarget, name) {
+    const cur = Array.isArray(target.skills) ? target.skills : [];
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    setTarget({ ...target, skills: next });
+  }
+
   async function saveSkillEdit() {
     if (!skillEdit?.name) return;
     await api("/api/skills/" + encodeURIComponent(skillEdit.name), {
@@ -636,6 +728,7 @@ function App() {
   const NAV = [
     { id: "board", label: "Board", tip: "Tasks" },
     { id: "run", label: "Live", tip: "Agent stream" },
+    { id: "queries", label: "Queries", tip: "Per-turn plan/tasks" },
     { id: "archives", label: "Archives", tip: "Past runs" },
     { id: "agents", label: "Agents", tip: "Specialists" },
     { id: "skills", label: "Skills", tip: "Knowledge" },
@@ -895,6 +988,110 @@ function App() {
             </>
           )}
 
+          {nav === "queries" && (
+            <>
+              <h2>Queries</h2>
+              <p className="lead">
+                Each user turn gets a dedicated plan, tasks, and <code>summary.md</code> under{" "}
+                <code>.slmcode/queries/&lt;id&gt;/</code>. Live board is always the current query only.
+              </p>
+              <div className="split-panels">
+                <div className="panel-box">
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <h3 style={{ margin: 0 }}>Turns ({queries.length})</h3>
+                    <button className="sm ghost" onClick={refreshQueries}>Refresh</button>
+                  </div>
+                  {!queries.length ? (
+                    <div className="empty-state" style={{ marginTop: 10 }}>
+                      <strong>No query turns yet</strong>
+                      <p>Run a task — each interaction is stored as its own plan/tasks/summary.</p>
+                    </div>
+                  ) : (
+                    <ul className="archive-list query-list" style={{ marginTop: 10 }}>
+                      {queries.map((q) => (
+                        <li
+                          key={q.id}
+                          className={queryView?.id === q.id ? "active" : ""}
+                          onClick={() => openQuery(q.id)}
+                        >
+                          <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+                            <div className="name">{q.id}</div>
+                            <span className={"query-badge" + (q.success ? " ok" : " bad")}>
+                              {q.success ? "ok" : "open"}
+                            </span>
+                          </div>
+                          <div className="query-ask">{q.query || "(empty query)"}</div>
+                          <div className="when">{q.updated_at || ""}{q.summary ? " · " + q.summary : ""}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="panel-box">
+                  {queryView ? (
+                    <>
+                      <h3 style={{ marginTop: 0 }}>{queryView.id}</h3>
+                      <p className="lead" style={{ marginTop: 4 }}>{queryView.query}</p>
+                      <div className="row query-doc-tabs" style={{ gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                        {[
+                          { id: "summary", label: "Summary" },
+                          { id: "plan", label: "Plan" },
+                          { id: "tasks", label: "Tasks" },
+                          { id: "board", label: "Board" },
+                        ].map((t) => (
+                          <button
+                            key={t.id}
+                            className={"sm" + (queryDocTab === t.id ? "" : " ghost")}
+                            onClick={() => setQueryDocTab(t.id)}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                      {queryDocTab === "board" ? (
+                        <div className="query-board-meta">
+                          <div className="lead">
+                            {(queryView.board?.tasks || []).length} tasks · plan:{" "}
+                            {queryView.board?.plan?.summary || "—"}
+                          </div>
+                          <ul className="archive-list" style={{ marginTop: 8 }}>
+                            {(queryView.board?.tasks || []).map((t) => (
+                              <li key={t.id} style={{ cursor: "default" }}>
+                                <div className="name">{t.id} · {t.column} · {t.role}</div>
+                                <div className="query-ask">{t.title}</div>
+                                {t.files?.length ? (
+                                  <div className="when">files: {t.files.join(", ")}</div>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div
+                          className="md-preview"
+                          dangerouslySetInnerHTML={{
+                            __html: renderMarkdown(
+                              queryDocTab === "plan"
+                                ? (queryView.plan_md || "")
+                                : queryDocTab === "tasks"
+                                  ? (queryView.tasks_md || "")
+                                  : (queryView.summary_md || queryView.summary || "")
+                            ),
+                          }}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <div className="empty-state">
+                      <strong>Select a query turn</strong>
+                      <p>Inspect that turn’s plan, tasks, and summary without mutating the live board.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
           {nav === "archives" && (
             <>
               <h2>Archives</h2>
@@ -945,17 +1142,128 @@ function App() {
           {nav === "agents" && (
             <>
               <h2>Agents</h2>
-              <p className="lead">Specialists the orchestrator can call. Workers with ⚙ can edit files.</p>
-              <div className="split-panels">
-                {agents.map((a) => (
-                  <div key={a.id} className="panel-box">
-                    <strong>@{a.id}</strong>
-                    <div style={{ color: "var(--muted)", marginTop: 4 }}>{a.role}</div>
-                    <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: "0.72rem" }}>
-                      {a.tools ? "can edit files" : "reasoning only"}
-                    </div>
-                  </div>
-                ))}
+              <p className="lead">
+                Built-in specialists plus your custom agents. Custom agents persist under{" "}
+                <code>.slmcode/agents/</code> (and <code>~/.slmcode/agents/</code>).
+              </p>
+              <div className="split-panels agents-crud">
+                <div className="panel-box">
+                  <h3>Roster ({agents.length})</h3>
+                  <ul className="event-list agent-roster">
+                    {agents.map((a) => (
+                      <li key={a.id} className={a.custom ? "agent-custom" : "agent-builtin"}>
+                        <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+                          <strong>@{a.id}</strong>
+                          <span className={"badge " + (a.custom ? "ok" : "muted")}>
+                            {a.custom ? "custom" : "built-in"}
+                          </span>
+                        </div>
+                        <div style={{ color: "var(--muted)", marginTop: 4 }}>{a.title || a.role}</div>
+                        {a.description ? <p className="lead" style={{ marginTop: 4 }}>{a.description}</p> : null}
+                        <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: "var(--muted)" }}>
+                          {a.tools ? "⚙ can edit files" : "reasoning only"}
+                          {a.provider || a.model ? ` · ${a.provider || "default"}/${a.model || "default"}` : ""}
+                          {a.skills?.length ? ` · skills: ${a.skills.join(", ")}` : ""}
+                        </div>
+                        {a.custom && (
+                          <div className="row" style={{ marginTop: 8 }}>
+                            <button className="sm ghost" onClick={() => setAgentEdit({
+                              id: a.id,
+                              title: a.title || a.role || "",
+                              description: a.description || "",
+                              system_prompt: a.system_prompt || "",
+                              skills: a.skills || [],
+                              model: a.model || "",
+                              provider: a.provider || "",
+                              tools: !!a.tools,
+                              max_iter: a.max_iter || 10,
+                              temperature: a.temperature ?? 0.2,
+                              max_tokens: a.max_tokens || 2048,
+                            })}>Edit</button>
+                            <button className="sm ghost danger" onClick={() => deleteAgent(a.id)}>Delete</button>
+                            <button className="sm ghost" onClick={() => {
+                              setRunMode("specialist");
+                              setRunSpecialist(a.id);
+                              showToast("Selected @" + a.id + " for specialist run");
+                            }}>Use</button>
+                          </div>
+                        )}
+                        {!a.custom && (
+                          <div className="row" style={{ marginTop: 8 }}>
+                            <button className="sm ghost" onClick={() => {
+                              setRunMode("specialist");
+                              setRunSpecialist(a.id);
+                              showToast("Selected @" + a.id + " for specialist run");
+                            }}>Use</button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="panel-box">
+                  {agentEdit ? (
+                    <>
+                      <h3>Edit @{agentEdit.id}</h3>
+                      <label>Title<input value={agentEdit.title || ""} onChange={(e) => setAgentEdit({ ...agentEdit, title: e.target.value })} /></label>
+                      <label>Description<input value={agentEdit.description || ""} onChange={(e) => setAgentEdit({ ...agentEdit, description: e.target.value })} /></label>
+                      <label>Provider<input value={agentEdit.provider || ""} onChange={(e) => setAgentEdit({ ...agentEdit, provider: e.target.value })} placeholder="empty = active provider" /></label>
+                      <label>Model<input value={agentEdit.model || ""} onChange={(e) => setAgentEdit({ ...agentEdit, model: e.target.value })} placeholder="empty = active model" /></label>
+                      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+                        <label>Max iter<input type="number" value={agentEdit.max_iter} onChange={(e) => setAgentEdit({ ...agentEdit, max_iter: e.target.value })} /></label>
+                        <label>Temp<input type="number" step="0.05" value={agentEdit.temperature} onChange={(e) => setAgentEdit({ ...agentEdit, temperature: e.target.value })} /></label>
+                        <label>Max tokens<input type="number" value={agentEdit.max_tokens} onChange={(e) => setAgentEdit({ ...agentEdit, max_tokens: e.target.value })} /></label>
+                        <label className="check"><input type="checkbox" checked={!!agentEdit.tools} onChange={(e) => setAgentEdit({ ...agentEdit, tools: e.target.checked })} /> Coding tools</label>
+                      </div>
+                      <div style={{ margin: "8px 0" }}>
+                        <div className="lead" style={{ marginBottom: 6 }}>Skills</div>
+                        <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+                          {skills.map((s) => {
+                            const on = (agentEdit.skills || []).includes(s.name);
+                            return (
+                              <button key={s.name} type="button" className={"sm" + (on ? "" : " ghost")}
+                                onClick={() => toggleAgentSkill(agentEdit, setAgentEdit, s.name)}>{on ? "✓ " : ""}{s.name}</button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <label>System prompt<textarea className="doc-editor" style={{ minHeight: 160 }} value={agentEdit.system_prompt || ""} onChange={(e) => setAgentEdit({ ...agentEdit, system_prompt: e.target.value })} /></label>
+                      <div className="row">
+                        <button className="sm" onClick={saveAgentEdit}>Save</button>
+                        <button className="sm ghost" onClick={() => setAgentEdit(null)}>Cancel</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h3>New custom agent</h3>
+                      <label>ID<input placeholder="night-auditor" value={agentDraft.id} onChange={(e) => setAgentDraft({ ...agentDraft, id: e.target.value })} /></label>
+                      <label>Title<input value={agentDraft.title} onChange={(e) => setAgentDraft({ ...agentDraft, title: e.target.value })} placeholder="Night Auditor" /></label>
+                      <label>Description<input value={agentDraft.description} onChange={(e) => setAgentDraft({ ...agentDraft, description: e.target.value })} /></label>
+                      <label>Provider<input value={agentDraft.provider} onChange={(e) => setAgentDraft({ ...agentDraft, provider: e.target.value })} placeholder="ollama / omlx / openai / …" /></label>
+                      <label>Model<input value={agentDraft.model} onChange={(e) => setAgentDraft({ ...agentDraft, model: e.target.value })} placeholder="model id" /></label>
+                      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+                        <label>Max iter<input type="number" value={agentDraft.max_iter} onChange={(e) => setAgentDraft({ ...agentDraft, max_iter: e.target.value })} /></label>
+                        <label>Temp<input type="number" step="0.05" value={agentDraft.temperature} onChange={(e) => setAgentDraft({ ...agentDraft, temperature: e.target.value })} /></label>
+                        <label>Max tokens<input type="number" value={agentDraft.max_tokens} onChange={(e) => setAgentDraft({ ...agentDraft, max_tokens: e.target.value })} /></label>
+                        <label className="check"><input type="checkbox" checked={!!agentDraft.tools} onChange={(e) => setAgentDraft({ ...agentDraft, tools: e.target.checked })} /> Coding tools</label>
+                      </div>
+                      <div style={{ margin: "8px 0" }}>
+                        <div className="lead" style={{ marginBottom: 6 }}>Skills</div>
+                        <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+                          {skills.map((s) => {
+                            const on = (agentDraft.skills || []).includes(s.name);
+                            return (
+                              <button key={s.name} type="button" className={"sm" + (on ? "" : " ghost")}
+                                onClick={() => toggleAgentSkill(agentDraft, setAgentDraft, s.name)}>{on ? "✓ " : ""}{s.name}</button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <label>System prompt<textarea className="doc-editor" style={{ minHeight: 140 }} value={agentDraft.system_prompt} onChange={(e) => setAgentDraft({ ...agentDraft, system_prompt: e.target.value })} placeholder="You are a specialist that…" /></label>
+                      <button className="sm" onClick={createAgent}>Create agent</button>
+                    </>
+                  )}
+                </div>
               </div>
             </>
           )}

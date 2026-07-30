@@ -62,6 +62,7 @@ func TestStudioUIInteraction(t *testing.T) {
 			for _, marker := range []string{
 				"renderMarkdown", "DepGraph", "PROVIDER_PRESETS", "/api/runs",
 				"/api/runs/stop", "/api/events", "file_change", "autoScroll",
+				`id: "queries"`, "/api/queries", "openQuery", "queryDocTab",
 			} {
 				if !strings.Contains(src, marker) {
 					t.Fatalf("app.jsx missing %q", marker)
@@ -151,6 +152,20 @@ func TestStudioUIInteraction(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("status %d", res.StatusCode)
+	}
+
+	// --- Queries API (Studio Queries panel) ---
+	res, err = http.Get(ts.URL + "/api/queries")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qBody, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("queries %d %s", res.StatusCode, qBody)
+	}
+	if strings.TrimSpace(string(qBody)) == "" || string(qBody)[0] != '[' {
+		t.Fatalf("queries should return JSON array: %s", qBody)
 	}
 
 	res, err = http.Get(ts.URL + "/api/agents")

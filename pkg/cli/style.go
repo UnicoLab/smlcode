@@ -91,3 +91,15 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Clip truncates s for compact TUI/CLI lines.
+func Clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	if n < 4 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}

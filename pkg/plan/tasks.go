@@ -63,10 +63,14 @@ type Plan struct {
 	Raw         string   `json:"raw,omitempty"`
 }
 
-// Board holds the current plan + task list.
+// Board holds the current plan + task list for one user query/turn.
+// QueryID scopes this board to a single interaction — each new query gets a
+// fresh board rewrite (not an in-place patch of a forever-global board).
 type Board struct {
-	Plan  Plan   `json:"plan"`
-	Tasks []Task `json:"tasks"`
+	QueryID string `json:"query_id,omitempty"`
+	Query   string `json:"query,omitempty"`
+	Plan    Plan   `json:"plan"`
+	Tasks   []Task `json:"tasks"`
 }
 
 // ReadyTasks returns executable tasks (ready_to_dev with deps met).
@@ -149,6 +153,16 @@ func (b *Board) FailedCount() int {
 func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 	var p strings.Builder
 	p.WriteString("# Plan\n\n")
+	if b.QueryID != "" || b.Query != "" {
+		p.WriteString("## Query scope\n\n")
+		if b.QueryID != "" {
+			p.WriteString("- **Query ID:** " + b.QueryID + "\n")
+		}
+		if b.Query != "" {
+			p.WriteString("- **Query:** " + strings.TrimSpace(b.Query) + "\n")
+		}
+		p.WriteString("\n")
+	}
 	p.WriteString("## Summary\n\n")
 	p.WriteString(b.Plan.Summary)
 	p.WriteString("\n\n## Goals\n\n")
@@ -318,6 +332,95 @@ type ReviewResult struct {
 	Score    int      `json:"score"`
 	Issues   []string `json:"issues"`
 	Summary  string   `json:"summary"`
+}
+
+// TesterResult is the structured output of the tester specialist.
+type TesterResult struct {
+	Passed   bool     `json:"passed"`
+	Commands []string `json:"commands,omitempty"`
+	Summary  string   `json:"summary,omitempty"`
+	Failures []string `json:"failures,omitempty"`
+	Issues   []string `json:"issues,omitempty"` // alias some models use
+}
+
+// ParseTesterJSON extracts a tester result. Empty, malformed, or ambiguous
+// finalize output is ALWAYS treated as failed — never a silent pass.
+func ParseTesterJSON(raw string) TesterResult {
+	if strings.TrimSpace(raw) == "" {
+		return TesterResult{
+			Passed:   false,
+			Summary:  "empty tester finalize",
+			Failures: []string{"empty or missing tester JSON — treat as failed; rewrite plan/tasks"},
+		}
+	}
+	extracted := extractJSON(raw)
+	var r TesterResult
+	if err := json.Unmarshal([]byte(extracted), &r); err == nil {
+		if len(r.Failures) == 0 && len(r.Issues) > 0 {
+			r.Failures = r.Issues
+		}
+		lowerExt := strings.ToLower(extracted)
+		explicitTrue := strings.Contains(lowerExt, `"passed":true`) || strings.Contains(lowerExt, `"passed": true`)
+		explicitFalse := strings.Contains(lowerExt, `"passed":false`) || strings.Contains(lowerExt, `"passed": false`)
+		// Explicit false wins; explicit true only if no failure list.
+		if !r.Passed && len(r.Failures) == 0 && explicitFalse {
+			if s := firstLine(r.Summary); s != "" {
+				r.Failures = []string{s}
+			} else {
+				r.Failures = []string{"tester reported passed=false"}
+			}
+		}
+		if r.Passed && len(r.Failures) > 0 {
+			// Contradictory: failures present → treat as failed.
+			r.Passed = false
+		}
+		// {} / incomplete JSON with no explicit passed:true → fail (no silent pass).
+		if !r.Passed && !explicitTrue && len(r.Failures) == 0 {
+			r.Summary = firstNonEmpty(r.Summary, "malformed or incomplete tester JSON")
+			r.Failures = []string{"tester finalize missing passed:true — treat as failed; rewrite plan/tasks"}
+		}
+		return r
+	}
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, `"passed":true`) || strings.Contains(lower, `"passed": true`):
+		r.Passed = true
+	case strings.Contains(lower, `"passed":false`) || strings.Contains(lower, `"passed": false`):
+		r.Passed = false
+		r.Failures = []string{firstLine(raw)}
+	case strings.Contains(lower, "does not work") || strings.Contains(lower, "doesn't work") ||
+		strings.Contains(lower, "not working") || strings.Contains(lower, "failed") ||
+		strings.Contains(lower, "test failed") || strings.Contains(lower, "still broken"):
+		r.Passed = false
+		r.Failures = []string{firstLine(raw)}
+	case strings.Contains(lower, "all tests passed") || strings.Contains(lower, "verification passed") ||
+		(strings.Contains(lower, "pass") && !strings.Contains(lower, "fail")):
+		r.Passed = true
+	default:
+		// Unknown / prose-only / broken JSON → do not auto-accept.
+		r.Passed = false
+		r.Summary = firstLine(raw)
+		if r.Summary == "" {
+			r.Summary = "malformed tester finalize"
+		}
+		r.Failures = []string{"tester output unclear or malformed — treat as failed until rewritten"}
+	}
+	return r
+}
+
+// TesterFailed reports whether verification should drive a plan/task rewrite.
+// Empty/malformed finalize counts as failed (never a silent skip).
+func TesterFailed(raw string) bool {
+	return !ParseTesterJSON(raw).Passed
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // ParseReviewJSON extracts a review result.

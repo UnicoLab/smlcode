@@ -16,6 +16,10 @@ func ApplyPatch(content, patch string) (next string, summary string, err error) 
 	if patch == "" {
 		return "", "", fmt.Errorf("empty patch")
 	}
+	// Reject obvious junk / wandering payloads early (anti-wander for SLMs).
+	if looksLikeJunkPatch(patch) {
+		return "", "", fmt.Errorf("rejected bad patch format — use a single SEARCH/REPLACE or one unified diff hunk (no prose, no multiple files)")
+	}
 
 	if strings.Contains(patch, "<<<<<<<") && strings.Contains(patch, ">>>>>>>") {
 		return applySearchReplace(content, patch)
@@ -146,6 +150,29 @@ func applyUnifiedHunks(content, patch string) (string, string, error) {
 		}
 	}
 	return applyExact(content, oldStr, newStr)
+}
+
+func looksLikeJunkPatch(patch string) bool {
+	lower := strings.ToLower(patch)
+	// Multiple file headers in one patch → agents wandering across files.
+	if strings.Count(patch, "\n+++ ") > 1 || strings.Count(patch, "\n--- ") > 1 {
+		return true
+	}
+	// Prose wrappers without any patch markers.
+	hasMarkers := strings.Contains(patch, "<<<<<<<") || strings.Contains(patch, "=======") ||
+		strings.Contains(patch, "@@") || strings.HasPrefix(patch, "---") || looksLikeDiff(patch)
+	if !hasMarkers {
+		return true
+	}
+	// Extremely large patches are almost always full-file rewrites / wander.
+	if len(patch) > 80_000 {
+		return true
+	}
+	// Common SLM failure: "Here is the patch:" essays.
+	if strings.Contains(lower, "here is the") && !strings.Contains(patch, "<<<<<<<") && !strings.Contains(patch, "@@") {
+		return true
+	}
+	return false
 }
 
 func truncateSnippet(s string, n int) string {

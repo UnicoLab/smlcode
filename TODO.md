@@ -183,7 +183,20 @@ We need everything to be self evolving and improving all the time !!!
 - [x] LangGraph temp-dir e2e green (`/tmp/slmcode-lg-ONOoTB` — 8/8 tasks, full MVP tree)
 - [x] Studio UI↔API wiring hardened (SSE connected+heartbeat, patch-only config, connection strip, never-null board)
 - [x] Studio UI visually verified (light + dark) from embedded binary (`conn-strip`, no `bgDrift`)
-- [ ] Single commit → push → `make install-system` → `slmcode version`
+- [x] Query-scoped plan/tasks + summary.md + tester rewrite (multi-turn live e2e PASS)
+- [x] Empty/malformed tester finalize forces rewrite (no silent skip / false pass)
+- [x] Vague tester failures reopen narrowly (task IDs / focus files / acceptance — not whole board)
+- [x] Studio Queries panel wired to `GET /api/queries` + `GET /api/queries/{id}`
+- [x] Provider/model flexibility re-verified (presets, env/`OPENAI_BASE_URL`, custom OpenAI-compat gateway tests)
+- [x] Single commit → push → `make install-system` → `slmcode version`
+
+## Production ship (2026-07-30 — TUI + agents CRUD)
+- [x] Premium default TUI on bare `slmcode` / `slmcode tui` (Studio-parity panels; CI non-interactive fallback)
+- [x] Studio custom agents CRUD (`GET/POST/PUT/DELETE /api/agents`) + Agents tab UI
+- [x] Stronger anti-wander (junk patch reject, tighter worker/corrector prompts)
+- [x] Reviewer fingerprint: trust Disk evidence / ambiguous baseline (tests)
+- [x] Query-scope + tester rewrite + multi-turn e2e (prior pass)
+- [x] `go test ./...` + `go test -race ./pkg/...` green
 
 ## Studio ↔ backend wiring (was missing / broken in practice)
 - [x] SSE emits immediate `connected` event + keepalive pings (Live no longer looks dead)
@@ -195,15 +208,38 @@ We need everything to be self evolving and improving all the time !!!
 
 ---
 
-### Self-use diagnosis (2026-07-29) — fixed
+## Planing and Tasks (query-scoped — 2026-07-30)
 
-From `.slmcode/` board/MEMORY during "improve slmcode" run:
+- [x] Each user query gets a **dedicated plan + tasks** (not a forever-mutating global board)
+  - Live `PLAN.md` / `TASKS.md` / `board.json` are rewritten fresh at each `Run` start
+  - Durable per-turn copies under `.slmcode/queries/<runID>/` (`PLAN.md`, `TASKS.md`, `board.json`, `meta.json`)
+  - Board carries `query_id` + `query`; planner/splitter prompts force a brand-new plan/task list
+- [x] Plans/tasks enrich project knowledge **after** the run via `summary.md` + `summaries/INDEX.md` → CONTEXT/MEMORY
+- [x] Studio API: `GET /api/queries`, `GET /api/queries/{id}` (summary/plan/tasks per turn)
 
-| Symptom | Root cause | Fix |
-|---------|------------|-----|
-| PROJECT.md empty | Never written by any agent | Seed + ensureProjectDoc + Evolve enrich |
-| `context deadline exceeded` | 5m task timeout + 180s LLM timeout + parallel contention | 12m task / aligned LLM timeout / parallel=2 |
-| `review rejected after max retries` / no actionable changes | Review trusted JSON claims; workers often skipped tools | Disk/git evidence gate; require ws_* or real diff |
-| TASKS.md 654KB | Full packs+outputs persisted every wave | Lean ToMarkdown + ephemeral BuildInput packs |
-| Duplicate tasks | Coordinator `add_task` spam | Dedupe + cap |
-| No errors.md | `pkg/loop` did not compile; handler unwired | Fixed handler + wired FailureHandler |
+## Testers (rewrite on failure — 2026-07-30)
+
+- [x] Parse tester JSON (`passed` / `failures`); never soft-accept `"does not work"`
+- [x] Per-task tester gate in the review loop (`passed:false` → reject)
+- [x] Post-board tester failure **rewrites** this query’s plan/tasks + opens corrective work + one re-execute wave
+- [x] QA gate red ends the run as rejected and feeds the same rewrite path
+- [x] Multi-turn tmp e2e (offline + live oMLX) verifies query scope + summaries
+- [x] Empty / `{}` / malformed tester finalize → **failed + rewrite** (orchestrator no longer skips empty output)
+- [x] Vague failures (`does not work` / unclear) reopen **narrowly** (newest done focus + tester; not unrelated blocked/docs)
+- [x] Tester prompts/skills require task-ID + file-path citations in `failures[]`
+
+## Studio Queries panel (2026-07-30)
+- [x] Nav item **Queries** lists turns from `GET /api/queries`
+- [x] Detail view: Summary / Plan / Tasks / Board from `GET /api/queries/{id}`
+- [x] Themed to match light/dark Studio (`query-badge`, list cards)
+
+## Closed this pass (engine)
+- [x] Query-scoped turns (`pkg/session/turn.go`)
+- [x] Tester-driven rewrite (`pkg/orchestrator/rewrite.go`)
+- [x] Post-run `summary.md` attached to each query turn
+- [x] Prior summaries enrich next-query CONTEXT (knowledge only — not live plan)
+- [x] Live e2e: `RUN_E2E=1 go test ./test/e2e/ -run TestLiveMultiTurnQueryScope` (PASS ~120s)
+- [x] Review auto-approve trusts disk write evidence even without `status:done` JSON (artifact lesson)
+- [x] Deepened offline multi-turn stage test + queries API/UI smoke
+
+

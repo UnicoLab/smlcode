@@ -132,4 +132,46 @@ func TestDefaultEndpointFor(t *testing.T) {
 	if DefaultEndpointFor("ollama") != "http://127.0.0.1:11434" {
 		t.Fatal("ollama")
 	}
+	if DefaultEndpointFor("openrouter") != "https://openrouter.ai/api/v1" {
+		t.Fatal("openrouter")
+	}
+	if DefaultEndpointFor("my-gateway") != DefaultEndpoint {
+		t.Fatal("unknown gateway should keep local default endpoint")
+	}
+}
+
+func TestApplyEnvOpenAIBaseURL(t *testing.T) {
+	t.Setenv("SLMCODE_PROVIDER", "openai")
+	t.Setenv("SLMCODE_MODEL", "gpt-4o-mini")
+	t.Setenv("SLMCODE_ENDPOINT", "")
+	t.Setenv("OPENAI_BASE_URL", "https://proxy.example/v1")
+	c := Default(t.TempDir())
+	c.Provider = "omlx" // overwritten by env
+	c.ApplyEnv()
+	if c.Provider != "openai" || c.Model != "gpt-4o-mini" {
+		t.Fatalf("provider/model: %s / %s", c.Provider, c.Model)
+	}
+	if c.Endpoint != "https://proxy.example/v1" {
+		t.Fatalf("OPENAI_BASE_URL not applied: %s", c.Endpoint)
+	}
+	if !IsOpenAICompat(c.Provider) {
+		t.Fatal("openai must stay openai-compat")
+	}
+}
+
+func TestCustomGatewayStaysOpenAICompat(t *testing.T) {
+	c := Default(t.TempDir())
+	name := "corp-llm"
+	ep := "https://llm.corp.internal/v1"
+	model := "corp-coder"
+	c.ApplyPatch(Patch{Provider: &name, Endpoint: &ep, Model: &model})
+	if c.Provider != "corp-llm" {
+		t.Fatalf("custom provider mutated: %s", c.Provider)
+	}
+	if !IsOpenAICompat(c.Provider) || IsOllama(c.Provider) {
+		t.Fatal("custom gateway must route OpenAI-compat")
+	}
+	if c.Endpoint != ep || c.Model != model {
+		t.Fatalf("endpoint/model: %s / %s", c.Endpoint, c.Model)
+	}
 }

@@ -111,6 +111,34 @@ func TestEvidenceOKRequiresDiskOrTool(t *testing.T) {
 	}
 }
 
+func TestHasRealWriteEvidenceTrustsDiskSectionWhenBaselineAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "hello.go")
+	_ = os.WriteFile(target, []byte("package main\n// done\n"), 0o644)
+	r := &Runner{Root: dir}
+	task := plan.Task{
+		ID: "T1", Title: "Edit hello", Description: "implement comment",
+		Acceptance: "file updated", Files: []string{"hello.go"},
+		Output: "worker mumbled\n\n## Disk evidence\n- modified: hello.go\n",
+	}
+	// Ambiguous: nil baseline (late snapshot / lost fingerprints)
+	if !r.hasRealWriteEvidence(task, nil) {
+		t.Fatal("disk evidence section must count even with nil baseline")
+	}
+	// Ambiguous: empty map
+	if !r.hasRealWriteEvidence(task, map[string]string{}) {
+		t.Fatal("disk evidence section must count with empty baseline")
+	}
+	// Ambiguous: baseline fingerprints missing for focus files
+	if !r.hasRealWriteEvidence(task, map[string]string{"other.go": "1:2"}) {
+		t.Fatal("disk evidence section must count when focus missing from baseline")
+	}
+	// Auto-approve path via evidenceOK
+	if ok, why := r.evidenceOK(task, nil); !ok {
+		t.Fatalf("evidenceOK should pass with disk section: %s", why)
+	}
+}
+
 func TestEvidenceOKCreateSatisfiedWithoutDelta(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\nname=\"lg-agent\"\n"), 0o644)

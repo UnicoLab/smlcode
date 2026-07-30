@@ -12,16 +12,20 @@ import (
 
 // RoleSpec describes a specialist sub-agent.
 type RoleSpec struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	SystemPrompt string `json:"-"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	SystemPrompt string   `json:"-"`
 	Tools        []string `json:"tools,omitempty"`
-	MaxIter      int    `json:"max_iter"`
-	Temperature  float64 `json:"temperature"`
-	MaxTokens    int    `json:"max_tokens"`
+	MaxIter      int      `json:"max_iter"`
+	Temperature  float64  `json:"temperature"`
+	MaxTokens    int      `json:"max_tokens"`
+	Model        string   `json:"model,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	Skills       []string `json:"skills,omitempty"`
+	Custom       bool     `json:"custom"`
 }
 
-// Specs returns the specialist roster (Claude Code / Antigravity inspired).
+// Specs returns the built-in specialist roster (Claude Code / Antigravity inspired).
 func Specs() []RoleSpec {
 	coding := workspace.ToolNames()
 	return []RoleSpec{
@@ -42,16 +46,45 @@ func Specs() []RoleSpec {
 	}
 }
 
-// PublicSpecs strips prompts for API/UI.
+// PublicSpecs strips prompts for API/UI (built-ins only — callers merge customs).
 func PublicSpecs() []map[string]interface{} {
+	return PublicSpecsWithCustom(nil)
+}
+
+// PublicSpecsWithCustom merges built-ins + custom agents for Studio.
+func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 	var out []map[string]interface{}
 	for _, s := range Specs() {
 		out = append(out, map[string]interface{}{
-			"id":     s.ID,
-			"role":   s.Title,
-			"title":  s.Title,
-			"tools":  len(s.Tools) > 0,
-			"max_iter": s.MaxIter,
+			"id":          s.ID,
+			"role":        s.Title,
+			"title":       s.Title,
+			"tools":       len(s.Tools) > 0,
+			"max_iter":    s.MaxIter,
+			"temperature": s.Temperature,
+			"max_tokens":  s.MaxTokens,
+			"skills":      s.Skills,
+			"custom":      false,
+			"builtin":     true,
+		})
+	}
+	for _, c := range custom {
+		out = append(out, map[string]interface{}{
+			"id":            c.ID,
+			"role":          c.Title,
+			"title":         c.Title,
+			"description":   c.Description,
+			"tools":         c.Tools,
+			"max_iter":      c.MaxIter,
+			"temperature":   c.Temperature,
+			"max_tokens":    c.MaxTokens,
+			"skills":        c.Skills,
+			"model":         c.Model,
+			"provider":      c.Provider,
+			"system_prompt": c.SystemPrompt,
+			"path":          c.Path,
+			"custom":        true,
+			"builtin":       false,
 		})
 	}
 	return out
@@ -59,10 +92,11 @@ func PublicSpecs() []map[string]interface{} {
 
 // Factory builds GoLangGraph agents for the harness.
 type Factory struct {
-	LLM      *llm.ProviderManager
-	Tools    *tools.ToolRegistry
-	Model    string
-	Provider string
+	LLM        *llm.ProviderManager
+	Tools      *tools.ToolRegistry
+	Model      string
+	Provider   string
+	CustomDirs []string
 }
 
 // NewFactory constructs a specialist factory.
@@ -70,10 +104,29 @@ func NewFactory(llmManager *llm.ProviderManager, toolReg *tools.ToolRegistry, mo
 	return &Factory{LLM: llmManager, Tools: toolReg, Model: model, Provider: provider}
 }
 
+// AllSpecs returns built-in + custom role specs.
+func (f *Factory) AllSpecs() []RoleSpec {
+	coding := workspace.ToolNames()
+	out := append([]RoleSpec{}, Specs()...)
+	custom, _ := LoadCustomSpecs(f.CustomDirs...)
+	seen := map[string]bool{}
+	for _, s := range out {
+		seen[s.ID] = true
+	}
+	for _, c := range custom {
+		if seen[c.ID] {
+			continue
+		}
+		out = append(out, c.ToRoleSpec(coding))
+		seen[c.ID] = true
+	}
+	return out
+}
+
 // BuildRegistry registers all specialist definitions for SubAgentExecutor.
 func (f *Factory) BuildRegistry() (*agent.AgentRegistry, error) {
 	reg := agent.NewAgentRegistry()
-	for _, spec := range Specs() {
+	for _, spec := range f.AllSpecs() {
 		def := f.definition(spec)
 		if err := reg.RegisterDefinition(spec.ID, def); err != nil {
 			return nil, fmt.Errorf("register %s: %w", spec.ID, err)
@@ -84,7 +137,7 @@ func (f *Factory) BuildRegistry() (*agent.AgentRegistry, error) {
 
 // Create returns a live agent for a role id.
 func (f *Factory) Create(roleID string) (agent.Agent, error) {
-	for _, spec := range Specs() {
+	for _, spec := range f.AllSpecs() {
 		if spec.ID == roleID {
 			return f.definition(spec).CreateAgent()
 		}
@@ -100,7 +153,13 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 		cfg.Type = agent.AgentTypeReAct
 	}
 	cfg.Model = f.Model
+	if spec.Model != "" {
+		cfg.Model = spec.Model
+	}
 	cfg.Provider = f.Provider
+	if spec.Provider != "" {
+		cfg.Provider = spec.Provider
+	}
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature

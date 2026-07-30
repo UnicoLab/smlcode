@@ -174,6 +174,7 @@ func Default(root string) *Config {
 func (c *Config) SlmDir() string     { return filepath.Join(c.Root, DirName) }
 func (c *Config) ConfigPath() string { return filepath.Join(c.SlmDir(), "config.yaml") }
 func (c *Config) SkillsDir() string  { return filepath.Join(c.SlmDir(), "skills") }
+func (c *Config) AgentsDir() string  { return filepath.Join(c.SlmDir(), "agents") }
 
 // ResolveAPIKey fills API key from env or provider-specific stores.
 func (c *Config) ResolveAPIKey() {

@@ -104,6 +104,16 @@ func Archive(slmDir, runID, query, summary string) (string, error) {
 	b.WriteString("\n\n## Summary\n\n")
 	b.WriteString(strings.TrimSpace(summary))
 	b.WriteString("\n\n")
+	// Prefer query-scoped summary when present.
+	if sum, err := os.ReadFile(filepath.Join(TurnDir(slmDir, runID), "summary.md")); err == nil && len(sum) > 0 {
+		body := string(sum)
+		if len(body) > 12000 {
+			body = body[:12000] + "\n…\n"
+		}
+		b.WriteString("## summary.md\n\n")
+		b.WriteString(body)
+		b.WriteString("\n\n")
+	}
 	for _, name := range []string{"PLAN.md", "TASKS.md", "MEMORY.md", "CONTEXT.md", "PROJECT.md"} {
 		data, err := os.ReadFile(filepath.Join(slmDir, name))
 		if err != nil || len(data) == 0 {

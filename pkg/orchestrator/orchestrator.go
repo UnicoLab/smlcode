@@ -65,6 +65,9 @@ type Orchestrator struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+
+	// currentTurn scopes plan/tasks/summary to one user query (rewritten each Run).
+	currentTurn *session.Turn
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -112,6 +115,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	providerName := config.NormalizeProvider(cfg.Provider)
 	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
+	factory.CustomDirs = append([]string{cfg.AgentsDir()}, agents.GlobalAgentRoots()...)
 
 	registry, err := factory.BuildRegistry()
 	if err != nil {
@@ -187,8 +191,34 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	runID := fmt.Sprintf("run-%d", start.UnixNano())
 
 	o.emit("init", "starting "+runID, "")
+	// Fresh query-scoped plan/tasks — never patch the previous interaction's board
+	// as if it were the same job. Prior turns enrich MEMORY via summaries only.
+	turn, terr := session.BeginTurn(o.cfg.SlmDir(), runID, query)
+	if terr != nil {
+		return nil, fmt.Errorf("begin query turn: %w", terr)
+	}
+	o.mu.Lock()
+	o.currentTurn = turn
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.currentTurn = nil
+		o.mu.Unlock()
+	}()
+	if o.boardStore != nil {
+		_ = o.boardStore.Replace(turn.Board)
+	}
+	o.emit("init", "query-scoped plan/tasks reset for "+runID, "")
+
 	_ = o.store.SetQuery(query)
+	if prior := session.RecentSummaries(o.cfg.SlmDir(), 5); prior != "" {
+		_ = o.store.Append(contextstore.DocContext, "Prior query summaries (knowledge only — write a NEW plan for this query)",
+			truncate(prior, 6000))
+		o.shared.SetGlobal("prior_summaries", truncate(prior, 4000))
+		o.emit("init", "enriched context from prior query summaries", "")
+	}
 	o.shared.SetGlobal("query", query)
+	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
 	o.shared.SetGlobal("mode", o.cfg.Mode)
 	if o.cfg.Specialist != "" {
@@ -277,11 +307,15 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 		errStr = err.Error()
 	}
 	board := &plan.Board{
+		QueryID: runID, Query: query,
 		Plan: plan.Plan{Summary: "Specialist: " + role, Steps: []string{query}},
 		Tasks: []plan.Task{{
 			ID: "S1", Title: "Specialist " + role, Description: query,
 			Role: role, Status: status, Output: out, Error: errStr, Files: discovered,
 		}},
+	}
+	for i := range board.Tasks {
+		board.Tasks[i].Normalize()
 	}
 	o.persistBoard(board)
 	if strings.TrimSpace(out) != "" {
@@ -295,6 +329,9 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	}
 	if res.Summary == "" {
 		res.Summary = fmt.Sprintf("specialist %s finished", role)
+	}
+	if o.currentTurn != nil {
+		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, res.Summary)
 	}
 	o.emit("done", res.Summary, "")
 	return res, err
@@ -459,7 +496,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if archOut != "" {
 		planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 2500)
 	}
-	planPrompt += "\n\nReturn STRICT JSON plan."
+	planPrompt += "\n\nIMPORTANT: Write a brand-new plan for THIS query only (query_id=" + runID + "). " +
+		"Do NOT continue, append, or patch any previous plan/tasks. Prior summaries are project knowledge only.\n" +
+		"Return STRICT JSON plan."
 	planOut, err := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", planPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("planner: %w", err)
@@ -491,13 +530,14 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		pl.Summary = firstSentence(planOut)
 	}
 	// Persist agent plan immediately so Studio PLAN.md / board update live mid-run.
-	o.persistBoard(&plan.Board{Plan: pl, Tasks: nil})
-	o.emit("plan", "PLAN.md updated from planner", "")
+	o.persistBoard(&plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: nil})
+	o.emit("plan", "PLAN.md rewritten for this query", "")
 
 	// 4 Split
 	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
 	splitPack, _ := o.packer.Build("splitter", query, contextstore.DefaultDocsForRole("splitter"), nil, o.skillPackFor("splitter", query))
-	splitPrompt := splitPack.Render() + "\nPlan:\n" + planOut + "\n\nReturn STRICT JSON tasks."
+	splitPrompt := splitPack.Render() + "\nPlan:\n" + planOut +
+		"\n\nSplit for THIS query only (fresh task list — do not keep prior-query tasks).\nReturn STRICT JSON tasks."
 	if o.cfg.ThinkPasses >= 2 {
 		splitPrompt += "\nPrefer ≤6 tiny tasks, each with clear files + acceptance checks. Include a tester task when code changes."
 	}
@@ -527,7 +567,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		tasks = tasks[:8]
 	}
 
-	board := &plan.Board{Plan: pl, Tasks: tasks}
+	board := &plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: tasks}
 	for i := range board.Tasks {
 		t := board.Tasks[i]
 		if t.Column == "" {
@@ -591,18 +631,69 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	board = &snap
 	o.persistBoard(board)
 
-	// 6 Test / validation
+	// 6 Test / validation — failures rewrite this query's plan/tasks (do not accept quietly)
 	o.emitAgent("test", plan.RoleTester, "", "verification pass", "", "")
 	_, tasksMD := board.ToMarkdown()
 	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor("tester", query))
-	testOut, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+"\nTasks:\n"+truncate(tasksMD, 4000))
-	if strings.TrimSpace(testOut) != "" {
-		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
+	testPrompt := testPack.Render() + "\nTasks:\n" + truncate(tasksMD, 4000) +
+		"\n\nVerify THIS query's work. Return STRICT JSON: " +
+		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
+		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
+	testOut, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPrompt)
+	testerRejected := false
+	if strings.TrimSpace(testOut) == "" {
+		// Empty finalize must NOT silently skip — force rewrite path.
+		testOut = `{"passed":false,"summary":"empty tester finalize","failures":["empty or missing tester JSON — treat as failed"]}`
+		o.emitFull("test", stream.KindOutput, plan.RoleTester, "",
+			"tester returned empty finalize — forcing plan/task rewrite", "", testOut)
+	} else {
 		o.emitFull("test", stream.KindOutput, plan.RoleTester, "", "tester output", "", truncate(testOut, 1200))
+	}
+	_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
+	testerRejected = o.applyTesterFeedback(ctx, query, board, testOut)
+	if testerRejected {
+		snap = o.boardStore.Snapshot()
+		board = &snap
+		// One corrective execute wave after rewrite (same query scope).
+		if board.AgentWorkRemaining() {
+			o.emit("execute", "corrective wave after tester rewrite", "")
+			if err := runner.RunBoard(ctx, board); err != nil {
+				o.emit("execute", "corrective wave warning: "+err.Error(), "")
+			}
+			snap = o.boardStore.Snapshot()
+			board = &snap
+			o.persistBoard(board)
+			// Re-test once after corrective wave.
+			o.emitAgent("test", plan.RoleTester, "", "re-verify after rewrite", "", "")
+			_, tasksMD2 := board.ToMarkdown()
+			testOut2, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
+				"\nTasks:\n"+truncate(tasksMD2, 4000)+
+				"\n\nRe-verify after fixes. STRICT JSON with passed true/false."+
+				"\nIf you cannot produce JSON, still set passed=false with concrete failures citing task IDs and file paths.")
+			if strings.TrimSpace(testOut2) == "" {
+				testOut2 = `{"passed":false,"summary":"empty tester finalize on retry","failures":["empty tester JSON after corrective wave"]}`
+			}
+			testOut = testOut2
+			_ = o.store.Append(contextstore.DocScratch, "Verification (retry)", testOut2)
+			if o.applyTesterFeedback(ctx, query, board, testOut2) {
+				snap = o.boardStore.Snapshot()
+				board = &snap
+			} else {
+				testerRejected = false
+			}
+		}
 	}
 
 	// 6b Iterate-until-green QA gate (configurable command + max rounds)
-	o.runQAGate(ctx, query, board)
+	qaFailed := o.runQAGate(ctx, query, board)
+	if qaFailed {
+		testerRejected = true
+		// Surface QA failure into plan/tasks rewrite for this query.
+		fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`
+		_ = o.applyTesterFeedback(ctx, query, board, fake)
+		snap = o.boardStore.Snapshot()
+		board = &snap
+	}
 
 	// 7 Memory — consolidate wave lessons + SLM distillation
 	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
@@ -641,12 +732,33 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	_ = o.store.Append(contextstore.DocContext, "Run complete", summarize(board, pl))
 
 	failed := board.FailedCount()
+	success := failed == 0 && board.AllDone() && !testerRejected
 	res := &Result{
 		ID: runID, Query: query, Board: *board,
-		Success: failed == 0 && board.AllDone(), FailedTasks: failed,
+		Success: success, FailedTasks: failed,
 		Duration: time.Since(start), Summary: summarize(board, pl),
 		Backend: config.BackendSLMCode,
 	}
+	if testerRejected && success {
+		res.Success = false
+	}
+	if !res.Success && testerRejected {
+		res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
+	}
+
+	// Query-scoped summary.md — enriches later turns via summaries/INDEX.md
+	extraNotes := lessonsMD
+	if strings.TrimSpace(testOut) != "" {
+		extraNotes = strings.TrimSpace(extraNotes + "\n\n### Tester\n" + truncate(testOut, 1500))
+	}
+	if o.currentTurn != nil {
+		if spath, serr := session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, extraNotes); serr == nil && spath != "" {
+			o.emit("session", "summary "+filepath.Base(filepath.Dir(spath))+"/summary.md", "")
+			_ = o.store.Append(contextstore.DocMemory, "Query summary", truncate(
+				"Query "+runID+": "+firstSentence(query)+" — "+res.Summary, 800))
+		}
+	}
+
 	if path, err := session.Save(o.cfg.SlmDir(), session.Session{
 		ID: runID, Query: query, Summary: res.Summary, Success: res.Success, Board: *board,
 	}); err == nil {
@@ -670,6 +782,7 @@ func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPac
 	prompt := pack.Render() + "\n\n## Request\n\n" + query + "\n\nWork only on what is needed. Prefer small atomic edits."
 	out, err := o.claude.Run(ctx, prompt)
 	board := &plan.Board{
+		QueryID: runID, Query: query,
 		Plan: plan.Plan{Summary: "Claude Code backend", Steps: []string{query}},
 		Tasks: []plan.Task{{
 			ID: "T1", Title: "Claude Code execution", Description: query,
@@ -680,6 +793,9 @@ func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPac
 		board.Tasks[0].Status = plan.StatusFailed
 		board.Tasks[0].Error = err.Error()
 	}
+	for i := range board.Tasks {
+		board.Tasks[i].Normalize()
+	}
 	o.persistBoard(board)
 	_ = o.store.Append(contextstore.DocScratch, "Claude Code", out)
 	res := &Result{
@@ -687,6 +803,9 @@ func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPac
 		Success: err == nil, FailedTasks: board.FailedCount(),
 		Duration: time.Since(start), Summary: firstSentence(out),
 		Backend: config.BackendClaudeCode,
+	}
+	if o.currentTurn != nil {
+		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, res.Summary)
 	}
 	o.emit("done", res.Summary, "")
 	return res, err
@@ -909,6 +1028,18 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 }
 
 func (o *Orchestrator) persistBoard(board *plan.Board) {
+	if board == nil {
+		return
+	}
+	if o.currentTurn != nil {
+		if board.QueryID == "" {
+			board.QueryID = o.currentTurn.ID
+		}
+		if board.Query == "" {
+			board.Query = o.currentTurn.Query
+		}
+		_ = session.SaveTurnBoard(o.cfg.SlmDir(), o.currentTurn, *board)
+	}
 	if o.boardStore != nil {
 		_ = o.boardStore.Replace(*board)
 		return
@@ -1019,6 +1150,8 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	_ = os.MkdirAll(cfg.SkillsDir(), 0o755)
 	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "errors"), 0o755)
 	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "archives"), 0o755)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "queries"), 0o755)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "summaries"), 0o755)
 	// Materialize bundled skills only — CONTEXT/PLAN/TASKS stay empty until agents write them.
 	_ = skills.MaterializeBundled(filepath.Join(cfg.SlmDir(), "skills", "_bundled"))
 	// Seed PROJECT.md from README / go.mod / layout so agents always have context.

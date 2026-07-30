@@ -48,21 +48,29 @@ func main() {
 ` + cli.Dim(`Designed for local SLMs: scoped context packs, markdown memory, multi-pass
 thinking, parallel specialists, and a live kanban you can edit while agents run.
 
+Default (no subcommand): premium interactive TUI — connection, board, live events,
+agents, queries, errors, diffs, and keyboard UX. Docs sometimes spell it "smlcode";
+the binary is slmcode.
+
 Point at any OpenAI-compatible endpoint (oMLX, Ollama, LM Studio, cloud OpenAI, …):
   slmcode run --provider openai --model gpt-4o-mini --endpoint https://api.openai.com/v1 "…"
   slmcode run --provider ollama --model qwen2.5-coder:14b "…"
   SLMCODE_PROVIDER=lmstudio SLMCODE_MODEL=… slmcode run "…"
 
 Examples:
+  slmcode                 # premium TUI (default)
+  slmcode tui             # same
   slmcode init
   slmcode run "add JWT auth"
   slmcode board
-  slmcode task add "Write tests" --column ready_to_dev --role tester
-  slmcode task move T3 in_review
-  slmcode context edit
   slmcode studio
-  slmcode doctor`),
+  slmcode doctor
+  slmcode chat            # classic REPL`),
 		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Bare `slmcode` → premium TUI (Studio-parity dashboard + REPL).
+			return runPremiumTUI()
+		},
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if flagNoBanner || cmd.Name() == "completion" || cmd.Name() == "help" {
 				return
@@ -84,6 +92,7 @@ Examples:
 	root.PersistentFlags().BoolVar(&flagNoBanner, "no-banner", false, "hide ASCII banner on help")
 
 	root.AddCommand(
+		tuiCmd(),
 		initCmd(),
 		runCmd(),
 		chatCmd(),

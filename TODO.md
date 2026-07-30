@@ -194,9 +194,10 @@ We need everything to be self evolving and improving all the time !!!
 - [x] Premium default TUI on bare `slmcode` / `slmcode tui` (Studio-parity panels; CI non-interactive fallback)
 - [x] Studio custom agents CRUD (`GET/POST/PUT/DELETE /api/agents`) + Agents tab UI
 - [x] Stronger anti-wander (junk patch reject, tighter worker/corrector prompts)
-- [x] Reviewer fingerprint: trust Disk evidence / ambiguous baseline (tests)
-- [x] Query-scope + tester rewrite + multi-turn e2e (prior pass)
+- [x] Reviewer fingerprint: trust Disk evidence / ambiguous baseline + LLM fast-path (tests)
+- [x] Query-scope + tester rewrite + multi-turn e2e (offline PASS; live attempted)
 - [x] `go test ./...` + `go test -race ./pkg/...` green
+- [x] Commit `0c31e01` → pushed `UnicoLab/smlcode` → `make install-system` → `slmcode 0.5.9`
 
 ## Studio ↔ backend wiring (was missing / broken in practice)
 - [x] SSE emits immediate `connected` event + keepalive pings (Live no longer looks dead)

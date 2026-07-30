@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CustomSpec is a user-defined specialist persisted as YAML under agents/.
+// CustomSpec is a user-defined specialist (or builtin override) persisted as YAML under agents/.
 type CustomSpec struct {
 	ID           string   `yaml:"id" json:"id"`
 	Title        string   `yaml:"title" json:"title"`
@@ -19,18 +19,32 @@ type CustomSpec struct {
 	Skills       []string `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Model        string   `yaml:"model,omitempty" json:"model,omitempty"`
 	Provider     string   `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Tools        bool     `yaml:"tools" json:"tools"`
-	MaxIter      int      `yaml:"max_iter" json:"max_iter"`
-	Temperature  float64  `yaml:"temperature" json:"temperature"`
-	MaxTokens    int      `yaml:"max_tokens" json:"max_tokens"`
-	Path         string   `yaml:"-" json:"path,omitempty"`
-	Custom       bool     `yaml:"-" json:"custom"`
-	Builtin      bool     `yaml:"-" json:"builtin"`
+	Endpoint     string   `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	// Tools is a pointer so omitempty/omitted YAML does not clear builtin tools on override.
+	Tools       *bool   `yaml:"tools,omitempty" json:"tools"`
+	MaxIter     int     `yaml:"max_iter" json:"max_iter"`
+	Temperature float64 `yaml:"temperature" json:"temperature"`
+	MaxTokens   int     `yaml:"max_tokens" json:"max_tokens"`
+	Path        string  `yaml:"-" json:"path,omitempty"`
+	Custom      bool    `yaml:"-" json:"custom"`
+	Builtin     bool    `yaml:"-" json:"builtin"`
+	Override    bool    `yaml:"-" json:"override,omitempty"` // true when patching a built-in
 }
 
 var agentIDRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,63}$`)
 
-// BuiltinIDs returns reserved specialist ids that cannot be overwritten/deleted.
+// BoolPtr is a small helper for tests and API callers.
+func BoolPtr(v bool) *bool { return &v }
+
+// ToolsEnabled reports whether coding tools are on (default true for new customs).
+func (c CustomSpec) ToolsEnabled() bool {
+	if c.Tools == nil {
+		return !c.Override // customs default on; overrides leave base alone
+	}
+	return *c.Tools
+}
+
+// BuiltinIDs returns reserved specialist ids.
 func BuiltinIDs() map[string]bool {
 	out := map[string]bool{}
 	for _, s := range Specs() {
@@ -39,7 +53,7 @@ func BuiltinIDs() map[string]bool {
 	return out
 }
 
-// NormalizeCustom validates and fills defaults for a custom agent.
+// NormalizeCustom validates and fills defaults for a custom agent or builtin override.
 func NormalizeCustom(c *CustomSpec) error {
 	if c == nil {
 		return fmt.Errorf("agent required")
@@ -50,27 +64,50 @@ func NormalizeCustom(c *CustomSpec) error {
 	c.SystemPrompt = strings.TrimSpace(c.SystemPrompt)
 	c.Model = strings.TrimSpace(c.Model)
 	c.Provider = strings.TrimSpace(c.Provider)
+	c.Endpoint = strings.TrimSpace(c.Endpoint)
 	if !agentIDRe.MatchString(c.ID) {
 		return fmt.Errorf("invalid id %q (use lowercase letters, digits, _-; 2–64 chars)", c.ID)
 	}
-	if BuiltinIDs()[c.ID] {
-		return fmt.Errorf("id %q is a built-in specialist — choose another name", c.ID)
-	}
-	if c.Title == "" {
-		c.Title = c.ID
-	}
-	if c.SystemPrompt == "" {
-		c.SystemPrompt = "You are a custom SLMCode specialist. Complete the assigned task carefully.\n" +
-			"Prefer workspace tools for code changes. Finish with a short status summary."
-	}
-	if c.MaxIter <= 0 {
-		c.MaxIter = 10
-	}
-	if c.MaxTokens <= 0 {
-		c.MaxTokens = 2048
-	}
-	if c.Temperature <= 0 {
-		c.Temperature = 0.2
+	isBuiltin := BuiltinIDs()[c.ID]
+	if isBuiltin {
+		c.Override = true
+		c.Custom = false
+		c.Builtin = true
+		if c.Title == "" {
+			for _, s := range Specs() {
+				if s.ID == c.ID {
+					c.Title = s.Title
+					break
+				}
+			}
+		}
+		if c.Title == "" {
+			c.Title = c.ID
+		}
+		// 0 numeric fields mean "keep builtin default" at merge time.
+	} else {
+		if c.Title == "" {
+			c.Title = c.ID
+		}
+		if c.SystemPrompt == "" {
+			c.SystemPrompt = "You are a custom SLMCode specialist. Complete the assigned task carefully.\n" +
+				"Prefer workspace tools for code changes. Finish with a short status summary."
+		}
+		if c.MaxIter <= 0 {
+			c.MaxIter = 10
+		}
+		if c.MaxTokens <= 0 {
+			c.MaxTokens = 2048
+		}
+		if c.Temperature <= 0 {
+			c.Temperature = 0.2
+		}
+		if c.Tools == nil {
+			c.Tools = BoolPtr(true)
+		}
+		c.Custom = true
+		c.Builtin = false
+		c.Override = false
 	}
 	var skills []string
 	seen := map[string]bool{}
@@ -83,8 +120,6 @@ func NormalizeCustom(c *CustomSpec) error {
 		skills = append(skills, s)
 	}
 	c.Skills = skills
-	c.Custom = true
-	c.Builtin = false
 	return nil
 }
 
@@ -102,7 +137,7 @@ func GlobalAgentRoots() []string {
 	return roots
 }
 
-// LoadCustomSpecs discovers custom agents from directories (project first, then global).
+// LoadCustomSpecs discovers custom agents / overrides from directories (project first, then global).
 // First id wins.
 func LoadCustomSpecs(dirs ...string) ([]CustomSpec, error) {
 	seen := map[string]bool{}
@@ -163,7 +198,7 @@ func ReadCustomFile(path string) (CustomSpec, error) {
 	return c, nil
 }
 
-// WriteCustom persists a custom agent under dir as <id>.yaml.
+// WriteCustom persists a custom agent (or built-in override) under dir as <id>.yaml.
 func WriteCustom(dir string, c CustomSpec) (string, error) {
 	if err := NormalizeCustom(&c); err != nil {
 		return "", err
@@ -180,6 +215,7 @@ func WriteCustom(dir string, c CustomSpec) (string, error) {
 		Skills:       c.Skills,
 		Model:        c.Model,
 		Provider:     c.Provider,
+		Endpoint:     c.Endpoint,
 		Tools:        c.Tools,
 		MaxIter:      c.MaxIter,
 		Temperature:  c.Temperature,
@@ -195,22 +231,22 @@ func WriteCustom(dir string, c CustomSpec) (string, error) {
 	return path, nil
 }
 
-// DeleteCustom removes a project-level custom agent file.
+// DeleteCustom removes a project-level custom agent or built-in override file.
+// Built-in specialists themselves cannot be deleted — only their override YAML.
 func DeleteCustom(dir, id string) error {
 	id = strings.ToLower(strings.TrimSpace(id))
-	if BuiltinIDs()[id] {
-		return fmt.Errorf("cannot delete built-in agent %q", id)
-	}
 	if !agentIDRe.MatchString(id) {
 		return fmt.Errorf("invalid id")
 	}
 	path := filepath.Join(dir, id+".yaml")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// also try .yml
 		path = filepath.Join(dir, id+".yml")
 	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
+			if BuiltinIDs()[id] {
+				return fmt.Errorf("built-in agent %q has no project override to delete", id)
+			}
 			return fmt.Errorf("custom agent %q not found in %s", id, dir)
 		}
 		return err
@@ -221,7 +257,7 @@ func DeleteCustom(dir, id string) error {
 // ToRoleSpec converts a custom definition into a RoleSpec for the factory.
 func (c CustomSpec) ToRoleSpec(codingTools []string) RoleSpec {
 	tools := []string(nil)
-	if c.Tools {
+	if c.ToolsEnabled() {
 		tools = codingTools
 	}
 	prompt := c.SystemPrompt
@@ -238,7 +274,58 @@ func (c CustomSpec) ToRoleSpec(codingTools []string) RoleSpec {
 		MaxTokens:    c.MaxTokens,
 		Model:        c.Model,
 		Provider:     c.Provider,
+		Endpoint:     c.Endpoint,
 		Skills:       append([]string{}, c.Skills...),
-		Custom:       true,
+		Custom:       !c.Override,
+	}
+}
+
+// ApplyOverride merges a YAML override onto a built-in RoleSpec.
+// Empty override fields leave the builtin value unchanged.
+func ApplyOverride(base *RoleSpec, o CustomSpec, codingTools []string) {
+	if base == nil {
+		return
+	}
+	if strings.TrimSpace(o.Title) != "" {
+		base.Title = strings.TrimSpace(o.Title)
+	}
+	if strings.TrimSpace(o.SystemPrompt) != "" {
+		prompt := strings.TrimSpace(o.SystemPrompt)
+		if len(o.Skills) > 0 {
+			prompt += "\n\n## Preferred skills\nUse conventions from: " + strings.Join(o.Skills, ", ")
+		}
+		base.SystemPrompt = prompt
+	} else if len(o.Skills) > 0 {
+		if !strings.Contains(base.SystemPrompt, "## Preferred skills") {
+			base.SystemPrompt += "\n\n## Preferred skills\nUse conventions from: " + strings.Join(o.Skills, ", ")
+		}
+	}
+	if strings.TrimSpace(o.Model) != "" {
+		base.Model = strings.TrimSpace(o.Model)
+	}
+	if strings.TrimSpace(o.Provider) != "" {
+		base.Provider = strings.TrimSpace(o.Provider)
+	}
+	if strings.TrimSpace(o.Endpoint) != "" {
+		base.Endpoint = strings.TrimSpace(o.Endpoint)
+	}
+	if o.MaxIter > 0 {
+		base.MaxIter = o.MaxIter
+	}
+	if o.MaxTokens > 0 {
+		base.MaxTokens = o.MaxTokens
+	}
+	if o.Temperature > 0 {
+		base.Temperature = o.Temperature
+	}
+	if o.Tools != nil {
+		if *o.Tools {
+			base.Tools = codingTools
+		} else {
+			base.Tools = nil
+		}
+	}
+	if len(o.Skills) > 0 {
+		base.Skills = append([]string{}, o.Skills...)
 	}
 }

@@ -111,11 +111,23 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		return nil, err
 	}
 
-	// AgentConfig.Provider must match the name registered by backends.RegisterLLM.
+	// AgentConfig.Provider must match a name registered in the ProviderManager.
 	providerName := config.NormalizeProvider(cfg.Provider)
 	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
 	factory.CustomDirs = append([]string{cfg.AgentsDir()}, agents.GlobalAgentRoots()...)
+
+	// Auto-register providers for per-agent overrides (custom agents / builtin patches)
+	// so rebuild never leaves an agent pointing at an unregistered provider.
+	var agentOverrides []backends.AgentProviderOverride
+	for _, n := range factory.ProviderOverrides() {
+		agentOverrides = append(agentOverrides, backends.AgentProviderOverride{
+			Provider: n.Provider, Model: n.Model, Endpoint: n.Endpoint,
+		})
+	}
+	if err := backends.EnsureAgentProviders(llmManager, cfg, agentOverrides); err != nil {
+		return nil, err
+	}
 
 	registry, err := factory.BuildRegistry()
 	if err != nil {
@@ -815,10 +827,33 @@ func (o *Orchestrator) runRole(ctx context.Context, role, input string) (string,
 	return o.runRoleTracked(ctx, role, "", input)
 }
 
+// roleTimeout gives planning/coord roles a tighter budget than full task timeout
+// so slow oMLX multi-turn runs don't stall for 12 minutes on a stuck planner call.
+func (o *Orchestrator) roleTimeout(role string) time.Duration {
+	full := o.cfg.TaskTimeout
+	if full <= 0 {
+		full = config.DefaultTaskTimeout
+	}
+	switch role {
+	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs", plan.RoleTester:
+		return full
+	default:
+		// planner / splitter / reviewer / coordinator / context / memory / architect
+		d := full / 2
+		if d < 2*time.Minute {
+			d = 2 * time.Minute
+		}
+		if d > 6*time.Minute {
+			d = 6 * time.Minute
+		}
+		return d
+	}
+}
+
 func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input string) (string, error) {
 	o.emitFull(role, stream.KindAgentStart, role, taskID, "started", scopeFromInput(input), "")
 	results, err := o.executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-		AgentID: role, Input: input, Timeout: o.cfg.TaskTimeout, ShareState: true,
+		AgentID: role, Input: input, Timeout: o.roleTimeout(role), ShareState: true,
 	}}, o.shared)
 	if len(results) == 0 {
 		o.emitFull(role, stream.KindAgentEnd, role, taskID, "no result", "", "")
@@ -889,6 +924,12 @@ func (o *Orchestrator) shouldDeepExplore(query string) (doDeep bool, reason stri
 
 func (o *Orchestrator) coordinate(ctx context.Context, query string, board *plan.Board, when string) {
 	if board == nil {
+		return
+	}
+	// Skip coordinator LLM on lean SLM runs (think_passes=1) — saves a slow
+	// round-trip that rarely changes a freshly-split board.
+	if o.cfg != nil && o.cfg.ThinkPasses <= 1 && (when == "pre-execute" || when == "after-wave") {
+		o.emitFull("coord", stream.KindCoord, "coordinator", "", "coordinator @"+when+" (skipped — think_passes=1)", "", "")
 		return
 	}
 	o.emitFull("coord", stream.KindCoord, "coordinator", "", "coordinator @"+when, "", "")

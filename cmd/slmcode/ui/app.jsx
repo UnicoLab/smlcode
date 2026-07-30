@@ -280,7 +280,7 @@ function App() {
   const [skillEdit, setSkillEdit] = useState(null);
   const emptyAgentDraft = () => ({
     id: "", title: "", description: "", system_prompt: "",
-    skills: [], model: "", provider: "", tools: true,
+    skills: [], model: "", provider: "", endpoint: "", tools: true,
     max_iter: 10, temperature: 0.2, max_tokens: 2048,
   });
   const [agentDraft, setAgentDraft] = useState(emptyAgentDraft);
@@ -622,12 +622,14 @@ function App() {
   }
 
   async function deleteAgent(id) {
-    if (!id || !confirm("Delete custom agent @" + id + "?")) return;
+    const a = agents.find((x) => x.id === id);
+    const label = a?.override ? "Reset override for @" + id + "?" : "Delete custom agent @" + id + "?";
+    if (!id || !confirm(label)) return;
     try {
       await api("/api/agents/" + encodeURIComponent(id), { method: "DELETE" });
       if (agentEdit?.id === id) setAgentEdit(null);
       await refresh();
-      showToast("Deleted @" + id);
+      showToast((a?.override ? "Reset @" : "Deleted @") + id);
     } catch (e) {
       setErr(String(e.message || e));
     }
@@ -1163,40 +1165,38 @@ function App() {
                         <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: "0.72rem", color: "var(--muted)" }}>
                           {a.tools ? "⚙ can edit files" : "reasoning only"}
                           {a.provider || a.model ? ` · ${a.provider || "default"}/${a.model || "default"}` : ""}
+                          {a.endpoint ? ` · ${a.endpoint}` : ""}
+                          {a.override ? " · overridden" : ""}
                           {a.skills?.length ? ` · skills: ${a.skills.join(", ")}` : ""}
                         </div>
-                        {a.custom && (
-                          <div className="row" style={{ marginTop: 8 }}>
-                            <button className="sm ghost" onClick={() => setAgentEdit({
-                              id: a.id,
-                              title: a.title || a.role || "",
-                              description: a.description || "",
-                              system_prompt: a.system_prompt || "",
-                              skills: a.skills || [],
-                              model: a.model || "",
-                              provider: a.provider || "",
-                              tools: !!a.tools,
-                              max_iter: a.max_iter || 10,
-                              temperature: a.temperature ?? 0.2,
-                              max_tokens: a.max_tokens || 2048,
-                            })}>Edit</button>
-                            <button className="sm ghost danger" onClick={() => deleteAgent(a.id)}>Delete</button>
-                            <button className="sm ghost" onClick={() => {
-                              setRunMode("specialist");
-                              setRunSpecialist(a.id);
-                              showToast("Selected @" + a.id + " for specialist run");
-                            }}>Use</button>
-                          </div>
-                        )}
-                        {!a.custom && (
-                          <div className="row" style={{ marginTop: 8 }}>
-                            <button className="sm ghost" onClick={() => {
-                              setRunMode("specialist");
-                              setRunSpecialist(a.id);
-                              showToast("Selected @" + a.id + " for specialist run");
-                            }}>Use</button>
-                          </div>
-                        )}
+                        <div className="row" style={{ marginTop: 8 }}>
+                          <button className="sm ghost" onClick={() => setAgentEdit({
+                            id: a.id,
+                            title: a.title || a.role || "",
+                            description: a.description || "",
+                            system_prompt: a.system_prompt || "",
+                            skills: a.skills || [],
+                            model: a.model || "",
+                            provider: a.provider || "",
+                            endpoint: a.endpoint || "",
+                            tools: !!a.tools,
+                            max_iter: a.max_iter || 10,
+                            temperature: a.temperature ?? 0.2,
+                            max_tokens: a.max_tokens || 2048,
+                            builtin: !!a.builtin,
+                            override: !!a.override,
+                          })}>{a.custom ? "Edit" : (a.override ? "Edit override" : "Customize")}</button>
+                          {(a.custom || a.override) && (
+                            <button className="sm ghost danger" onClick={() => deleteAgent(a.id)}>
+                              {a.override ? "Reset" : "Delete"}
+                            </button>
+                          )}
+                          <button className="sm ghost" onClick={() => {
+                            setRunMode("specialist");
+                            setRunSpecialist(a.id);
+                            showToast("Selected @" + a.id + " for specialist run");
+                          }}>Use</button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1204,11 +1204,13 @@ function App() {
                 <div className="panel-box">
                   {agentEdit ? (
                     <>
-                      <h3>Edit @{agentEdit.id}</h3>
+                      <h3>{agentEdit.builtin ? "Customize" : "Edit"} @{agentEdit.id}</h3>
+                      {agentEdit.builtin ? <p className="lead">Saves a project override under <code>.slmcode/agents/{agentEdit.id}.yaml</code> — provider/model/settings apply at runtime.</p> : null}
                       <label>Title<input value={agentEdit.title || ""} onChange={(e) => setAgentEdit({ ...agentEdit, title: e.target.value })} /></label>
                       <label>Description<input value={agentEdit.description || ""} onChange={(e) => setAgentEdit({ ...agentEdit, description: e.target.value })} /></label>
                       <label>Provider<input value={agentEdit.provider || ""} onChange={(e) => setAgentEdit({ ...agentEdit, provider: e.target.value })} placeholder="empty = active provider" /></label>
                       <label>Model<input value={agentEdit.model || ""} onChange={(e) => setAgentEdit({ ...agentEdit, model: e.target.value })} placeholder="empty = active model" /></label>
+                      <label>Endpoint<input value={agentEdit.endpoint || ""} onChange={(e) => setAgentEdit({ ...agentEdit, endpoint: e.target.value })} placeholder="empty = provider default" /></label>
                       <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
                         <label>Max iter<input type="number" value={agentEdit.max_iter} onChange={(e) => setAgentEdit({ ...agentEdit, max_iter: e.target.value })} /></label>
                         <label>Temp<input type="number" step="0.05" value={agentEdit.temperature} onChange={(e) => setAgentEdit({ ...agentEdit, temperature: e.target.value })} /></label>
@@ -1241,6 +1243,7 @@ function App() {
                       <label>Description<input value={agentDraft.description} onChange={(e) => setAgentDraft({ ...agentDraft, description: e.target.value })} /></label>
                       <label>Provider<input value={agentDraft.provider} onChange={(e) => setAgentDraft({ ...agentDraft, provider: e.target.value })} placeholder="ollama / omlx / openai / …" /></label>
                       <label>Model<input value={agentDraft.model} onChange={(e) => setAgentDraft({ ...agentDraft, model: e.target.value })} placeholder="model id" /></label>
+                      <label>Endpoint<input value={agentDraft.endpoint} onChange={(e) => setAgentDraft({ ...agentDraft, endpoint: e.target.value })} placeholder="http://127.0.0.1:11434 or …/v1" /></label>
                       <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
                         <label>Max iter<input type="number" value={agentDraft.max_iter} onChange={(e) => setAgentDraft({ ...agentDraft, max_iter: e.target.value })} /></label>
                         <label>Temp<input type="number" step="0.05" value={agentDraft.temperature} onChange={(e) => setAgentDraft({ ...agentDraft, temperature: e.target.value })} /></label>

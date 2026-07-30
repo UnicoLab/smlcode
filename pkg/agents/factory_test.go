@@ -43,6 +43,39 @@ func TestPublicSpecs(t *testing.T) {
 	}
 }
 
+func TestPublicSpecsMergesBuiltinOverride(t *testing.T) {
+	dir := t.TempDir()
+	_, err := WriteCustom(dir, CustomSpec{
+		ID: "worker", Provider: "ollama", Model: "qwen2.5-coder:7b", MaxIter: 22,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom, err := LoadCustomSpecs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := PublicSpecsWithCustom(custom)
+	found := false
+	for _, m := range pub {
+		if m["id"] == "worker" {
+			found = true
+			if m["override"] != true {
+				t.Fatal("expected override flag")
+			}
+			if m["provider"] != "ollama" || m["model"] != "qwen2.5-coder:7b" {
+				t.Fatalf("%v", m)
+			}
+			if m["max_iter"] != 22 {
+				t.Fatalf("max_iter=%v", m["max_iter"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("worker missing")
+	}
+}
+
 func TestWorkerPromptAntiWander(t *testing.T) {
 	if !strings.Contains(PromptWorker, "HARD SCOPE") {
 		t.Fatal("worker prompt missing HARD SCOPE")

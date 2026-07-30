@@ -116,7 +116,7 @@ func TestAgentsCRUD(t *testing.T) {
 	}
 	s := New(h, nil)
 
-	body := []byte(`{"id":"night-auditor","title":"Night Auditor","description":"quiet review","system_prompt":"Audit carefully.","skills":["atomic-coding"],"tools":true,"provider":"ollama","model":"qwen2.5-coder:14b"}`)
+	body := []byte(`{"id":"night-auditor","title":"Night Auditor","description":"quiet review","system_prompt":"Audit carefully.","skills":["atomic-coding"],"tools":true,"provider":"ollama","model":"qwen2.5-coder:14b","endpoint":"http://127.0.0.1:11434"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
@@ -155,12 +155,30 @@ func TestAgentsCRUD(t *testing.T) {
 		t.Fatal("expected file removed")
 	}
 
-	// Cannot delete built-in
+	// Cannot delete built-in without an override file
 	req = httptest.NewRequest(http.MethodDelete, "/api/agents/worker", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code == 200 {
-		t.Fatal("must not delete built-in worker")
+		t.Fatal("must not delete built-in worker without override")
+	}
+
+	// Builtin override via PUT, then Reset (DELETE override)
+	ovr := []byte(`{"id":"worker","provider":"ollama","model":"qwen2.5-coder:7b","max_iter":18}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/agents/worker", bytes.NewReader(ovr))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("override put %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(h.Config.AgentsDir(), "worker.yaml")); err != nil {
+		t.Fatal("expected worker override yaml")
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/agents/worker", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("reset override %d %s", rec.Code, rec.Body.String())
 	}
 }
 

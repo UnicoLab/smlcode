@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,6 +153,47 @@ func TestEvidenceOKCreateSatisfiedWithoutDelta(t *testing.T) {
 	baseline := map[string]string{"pyproject.toml": fileFingerprint(filepath.Join(dir, "pyproject.toml"))}
 	if ok, why := r.evidenceOK(task, baseline); !ok {
 		t.Fatalf("create file already on disk should pass: %s", why)
+	}
+}
+
+func TestReviewFastPathSkipsExecutor(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "hello.go")
+	_ = os.WriteFile(target, []byte("package main\n\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+	r := &Runner{Root: dir, Executor: nil} // nil executor must never be called
+	var logs []string
+	r.Log = func(format string, args ...interface{}) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	task := plan.Task{
+		ID: "T1", Title: "Edit hello", Description: "implement comment",
+		Acceptance: "file updated", Files: []string{"hello.go"}, Role: plan.RoleWorker,
+		Column: plan.ColInReview,
+		Output: "done\n\n## Disk evidence\n- modified: hello.go\n",
+	}
+	baseline := map[string]string{"hello.go": "1:1"} // stale; disk section still counts
+	board := &plan.Board{Tasks: []plan.Task{task}}
+	// Mutate so hasRealWriteEvidence also sees a delta vs fingerprint-less baseline path
+	_ = os.WriteFile(target, []byte("package main\n\n// Hello greets.\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+
+	err := r.reviewAndCorrect(context.Background(), board, task, baseline)
+	if err != nil {
+		t.Fatalf("reviewAndCorrect: %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "skip reviewer LLM") {
+		t.Fatalf("expected review fast-path log, got: %s", joined)
+	}
+	got, ok := board.Get("T1")
+	if !ok {
+		t.Fatal("missing task")
+	}
+	if got.Column != plan.ColDone && !strings.Contains(strings.ToLower(got.Review), "auto-approved") {
+		// Done column is ideal; at minimum review summary must show auto-approve.
+		if !strings.Contains(strings.ToLower(got.Review), "auto-approved") &&
+			!strings.Contains(strings.ToLower(got.Review), "disk") {
+			t.Fatalf("expected auto-approve review, col=%s review=%q", got.Column, got.Review)
+		}
 	}
 }
 

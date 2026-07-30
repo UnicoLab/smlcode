@@ -9,6 +9,15 @@ import (
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 )
 
+// AgentProviderOverride describes a per-agent LLM backend that must exist
+// in the ProviderManager at orchestrator rebuild time.
+type AgentProviderOverride struct {
+	Provider string
+	Model    string
+	Endpoint string
+	APIKey   string
+}
+
 // llmTimeout aligns HTTP LLM calls with task timeout so multi-iteration
 // ReAct workers are not killed mid-tool-loop by a short provider deadline.
 func llmTimeout(cfg *config.Config) time.Duration {
@@ -42,18 +51,78 @@ func RegisterLLM(m *llm.ProviderManager, cfg *config.Config) error {
 	cfg.Provider = name
 
 	if config.IsOllama(name) {
-		return registerOllama(m, cfg)
+		return registerOllama(m, cfg, true)
 	}
-	return registerOpenAICompat(m, name, cfg)
+	return registerOpenAICompat(m, name, cfg, true)
 }
 
-func registerOllama(m *llm.ProviderManager, cfg *config.Config) error {
+// EnsureAgentProviders registers any per-agent provider overrides that are not
+// already present. Safe to call after RegisterLLM — never changes the default
+// provider. Unknown names are treated as OpenAI-compatible gateways.
+//
+// Model-only overrides on the active provider need no registration (AgentConfig.Model
+// is enough). A different provider name (e.g. agent=ollama while global=omlx) is
+// auto-registered with the agent's endpoint or DefaultEndpointFor(provider).
+func EnsureAgentProviders(m *llm.ProviderManager, cfg *config.Config, overrides []AgentProviderOverride) error {
+	if m == nil || cfg == nil {
+		return nil
+	}
+	cfg.ResolveAPIKey()
+	seen := map[string]bool{}
+	for _, o := range overrides {
+		name := config.NormalizeProvider(o.Provider)
+		if name == "" {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		if _, err := m.GetProvider(name); err == nil {
+			seen[name] = true
+			continue
+		}
+		agentCfg := *cfg
+		agentCfg.Provider = name
+		if strings.TrimSpace(o.Model) != "" {
+			agentCfg.Model = strings.TrimSpace(o.Model)
+		}
+		if strings.TrimSpace(o.Endpoint) != "" {
+			agentCfg.Endpoint = strings.TrimSpace(o.Endpoint)
+		} else {
+			agentCfg.Endpoint = config.DefaultEndpointFor(name)
+		}
+		if strings.TrimSpace(o.APIKey) != "" {
+			agentCfg.APIKey = strings.TrimSpace(o.APIKey)
+		}
+		agentCfg.ResolveAPIKey()
+		var err error
+		if config.IsOllama(name) {
+			err = registerOllamaNamed(m, name, &agentCfg, false)
+		} else {
+			err = registerOpenAICompat(m, name, &agentCfg, false)
+		}
+		if err != nil {
+			return fmt.Errorf("register agent provider %q: %w", name, err)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+func registerOllama(m *llm.ProviderManager, cfg *config.Config, setDefault bool) error {
+	return registerOllamaNamed(m, "ollama", cfg, setDefault)
+}
+
+func registerOllamaNamed(m *llm.ProviderManager, regName string, cfg *config.Config, setDefault bool) error {
 	endpoint := cfg.Endpoint
 	if strings.Contains(endpoint, "/v1") {
 		endpoint = strings.TrimSuffix(strings.TrimSuffix(endpoint, "/v1"), "/")
 	}
 	if endpoint == "" {
 		endpoint = config.DefaultEndpointFor("ollama")
+	}
+	if regName == "" {
+		regName = "ollama"
 	}
 	p, err := llm.NewOllamaProvider(&llm.ProviderConfig{
 		Type:        "ollama",
@@ -66,13 +135,16 @@ func registerOllama(m *llm.ProviderManager, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err := m.RegisterProvider("ollama", p); err != nil {
+	if err := m.RegisterProvider(regName, p); err != nil {
 		return err
 	}
-	return m.SetDefaultProvider("ollama")
+	if setDefault {
+		return m.SetDefaultProvider(regName)
+	}
+	return nil
 }
 
-func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Config) error {
+func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Config, setDefault bool) error {
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
 		endpoint = config.DefaultEndpointFor(name)
@@ -105,13 +177,33 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 	if err := m.RegisterProvider(regName, p); err != nil {
 		return err
 	}
-	// Alias common synonyms so AgentConfig.Provider always resolves.
-	for _, alias := range []string{"openai", "omlx", cfg.Provider} {
-		alias = config.NormalizeProvider(alias)
+	// Alias only true synonyms of THIS provider — never map openai↔omlx.
+	// Cross-mapping broke per-agent provider overrides (agent asked for openai
+	// but hit the omlx endpoint).
+	for _, alias := range providerSynonyms(regName) {
 		if alias == "" || alias == regName {
+			continue
+		}
+		if _, err := m.GetProvider(alias); err == nil {
 			continue
 		}
 		_ = m.RegisterProvider(alias, p)
 	}
-	return m.SetDefaultProvider(regName)
+	if setDefault {
+		return m.SetDefaultProvider(regName)
+	}
+	return nil
+}
+
+func providerSynonyms(name string) []string {
+	switch config.NormalizeProvider(name) {
+	case "omlx":
+		return []string{"mlx"}
+	case "openai":
+		return []string{"openai-compatible", "openai_compat"}
+	case "lmstudio":
+		return []string{"lm-studio", "lm_studio"}
+	default:
+		return nil
+	}
 }

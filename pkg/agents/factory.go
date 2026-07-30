@@ -21,8 +21,10 @@ type RoleSpec struct {
 	MaxTokens    int      `json:"max_tokens"`
 	Model        string   `json:"model,omitempty"`
 	Provider     string   `json:"provider,omitempty"`
+	Endpoint     string   `json:"endpoint,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
 	Custom       bool     `json:"custom"`
+	Override     bool     `json:"override,omitempty"`
 }
 
 // Specs returns the built-in specialist roster (Claude Code / Antigravity inspired).
@@ -52,10 +54,20 @@ func PublicSpecs() []map[string]interface{} {
 }
 
 // PublicSpecsWithCustom merges built-ins + custom agents for Studio.
+// Built-in overrides from YAML are merged into the corresponding roster entry.
 func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
+	byID := map[string]CustomSpec{}
+	var extras []CustomSpec
+	for _, c := range custom {
+		if BuiltinIDs()[c.ID] {
+			byID[c.ID] = c
+		} else {
+			extras = append(extras, c)
+		}
+	}
 	var out []map[string]interface{}
 	for _, s := range Specs() {
-		out = append(out, map[string]interface{}{
+		m := map[string]interface{}{
 			"id":          s.ID,
 			"role":        s.Title,
 			"title":       s.Title,
@@ -64,27 +76,70 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 			"temperature": s.Temperature,
 			"max_tokens":  s.MaxTokens,
 			"skills":      s.Skills,
+			"model":       s.Model,
+			"provider":    s.Provider,
+			"endpoint":    s.Endpoint,
 			"custom":      false,
 			"builtin":     true,
-		})
+			"override":    false,
+		}
+		if o, ok := byID[s.ID]; ok {
+			m["override"] = true
+			m["path"] = o.Path
+			m["description"] = o.Description
+			if o.Title != "" {
+				m["title"] = o.Title
+				m["role"] = o.Title
+			}
+			if o.SystemPrompt != "" {
+				m["system_prompt"] = o.SystemPrompt
+			}
+			if o.Model != "" {
+				m["model"] = o.Model
+			}
+			if o.Provider != "" {
+				m["provider"] = o.Provider
+			}
+			if o.Endpoint != "" {
+				m["endpoint"] = o.Endpoint
+			}
+			if o.MaxIter > 0 {
+				m["max_iter"] = o.MaxIter
+			}
+			if o.MaxTokens > 0 {
+				m["max_tokens"] = o.MaxTokens
+			}
+			if o.Temperature > 0 {
+				m["temperature"] = o.Temperature
+			}
+			if o.Tools != nil {
+				m["tools"] = *o.Tools
+			}
+			if len(o.Skills) > 0 {
+				m["skills"] = o.Skills
+			}
+		}
+		out = append(out, m)
 	}
-	for _, c := range custom {
+	for _, c := range extras {
 		out = append(out, map[string]interface{}{
 			"id":            c.ID,
 			"role":          c.Title,
 			"title":         c.Title,
 			"description":   c.Description,
-			"tools":         c.Tools,
+			"tools":         c.ToolsEnabled(),
 			"max_iter":      c.MaxIter,
 			"temperature":   c.Temperature,
 			"max_tokens":    c.MaxTokens,
 			"skills":        c.Skills,
 			"model":         c.Model,
 			"provider":      c.Provider,
+			"endpoint":      c.Endpoint,
 			"system_prompt": c.SystemPrompt,
 			"path":          c.Path,
 			"custom":        true,
 			"builtin":       false,
+			"override":      false,
 		})
 	}
 	return out
@@ -104,21 +159,47 @@ func NewFactory(llmManager *llm.ProviderManager, toolReg *tools.ToolRegistry, mo
 	return &Factory{LLM: llmManager, Tools: toolReg, Model: model, Provider: provider}
 }
 
-// AllSpecs returns built-in + custom role specs.
+// AllSpecs returns built-in + custom role specs (with builtin overrides merged).
 func (f *Factory) AllSpecs() []RoleSpec {
 	coding := workspace.ToolNames()
 	out := append([]RoleSpec{}, Specs()...)
 	custom, _ := LoadCustomSpecs(f.CustomDirs...)
-	seen := map[string]bool{}
-	for _, s := range out {
-		seen[s.ID] = true
+	index := map[string]int{}
+	for i, s := range out {
+		index[s.ID] = i
 	}
 	for _, c := range custom {
-		if seen[c.ID] {
+		if i, ok := index[c.ID]; ok {
+			ApplyOverride(&out[i], c, coding)
+			out[i].Override = true
 			continue
 		}
 		out = append(out, c.ToRoleSpec(coding))
-		seen[c.ID] = true
+		index[c.ID] = len(out) - 1
+	}
+	return out
+}
+
+// ProviderNeed is a per-agent LLM backend hint for ProviderManager registration.
+type ProviderNeed struct {
+	Provider string
+	Model    string
+	Endpoint string
+}
+
+// ProviderOverrides lists per-agent provider/model/endpoint settings that need
+// registration in the LLM ProviderManager at rebuild time.
+func (f *Factory) ProviderOverrides() []ProviderNeed {
+	var out []ProviderNeed
+	for _, s := range f.AllSpecs() {
+		if s.Provider == "" && s.Endpoint == "" {
+			continue
+		}
+		out = append(out, ProviderNeed{
+			Provider: s.Provider,
+			Model:    s.Model,
+			Endpoint: s.Endpoint,
+		})
 	}
 	return out
 }
@@ -160,6 +241,8 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	if spec.Provider != "" {
 		cfg.Provider = spec.Provider
 	}
+	// Endpoint is used only at ProviderManager registration time (EnsureAgentProviders).
+	// AgentConfig selects the registered provider name + model.
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature

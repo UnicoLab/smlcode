@@ -176,17 +176,42 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		defer r.Focus.Clear()
 	}
 
-	reqs := make([]ggagent.SubAgentRequest, 0, len(wave))
-	roles := make([]string, 0, len(wave))
+	// Skip worker LLM when acceptance is already satisfied on disk (multi-turn / retries).
+	var needExec []plan.Task
+	var needIdx []int
 	snapshots := make([]map[string]string, len(wave))
+	roles := make([]string, len(wave))
 	for i, t := range wave {
 		role := normalizeExecRole(t.Role)
-		roles = append(roles, role)
-		scope := strings.Join(t.Files, ", ")
-		r.fire("agent_start", role, t.ID, t.Title, scope, "")
+		roles[i] = role
 		snapshots[i] = r.snapshotTargets(t)
+		scope := strings.Join(t.Files, ", ")
+		if alreadySatisfied(r.Root, t) && r.scopeOK(t) == "" {
+			r.Log("%s skip worker LLM: acceptance already satisfied on disk", t.ID)
+			r.fire("agent_start", role, t.ID, "skip — already satisfied", scope, "")
+			t.Output = `{"status":"done","summary":"already satisfied on disk — skipped worker LLM"}` +
+				"\n\n## Disk evidence\n- present: " + strings.Join(t.Files, ", ")
+			r.fire("agent_end", role, t.ID, "skipped worker (already satisfied)", scope, truncate(t.Output, 400))
+			t.MoveTo(plan.ColInReview)
+			board.UpdateTask(t)
+			if err := r.reviewAndCorrect(ctx, board, t, snapshots[i]); err != nil {
+				r.Log("review/correct %s: %v", t.ID, err)
+			}
+			continue
+		}
+		r.fire("agent_start", role, t.ID, t.Title, scope, "")
+		needExec = append(needExec, t)
+		needIdx = append(needIdx, i)
+	}
+	if len(needExec) == 0 {
+		r.persist(board)
+		return nil
+	}
+
+	reqs := make([]ggagent.SubAgentRequest, 0, len(needExec))
+	for _, t := range needExec {
 		reqs = append(reqs, ggagent.SubAgentRequest{
-			AgentID:    role,
+			AgentID:    normalizeExecRole(t.Role),
 			Input:      r.taskInput(t),
 			Timeout:    r.Timeout,
 			ShareState: true,
@@ -198,8 +223,9 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		r.Log("wave execution warning: %v", err)
 	}
 
-	for i, res := range results {
-		t := wave[i]
+	for j, res := range results {
+		i := needIdx[j]
+		t := needExec[j]
 		role := roles[i]
 		if res.Error != nil {
 			t.MoveTo(plan.ColBlocked)

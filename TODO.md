@@ -243,4 +243,12 @@ We need everything to be self evolving and improving all the time !!!
 - [x] Review auto-approve trusts disk write evidence even without `status:done` JSON (artifact lesson)
 - [x] Deepened offline multi-turn stage test + queries API/UI smoke
 
+## Per-agent settings + slow-path hardening (2026-07-30 — 0.5.10)
+- [x] Custom + builtin-override agents: provider / model / endpoint / skills / tools / temp / max_tokens / max_iter / system_prompt (Studio Agents tab + YAML + API)
+- [x] Runtime path: `Factory.definition` applies RoleSpec provider/model/temp/tokens/iter/prompt/tools; skills appended into system prompt
+- [x] `EnsureAgentProviders` auto-registers OpenAI-compat/Ollama providers for per-agent overrides on orchestrator rebuild (no more missing-provider break)
+- [x] Stop aliasing `openai`↔`omlx` (broke intentional per-agent provider selection)
+- [x] Skip worker LLM when acceptance already satisfied; reviewer disk-evidence fast-path regression test (`TestReviewFastPathSkipsExecutor`)
+- [x] Lean SLM defaults: skip coordinator LLM when `think_passes≤1`; tighter planning-role timeouts
+
 

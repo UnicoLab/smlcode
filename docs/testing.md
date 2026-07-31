@@ -1,34 +1,31 @@
-# ✅ SLMCode — Testing Guide
+# ✅ Testing
 
-**Studio:** http://127.0.0.1:7420
-Works fully offline with local oMLX (or Ollama — see [PROVIDERS](PROVIDERS.md)).
+Prove SLMCode works on *your* machine — offline, with oMLX or Ollama, without summoning a cloud bill.
 
-Docs index: [README.md](README.md) · Made with ♥ by [UnicoLab](https://unicolab.ai)
+!!! tip "Studio"
+    Default UI: [http://127.0.0.1:7420](http://127.0.0.1:7420) — see [Studio](studio.md).
 
 ---
 
 ## 0. Prerequisites (once)
 
 ```bash
-# Install (pick one)
+# Install
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
 # or from a checkout: make install-system
 
 # Terminal A — local model server
 omlx start
-# or: ollama serve
+# or: ollama serve  (+ configure provider — see Providers)
 
 # Terminal B
 slmcode version
 slmcode doctor
-slmcode update --check
 ```
-
-API key comes from `~/.omlx/settings.json` (`auth.api_key`).
 
 ---
 
-## 1. Five-minute smoke test
+## 1. Five-minute smoke test 🔥
 
 ```bash
 mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
@@ -45,7 +42,12 @@ slmcode docs list
 ls .slmcode/SKILLS.md .slmcode/skills/learned/ 2>/dev/null
 ```
 
-**Pass:** `hello.go` has `// Hello returns…`, board done, session saved, skills evolved.
+**Pass:**
+
+- [ ] `hello.go` has `// Hello returns…`
+- [ ] Board shows completed work
+- [ ] Session saved
+- [ ] Skills flywheel touched disk
 
 ---
 
@@ -54,22 +56,21 @@ ls .slmcode/SKILLS.md .slmcode/skills/learned/ 2>/dev/null
 ```bash
 cd /tmp/slm-demo
 slmcode studio
-# open http://127.0.0.1:7420
 ```
 
 Checklist:
 
 1. Query → **Run**
-2. Pipeline strip advances
+2. Pipeline strip advances (not stuck forever at “thinking about thinking”)
 3. **Live** tab shows `@agent` + scope + output
 4. Drag a kanban card / edit CONTEXT
-5. Settings → model list loads from oMLX
+5. Settings → model list loads
 
 API smoke:
 
 ```bash
 curl -s http://127.0.0.1:7420/api/health | jq .
-curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # 14
+curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # expect 14
 ```
 
 ---
@@ -80,7 +81,7 @@ curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # 14
 slmcode chat
 ```
 
-```
+```text
 slm › /help
 slm › /permission review
 slm › Add a unit test for Hello()
@@ -102,7 +103,7 @@ slmcode commit -m "slmcode: hello tests"
 
 | Mode | Behavior | Verify |
 |------|----------|--------|
-| `auto` | Writes files | `cat` changed file |
+| `auto` | Writes files | `cat` the changed file |
 | `dry-run` | Never writes | log shows `dry-run: would…` |
 | `review` | Stages patches | `.slmcode/pending/` → `slmcode apply` |
 
@@ -124,17 +125,17 @@ slmcode run "continue remaining work"
 
 ---
 
-## 6. Automated tests
+## 6. Automated tests (developers)
 
 ```bash
-cd ~/Desktop/PROJECT/slmcode
-go test ./... -count=1
+cd /path/to/smlcode
+make lint && make test
 
-# Live oMLX (≈1–2 min)
-RUN_E2E=1 go test ./test/e2e/ -run 'TestLiveOMLX|TestStudioAPI' -timeout 45m -v
+# Live multi-agent / oMLX (optional, slower)
+RUN_E2E=1 make e2e
 ```
 
-**Pass:** `ok` on all packages; live test `success=true`.
+**Pass:** `ok` on packages; live tests report success when enabled.
 
 ---
 
@@ -144,10 +145,10 @@ RUN_E2E=1 go test ./test/e2e/ -run 'TestLiveOMLX|TestStudioAPI' -timeout 45m -v
 |---------|----------------|
 | Plan → split → parallel | `run -v` stream |
 | Coordinator | `[coord]` / `@coordinator` |
-| Self-critic | `approved → done` or corrector |
-| Skip deep explore | 2nd run: “reusing CONTEXT/MEMORY” |
+| Self-critic | `approved → done` or corrector loop |
+| Skip deep explore | 2nd run mentions reusing CONTEXT/MEMORY |
 | Auto skills | `.slmcode/SKILLS.md` after run |
-| AGENTS.md load | “loaded project instructions” |
+| Instructions load | “loaded project instructions” |
 | Live CLI | `run -v` or `chat` |
 | Live GUI | Studio → Live |
 | Diff / commit | `slmcode diff` / `commit -m` |
@@ -156,16 +157,21 @@ RUN_E2E=1 go test ./test/e2e/ -run 'TestLiveOMLX|TestStudioAPI' -timeout 45m -v
 
 ---
 
-## Troubleshooting
+## 🆘 Troubleshooting
 
 ```bash
 slmcode doctor
-# LLM must show status=200
+# LLM should show a happy status
 
 SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"
 slmcode config set think_passes 2
 slmcode config set retries 2
-slmcode config set model Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
 ```
 
-If Studio port busy: `slmcode studio --listen 127.0.0.1:7421`.
+| Symptom | Fix |
+|---------|-----|
+| Studio port busy | `slmcode studio --listen 127.0.0.1:7421` |
+| Model unreachable | Start oMLX/Ollama; check [Providers](providers.md) |
+| Wander / wrong files | Lower context KB; raise think passes; tighten `AGENTS.md` |
+
+Made with ♥ by [UnicoLab](https://unicolab.ai)

@@ -7,44 +7,34 @@ Made with ♥ by [UnicoLab](https://unicolab.ai)
 ```text
 slmcode/
 ├── cmd/slmcode/                 CLI + embedded Studio UI (ui/)
-├── pkg/
-│   ├── agents/                  14 specialist prompts + factory
-│   ├── backends/                OpenAI-compat / Ollama / optional CLI backends
-│   ├── cli/                     Colored TTY + live event formatter
-│   ├── config/                  .slmcode/config.yaml + provider presets
-│   ├── context/                 Markdown memory + scoped packs
-│   ├── harness/                 Public New / OpenWorkspace API
-│   ├── instructions/            AGENTS.md / PROJECT loader
-│   ├── knowledge/               SKILLS.md + learned skill evolution
-│   ├── learning/                Wave lessons / context deltas
-│   ├── loop/                    Parallel execute + review/correct
-│   ├── multipass/               Think → critique → refine
-│   ├── orchestrator/            Code-driven pipeline
-│   ├── permissions/             auto | dry-run | review
-│   ├── plan/                    Kanban, sanitize, discover
-│   ├── server/                  Studio HTTP + SSE
-│   ├── session/                 Resumable run snapshots
-│   ├── skills/                  SKILL.md loader (+ embedded)
-│   ├── stream/                  Live event schema
-│   └── workspace/               Real FS / git tools
+├── pkg/                         Engine packages (agents, loop, server, …)
 ├── skills/default/              Default skill packs (source)
 ├── test/e2e/                    Board + Studio API + live oMLX
-├── docs/                        INSTALL / PROVIDERS / GUIDE / …
+├── docs/                        MkDocs Material pages (→ GitHub Pages)
+│   ├── index.md
+│   ├── install.md / quickstart.md / providers.md
+│   ├── guide.md / studio.md / agents.md / testing.md
+│   ├── architecture.md / contributing.md
+│   ├── assets/ · stylesheets/ · overrides/
 ├── Formula/slmcode.rb           Homebrew formula
 ├── scripts/
 │   ├── install-remote.sh        curl one-liner (prebuilt)
 │   ├── install.ps1 / install.cmd
 │   ├── install.sh               build-from-source installer
 │   └── lint.sh
+├── mkdocs.yml
+├── requirements-docs.txt
 └── go.mod                       → github.com/piotrlaczkowski/GoLangGraph
 ```
 
-## Dependency
+## Docs site
 
-```text
-slmcode  ──go.mod──►  github.com/piotrlaczkowski/GoLangGraph
-                         └── optional local replace for hacking
+```bash
+make docs-serve    # http://127.0.0.1:8000
+make docs-build    # strict build → site/
 ```
+
+Published: https://unicolab.github.io/smlcode/
 
 ## Commands
 
@@ -53,8 +43,6 @@ slmcode  ──go.mod──►  github.com/piotrlaczkowski/GoLangGraph
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
 
 # Developers
-make tidy && make lint && make test && make install-system
+make tidy && make lint && make test && make docs-build && make install-system
 RUN_E2E=1 make e2e
-slmcode studio
-slmcode chat
 ```

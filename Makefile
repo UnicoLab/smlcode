@@ -16,7 +16,7 @@ SYSTEM_PREFIX := $(shell \
 	elif [ -d /opt/homebrew/bin ]; then echo /opt/homebrew; \
 	else echo /usr/local; fi)
 
-.PHONY: tidy lint build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
+.PHONY: tidy lint build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean docs docs-serve docs-build docs-venv
 
 tidy:
 	go mod tidy
@@ -72,5 +72,21 @@ studio: build
 doctor: build
 	./bin/$(BIN) doctor
 
+docs-venv:
+	@test -d .venv-docs || python3 -m venv .venv-docs
+	@.venv-docs/bin/pip install -q -r requirements-docs.txt
+
+docs-build: docs-venv
+	@mkdir -p docs/assets
+	@cp -f assets/slmcode-logo.png docs/assets/slmcode-logo.png
+	.venv-docs/bin/mkdocs build --strict
+
+docs-serve: docs-venv
+	@mkdir -p docs/assets
+	@cp -f assets/slmcode-logo.png docs/assets/slmcode-logo.png
+	.venv-docs/bin/mkdocs serve
+
+docs: docs-build
+
 clean:
-	rm -rf bin
+	rm -rf bin site

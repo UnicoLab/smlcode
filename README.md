@@ -13,6 +13,7 @@
 
 <p align="center">
   <a href="https://unicolab.ai"><img alt="UnicoLab" src="https://img.shields.io/badge/Made%20with%20%E2%99%A5%20by-UnicoLab-0f6e8c?style=flat-square" /></a>
+  <a href="https://unicolab.github.io/smlcode/"><img alt="docs" src="https://img.shields.io/badge/docs-MkDocs-0ea5e9?style=flat-square" /></a>
   <a href="https://github.com/UnicoLab/smlcode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/UnicoLab/smlcode/ci.yml?branch=main&style=flat-square&label=CI" /></a>
   <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf" /></a>
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
@@ -181,17 +182,20 @@ TUI: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/res
 
 ## 📚 Docs
 
-| Doc | When |
-|-----|------|
-| **[INSTALL](docs/INSTALL.md)** | One-liners, brew, Windows, uninstall |
-| **[PROVIDERS](docs/PROVIDERS.md)** | Any LLM — presets, keys, per-agent |
-| **[GUIDE](docs/GUIDE.md)** | Daily CLI / Studio workflow |
-| **[TESTING](docs/TESTING.md)** | Smoke test, Studio, e2e |
-| **[STUDIO](docs/STUDIO.md)** | GUI + HTTP/SSE API |
-| **[AGENTS](docs/AGENTS.md)** | Specialist roster |
-| **[ARCHITECTURE](docs/ARCHITECTURE.md)** | Internals |
+**Site (MkDocs → GitHub Pages):** [unicolab.github.io/smlcode](https://unicolab.github.io/smlcode/)
 
-Index: [docs/README.md](docs/README.md)
+| Page | When |
+|------|------|
+| [Install](docs/install.md) | One-liners, brew, Windows, uninstall |
+| [Quick start](docs/quickstart.md) | First green run in ~60s |
+| [Providers](docs/providers.md) | Any LLM — presets, keys, per-agent |
+| [User guide](docs/guide.md) | Daily CLI / Studio workflow |
+| [Studio](docs/studio.md) | GUI + HTTP/SSE API |
+| [Agents](docs/agents.md) | Specialist roster |
+| [Testing](docs/testing.md) | Smoke test, Studio, e2e |
+| [Architecture](docs/architecture.md) | Internals |
+
+Local preview: `make docs-serve` → http://127.0.0.1:8000
 
 ---
 
@@ -200,6 +204,7 @@ Index: [docs/README.md](docs/README.md)
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
 make tidy && make lint && make test
+make docs-build              # MkDocs strict build
 make install-system          # build from source onto PATH
 ```
 

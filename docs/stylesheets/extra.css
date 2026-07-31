@@ -1,0 +1,28 @@
+/* SLMCode docs — light UnicoLab polish */
+:root {
+  --slm-accent: #0f6e8c;
+}
+
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset .hero-sub {
+  font-size: 1.15em;
+  opacity: 0.9;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.6rem;
+}
+
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  height: 1.6rem;
+}
+
+/* Slightly friendlier code blocks */
+.md-typeset pre > code {
+  font-variant-ligatures: none;
+}

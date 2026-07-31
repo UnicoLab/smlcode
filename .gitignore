@@ -1,5 +1,7 @@
 bin/
 dist/
+site/
+.venv-docs/
 .slmcode/
 *.exe
 .DS_Store

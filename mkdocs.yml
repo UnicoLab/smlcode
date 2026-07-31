@@ -1,0 +1,114 @@
+site_name: SLMCode
+site_description: Coding harness for SLMs — and any OpenAI-compatible LLM
+site_author: UnicoLab
+site_url: https://unicolab.github.io/smlcode/
+repo_name: UnicoLab/smlcode
+repo_url: https://github.com/UnicoLab/smlcode
+edit_uri: edit/main/docs/
+copyright: Made with ♥ by <a href="https://unicolab.ai" target="_blank" rel="noopener">UnicoLab</a>
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: assets/slmcode-logo.png
+  favicon: assets/slmcode-logo.png
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to system preference
+  font:
+    text: IBM Plex Sans
+    code: IBM Plex Mono
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.snippets
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/UnicoLab/smlcode
+    - icon: fontawesome/solid/heart
+      link: https://unicolab.ai
+      name: UnicoLab
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: install.md
+      - Quick start: quickstart.md
+      - Providers (any LLM): providers.md
+  - Using SLMCode:
+      - User guide: guide.md
+      - Studio GUI: studio.md
+      - Agents: agents.md
+      - Testing: testing.md
+  - Internals:
+      - Architecture: architecture.md
+  - Project:
+      - Contributing: contributing.md

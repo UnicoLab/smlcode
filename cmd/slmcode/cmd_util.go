@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
@@ -307,10 +309,14 @@ func runDoctor() error {
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
 	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
-	embMode := "lexical"
-	if ws.Config.EmbeddingEnabled {
-		embMode = "openai-embed"
+	embCfg := retrieval.Config{
+		Enabled:  ws.Config.EmbeddingEnabled,
+		Endpoint: ws.Config.EmbeddingEndpoint,
+		Model:    ws.Config.EmbeddingModel,
+		APIKey:   ws.Config.EmbeddingAPIKey,
+		TopK:     ws.Config.EmbeddingTopK,
 	}
+	_, embMode := retrieval.ResolveEmbedder(context.Background(), embCfg)
 	cli.KeyVal("embedding", fmt.Sprintf("%s enabled=%v model=%s endpoint=%s top_k=%d",
 		embMode, ws.Config.EmbeddingEnabled, ws.Config.EmbeddingModel, ws.Config.EmbeddingEndpoint, ws.Config.EmbeddingTopK))
 	if _, err := os.Stat(ws.Config.SlmDir()); err != nil {

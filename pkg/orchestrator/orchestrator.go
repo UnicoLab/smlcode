@@ -668,6 +668,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
+	runner.SlmDir = o.cfg.SlmDir()
+	runner.TurnID = runID
 	runner.Store = o.boardStore
 	runner.Focus = o.focus
 	runner.MaxRetries = o.cfg.MaxRetries

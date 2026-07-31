@@ -271,10 +271,13 @@ We need everything to be self evolving and improving all the time !!!
 - [x] **Embedding-quality memory retrieval** — `pkg/retrieval` OpenAI-compat `/v1/embeddings` + lexical TF-IDF fallback; config `embedding_*` + env; doctor visibility; CONTEXT injection ranks prior summaries/MEMORY/skills; fake-embedder tests prove relevant summaries outrank noise
 - [x] **Multi-file rename reliability** — `ws_mv` / `ws_delete`; `plan.DetectRenameIntent` + `RenameSatisfied`; evidence/acceptance recognize symbol+file renames; tester override when disk rename OK; anti-wander prompts; offline e2e + unit tests
 
+### Closed this pass (2026-07-31 — 0.5.14)
+- [x] **True mid-tool-call ReAct HITL resume** — persist messages + pending tool calls + iteration/provider under `.slmcode/queries/<id>/react/`; GoLangGraph `SubAgentRequest/Result` seed+capture; `/resume` + `session resume` continue from history (no cold replan when messages exist); offline fake-executor interrupt/resume test
+- [x] **Local embedding fallback** — pure-Go hashing/n-gram `LocalEmbedder`; cascade openai → local → lexical; doctor reports `openai` / `local` / `lexical`; offline ranking test without network
+- [x] **Rename mid-review escalate fix** — `RenameSatisfied` before reviewer LLM; `ws_mv`/delete+create/git rename as write evidence; tester gate skips reopen when rename on disk; regression: weak tool log + disk rename → no reviewer / no escalate / Success
+
 ### Honest remaining gaps vs “best in world”
 - [ ] Speculative parallel specialists beyond explorer/architect (bounded by oMLX contention)
 - [ ] Per-tool token/cost accounting when providers omit usage on stream early-exit
-- [ ] True mid-tool-call ReAct message-history HITL resume (board/phase resume shipped; full GoLangGraph pause still optional)
-- [ ] Remote embedding quality depends on local gateway supporting `/v1/embeddings`
 
 

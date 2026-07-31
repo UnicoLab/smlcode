@@ -66,7 +66,12 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	if from == "" {
 		from = session.PhaseExecute
 	}
-	o.emit("init", fmt.Sprintf("resuming %s from %s", runID, from), "")
+	reactMode := session.HasReactHistory(o.cfg.SlmDir(), runID)
+	if reactMode {
+		o.emit("init", fmt.Sprintf("resuming %s from %s (ReAct message history)", runID, from), "")
+	} else {
+		o.emit("init", fmt.Sprintf("resuming %s from %s", runID, from), "")
+	}
 
 	// No tasks yet → unavoidable full restart with the same query.
 	if len(board.Tasks) == 0 {
@@ -85,6 +90,11 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
 	o.shared.SetGlobal("resumed", "1")
+	if reactMode {
+		o.shared.SetGlobal("resume_mode", "react")
+	} else {
+		o.shared.SetGlobal("resume_mode", "board")
+	}
 
 	skillPack := o.skillPackFor(plan.RoleWorker, query)
 	return o.finishFromExecute(ctx, runID, query, skillPack, &board, start)
@@ -97,6 +107,8 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	}
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
+	runner.SlmDir = o.cfg.SlmDir()
+	runner.TurnID = runID
 	runner.Store = o.boardStore
 	runner.Focus = o.focus
 	runner.MaxRetries = o.cfg.MaxRetries
@@ -124,10 +136,17 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	}
 
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)
-	o.emit("execute", fmt.Sprintf("resume execute · %d tasks", len(board.Tasks)), "")
+	if session.HasReactHistory(o.cfg.SlmDir(), runID) {
+		o.emit("execute", fmt.Sprintf("resume execute · %d tasks · ReAct history restored", len(board.Tasks)), "")
+	} else {
+		o.emit("execute", fmt.Sprintf("resume execute · %d tasks", len(board.Tasks)), "")
+	}
 	execStart := time.Now()
 	if err := runner.RunBoard(ctx, board); err != nil {
 		return o.checkpointInterrupt(board, session.PhaseExecute, err)
+	}
+	if runner.ResumedReact {
+		o.emit("execute", "continued from ReAct message checkpoint (no cold replan)", "")
 	}
 	o.recordLatency("execute", time.Since(execStart))
 	snap := o.boardStore.Snapshot()
@@ -316,8 +335,11 @@ func (o *Orchestrator) checkpointInterrupt(board *plan.Board, phase string, err 
 	}
 	if o.currentTurn != nil && board != nil && isCancelErr(err) {
 		_ = session.MarkInterrupted(o.cfg.SlmDir(), o.currentTurn, *board, phase)
-		o.emitFull("stop", stream.KindPhase, "", "",
-			fmt.Sprintf("interrupted at %s — board saved; /resume %s", phase, o.currentTurn.ID), "", "")
+		msg := fmt.Sprintf("interrupted at %s — board saved; /resume %s", phase, o.currentTurn.ID)
+		if session.HasReactHistory(o.cfg.SlmDir(), o.currentTurn.ID) {
+			msg = fmt.Sprintf("interrupted at %s — ReAct history + board saved; /resume %s", phase, o.currentTurn.ID)
+		}
+		o.emitFull("stop", stream.KindPhase, "", "", msg, "", "")
 		res := &Result{
 			ID: o.currentTurn.ID, Query: o.currentTurn.Query, Board: *board,
 			Success: false, FailedTasks: board.FailedCount(),

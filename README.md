@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.12-0f6e8c?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.14-0f6e8c?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -165,7 +165,7 @@ slmcode doctor               # shows active provider + model + reachability
 
 TUI slash commands worth knowing: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/resume`.
 
-Mid-run **Ctrl+C** or `/stop` checkpoints the board under `.slmcode/queries/<id>/` (and `checkpoint.json`); continue with `/resume` or `slmcode session resume`. Memory injection ranks prior summaries via embeddings when `embedding_*` is configured, else lexical TF-IDF.
+Mid-run **Ctrl+C** or `/stop` checkpoints the board plus ReAct message history under `.slmcode/queries/<id>/react/`; `/resume` or `slmcode session resume` continues from that history when present (not a cold replan). Memory injection ranks prior summaries via `/v1/embeddings` when available, else a pure-Go local hashing embedder, else lexical TF-IDF (`doctor` reports `openai` / `local` / `lexical`).
 
 ## Studio
 
@@ -187,7 +187,7 @@ make install / make install-system
 RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
 
-Engine notes (0.5.12+): token-stream early-exit in GoLangGraph `CompleteStream`, tool-arg JSON repair, phase latency telemetry, shell permission modes, TUI compact/sessions/stats. Prior: focus allowlists, lean packs, Studio themes, query-scoped turns.
+Engine notes (0.5.14+): mid-ReAct HITL resume with message history, local hashing embeddings offline, rename disk fast-path before reviewer. Prior (0.5.12+): token-stream early-exit, tool-arg JSON repair, phase latency, shell permission modes, TUI compact/sessions/stats.
 
 Local layout during development:
 

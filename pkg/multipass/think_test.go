@@ -41,6 +41,7 @@ func (s *stubAgent) GetGraph() *core.Graph                 { return nil }
 func (s *stubAgent) IsRunning() bool                       { return false }
 func (s *stubAgent) GetConversation() []llm.Message        { return nil }
 func (s *stubAgent) ClearConversation()                    {}
+func (s *stubAgent) SeedConversation([]llm.Message)        {}
 func (s *stubAgent) GetExecutionHistory() []agent.AgentExecution {
 	return nil
 }
@@ -90,6 +91,7 @@ func (s *jsonDraftAgent) GetGraph() *core.Graph                      { return ni
 func (s *jsonDraftAgent) IsRunning() bool                            { return false }
 func (s *jsonDraftAgent) GetConversation() []llm.Message             { return nil }
 func (s *jsonDraftAgent) ClearConversation()                         {}
+func (s *jsonDraftAgent) SeedConversation([]llm.Message)             {}
 func (s *jsonDraftAgent) GetExecutionHistory() []agent.AgentExecution { return nil }
 func (s *jsonDraftAgent) ClearHistory()                               {}
 func (s *jsonDraftAgent) Name() string                                { return "json-stub" }

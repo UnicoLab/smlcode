@@ -168,11 +168,13 @@ func ListInterrupted(slmDir string) ([]Turn, error) {
 }
 
 type checkpointFile struct {
-	TurnID      string `json:"turn_id"`
-	Interrupted bool   `json:"interrupted"`
-	Phase       string `json:"phase"`
-	UpdatedAt   string `json:"updated_at"`
-	Query       string `json:"query,omitempty"`
+	TurnID      string   `json:"turn_id"`
+	Interrupted bool     `json:"interrupted"`
+	Phase       string   `json:"phase"`
+	UpdatedAt   string   `json:"updated_at"`
+	Query       string   `json:"query,omitempty"`
+	ResumeMode  string   `json:"resume_mode,omitempty"` // board | react
+	ReactTasks  []string `json:"react_tasks,omitempty"` // task ids with message history
 }
 
 func checkpointPath(slmDir string) string {
@@ -184,9 +186,30 @@ func writeCheckpoint(slmDir string, t *Turn) error {
 		return nil
 	}
 	_ = os.MkdirAll(slmDir, 0o755)
+	mode := "board"
+	var reactTasks []string
+	if list, err := ListReactCheckpoints(slmDir, t.ID); err == nil {
+		for _, cp := range list {
+			if len(cp.Messages) > 0 {
+				reactTasks = append(reactTasks, cp.TaskID)
+			}
+		}
+	}
+	if len(reactTasks) > 0 {
+		mode = "react"
+	}
+	// Preserve prior react_tasks pointer if list failed but checkpoint existed.
+	if prev, err := os.ReadFile(checkpointPath(slmDir)); err == nil {
+		var old checkpointFile
+		if json.Unmarshal(prev, &old) == nil && len(reactTasks) == 0 && len(old.ReactTasks) > 0 && HasReactHistory(slmDir, t.ID) {
+			reactTasks = old.ReactTasks
+			mode = "react"
+		}
+	}
 	cf := checkpointFile{
 		TurnID: t.ID, Interrupted: t.Interrupted, Phase: t.Phase,
 		UpdatedAt: t.UpdatedAt, Query: t.Query,
+		ResumeMode: mode, ReactTasks: reactTasks,
 	}
 	data, err := json.MarshalIndent(cf, "", "  ")
 	if err != nil {

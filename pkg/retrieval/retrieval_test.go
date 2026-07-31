@@ -77,12 +77,60 @@ func TestCollectAndRetrieveForQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != "lexical" {
-		t.Fatalf("mode=%s", mode)
+	if mode != "local" {
+		t.Fatalf("mode=%s want local", mode)
 	}
 	lower := strings.ToLower(body)
 	if !strings.Contains(lower, "greet") && !strings.Contains(body, "Hello") {
 		t.Fatalf("expected rename knowledge in retrieval:\n%s", body)
+	}
+}
+
+func TestLocalEmbedderRanksSemanticallyRelated(t *testing.T) {
+	chunks := []Chunk{
+		{
+			ID: "related", Source: "summary", Query: "symbol refactor greeting",
+			Text: "Completed renaming the Hello helper to Greet across the greet package and call sites.",
+		},
+		{
+			ID: "unrelated", Source: "summary", Query: "kubernetes ingress tls",
+			Text: "Configured nginx ingress with cert-manager for TLS termination on staging.",
+		},
+		{
+			ID: "noise", Source: "summary", Query: "css theme tokens",
+			Text: "Updated button border-radius and slate palette variables in styles.css.",
+		},
+	}
+	r := &Retriever{Embedder: NewLocalEmbedder(), TopK: 3}
+	// Paraphrase with little exact token overlap vs "Hello"/"Greet" titles —
+	// n-gram hashing should still prefer the rename summary.
+	hits, err := r.Search(context.Background(), "continue the greeting function rename refactor", chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Chunk.ID != "related" {
+		t.Fatalf("expected related first, got %s", hitScores(hits))
+	}
+	if hits[0].Score <= hits[1].Score {
+		t.Fatalf("related should outrank: %s", hitScores(hits))
+	}
+}
+
+func TestResolveEmbedderModes(t *testing.T) {
+	emb, mode := ResolveEmbedder(context.Background(), Config{ForceLexical: true})
+	if mode != "lexical" || emb.Name() != "lexical" {
+		t.Fatalf("force lexical: %s %s", mode, emb.Name())
+	}
+	emb, mode = ResolveEmbedder(context.Background(), Config{})
+	if mode != "local" {
+		t.Fatalf("default offline=%s", mode)
+	}
+	// Unreachable openai endpoint → local fallback.
+	emb, mode = ResolveEmbedder(context.Background(), Config{
+		Enabled: true, Endpoint: "http://127.0.0.1:1", Model: "x",
+	})
+	if mode != "local" {
+		t.Fatalf("unreachable openai should fall back to local, got %s (%s)", mode, emb.Name())
 	}
 }
 

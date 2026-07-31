@@ -31,10 +31,12 @@ type BuildInput func(t plan.Task) string
 
 // Runner executes parallel workers → review → correct against a live board.
 type Runner struct {
-	Executor       *ggagent.SubAgentExecutor
+	Executor       SubAgentRunner
 	Shared         *ggagent.SharedState
 	Store          *plan.LiveStore // optional — reload mid-run for human edits
 	Root           string          // workspace root for evidence checks
+	SlmDir         string          // optional; defaults to Root/.slmcode
+	TurnID         string          // query turn id for react checkpoints
 	Focus          *workspace.FocusGuard
 	AfterWave      AfterWave
 	OnEvent        AgentEvent
@@ -45,9 +47,12 @@ type Runner struct {
 	IdleWait       time.Duration // wait for human to promote to_scope → ready
 	Log            Logger
 	FailureHandler *EnhancedFailureHandler
+	// ResumedReact is set true when any task continued from message history
+	// (used by tests / observability to assert no cold replan).
+	ResumedReact bool
 }
 
-func NewRunner(exec *ggagent.SubAgentExecutor, shared *ggagent.SharedState) *Runner {
+func NewRunner(exec SubAgentRunner, shared *ggagent.SharedState) *Runner {
 	return &Runner{
 		Executor:    exec,
 		Shared:      shared,
@@ -210,24 +215,52 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 
 	reqs := make([]ggagent.SubAgentRequest, 0, len(needExec))
 	for _, t := range needExec {
-		reqs = append(reqs, ggagent.SubAgentRequest{
+		req := ggagent.SubAgentRequest{
 			AgentID:    normalizeExecRole(t.Role),
 			Input:      r.taskInput(t),
 			Timeout:    r.Timeout,
 			ShareState: true,
-		})
+			TaskID:     t.ID,
+		}
+		if r.applyResumeRequest(&req, t.ID) {
+			r.ResumedReact = true
+		}
+		reqs = append(reqs, req)
 	}
 
+	if r.Executor == nil {
+		return fmt.Errorf("nil executor")
+	}
 	results, err := r.Executor.ExecuteSubAgents(ctx, reqs, r.Shared)
 	if err != nil {
 		r.Log("wave execution warning: %v", err)
 	}
 
+	canceled := false
 	for j, res := range results {
 		i := needIdx[j]
 		t := needExec[j]
 		role := roles[i]
+		if isCancelResult(err, res) || (res.Error != nil && isCancelResult(res.Error, res)) {
+			r.saveReactFromResult(t.ID, role, res)
+			canceled = true
+			t.MoveTo(plan.ColBlocked)
+			if res.Error != nil {
+				t.Error = res.Error.Error()
+			} else if err != nil {
+				t.Error = err.Error()
+			} else {
+				t.Error = "context canceled"
+			}
+			board.UpdateTask(t)
+			r.fire("agent_end", role, t.ID, "interrupted — react checkpointed", strings.Join(t.Files, ", "), t.Error)
+			continue
+		}
 		if res.Error != nil {
+			// Still persist partial conversation when available.
+			if len(res.Messages) > 0 {
+				r.saveReactFromResult(t.ID, role, res)
+			}
 			t.MoveTo(plan.ColBlocked)
 			t.Error = res.Error.Error()
 			board.UpdateTask(t)
@@ -237,6 +270,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 			}
 			continue
 		}
+		r.clearReact(t.ID)
 		t.Output = outputString(res)
 		// SLMs sometimes emit a bare tool call as "final" — nudge one corrective pass.
 		if looksLikeToolJunk(t.Output) {
@@ -270,9 +304,18 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		// omits tool traces (reviewAndCorrect must not re-baseline after writes).
 		if err := r.reviewAndCorrect(ctx, board, t, snapshots[i]); err != nil {
 			r.Log("review/correct %s: %v", t.ID, err)
+			if isCancelResult(err, ggagent.SubAgentResult{}) {
+				canceled = true
+			}
 		}
 	}
 	r.persist(board)
+	if canceled {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.Canceled
+	}
 	return nil
 }
 
@@ -320,22 +363,28 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		}
 
 		// Fast path: skip reviewer LLM when disk/acceptance evidence is already clear.
-		// Prevents SLM hangs after a successful write (live multi-turn lesson).
+		// Prefer RenameSatisfied / rename disk OK before any reviewer call.
 		reviewRaw := ""
 		review := plan.ReviewResult{}
-		satisfied := alreadySatisfied(r.Root, current)
-		diskWrite := r.hasRealWriteEvidence(current, baseline)
+		renameDisk := renameOK(r.Root, current)
+		satisfied := alreadySatisfied(r.Root, current) || renameDisk
+		diskWrite := r.hasRealWriteEvidence(current, baseline) || renameDisk
 		toolWrite := hasToolWriteEvidence(current.Output)
 		diskSection := hasDiskEvidenceSection(current.Output)
 		done := plan.WorkerLooksComplete(current.Output) || workerReportedDone(current.Output)
-		hasEvidence := diskWrite || toolWrite || diskSection
-		fastPath := (satisfied || diskWrite || diskSection) && r.scopeOK(current) == ""
+		hasEvidence := diskWrite || toolWrite || diskSection || renameDisk
+		scopeWhy := r.scopeOK(current)
+		// Rename on disk wins even when scope claims are noisy (weak tool log).
+		fastPath := renameDisk || ((satisfied || diskWrite || diskSection) && scopeWhy == "")
 		if fastPath {
 			review.Approved = true
 			review.Score = 85
-			if satisfied && !hasEvidence {
+			switch {
+			case renameDisk:
+				review.Summary = "auto-approved: rename satisfied on disk"
+			case satisfied && !hasEvidence:
 				review.Summary = "auto-approved: acceptance already satisfied on disk"
-			} else {
+			default:
 				review.Summary = "auto-approved: disk write evidence on focus files"
 			}
 			r.Log("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
@@ -380,25 +429,32 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			}
 		}
 		// Tester gate: never accept "does not work" / passed:false / empty finalize as done.
+		// Exception: rename already satisfied on disk — do not reopen/escalate.
 		if review.Approved && strings.EqualFold(current.Role, plan.RoleTester) {
-			tr := plan.ParseTesterJSON(current.Output)
-			if !tr.Passed {
-				review.Approved = false
-				review.Score = 0
-				why := "tester reported failure"
-				if len(tr.Failures) > 0 {
-					why = tr.Failures[0]
-				} else if tr.Summary != "" {
-					why = tr.Summary
+			if renameOK(r.Root, current) {
+				r.Log("%s tester gate skipped: rename satisfied on disk", current.ID)
+			} else {
+				tr := plan.ParseTesterJSON(current.Output)
+				if !tr.Passed {
+					review.Approved = false
+					review.Score = 0
+					why := "tester reported failure"
+					if len(tr.Failures) > 0 {
+						why = tr.Failures[0]
+					} else if tr.Summary != "" {
+						why = tr.Summary
+					}
+					review.Summary = "rejected by tester gate: " + why
+					review.Issues = append([]string{why}, review.Issues...)
+					r.Log("%s tester gate blocked approval: %s", current.ID, why)
 				}
-				review.Summary = "rejected by tester gate: " + why
-				review.Issues = append([]string{why}, review.Issues...)
-				r.Log("%s tester gate blocked approval: %s", current.ID, why)
 			}
 		}
 		// Evidence gate: never mark done when targets are missing or no write occurred.
 		if review.Approved {
-			if ok, why := r.evidenceOK(current, baseline); !ok {
+			if renameOK(r.Root, current) {
+				// Disk rename is authoritative — skip scope/evidence reopen.
+			} else if ok, why := r.evidenceOK(current, baseline); !ok {
 				review.Approved = false
 				review.Score = 0
 				review.Summary = "rejected by evidence gate: " + why
@@ -683,13 +739,13 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 	if r.Root == "" {
 		return true, ""
 	}
-	if why := r.scopeOK(t); why != "" {
-		return false, why
-	}
-	// Rename acceptance: old gone / new present / symbols updated — even when
-	// t.Files still lists the old path that was deliberately removed.
+	// Rename acceptance first: old gone / new present / symbols updated — even when
+	// t.Files still lists the old path or worker left weak/out-of-scope claims.
 	if renameOK(r.Root, t) {
 		return true, ""
+	}
+	if why := r.scopeOK(t); why != "" {
+		return false, why
 	}
 	if len(t.Files) > 0 {
 		missing := 0
@@ -867,6 +923,9 @@ func hasWriteEvidence(output string) bool {
 }
 
 func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) bool {
+	if renameOK(r.Root, t) {
+		return true
+	}
 	if hasToolWriteEvidence(t.Output) {
 		return true
 	}
@@ -881,7 +940,7 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 	if entries, err := os.ReadDir(pending); err == nil && len(entries) > 0 {
 		return true
 	}
-	// Content hash changes vs baseline.
+	// Content hash changes vs baseline — including deletions (rename-away).
 	delta := false
 	for _, f := range t.Files {
 		cur := fileFingerprint(filepath.Join(r.Root, f))
@@ -891,38 +950,66 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 			break
 		}
 		if prev == "" && cur != "" && plan.FileExists(r.Root, f) {
-			// Newly created file.
+			// Newly created file (delete+create rename pair / scaffold).
 			delta = true
 			break
+		}
+		if prev != "" && cur == "" {
+			// Deleted / renamed-away focus path.
+			delta = true
+			break
+		}
+	}
+	// Detect rename pair: old deleted + new created from intent.
+	if !delta {
+		if spec := plan.DetectRenameIntent(t.Title, StripScopedPack(t.Description), t.Acceptance, strings.Join(t.Files, " ")); spec.Kind == plan.RenameFile {
+			oldGone := spec.OldPath != "" && !plan.FileExists(r.Root, spec.OldPath)
+			newPresent := spec.NewPath != "" && plan.FileExists(r.Root, spec.NewPath)
+			if oldGone && newPresent {
+				delta = true
+			}
 		}
 	}
 	if delta {
 		return true
 	}
+	changed := r.gitChangedFiles()
 	// Ambiguous baseline (empty / missing / matches current after a late snapshot):
 	// trust git dirty on focus files or disk evidence section already checked above.
 	if baselineAmbiguous(baseline, t) {
-		if focusGitDirty(r.gitChangedFiles(), t.Files) {
+		if focusGitDirty(changed, t.Files) {
 			return true
 		}
 		// Focus file present + edit task with any write-looking output → trust disk.
+		lower := strings.ToLower(t.Output)
 		if looksLikeEditTask(t) && focusFilesPresent(r.Root, t.Files) &&
-			(strings.Contains(strings.ToLower(t.Output), "edited ") ||
-				strings.Contains(strings.ToLower(t.Output), "wrote ") ||
-				strings.Contains(strings.ToLower(t.Output), "patched ") ||
-				strings.Contains(strings.ToLower(t.Output), "dry-run: would")) {
+			(strings.Contains(lower, "edited ") ||
+				strings.Contains(lower, "wrote ") ||
+				strings.Contains(lower, "patched ") ||
+				strings.Contains(lower, "moved ") ||
+				strings.Contains(lower, "deleted ") ||
+				strings.Contains(lower, "ws_mv") ||
+				strings.Contains(lower, "dry-run: would")) {
 			return true
 		}
 	}
-	// Git diff for target files.
-	changed := r.gitChangedFiles()
+	// Git diff for target files (includes rename old+new paths).
 	if len(changed) == 0 {
 		return false
 	}
 	if len(t.Files) == 0 {
 		return true
 	}
-	return focusGitDirty(changed, t.Files)
+	focus := append([]string{}, t.Files...)
+	if spec := plan.DetectRenameIntent(t.Title, StripScopedPack(t.Description), t.Acceptance, strings.Join(t.Files, " ")); spec.Kind == plan.RenameFile {
+		if spec.OldPath != "" {
+			focus = append(focus, spec.OldPath)
+		}
+		if spec.NewPath != "" {
+			focus = append(focus, spec.NewPath)
+		}
+	}
+	return focusGitDirty(changed, focus)
 }
 
 func hasDiskEvidenceSection(output string) bool {
@@ -1062,10 +1149,20 @@ func (r *Runner) gitChangedFiles() []string {
 			if line == "" {
 				continue
 			}
-			// status --porcelain: XY PATH
-			if len(line) > 3 {
-				files = append(files, filepath.ToSlash(strings.TrimSpace(line[3:])))
+			// status --porcelain: XY PATH  or  R  old -> new
+			if len(line) <= 3 {
+				continue
 			}
+			rest := strings.TrimSpace(line[3:])
+			if strings.Contains(rest, " -> ") {
+				parts := strings.SplitN(rest, " -> ", 2)
+				if len(parts) == 2 {
+					files = append(files, filepath.ToSlash(strings.TrimSpace(parts[0])))
+					files = append(files, filepath.ToSlash(strings.TrimSpace(parts[1])))
+					continue
+				}
+			}
+			files = append(files, filepath.ToSlash(rest))
 		}
 		return files
 	}

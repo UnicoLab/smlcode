@@ -36,11 +36,12 @@ type Embedder interface {
 
 // Config selects embedding backend + ranking knobs.
 type Config struct {
-	Enabled  bool
-	Endpoint string // OpenAI-compat base, e.g. http://127.0.0.1:8000/v1
-	Model    string
-	APIKey   string
-	TopK     int
+	Enabled      bool
+	Endpoint     string // OpenAI-compat base, e.g. http://127.0.0.1:8000/v1
+	Model        string
+	APIKey       string
+	TopK         int
+	ForceLexical bool // tests / explicit last-resort TF-IDF only
 }
 
 // Retriever ranks memory chunks for CONTEXT injection.
@@ -49,19 +50,33 @@ type Retriever struct {
 	TopK     int
 }
 
-// New builds a retriever. When embeddings are unavailable/disabled, uses lexical TF-IDF.
+// New builds a retriever. Tries OpenAI-compat embeddings when configured,
+// else local hashing embedder, else lexical TF-IDF (ForceLexical / failures).
 func New(cfg Config) *Retriever {
 	k := cfg.TopK
 	if k <= 0 {
 		k = 5
 	}
-	var emb Embedder
-	if cfg.Enabled && strings.TrimSpace(cfg.Endpoint) != "" && strings.TrimSpace(cfg.Model) != "" {
-		emb = NewOpenAIEmbedder(cfg.Endpoint, cfg.Model, cfg.APIKey)
-	} else {
-		emb = NewLexicalEmbedder()
-	}
+	emb, _ := ResolveEmbedder(context.Background(), cfg)
 	return &Retriever{Embedder: emb, TopK: k}
+}
+
+// ModeName returns the active embedder mode (openai / local / lexical).
+func ModeName(emb Embedder) string {
+	if emb == nil {
+		return "lexical"
+	}
+	name := emb.Name()
+	switch {
+	case strings.HasPrefix(name, "openai"):
+		return "openai"
+	case name == "local":
+		return "local"
+	case name == "lexical":
+		return "lexical"
+	default:
+		return name
+	}
 }
 
 // NewLexical always uses the bag-of-words / TF-IDF fallback (tests + offline).
@@ -89,11 +104,17 @@ func (r *Retriever) Search(ctx context.Context, query string, chunks []Chunk) ([
 	}
 	vecs, err := r.Embedder.Embed(ctx, texts)
 	if err != nil || len(vecs) != len(texts) {
-		// Graceful fallback to pure lexical cosine.
-		lex := NewLexicalEmbedder()
-		vecs, err = lex.Embed(ctx, texts)
-		if err != nil {
-			return nil, err
+		// Prefer local hashing before last-resort TF-IDF.
+		if ModeName(r.Embedder) != "local" {
+			loc := NewLocalEmbedder()
+			vecs, err = loc.Embed(ctx, texts)
+		}
+		if err != nil || len(vecs) != len(texts) {
+			lex := NewLexicalEmbedder()
+			vecs, err = lex.Embed(ctx, texts)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	q := vecs[0]
@@ -175,15 +196,18 @@ func CollectChunks(slmDir string) []Chunk {
 }
 
 // RetrieveForQuery is the high-level CONTEXT enrichment entrypoint.
-// Uses embeddings when configured; otherwise lexical ranking. Falls back to
-// a recency-trimmed index if ranking yields nothing useful.
+// Mode cascade: openai → local → lexical. Falls back to a recency-trimmed
+// index if ranking yields nothing useful.
 func RetrieveForQuery(ctx context.Context, slmDir, query string, cfg Config) (string, string, error) {
 	chunks := CollectChunks(slmDir)
 	if len(chunks) == 0 {
 		return "", "none", nil
 	}
-	r := New(cfg)
-	mode := r.Embedder.Name()
+	emb, mode := ResolveEmbedder(ctx, cfg)
+	r := &Retriever{Embedder: emb, TopK: cfg.TopK}
+	if r.TopK <= 0 {
+		r.TopK = 5
+	}
 	hits, err := r.Search(ctx, query, chunks)
 	if err != nil {
 		return "", mode, err

@@ -37,11 +37,11 @@ func (s *stubAgent) GetConfig() *agent.AgentConfig {
 	return s.config
 }
 func (s *stubAgent) UpdateConfig(config *agent.AgentConfig) { s.config = config }
-func (s *stubAgent) GetGraph() *core.Graph                 { return nil }
-func (s *stubAgent) IsRunning() bool                       { return false }
-func (s *stubAgent) GetConversation() []llm.Message        { return nil }
-func (s *stubAgent) ClearConversation()                    {}
-func (s *stubAgent) SeedConversation([]llm.Message)        {}
+func (s *stubAgent) GetGraph() *core.Graph                  { return nil }
+func (s *stubAgent) IsRunning() bool                        { return false }
+func (s *stubAgent) GetConversation() []llm.Message         { return nil }
+func (s *stubAgent) ClearConversation()                     {}
+func (s *stubAgent) SeedConversation([]llm.Message)         {}
 func (s *stubAgent) GetExecutionHistory() []agent.AgentExecution {
 	return nil
 }
@@ -71,7 +71,7 @@ func TestNewDefaultPasses(t *testing.T) {
 }
 
 type jsonDraftAgent struct {
-	calls    int
+	calls     int
 	critiques int
 }
 
@@ -86,12 +86,12 @@ func (s *jsonDraftAgent) Execute(_ context.Context, input string) (*agent.AgentE
 func (s *jsonDraftAgent) GetConfig() *agent.AgentConfig {
 	return agent.DefaultAgentConfig()
 }
-func (s *jsonDraftAgent) UpdateConfig(*agent.AgentConfig)            {}
-func (s *jsonDraftAgent) GetGraph() *core.Graph                      { return nil }
-func (s *jsonDraftAgent) IsRunning() bool                            { return false }
-func (s *jsonDraftAgent) GetConversation() []llm.Message             { return nil }
-func (s *jsonDraftAgent) ClearConversation()                         {}
-func (s *jsonDraftAgent) SeedConversation([]llm.Message)             {}
+func (s *jsonDraftAgent) UpdateConfig(*agent.AgentConfig)             {}
+func (s *jsonDraftAgent) GetGraph() *core.Graph                       { return nil }
+func (s *jsonDraftAgent) IsRunning() bool                             { return false }
+func (s *jsonDraftAgent) GetConversation() []llm.Message              { return nil }
+func (s *jsonDraftAgent) ClearConversation()                          {}
+func (s *jsonDraftAgent) SeedConversation([]llm.Message)              {}
 func (s *jsonDraftAgent) GetExecutionHistory() []agent.AgentExecution { return nil }
 func (s *jsonDraftAgent) ClearHistory()                               {}
 func (s *jsonDraftAgent) Name() string                                { return "json-stub" }

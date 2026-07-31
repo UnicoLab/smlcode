@@ -77,9 +77,9 @@ Studio task inspector → role dropdown includes all specialists.
 
 Place any of these at the repo root (or under `.slmcode/`):
 
-- `AGENTS.md` / `AGENT.md`  
-- `CLAUDE.md`  
-- `.cursorrules`  
-- `.slmcode/PROJECT.md`  
+- `AGENTS.md` / `AGENT.md`
+- `CLAUDE.md`
+- `.cursorrules`
+- `.slmcode/PROJECT.md`
 
 They are injected into specialist packs at run start.

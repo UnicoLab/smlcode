@@ -14,7 +14,7 @@ func TestScopeOKRejectsOutOfFocusMain(t *testing.T) {
 	r := &Runner{Root: dir}
 	task := plan.Task{
 		ID: "T1", Title: "Edit pkg", Description: "implement tiny fix",
-		Files: []string{"pkg.go"},
+		Files:  []string{"pkg.go"},
 		Output: `{"status":"done","files_changed":["main.go"],"summary":"oops"}`,
 	}
 	if why := r.scopeOK(task); why == "" {

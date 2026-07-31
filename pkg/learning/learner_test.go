@@ -10,7 +10,7 @@ import (
 func TestExtractAndRender(t *testing.T) {
 	done := plan.Task{
 		ID: "T1", Title: "Add helper", Column: plan.ColDone,
-		Output: "Added Greeting(). Tests pass.",
+		Output:     "Added Greeting(). Tests pass.",
 		Acceptance: "compiles",
 	}
 	done.Normalize()

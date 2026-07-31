@@ -93,7 +93,7 @@ func TestSpeculateReviewCancelsOnAcceptanceWin(t *testing.T) {
 func TestSpeculateTesterDuplicateCancelsLoser(t *testing.T) {
 	fe := &fakeReviewExec{
 		delay: map[string]time.Duration{
-			plan.RoleTester:  20 * time.Millisecond,
+			plan.RoleTester: 20 * time.Millisecond,
 			"tester-strict": 400 * time.Millisecond,
 		},
 		out: map[string]string{

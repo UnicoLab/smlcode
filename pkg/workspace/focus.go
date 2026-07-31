@@ -14,11 +14,11 @@ import (
 // (pyproject.toml, package.json, …) or explicit directory prefixes (src/),
 // new package trees may be created without treating that as wander.
 type FocusGuard struct {
-	mu        sync.RWMutex
-	enabled   bool
-	scaffold  bool // allow creating project tree files
-	files     map[string]struct{}
-	dirs      map[string]struct{}
+	mu       sync.RWMutex
+	enabled  bool
+	scaffold bool // allow creating project tree files
+	files    map[string]struct{}
+	dirs     map[string]struct{}
 }
 
 // NewFocusGuard returns an inactive guard (all writes allowed until SetWave).

@@ -16,7 +16,7 @@ SYSTEM_PREFIX := $(shell \
 	elif [ -d /opt/homebrew/bin ]; then echo /opt/homebrew; \
 	else echo /usr/local; fi)
 
-.PHONY: tidy build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
+.PHONY: tidy lint build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
 
 tidy:
 	go mod tidy
@@ -29,6 +29,9 @@ ui-check:
 	@grep -q 'slmcode-theme' cmd/slmcode/ui/app.jsx
 	@echo "ui-check: OK (embedded by go:embed all:ui)"
 
+lint:
+	@./scripts/lint.sh
+
 build: tidy ui-check
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) ./cmd/slmcode
 
@@ -38,7 +41,7 @@ install: install-user
 install-user:
 	./scripts/install.sh --user --prefix "$(PREFIX)"
 
-# System-wide (Claude Code–style): /opt/homebrew/bin or /usr/local/bin
+# System-wide install: /opt/homebrew/bin or /usr/local/bin
 install-system:
 	./scripts/install.sh --system
 

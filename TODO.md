@@ -13,7 +13,7 @@ GUI is a nice start but let's make it much more professional and user friendly:
 
 - [x] we shoudl see and be able to know what agent or sub-agent or current step recieved and input command, what it did, what it changes etc ... so we have full observability per action, step etc !!!
 
-- [x] when everything is done for a given query we shoudl put it into archives with all the history etc, it should be a separate thread or something so we keep the history per project etc !!! 
+- [x] when everything is done for a given query we shoudl put it into archives with all the history etc, it should be a separate thread or something so we keep the history per project etc !!!
 
 -> [x] when executing some request we shoudl have nicely displayed plan and tasks great visually so we can track the overall progress ! Not only using text or markdown files here, but in the GUI !!! For example when a query is given to the slmcode it shoudl first get context, skills, memories all agents and entire context of the project and it's capabilities, plan everything, split into tasks etc ... then generate populate board with these taks with attributes agents etc ... live updates everywhere !!
 
@@ -26,7 +26,7 @@ GUI is a nice start but let's make it much more professional and user friendly:
 -> [x] for all tasks we should also be able to handle their dependencies, we can display it nicely using react-flow somehow like nodes and edges etc ... or some nice method -> and this shoudl be clear for codign agents etc
   - SVG dependency graph (nodes + edged arrows) in Live — no npm build; practical react-flow equivalent
 
--> [x] on the live beedback live scroll to the last even shoudl be enabled by default ! We also shoudl be able to pause the current loop and add context if we want or stop it if something is not right etc ... 
+-> [x] on the live beedback live scroll to the last even shoudl be enabled by default ! We also shoudl be able to pause the current loop and add context if we want or stop it if something is not right etc ...
 
 -> [x] we should be able to reference files, folders and add context to the query in GUI and TUI etc (like claude code !)
 
@@ -52,7 +52,7 @@ GUI is a nice start but let's make it much more professional and user friendly:
 
 ## Waves
 
-- [x] I can see some concept of "## Wave lessons ..." let's make sure that we keep coherent memories or context per project so onece we do something all further request agents and everything will have already usable context and informations like code et orgnization etc ... 
+- [x] I can see some concept of "## Wave lessons ..." let's make sure that we keep coherent memories or context per project so onece we do something all further request agents and everything will have already usable context and informations like code et orgnization etc ...
 So we keep rpogressively all the knowledge about the project after each run getting better and better and not being reinitialized form scratch on every run ... but let's make sure that each agent get's correct context and info and when designing new agent we will be able to precisely controll this as well !!!
   - PROJECT.md seeded + evolved; MEMORY wave lessons; archives per run; learned skills
 
@@ -82,11 +82,11 @@ So we keep rpogressively all the knowledge about the project after each run gett
 
 ## Testing results
 
-- [x] on my initial test I can notice lot's of failures -> deep dive and fix all problems 
+- [x] on my initial test I can notice lot's of failures -> deep dive and fix all problems
   - Fixed compile break in failure handler
   - Fixed timeouts (task/LLM alignment), empty output reviews, TASKS.md bloat, duplicate coordinator tasks, empty PROJECT.md
 
-We need everything to be self evolving and improving all the time !!! 
+We need everything to be self evolving and improving all the time !!!
 
 ## Planing
 
@@ -102,7 +102,7 @@ We need everything to be self evolving and improving all the time !!!
   - Interactive chat still accepts input between runs
   - File-change events (`✎`) in the live stream
 
-## Concepts of Waves 
+## Concepts of Waves
 - [x] This concept is quite nice, maybe we can explore it more and use it somehow in the GUI, TUI and in general ?
   - Wave chips / observability strip in Live; wave lessons in MEMORY; errors wave_lessons.md
 
@@ -112,7 +112,7 @@ We need everything to be self evolving and improving all the time !!!
   - Pipeline: skills → context → explore[/docs parallel] → architect → plan[+critique] → split → coord → execute/review/correct → test → QA gate → memory → evolve
   - Parallel deep-dives when think_passes≥2; evidence-gated reviews
 
-## Coding 
+## Coding
 
 - [x] streaming code updates / partial file patches for SLMs
   - Prefer `ws_edit` / new `ws_patch` (SEARCH/REPLACE + unified hunks) + disk evidence
@@ -291,5 +291,3 @@ We need everything to be self evolving and improving all the time !!!
 
 ### Honest remaining gaps vs “best in world”
 - [ ] Full per-tool call cost breakdown in Studio UI charts
-
-

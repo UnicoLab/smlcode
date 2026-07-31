@@ -8,13 +8,13 @@ import (
 
 // Kanban columns for human + agent orchestration.
 const (
-	ColToScope     = "to_scope"
-	ColScoped      = "scoped"
-	ColReadyToDev  = "ready_to_dev"
-	ColInProgress  = "in_progress"
-	ColInReview    = "in_review"
-	ColDone        = "done"
-	ColBlocked     = "blocked"
+	ColToScope    = "to_scope"
+	ColScoped     = "scoped"
+	ColReadyToDev = "ready_to_dev"
+	ColInProgress = "in_progress"
+	ColInReview   = "in_review"
+	ColDone       = "done"
+	ColBlocked    = "blocked"
 )
 
 // Columns returns ordered kanban columns for UI/CLI.

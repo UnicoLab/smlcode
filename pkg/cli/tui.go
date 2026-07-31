@@ -375,8 +375,8 @@ func (s *LiveSession) UsageHead() string {
 	return s.state.UsageHead
 }
 
-func (s *LiveSession) OnRun(fn func(string) error)   { s.onRun = fn }
-func (s *LiveSession) OnStop(fn func())               { s.onStop = fn }
+func (s *LiveSession) OnRun(fn func(string) error) { s.onRun = fn }
+func (s *LiveSession) OnStop(fn func())            { s.onStop = fn }
 func (s *LiveSession) OnSlash(fn func(string) (bool, error)) {
 	s.onSlash = fn
 }

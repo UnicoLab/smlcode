@@ -1,8 +1,8 @@
 # SLMCode — Testing Guide (local / offline)
 
-**Version:** 0.5.0  
-**Binary:** `/opt/homebrew/bin/slmcode` (or `~/.local/bin/slmcode`)  
-**Studio:** http://127.0.0.1:7420  
+**Version:** 0.5.0
+**Binary:** `/opt/homebrew/bin/slmcode` (or `~/.local/bin/slmcode`)
+**Studio:** http://127.0.0.1:7420
 
 No cloud required. Uses local oMLX.
 
@@ -61,11 +61,11 @@ slmcode studio
 
 Checklist:
 
-1. Query → **Run**  
-2. Pipeline strip advances  
-3. **Live** tab shows `@agent` + scope + output  
-4. Drag a kanban card / edit CONTEXT  
-5. Settings → model list loads from oMLX  
+1. Query → **Run**
+2. Pipeline strip advances
+3. **Live** tab shows `@agent` + scope + output
+4. Drag a kanban card / edit CONTEXT
+5. Settings → model list loads from oMLX
 
 API smoke:
 

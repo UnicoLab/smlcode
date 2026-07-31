@@ -338,9 +338,9 @@ func TestSPAContentTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ui := fstest.MapFS{
-		"index.html":                  &fstest.MapFile{Data: []byte("<html>ok</html>")},
-		"app.jsx":                     &fstest.MapFile{Data: []byte("const x = 1")},
-		"styles.css":                  &fstest.MapFile{Data: []byte("body{}")},
+		"index.html":                     &fstest.MapFile{Data: []byte("<html>ok</html>")},
+		"app.jsx":                        &fstest.MapFile{Data: []byte("const x = 1")},
+		"styles.css":                     &fstest.MapFile{Data: []byte("body{}")},
 		"vendor/react.production.min.js": &fstest.MapFile{Data: []byte("/*react*/")},
 	}
 	s := New(h, ui)

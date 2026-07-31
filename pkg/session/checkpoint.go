@@ -14,15 +14,15 @@ import (
 
 // Pipeline phases persisted for interrupt/resume.
 const (
-	PhaseInit     = "init"
-	PhaseContext  = "context"
-	PhaseExplore  = "explore"
-	PhasePlan     = "plan"
-	PhaseSplit    = "split"
-	PhaseExecute  = "execute"
-	PhaseTest     = "test"
-	PhaseMemory   = "memory"
-	PhaseDone     = "done"
+	PhaseInit    = "init"
+	PhaseContext = "context"
+	PhaseExplore = "explore"
+	PhasePlan    = "plan"
+	PhaseSplit   = "split"
+	PhaseExecute = "execute"
+	PhaseTest    = "test"
+	PhaseMemory  = "memory"
+	PhaseDone    = "done"
 )
 
 // MarkInterrupted snapshots the board, resets in-flight tasks to ready, and

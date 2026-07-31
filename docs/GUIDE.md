@@ -37,7 +37,7 @@ slmcode update --check         # show installed vs source versions
 make update                    # from the checkout (= make install-system)
 ```
 
-`install.sh` writes `~/.config/slmcode/install.json` (source path + mode).  
+`install.sh` writes `~/.config/slmcode/install.json` (source path + mode).
 Override with `SLMCODE_SRC=/path/to/slmcode` or `slmcode update --src …`.
 
 ## Day-to-day

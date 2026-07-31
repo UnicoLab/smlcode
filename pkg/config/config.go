@@ -419,35 +419,35 @@ func normalize(c *Config) {
 
 // Patch is a partial config update. Nil fields are left unchanged.
 type Patch struct {
-	Model           *string   `json:"model,omitempty"`
-	Provider        *string   `json:"provider,omitempty"`
-	Endpoint        *string   `json:"endpoint,omitempty"`
-	APIKey          *string   `json:"api_key,omitempty"`
-	Backend         *string   `json:"backend,omitempty"`
-	Mode            *string   `json:"mode,omitempty"`
-	Specialist      *string   `json:"specialist,omitempty"`
-	PinnedSkills    *[]string `json:"pinned_skills,omitempty"`
-	ThinkPasses     *int      `json:"think_passes,omitempty"`
-	MaxParallel     *int      `json:"max_parallel,omitempty"`
-	MaxRetries      *int      `json:"max_retries,omitempty"`
-	MaxContextKB    *int      `json:"max_context_kb,omitempty"`
-	QAGate          *bool     `json:"qa_gate,omitempty"`
-	QAGateCommand   *string   `json:"qa_gate_command,omitempty"`
-	QAGateMaxRounds *int      `json:"qa_gate_max_rounds,omitempty"`
-	DryRun          *bool     `json:"dry_run,omitempty"`
-	Verbose         *bool     `json:"verbose,omitempty"`
-	Permission      *string   `json:"permission,omitempty"`
-	ShellPermission     *string `json:"shell_permission,omitempty"`
-	CompactMode         *bool   `json:"compact_mode,omitempty"`
-	Listen              *string `json:"listen,omitempty"`
-	EmbeddingEnabled    *bool   `json:"embedding_enabled,omitempty"`
-	EmbeddingEndpoint   *string `json:"embedding_endpoint,omitempty"`
-	EmbeddingModel      *string `json:"embedding_model,omitempty"`
-	EmbeddingAPIKey     *string `json:"embedding_api_key,omitempty"`
-	EmbeddingTopK       *int    `json:"embedding_top_k,omitempty"`
-	PricePreset            *string  `json:"price_preset,omitempty"`
-	PricePromptPerMTok     *float64 `json:"price_prompt_per_mtok,omitempty"`
-	PriceCompletionPerMTok *float64 `json:"price_completion_per_mtok,omitempty"`
+	Model                  *string   `json:"model,omitempty"`
+	Provider               *string   `json:"provider,omitempty"`
+	Endpoint               *string   `json:"endpoint,omitempty"`
+	APIKey                 *string   `json:"api_key,omitempty"`
+	Backend                *string   `json:"backend,omitempty"`
+	Mode                   *string   `json:"mode,omitempty"`
+	Specialist             *string   `json:"specialist,omitempty"`
+	PinnedSkills           *[]string `json:"pinned_skills,omitempty"`
+	ThinkPasses            *int      `json:"think_passes,omitempty"`
+	MaxParallel            *int      `json:"max_parallel,omitempty"`
+	MaxRetries             *int      `json:"max_retries,omitempty"`
+	MaxContextKB           *int      `json:"max_context_kb,omitempty"`
+	QAGate                 *bool     `json:"qa_gate,omitempty"`
+	QAGateCommand          *string   `json:"qa_gate_command,omitempty"`
+	QAGateMaxRounds        *int      `json:"qa_gate_max_rounds,omitempty"`
+	DryRun                 *bool     `json:"dry_run,omitempty"`
+	Verbose                *bool     `json:"verbose,omitempty"`
+	Permission             *string   `json:"permission,omitempty"`
+	ShellPermission        *string   `json:"shell_permission,omitempty"`
+	CompactMode            *bool     `json:"compact_mode,omitempty"`
+	Listen                 *string   `json:"listen,omitempty"`
+	EmbeddingEnabled       *bool     `json:"embedding_enabled,omitempty"`
+	EmbeddingEndpoint      *string   `json:"embedding_endpoint,omitempty"`
+	EmbeddingModel         *string   `json:"embedding_model,omitempty"`
+	EmbeddingAPIKey        *string   `json:"embedding_api_key,omitempty"`
+	EmbeddingTopK          *int      `json:"embedding_top_k,omitempty"`
+	PricePreset            *string   `json:"price_preset,omitempty"`
+	PricePromptPerMTok     *float64  `json:"price_prompt_per_mtok,omitempty"`
+	PriceCompletionPerMTok *float64  `json:"price_completion_per_mtok,omitempty"`
 }
 
 // ApplyPatch merges a partial update and re-normalizes permission/dry-run.

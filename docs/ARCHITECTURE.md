@@ -5,10 +5,10 @@
 30B-class SLMs fail when asked to “be Claude” in one giant free-form loop.
 SLMCode keeps **routing in Go** and gives each specialist a **tiny scoped pack**:
 
-- selected `.slmcode/*.md` slices  
-- few focus files  
-- matched + learned skills  
-- one atomic task  
+- selected `.slmcode/*.md` slices
+- few focus files
+- matched + learned skills
+- one atomic task
 
 ## Package map
 
@@ -70,11 +70,11 @@ GoLangGraph `finalizeNode` also recovers from tool-call XML junk finals.
 
 After each run:
 
-1. MEMORY.md append (lessons)  
-2. CONTEXT.md append (run complete)  
-3. `knowledge.Evolve` → `SKILLS.md` + `skills/learned/SKILL.md`  
-4. PROJECT.md auto-notes for touched files  
-5. Session JSON under `.slmcode/sessions/`  
+1. MEMORY.md append (lessons)
+2. CONTEXT.md append (run complete)
+3. `knowledge.Evolve` → `SKILLS.md` + `skills/learned/SKILL.md`
+4. PROJECT.md auto-notes for touched files
+5. Session JSON under `.slmcode/sessions/`
 
 ## Parallelism & deps
 
@@ -85,9 +85,9 @@ Blocked upstream deps are soft-skipped so one failed locate task cannot freeze t
 
 Workspace tools honor `config.permission`:
 
-- `auto` — write  
-- `dry-run` — simulate  
-- `review` — stage JSON patches under `.slmcode/pending/` for `slmcode apply`  
+- `auto` — write
+- `dry-run` — simulate
+- `review` — stage JSON patches under `.slmcode/pending/` for `slmcode apply`
 
 ## Dependency
 

@@ -11,10 +11,10 @@ import (
 
 // Lesson is a durable takeaway for MEMORY.md / future packs.
 type Lesson struct {
-	TaskID  string `json:"task_id"`
-	Kind    string `json:"kind"` // success | failure | convention
-	Text    string `json:"text"`
-	At      string `json:"at"`
+	TaskID string `json:"task_id"`
+	Kind   string `json:"kind"` // success | failure | convention
+	Text   string `json:"text"`
+	At     string `json:"at"`
 }
 
 // Extract pulls short lessons from a finished/blocked task for memory evolution.

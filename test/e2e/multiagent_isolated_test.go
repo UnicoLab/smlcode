@@ -41,7 +41,7 @@ func TestIsolatedMultiAgentBoardSandbox(t *testing.T) {
 	board := &plan.Board{Tasks: []plan.Task{
 		{
 			ID: "T1", Title: "Doc comment Hello", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
-			Files: []string{"pkg/greet/greet.go"},
+			Files:       []string{"pkg/greet/greet.go"},
 			Description: "Add a short doc comment above Hello(). Do not create main.go.",
 			Acceptance:  "pkg/greet/greet.go has a // comment above Hello",
 		},

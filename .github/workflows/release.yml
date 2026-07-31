@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Extract version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Lint & test
+        run: |
+          make lint
+          make test
+
+      - name: Build release binaries
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          commit="$(git rev-parse --short HEAD)"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-s -w -X main.Version=${VERSION} -X main.GitCommit=${commit} -X main.BuildTime=${built}"
+
+          build() {
+            local goos="$1" goarch="$2" ext="$3"
+            local out="dist/slmcode_${VERSION}_${goos}_${goarch}${ext}"
+            echo "Building ${out}"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/slmcode
+            chmod +x "$out" || true
+          }
+
+          build darwin amd64 ""
+          build darwin arm64 ""
+          build linux amd64 ""
+          build linux arm64 ""
+
+          (
+            cd dist
+            shasum -a 256 slmcode_* > SHA256SUMS
+          )
+          ls -lah dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: SLMCode ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/slmcode_*
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

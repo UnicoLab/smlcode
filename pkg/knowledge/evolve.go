@@ -13,7 +13,7 @@ import (
 
 // Evolved is the result of a knowledge write-back.
 type Evolved struct {
-	SkillsIndex string // relative path written
+	SkillsIndex  string // relative path written
 	LearnedSkill string
 	ProjectNote  string
 }

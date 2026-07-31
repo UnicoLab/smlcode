@@ -45,7 +45,7 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 	cfg.MaxParallel = 2
 	cfg.ThinkPasses = 2
 	o := &Orchestrator{
-		cfg:      cfg,
+		cfg: cfg,
 		executor: &fakeSpecExec{
 			delay: map[string]time.Duration{
 				"explorer":  20 * time.Millisecond,

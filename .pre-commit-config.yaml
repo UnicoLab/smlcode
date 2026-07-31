@@ -1,0 +1,25 @@
+# Local hooks for SLMCode. Install with: pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(assets/|.*\.(png|jpg|jpeg|gif|webp|ico)$)
+      - id: end-of-file-fixer
+        exclude: ^(assets/|.*\.(png|jpg|jpeg|gif|webp|ico)$)
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: make-lint
+        name: make lint
+        language: system
+        entry: make lint
+        pass_filenames: false
+        types_or: [go, javascript, jsx, css, html, yaml]

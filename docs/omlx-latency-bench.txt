@@ -25,4 +25,3 @@ package greet
 
 // Greet returns hello
 func Greet() string { return "hello" }
-

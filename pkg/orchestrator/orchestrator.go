@@ -109,7 +109,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	toolReg := tools.NewToolRegistry()
 	if err := workspace.RegisterCodingToolsOpts(toolReg, cfg.Root, workspace.ToolOpts{
 		ShellPermission: cfg.ShellPermission,
-		DryRun: cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
+		DryRun:          cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
 		Focus: focus,
 		OnFileChange: func(path, kind, detail string) {
 			if o != nil {
@@ -682,7 +682,6 @@ func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
 		o.emit("init", "enriched context from prior query summaries (recency)", "")
 	}
 }
-
 
 func (o *Orchestrator) emitLatencySummary(res *Result) {
 	if res == nil {

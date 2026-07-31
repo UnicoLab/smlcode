@@ -10,11 +10,11 @@ Works **offline** — React / ReactDOM / Babel are vendored under `cmd/slmcode/u
 
 ## Layout
 
-1. **Top** — brand, query bar, Run/Stop, model chip  
-2. **Pipeline strip** — init → skills → context → explore → … → coord → execute → learn → done  
-3. **Left** — nav (`board` / `run` / `agents` / `skills`), stats, specialist chips  
-4. **Center** — kanban + task inspector, or live agent feed  
-5. **Right** — markdown docs (CONTEXT, MEMORY, **SKILLS.md**, …) + settings  
+1. **Top** — brand, query bar, Run/Stop, model chip
+2. **Pipeline strip** — init → skills → context → explore → … → coord → execute → learn → done
+3. **Left** — nav (`board` / `run` / `agents` / `skills`), stats, specialist chips
+4. **Center** — kanban + task inspector, or live agent feed
+5. **Right** — markdown docs (CONTEXT, MEMORY, **SKILLS.md**, …) + settings
 
 ## Live feed (Run tab)
 
@@ -34,10 +34,10 @@ The same stream powers `slmcode run -v` and `slmcode chat`.
 
 While agents run you can:
 
-- drag cards between columns  
-- promote `to_scope → ready_to_dev`  
-- edit CONTEXT/MEMORY (next packs pick it up after the wave)  
-- add checklist items / notes  
+- drag cards between columns
+- promote `to_scope → ready_to_dev`
+- edit CONTEXT/MEMORY (next packs pick it up after the wave)
+- add checklist items / notes
 
 The loop reloads `board.json` every wave.
 

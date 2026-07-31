@@ -23,27 +23,27 @@ type ReactMessage struct {
 
 // ReactToolCall is a pending or completed tool invocation.
 type ReactToolCall struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Name     string `json:"name,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 }
 
 // ReactCheckpoint stores enough state for the loop runner / GoLangGraph to
 // continue a mid-ReAct (or mid-tool-call) interrupt without a cold replan.
 type ReactCheckpoint struct {
-	SchemaVersion    int            `json:"schema_version"`
-	TurnID           string         `json:"turn_id"`
-	TaskID           string         `json:"task_id"`
-	AgentID          string         `json:"agent_id,omitempty"`
-	Provider         string         `json:"provider,omitempty"`
-	Model            string         `json:"model,omitempty"`
-	Iteration        int            `json:"iteration"`
-	MaxIterations    int            `json:"max_iterations,omitempty"`
-	Status           string         `json:"status,omitempty"` // interrupted|running|done
+	SchemaVersion    int             `json:"schema_version"`
+	TurnID           string          `json:"turn_id"`
+	TaskID           string          `json:"task_id"`
+	AgentID          string          `json:"agent_id,omitempty"`
+	Provider         string          `json:"provider,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Iteration        int             `json:"iteration"`
+	MaxIterations    int             `json:"max_iterations,omitempty"`
+	Status           string          `json:"status,omitempty"` // interrupted|running|done
 	PendingToolCalls []ReactToolCall `json:"pending_tool_calls,omitempty"`
-	Messages         []ReactMessage `json:"messages"`
-	UpdatedAt        string         `json:"updated_at"`
+	Messages         []ReactMessage  `json:"messages"`
+	UpdatedAt        string          `json:"updated_at"`
 }
 
 // ReactDir returns .slmcode/queries/<turn>/react/

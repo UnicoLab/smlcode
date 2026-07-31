@@ -140,6 +140,31 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 			},
 		),
 		tools.NewGenericTool(
+			"ws_mv",
+			"Rename/move a file in the workspace (git mv when .git present, else os.Rename). Prefer for file renames over rewrite+leave-old.",
+			ws.moveFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"from": map[string]interface{}{"type": "string", "description": "Existing relative path"},
+					"to":   map[string]interface{}{"type": "string", "description": "New relative path"},
+				},
+				"required": []string{"from", "to"},
+			},
+		),
+		tools.NewGenericTool(
+			"ws_delete",
+			"Delete a file in the workspace after a successful rename/move. Focus-guarded; prefer ws_mv for renames.",
+			ws.deleteFile,
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"path"},
+			},
+		),
+		tools.NewGenericTool(
 			"ws_shell",
 			"Run a shell command in the project root. Prefer tests/build over destructive ops.",
 			ws.shell,
@@ -375,6 +400,99 @@ func (w *Workspace) patchFile(_ context.Context, args map[string]interface{}) (i
 	return msg, nil
 }
 
+func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	from, _ := args["from"].(string)
+	to, _ := args["to"].(string)
+	if strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
+		return nil, fmt.Errorf("from and to required")
+	}
+	fromAbs, err := w.resolve(from)
+	if err != nil {
+		return nil, err
+	}
+	toAbs, err := w.resolve(to)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.checkFocus(from); err != nil {
+		return nil, err
+	}
+	if err := w.checkFocus(to); err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(fromAbs); err != nil {
+		return nil, fmt.Errorf("source missing: %s", from)
+	}
+	if _, err := os.Stat(toAbs); err == nil {
+		return nil, fmt.Errorf("destination already exists: %s", to)
+	}
+	content, _ := os.ReadFile(fromAbs)
+	if msg, stop, err := w.guardWrite(to, "mv", string(content)); stop {
+		kind := "review"
+		if strings.HasPrefix(msg, "dry-run:") {
+			kind = "dry-run"
+			msg = fmt.Sprintf("dry-run: would mv %s → %s", from, to)
+		}
+		w.notify(to, kind, fmt.Sprintf("mv %s → %s", from, to))
+		return msg, err
+	}
+	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
+		return nil, err
+	}
+	moved := false
+	if w.hasGit() {
+		cmd := exec.Command("git", "-C", w.Root, "mv", from, to)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			moved = true
+			_ = out
+		}
+	}
+	if !moved {
+		if err := os.Rename(fromAbs, toAbs); err != nil {
+			// Cross-device fallback: write+delete
+			if err := os.WriteFile(toAbs, content, 0o644); err != nil {
+				return nil, err
+			}
+			if err := os.Remove(fromAbs); err != nil {
+				return nil, fmt.Errorf("wrote %s but failed to remove %s: %w", to, from, err)
+			}
+		}
+	}
+	msg := fmt.Sprintf("moved %s → %s", from, to)
+	w.notify(to, "mv", msg)
+	w.notify(from, "delete", "renamed away")
+	return msg, nil
+}
+
+func (w *Workspace) deleteFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+	path, _ := args["path"].(string)
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("path required")
+	}
+	abs, err := w.resolve(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.checkFocus(path); err != nil {
+		return nil, err
+	}
+	if msg, stop, err := w.guardWrite(path, "delete", ""); stop {
+		kind := "review"
+		if strings.HasPrefix(msg, "dry-run:") {
+			kind = "dry-run"
+			msg = fmt.Sprintf("dry-run: would delete %s", path)
+		}
+		w.notify(path, kind, "delete "+path)
+		return msg, err
+	}
+	if err := os.Remove(abs); err != nil {
+		return nil, err
+	}
+	msg := fmt.Sprintf("deleted %s", path)
+	w.notify(path, "delete", msg)
+	return msg, nil
+}
+
 func (w *Workspace) listDir(_ context.Context, args map[string]interface{}) (interface{}, error) {
 	path, _ := args["path"].(string)
 	if path == "" {
@@ -544,7 +662,7 @@ func (w *Workspace) hasGit() bool {
 // ToolNames returns the coding tool names for agent config.
 func ToolNames() []string {
 	return []string{
-		"ws_read", "ws_write", "ws_edit", "ws_patch", "ws_list", "ws_glob", "ws_grep",
-		"ws_shell", "git_status", "git_diff",
+		"ws_read", "ws_write", "ws_edit", "ws_patch", "ws_mv", "ws_delete",
+		"ws_list", "ws_glob", "ws_grep", "ws_shell", "git_status", "git_diff",
 	}
 }

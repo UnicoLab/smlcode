@@ -266,11 +266,15 @@ We need everything to be self evolving and improving all the time !!!
 - [x] **Live oMLX benchmark** — `TestLiveOMLXLatencyBenchmark` + `docs/omlx-latency-bench.txt` (t1 ~32s success; early-exit confirmed)
 - [x] Tests: stream early-exit, repair, shell normalize; `go test ./...` + race pkgs green
 
+### Closed this pass (2026-07-31 — 0.5.13)
+- [x] **Mid-ReAct interrupt/resume** — `/stop` + Ctrl+C cancel through orchestrator→loop→CompleteStream; `session.MarkInterrupted` + `checkpoint.json`; TUI `/resume` + `slmcode session resume` continue from board/tasks (execute), not full restart when tasks exist; unit tests for cancel + normalize
+- [x] **Embedding-quality memory retrieval** — `pkg/retrieval` OpenAI-compat `/v1/embeddings` + lexical TF-IDF fallback; config `embedding_*` + env; doctor visibility; CONTEXT injection ranks prior summaries/MEMORY/skills; fake-embedder tests prove relevant summaries outrank noise
+- [x] **Multi-file rename reliability** — `ws_mv` / `ws_delete`; `plan.DetectRenameIntent` + `RenameSatisfied`; evidence/acceptance recognize symbol+file renames; tester override when disk rename OK; anti-wander prompts; offline e2e + unit tests
+
 ### Honest remaining gaps vs “best in world”
 - [ ] Speculative parallel specialists beyond explorer/architect (bounded by oMLX contention)
 - [ ] Per-tool token/cost accounting when providers omit usage on stream early-exit
-- [ ] Stronger interrupt/resume checkpoints mid-ReAct (HITL exists in GoLangGraph; not fully exposed in TUI)
-- [ ] Memory retrieval ranking beyond summary index (embedding/Falkor-style still optional)
-- [ ] Worker-phase success rate on rename/multi-file turns still SLM-dependent (t2 rename wrote file but board success=false after tester rewrite)
+- [ ] True mid-tool-call ReAct message-history HITL resume (board/phase resume shipped; full GoLangGraph pause still optional)
+- [ ] Remote embedding quality depends on local gateway supporting `/v1/embeddings`
 
 

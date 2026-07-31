@@ -15,11 +15,11 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/instructions"
-	"github.com/UnicoLab/slmcode/pkg/knowledge"
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/stream"
@@ -235,12 +235,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	o.emit("init", "query-scoped plan/tasks reset for "+runID, "")
 
 	_ = o.store.SetQuery(query)
-	if prior := session.RecentSummaries(o.cfg.SlmDir(), 3); prior != "" {
-		_ = o.store.Append(contextstore.DocContext, "Prior query summaries (knowledge only — write a NEW plan for this query)",
-			truncate(prior, 2500))
-		o.shared.SetGlobal("prior_summaries", truncate(prior, 2000))
-		o.emit("init", "enriched context from prior query summaries", "")
-	}
+	o.injectPriorKnowledge(ctx, query)
 	o.shared.SetGlobal("query", query)
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
@@ -560,6 +555,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 
 	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
+	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
 	o.emitAgent("plan", plan.RolePlanner, "", "creating plan", "", "")
 	planDocs := contextstore.LeanDocsForRole("planner")
 	planPack, _ := o.packer.Build("planner", query, planDocs, nil, o.skillPackFor("planner", query))
@@ -575,6 +571,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		"Do NOT continue prior plans. STRICT JSON plan only."
 	planOut, err := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", planPrompt)
 	if err != nil {
+		if isCancelErr(err) {
+			return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+		}
 		return nil, fmt.Errorf("planner: %w", err)
 	}
 	// Extra plan critique only when think_passes≥3 (think_passes=2 already uses
@@ -608,6 +607,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	o.emit("plan", "PLAN.md rewritten for this query", "")
 
 	// 4 Split
+	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
 	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
 	splitDocs := contextstore.LeanDocsForRole("splitter")
 	splitPack, _ := o.packer.Build("splitter", query, splitDocs, nil, o.skillPackFor("splitter", query))
@@ -618,6 +618,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	tasksOut, err := o.runRoleMultipassTracked(ctx, "splitter", "", splitPrompt)
 	if err != nil {
+		if isCancelErr(err) {
+			return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
+		}
 		return nil, fmt.Errorf("splitter: %w", err)
 	}
 	tasks, err := plan.ParseTasksJSON(tasksOut)
@@ -699,9 +702,10 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	o.persistBoard(board)
 
+	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)
 	execStart := time.Now()
 	if err := runner.RunBoard(ctx, board); err != nil {
-		return nil, err
+		return o.checkpointInterrupt(board, session.PhaseExecute, err)
 	}
 	o.recordLatency("execute", time.Since(execStart))
 	o.emitFull("execute", stream.KindLatency, "worker", "",
@@ -710,146 +714,34 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	board = &snap
 	o.persistBoard(board)
 
-	// 6 Test / validation — failures rewrite this query's plan/tasks (do not accept quietly)
-	o.emitAgent("test", plan.RoleTester, "", "verification pass", "", "")
-	_, tasksMD := board.ToMarkdown()
-	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor("tester", query))
-	testPrompt := testPack.Render() + "\nTasks:\n" + truncate(tasksMD, 4000) +
-		"\n\nVerify THIS query's work. Return STRICT JSON: " +
-		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
-		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
-	testOut, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPrompt)
-	testerRejected := false
-	if strings.TrimSpace(testOut) == "" {
-		// Empty finalize must NOT silently skip — force rewrite path.
-		testOut = `{"passed":false,"summary":"empty tester finalize","failures":["empty or missing tester JSON — treat as failed"]}`
-		o.emitFull("test", stream.KindOutput, plan.RoleTester, "",
-			"tester returned empty finalize — forcing plan/task rewrite", "", testOut)
-	} else {
-		o.emitFull("test", stream.KindOutput, plan.RoleTester, "", "tester output", "", truncate(testOut, 1200))
-	}
-	_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
-	testerRejected = o.applyTesterFeedback(ctx, query, board, testOut)
-	if testerRejected {
-		snap = o.boardStore.Snapshot()
-		board = &snap
-		// One corrective execute wave after rewrite (same query scope).
-		if board.AgentWorkRemaining() {
-			o.emit("execute", "corrective wave after tester rewrite", "")
-			if err := runner.RunBoard(ctx, board); err != nil {
-				o.emit("execute", "corrective wave warning: "+err.Error(), "")
-			}
-			snap = o.boardStore.Snapshot()
-			board = &snap
-			o.persistBoard(board)
-			// Re-test once after corrective wave.
-			o.emitAgent("test", plan.RoleTester, "", "re-verify after rewrite", "", "")
-			_, tasksMD2 := board.ToMarkdown()
-			testOut2, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
-				"\nTasks:\n"+truncate(tasksMD2, 4000)+
-				"\n\nRe-verify after fixes. STRICT JSON with passed true/false."+
-				"\nIf you cannot produce JSON, still set passed=false with concrete failures citing task IDs and file paths.")
-			if strings.TrimSpace(testOut2) == "" {
-				testOut2 = `{"passed":false,"summary":"empty tester finalize on retry","failures":["empty tester JSON after corrective wave"]}`
-			}
-			testOut = testOut2
-			_ = o.store.Append(contextstore.DocScratch, "Verification (retry)", testOut2)
-			if o.applyTesterFeedback(ctx, query, board, testOut2) {
-				snap = o.boardStore.Snapshot()
-				board = &snap
-			} else {
-				testerRejected = false
-			}
-		}
-	}
-
-	// 6b Iterate-until-green QA gate (configurable command + max rounds)
-	qaFailed := o.runQAGate(ctx, query, board)
-	if qaFailed {
-		testerRejected = true
-		// Surface QA failure into plan/tasks rewrite for this query.
-		fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`
-		_ = o.applyTesterFeedback(ctx, query, board, fake)
-		snap = o.boardStore.Snapshot()
-		board = &snap
-	}
-
-	// 7 Memory — consolidate wave lessons + SLM distillation
-	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
-	var allLessons []learning.Lesson
-	for _, t := range board.Tasks {
-		allLessons = append(allLessons, learning.Extract(t)...)
-	}
-	lessonsMD := learning.RenderMarkdown(allLessons)
-	if lessonsMD != "" {
-		_ = o.store.Append(contextstore.DocMemory, "Auto-lessons", lessonsMD)
-	}
-	memPack, _ := o.packer.Build("memory", query, contextstore.DefaultDocsForRole("memory"), nil, o.skillPackFor("memory", query))
-	memOut, _ := o.runRoleMultipassTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
-		"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", board.FailedCount()))
-	if strings.TrimSpace(memOut) != "" {
-		_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
-		lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
-	}
-
-	// 8 Auto-evolve SKILLS.md + learned skill (iterative project knowledge)
-	o.emit("skills", "evolving SKILLS.md + learned skill", "")
-	skillList, _ := o.skills.List()
-	if ev, err := knowledge.Evolve(o.cfg.SlmDir(), query, board, lessonsMD, skillList); err == nil && ev != nil {
-		o.emitFull("skills", stream.KindLearn, "memory", "",
-			fmt.Sprintf("updated %s + %s", ev.SkillsIndex, ev.LearnedSkill), "", "")
-		// Reload skills so next packs see learned/ + global skill roots
-		roots := []string{
-			filepath.Join(o.cfg.SlmDir(), "skills"),
-			filepath.Join(o.cfg.SlmDir(), "skills", "_bundled"),
-		}
-		roots = append(roots, globalSkillRoots()...)
-		roots = append(roots, o.cfg.SkillsDirs...)
-		o.skills = skills.NewLoader(roots...)
-	}
-
-	_ = o.store.Append(contextstore.DocContext, "Run complete", summarize(board, pl))
-
-	failed := board.FailedCount()
-	success := failed == 0 && board.AllDone() && !testerRejected
-	res := &Result{
-		ID: runID, Query: query, Board: *board,
-		Success: success, FailedTasks: failed,
-		Duration: time.Since(start), Summary: summarize(board, pl),
-		Backend: config.BackendSLMCode, LatencyMs: o.snapshotLatency(),
-	}
-	if testerRejected && success {
-		res.Success = false
-	}
-	if !res.Success && testerRejected {
-		res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
-	}
-
-	// Query-scoped summary.md — enriches later turns via summaries/INDEX.md
-	extraNotes := lessonsMD
-	if strings.TrimSpace(testOut) != "" {
-		extraNotes = strings.TrimSpace(extraNotes + "\n\n### Tester\n" + truncate(testOut, 1500))
-	}
-	if o.currentTurn != nil {
-		if spath, serr := session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, extraNotes); serr == nil && spath != "" {
-			o.emit("session", "summary "+filepath.Base(filepath.Dir(spath))+"/summary.md", "")
-			_ = o.store.Append(contextstore.DocMemory, "Query summary", truncate(
-				"Query "+runID+": "+firstSentence(query)+" — "+res.Summary, 800))
-		}
-	}
-
-	if path, err := session.Save(o.cfg.SlmDir(), session.Session{
-		ID: runID, Query: query, Summary: res.Summary, Success: res.Success, Board: *board,
-	}); err == nil {
-		o.emit("session", "saved "+filepath.Base(path), "")
-		if arch, aerr := session.Archive(o.cfg.SlmDir(), runID, query, res.Summary); aerr == nil && arch != "" {
-			o.emit("session", "archived "+filepath.Base(arch), "")
-		}
-	}
-	o.emitLatencySummary(res)
-	o.emit("done", res.Summary, "")
-	return res, nil
+	return o.finalizeAfterExecute(ctx, runID, query, skillPack, board, runner, start)
 }
+
+func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
+	enabled, endpoint, model, apiKey, topK := o.cfg.RetrievalConfig()
+	body, mode, err := retrieval.RetrieveForQuery(ctx, o.cfg.SlmDir(), query, retrieval.Config{
+		Enabled: enabled, Endpoint: endpoint, Model: model, APIKey: apiKey, TopK: topK,
+	})
+	if err != nil {
+		o.emit("init", "retrieval warning: "+err.Error(), "")
+	}
+	if strings.TrimSpace(body) != "" {
+		_ = o.store.Append(contextstore.DocContext,
+			"Retrieved prior knowledge (ranked — write a NEW plan for this query)",
+			truncate(body, 3000))
+		o.shared.SetGlobal("prior_summaries", truncate(body, 2000))
+		o.emit("init", fmt.Sprintf("enriched context via %s retrieval", mode), "")
+		return
+	}
+	// Fallback: recency index
+	if prior := session.RecentSummaries(o.cfg.SlmDir(), 3); prior != "" {
+		_ = o.store.Append(contextstore.DocContext, "Prior query summaries (knowledge only — write a NEW plan for this query)",
+			truncate(prior, 2500))
+		o.shared.SetGlobal("prior_summaries", truncate(prior, 2000))
+		o.emit("init", "enriched context from prior query summaries (recency)", "")
+	}
+}
+
 
 func (o *Orchestrator) emitLatencySummary(res *Result) {
 	if res == nil || len(res.LatencyMs) == 0 {

@@ -60,6 +60,14 @@ func (h *Harness) Run(ctx context.Context, query string) (*orchestrator.Result, 
 	return h.Orchestrator.Run(ctx, query)
 }
 
+// Resume continues an interrupted query turn from the last board checkpoint.
+func (h *Harness) Resume(ctx context.Context, turnID string) (*orchestrator.Result, error) {
+	if err := h.EnsureInitialized(); err != nil {
+		return nil, err
+	}
+	return h.Orchestrator.Resume(ctx, turnID)
+}
+
 func (h *Harness) Status() (string, error) {
 	store := contextstore.New(h.Config.SlmDir())
 	query, _ := store.Read(contextstore.DocQuery)

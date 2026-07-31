@@ -16,13 +16,16 @@ import (
 // Live PLAN.md / TASKS.md / board.json are mirrors of the *current* turn only;
 // prior turns live under .slmcode/queries/<id>/ and enrich MEMORY via summaries.
 type Turn struct {
-	ID        string     `json:"id"`
-	Query     string     `json:"query"`
-	CreatedAt string     `json:"created_at"`
-	UpdatedAt string     `json:"updated_at"`
-	Success   bool       `json:"success"`
-	Summary   string     `json:"summary,omitempty"`
-	Board     plan.Board `json:"board"`
+	ID          string     `json:"id"`
+	Query       string     `json:"query"`
+	CreatedAt   string     `json:"created_at"`
+	UpdatedAt   string     `json:"updated_at"`
+	Success     bool       `json:"success"`
+	Summary     string     `json:"summary,omitempty"`
+	Board       plan.Board `json:"board"`
+	Interrupted bool       `json:"interrupted,omitempty"`
+	Phase       string     `json:"phase,omitempty"`       // last completed/current pipeline phase
+	ResumeFrom  string     `json:"resume_from,omitempty"` // phase to continue from after /stop
 }
 
 // QueriesDir returns .slmcode/queries/

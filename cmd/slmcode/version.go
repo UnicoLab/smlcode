@@ -4,7 +4,7 @@ package main
 //
 //	go build -ldflags "-X main.Version=0.5.0 -X main.SourceRoot=/path -X main.GitCommit=abc -X main.BuildTime=…"
 var (
-	Version    = "0.5.12"
+	Version    = "0.5.13"
 	SourceRoot = "" // absolute path to the slmcode checkout used to build this binary
 	GitCommit  = "unknown"
 	BuildTime  = "unknown"

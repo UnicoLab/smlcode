@@ -77,6 +77,7 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 			files = append(files, known...)
 		}
 		tasks[i].Files = ReconcileFiles(root, files, known)
+		EnrichTaskFilesForRename(&tasks[i], query)
 		// Infer focus files from title/description for create/scaffold tasks.
 		if len(tasks[i].Files) == 0 || onlyRootManifest(tasks[i].Files) {
 			if inferred := InferCreateFiles(tasks[i].Title + " " + tasks[i].Description + " " + tasks[i].Acceptance); len(inferred) > 0 {

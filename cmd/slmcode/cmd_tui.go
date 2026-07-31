@@ -104,7 +104,30 @@ func runPremiumTUI() error {
 				cancelRun()
 			}
 			runMu.Unlock()
-			fmt.Println(cli.Warn("stop requested"))
+			fmt.Println(cli.Warn("stop requested — board checkpointed; use /resume to continue"))
+			return false, nil
+		case "/resume":
+			id := strings.TrimSpace(arg)
+			runMu.Lock()
+			ctx, cancel := signalContext()
+			cancelRun = cancel
+			runMu.Unlock()
+			defer cancel()
+			h.Orchestrator.OnEvent(func(e orchestrator.Event) {
+				sess.Observe(e)
+			})
+			res, err := h.Resume(ctx, id)
+			sess.SetState(loadDashboardFromHarness(h))
+			if err != nil && (res == nil || !strings.Contains(strings.ToLower(err.Error()), "canceled")) {
+				return false, err
+			}
+			if res != nil {
+				if res.Success {
+					fmt.Println(cli.Success("resumed — " + res.Summary))
+				} else {
+					fmt.Println(cli.Warn(res.Summary))
+				}
+			}
 			return false, nil
 		case "/errors":
 			path := filepath.Join(h.Config.SlmDir(), "errors", "errors.md")
@@ -156,6 +179,11 @@ func runPremiumTUI() error {
 				fmt.Printf("  %2d  %s  %s\n", i+1, cli.Accent(q.ID), cli.Dim(cli.Clip(q.Query, 60)))
 			}
 			fmt.Println(cli.Dim("  /sessions <n|id>  show plan + summary"))
+			fmt.Println(cli.Dim("  /resume [n|id]    continue interrupted run from board checkpoint"))
+			interrupted, _ := session.ListInterrupted(h.Config.SlmDir())
+			if len(interrupted) > 0 {
+				fmt.Println(cli.Warn(fmt.Sprintf("  %d interrupted — /resume to continue", len(interrupted))))
+			}
 			return false, nil
 		case "/compact":
 			on := !sess.Compact()

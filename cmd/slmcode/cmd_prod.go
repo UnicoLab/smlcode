@@ -201,14 +201,49 @@ func sessionCmd() *cobra.Command {
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "resume [id]",
-		Short: "Restore board.json from a session (then promote/run)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Resume an interrupted query turn (or restore a completed session board)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := openWorkspace()
+			h, err := openHarness()
 			if err != nil {
 				return err
 			}
-			s, err := session.Load(ws.Config.SlmDir(), args[0])
+			id := ""
+			if len(args) > 0 {
+				id = args[0]
+			}
+			// Prefer interrupted query-turn resume (continues execute from checkpoint).
+			if turn, err := session.FindInterrupted(h.Config.SlmDir()); err == nil && turn != nil && id == "" {
+				ctx, cancel := signalContext()
+				defer cancel()
+				h.Orchestrator.OnEvent(func(e orchestrator.Event) {
+					cli.PrintEvent(e)
+				})
+				res, err := h.Resume(ctx, turn.ID)
+				if res != nil {
+					fmt.Println(cli.Bold(res.Summary))
+				}
+				return err
+			}
+			if id != "" {
+				if turn, err := session.LoadTurn(h.Config.SlmDir(), id); err == nil && turn != nil && (turn.Interrupted || len(turn.Board.Tasks) > 0) {
+					ctx, cancel := signalContext()
+					defer cancel()
+					h.Orchestrator.OnEvent(func(e orchestrator.Event) {
+						cli.PrintEvent(e)
+					})
+					res, err := h.Resume(ctx, turn.ID)
+					if res != nil {
+						fmt.Println(cli.Bold(res.Summary))
+					}
+					return err
+				}
+			}
+			// Legacy: restore completed session snapshot into live board.
+			if id == "" {
+				return fmt.Errorf("no interrupted run — pass a session/query id")
+			}
+			s, err := session.Load(h.Config.SlmDir(), id)
 			if err != nil {
 				return err
 			}
@@ -219,11 +254,11 @@ func sessionCmd() *cobra.Command {
 					t.MoveTo(plan.ColReadyToDev)
 				}
 			}
-			if err := ws.Board.Replace(s.Board); err != nil {
+			if err := h.Orchestrator.Board().Replace(s.Board); err != nil {
 				return err
 			}
 			fmt.Println(cli.Success("board restored from " + s.ID))
-			fmt.Println(cli.Info("edit/promote tasks, then: slmcode run \"continue previous work\""))
+			fmt.Println(cli.Info("edit/promote tasks, then: slmcode run \"continue previous work\" — or /resume for interrupted turns"))
 			return nil
 		},
 	})

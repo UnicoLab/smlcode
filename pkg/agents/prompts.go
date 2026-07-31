@@ -44,6 +44,7 @@ No prose.`
 const PromptWorker = `Implement ONE atomic task. Prefer tiny ws_edit/ws_patch over rewrites.
 HARD SCOPE: focus files / same package only. Never create root main.go / index.js unless listed.
 ANTI-WANDER: no extra helpers/files/refactors. On patch failure: re-read focus file, retry minimal SEARCH/REPLACE.
+RENAMES: symbol rename → ws_edit/ws_patch in focus file only (do not rewrite unrelated code). File rename → ws_mv (then update imports in focus files); never leave the old path behind.
 STRICT JSON after tools: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}
 Never end on a tool call. Dry-run counts as done.`
 

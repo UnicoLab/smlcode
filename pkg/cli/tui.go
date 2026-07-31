@@ -181,6 +181,7 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 		White("/stats") + Dim("  ") +
 		White("/sessions") + Dim("  ") +
 		White("/stop") + Dim("  ") +
+		White("/resume") + Dim("  ") +
 		White("/q")
 	fmt.Fprintln(w, Accent("│")+padRight(help, min(width-2, 96))+Accent("│"))
 	if st.Message != "" {
@@ -450,7 +451,8 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle compact live stream")
 	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run phase latency")
 	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
-	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             request stop of current run")
+	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             cancel in-flight run (checkpoint board)")
+	fmt.Fprintln(s.out, "  "+Cyan("/resume [id]")+"      continue interrupted run from last board/tasks")
 	fmt.Fprintln(s.out, "  "+Cyan("/refresh")+"          redraw dashboard")
 	fmt.Fprintln(s.out, "  "+Cyan("/q")+"                quit")
 	fmt.Fprintln(s.out, Dim("  Binary is slmcode (docs sometimes say smlcode)."))

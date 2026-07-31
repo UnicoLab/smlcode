@@ -163,7 +163,9 @@ slmcode doctor               # shows active provider + model + reachability
 | `studio` | GUI + SSE API |
 | `update` | Rebuild & reinstall from source |
 
-TUI slash commands worth knowing: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`.
+TUI slash commands worth knowing: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/resume`.
+
+Mid-run **Ctrl+C** or `/stop` checkpoints the board under `.slmcode/queries/<id>/` (and `checkpoint.json`); continue with `/resume` or `slmcode session resume`. Memory injection ranks prior summaries via embeddings when `embedding_*` is configured, else lexical TF-IDF.
 
 ## Studio
 

@@ -686,6 +686,11 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 	if why := r.scopeOK(t); why != "" {
 		return false, why
 	}
+	// Rename acceptance: old gone / new present / symbols updated — even when
+	// t.Files still lists the old path that was deliberately removed.
+	if renameOK(r.Root, t) {
+		return true, ""
+	}
 	if len(t.Files) > 0 {
 		missing := 0
 		for _, f := range t.Files {
@@ -843,10 +848,13 @@ func looksLikeEditTask(t plan.Task) bool {
 func hasToolWriteEvidence(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "ws_write") || strings.Contains(lower, "ws_edit") ||
-		strings.Contains(lower, "ws_patch") ||
+		strings.Contains(lower, "ws_patch") || strings.Contains(lower, "ws_mv") ||
+		strings.Contains(lower, "ws_delete") ||
 		strings.Contains(lower, "wrote ") || strings.Contains(lower, "edited ") ||
 		strings.Contains(lower, "updated ") || strings.Contains(lower, "patched ") ||
+		strings.Contains(lower, "moved ") || strings.Contains(lower, "deleted ") ||
 		strings.Contains(lower, "dry-run: would write") || strings.Contains(lower, "dry-run: would edit") ||
+		strings.Contains(lower, "dry-run: would mv") || strings.Contains(lower, "dry-run: would delete") ||
 		strings.Contains(lower, "staged write") || strings.Contains(lower, "pending/") ||
 		strings.Contains(lower, "## disk evidence")
 }
@@ -924,6 +932,8 @@ func hasDiskEvidenceSection(output string) bool {
 	}
 	return strings.Contains(lower, "modified:") ||
 		strings.Contains(lower, "created/present:") ||
+		strings.Contains(lower, "renamed:") ||
+		strings.Contains(lower, "deleted:") ||
 		strings.Contains(lower, "git dirty:") ||
 		strings.Contains(lower, "pending:")
 }
@@ -992,10 +1002,24 @@ func (r *Runner) snapshotTargets(t plan.Task) map[string]string {
 
 func (r *Runner) diskEvidenceHint(t plan.Task, baseline map[string]string) string {
 	var lines []string
+	if spec := plan.DetectRenameIntent(t.Title, StripScopedPack(t.Description), t.Acceptance, strings.Join(t.Files, " ")); spec.Kind != plan.RenameNone {
+		if spec.Kind == plan.RenameFile && spec.OldPath != "" && spec.NewPath != "" {
+			if !plan.FileExists(r.Root, spec.OldPath) && plan.FileExists(r.Root, spec.NewPath) {
+				lines = append(lines, "- renamed: "+spec.OldPath+" → "+spec.NewPath)
+			} else if !plan.FileExists(r.Root, spec.OldPath) {
+				lines = append(lines, "- deleted: "+spec.OldPath)
+			}
+		}
+		if spec.Kind == plan.RenameSymbol && renameOK(r.Root, t) {
+			lines = append(lines, "- renamed: "+spec.OldSymbol+" → "+spec.NewSymbol)
+		}
+	}
 	for _, f := range t.Files {
 		cur := fileFingerprint(filepath.Join(r.Root, f))
 		prev := baseline[f]
 		switch {
+		case prev != "" && cur == "":
+			lines = append(lines, "- deleted: "+f)
 		case prev == "" && cur != "":
 			lines = append(lines, "- created/present: "+f)
 		case prev != "" && cur != "" && prev != cur:
@@ -1072,6 +1096,9 @@ func alreadySatisfied(root string, t plan.Task) bool {
 	if root == "" {
 		return false
 	}
+	if renameOK(root, t) {
+		return true
+	}
 	blob := strings.ToLower(t.Title + " " + StripScopedPack(t.Description) + " " + t.Acceptance)
 	// Create/scaffold tasks: acceptance met when the task's declared files exist.
 	// Use t.Files only (not expandTaskFocus) so scaffold prefixes don't inflate "needed".
@@ -1119,4 +1146,17 @@ func alreadySatisfied(root string, t plan.Task) bool {
 		}
 	}
 	return false
+}
+
+// renameOK is true when disk state matches a detected rename (symbol or file).
+func renameOK(root string, t plan.Task) bool {
+	spec := plan.DetectRenameIntent(t.Title, StripScopedPack(t.Description), t.Acceptance, strings.Join(t.Files, " "))
+	if spec.Kind == plan.RenameNone {
+		return false
+	}
+	focus := t.Files
+	if len(focus) == 0 {
+		focus = expandTaskFocus(t)
+	}
+	return plan.RenameSatisfied(root, spec, focus)
 }

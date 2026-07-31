@@ -307,6 +307,12 @@ func runDoctor() error {
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
 	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
+	embMode := "lexical"
+	if ws.Config.EmbeddingEnabled {
+		embMode = "openai-embed"
+	}
+	cli.KeyVal("embedding", fmt.Sprintf("%s enabled=%v model=%s endpoint=%s top_k=%d",
+		embMode, ws.Config.EmbeddingEnabled, ws.Config.EmbeddingModel, ws.Config.EmbeddingEndpoint, ws.Config.EmbeddingTopK))
 	if _, err := os.Stat(ws.Config.SlmDir()); err != nil {
 		fmt.Println(cli.Warn(".slmcode missing — run slmcode init"))
 	} else {

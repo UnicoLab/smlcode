@@ -139,6 +139,14 @@ type Config struct {
 	// CompactMode trims live event verbosity in TUI/CLI.
 	CompactMode bool `yaml:"compact_mode" json:"compact_mode"`
 
+	// Embedding retrieval for CONTEXT injection (OpenAI-compat /v1/embeddings).
+	// When disabled or unreachable, lexical TF-IDF ranking is used.
+	EmbeddingEnabled  bool   `yaml:"embedding_enabled" json:"embedding_enabled"`
+	EmbeddingEndpoint string `yaml:"embedding_endpoint" json:"embedding_endpoint"`
+	EmbeddingModel    string `yaml:"embedding_model" json:"embedding_model"`
+	EmbeddingAPIKey   string `yaml:"embedding_api_key,omitempty" json:"embedding_api_key,omitempty"`
+	EmbeddingTopK     int    `yaml:"embedding_top_k" json:"embedding_top_k"`
+
 	// SkillsDirs are extra skill roots (in addition to bundled + .slmcode/skills).
 	SkillsDirs []string `yaml:"skills_dirs" json:"skills_dirs"`
 
@@ -173,6 +181,7 @@ func Default(root string) *Config {
 		ClaudeCodeBin:   "claude",
 		Permission:      "auto",
 		ShellPermission: "allow",
+		EmbeddingTopK:   5,
 	}
 }
 
@@ -248,6 +257,20 @@ func (c *Config) ApplyEnv() {
 	}
 	if v := os.Getenv("SLMCODE_BACKEND"); v != "" {
 		c.Backend = v
+	}
+	if v := os.Getenv("SLMCODE_EMBEDDING_ENDPOINT"); v != "" {
+		c.EmbeddingEndpoint = v
+		c.EmbeddingEnabled = true
+	}
+	if v := os.Getenv("SLMCODE_EMBEDDING_MODEL"); v != "" {
+		c.EmbeddingModel = v
+		c.EmbeddingEnabled = true
+	}
+	if v := os.Getenv("SLMCODE_EMBEDDING_API_KEY"); v != "" {
+		c.EmbeddingAPIKey = v
+	}
+	if v := os.Getenv("SLMCODE_EMBEDDING_ENABLED"); v != "" {
+		c.EmbeddingEnabled = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 	}
 	normalize(c)
 	c.ResolveAPIKey()
@@ -375,6 +398,16 @@ func normalize(c *Config) {
 		c.DryRun = true
 	}
 	c.ShellPermission = permissions.NormalizeShell(c.ShellPermission)
+	if c.EmbeddingTopK <= 0 {
+		c.EmbeddingTopK = 5
+	}
+	// Default embedding endpoint to chat endpoint when enabled without explicit URL.
+	if c.EmbeddingEnabled && c.EmbeddingEndpoint == "" {
+		c.EmbeddingEndpoint = c.Endpoint
+	}
+	if c.EmbeddingAPIKey == "" {
+		c.EmbeddingAPIKey = c.APIKey
+	}
 }
 
 // Patch is a partial config update. Nil fields are left unchanged.
@@ -397,9 +430,14 @@ type Patch struct {
 	DryRun          *bool     `json:"dry_run,omitempty"`
 	Verbose         *bool     `json:"verbose,omitempty"`
 	Permission      *string   `json:"permission,omitempty"`
-	ShellPermission *string   `json:"shell_permission,omitempty"`
-	CompactMode     *bool     `json:"compact_mode,omitempty"`
-	Listen          *string   `json:"listen,omitempty"`
+	ShellPermission     *string `json:"shell_permission,omitempty"`
+	CompactMode         *bool   `json:"compact_mode,omitempty"`
+	Listen              *string `json:"listen,omitempty"`
+	EmbeddingEnabled    *bool   `json:"embedding_enabled,omitempty"`
+	EmbeddingEndpoint   *string `json:"embedding_endpoint,omitempty"`
+	EmbeddingModel      *string `json:"embedding_model,omitempty"`
+	EmbeddingAPIKey     *string `json:"embedding_api_key,omitempty"`
+	EmbeddingTopK       *int    `json:"embedding_top_k,omitempty"`
 }
 
 // ApplyPatch merges a partial update and re-normalizes permission/dry-run.
@@ -493,6 +531,24 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.CompactMode != nil {
 		c.CompactMode = *p.CompactMode
 	}
+	if p.EmbeddingEnabled != nil {
+		c.EmbeddingEnabled = *p.EmbeddingEnabled
+	}
+	if p.EmbeddingEndpoint != nil && *p.EmbeddingEndpoint != "" {
+		c.EmbeddingEndpoint = *p.EmbeddingEndpoint
+	}
+	if p.EmbeddingModel != nil && *p.EmbeddingModel != "" {
+		c.EmbeddingModel = *p.EmbeddingModel
+	}
+	if p.EmbeddingAPIKey != nil {
+		key := strings.TrimSpace(*p.EmbeddingAPIKey)
+		if key != "" && key != "***" {
+			c.EmbeddingAPIKey = key
+		}
+	}
+	if p.EmbeddingTopK != nil && *p.EmbeddingTopK > 0 {
+		c.EmbeddingTopK = *p.EmbeddingTopK
+	}
 	normalize(c)
 }
 
@@ -502,5 +558,16 @@ func (c *Config) Public() Config {
 	if p.APIKey != "" {
 		p.APIKey = "***"
 	}
+	if p.EmbeddingAPIKey != "" {
+		p.EmbeddingAPIKey = "***"
+	}
 	return p
+}
+
+// RetrievalConfig maps embedding settings for pkg/retrieval.
+func (c *Config) RetrievalConfig() (enabled bool, endpoint, model, apiKey string, topK int) {
+	if c == nil {
+		return false, "", "", "", 5
+	}
+	return c.EmbeddingEnabled, c.EmbeddingEndpoint, c.EmbeddingModel, c.EmbeddingAPIKey, c.EmbeddingTopK
 }

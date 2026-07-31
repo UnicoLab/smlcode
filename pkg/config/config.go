@@ -148,6 +148,9 @@ type Config struct {
 	EmbeddingTopK     int    `yaml:"embedding_top_k" json:"embedding_top_k"`
 
 	// Optional $/MTok rates for estimated cost in /stats (omit to report tokens only).
+	// price_preset: ""|off|local|omlx|openai|anthropic|openrouter — ballpark rates;
+	// explicit price_*_per_mtok always win. Unknown models never invent $ without preset/config.
+	PricePreset            string  `yaml:"price_preset" json:"price_preset"`
 	PricePromptPerMTok     float64 `yaml:"price_prompt_per_mtok" json:"price_prompt_per_mtok"`
 	PriceCompletionPerMTok float64 `yaml:"price_completion_per_mtok" json:"price_completion_per_mtok"`
 
@@ -442,6 +445,9 @@ type Patch struct {
 	EmbeddingModel      *string `json:"embedding_model,omitempty"`
 	EmbeddingAPIKey     *string `json:"embedding_api_key,omitempty"`
 	EmbeddingTopK       *int    `json:"embedding_top_k,omitempty"`
+	PricePreset            *string  `json:"price_preset,omitempty"`
+	PricePromptPerMTok     *float64 `json:"price_prompt_per_mtok,omitempty"`
+	PriceCompletionPerMTok *float64 `json:"price_completion_per_mtok,omitempty"`
 }
 
 // ApplyPatch merges a partial update and re-normalizes permission/dry-run.
@@ -553,6 +559,15 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.EmbeddingTopK != nil && *p.EmbeddingTopK > 0 {
 		c.EmbeddingTopK = *p.EmbeddingTopK
 	}
+	if p.PricePreset != nil {
+		c.PricePreset = strings.ToLower(strings.TrimSpace(*p.PricePreset))
+	}
+	if p.PricePromptPerMTok != nil {
+		c.PricePromptPerMTok = *p.PricePromptPerMTok
+	}
+	if p.PriceCompletionPerMTok != nil {
+		c.PriceCompletionPerMTok = *p.PriceCompletionPerMTok
+	}
 	normalize(c)
 }
 
@@ -574,4 +589,44 @@ func (c *Config) RetrievalConfig() (enabled bool, endpoint, model, apiKey string
 		return false, "", "", "", 5
 	}
 	return c.EmbeddingEnabled, c.EmbeddingEndpoint, c.EmbeddingModel, c.EmbeddingAPIKey, c.EmbeddingTopK
+}
+
+// PriceRates returns effective $/MTok rates. Explicit price_* win; else optional
+// price_preset ballparks. Returns ok=false when cost display should stay tokens-only
+// (no fake $ for unknown models without preset/config).
+func (c *Config) PriceRates() (prompt, completion float64, ok bool) {
+	if c == nil {
+		return 0, 0, false
+	}
+	if c.PricePromptPerMTok > 0 || c.PriceCompletionPerMTok > 0 {
+		return c.PricePromptPerMTok, c.PriceCompletionPerMTok, true
+	}
+	pin, cout, ok := PricePresetRates(c.PricePreset, c.Provider)
+	return pin, cout, ok
+}
+
+// PricePresetRates maps preset/provider-family names to ballpark $/MTok.
+// local/omlx/ollama/lmstudio → $0 (configured, free). openai/anthropic/openrouter
+// use public ballparks. Unknown/off/empty → not configured.
+func PricePresetRates(preset, provider string) (prompt, completion float64, ok bool) {
+	name := strings.ToLower(strings.TrimSpace(preset))
+	if name == "" || name == "off" || name == "none" || name == "disable" || name == "disabled" {
+		return 0, 0, false
+	}
+	if name == "auto" {
+		name = NormalizeProvider(provider)
+	}
+	switch name {
+	case "local", "omlx", "ollama", "lmstudio", "vllm", "mlx":
+		return 0, 0, true // explicitly free / local
+	case "openai", "gpt":
+		// Ballpark GPT-4o-mini class ($/MTok) — not model-perfect; override with price_*.
+		return 0.15, 0.60, true
+	case "anthropic", "claude":
+		return 3.0, 15.0, true
+	case "openrouter":
+		return 0.50, 1.50, true
+	default:
+		return 0, 0, false
+	}
 }

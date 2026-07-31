@@ -27,6 +27,16 @@ func TestRecordResultUsageEstimatesWhenEmpty(t *testing.T) {
 	if u.CostConfigured {
 		t.Fatal("no rate table configured — must not invent $ cost")
 	}
+	if !strings.Contains(u.CostNote, "price_") {
+		t.Fatalf("expected tokens-only note, got %q", u.CostNote)
+	}
+	// Tokenizer path should differ from naive chars/4 when tiktoken is available.
+	if llm.TokenizerAvailable() {
+		heurPrompt := (len(prompt) + 3) / 4
+		if u.PromptTokens == heurPrompt {
+			t.Fatalf("expected tiktoken prompt tokens != heuristic %d, got %d", heurPrompt, u.PromptTokens)
+		}
+	}
 }
 
 func TestRecordUsagePreservesProviderCounts(t *testing.T) {
@@ -60,5 +70,50 @@ func TestEstimateCostWhenRatesConfigured(t *testing.T) {
 	head := usageHead(u)
 	if head == "" || !strings.Contains(head, "tokens") || !strings.Contains(head, "total=") {
 		t.Fatalf("head=%q", head)
+	}
+}
+
+func TestEstimateCostPresetLocalVsOff(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.PricePreset = "off"
+	o := &Orchestrator{cfg: cfg}
+	o.recordUsage(llm.Usage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}, true)
+	u := o.snapshotUsage()
+	if u.CostConfigured {
+		t.Fatal("off preset must not invent $")
+	}
+	if !strings.Contains(formatUsage(u), "tokens only") {
+		t.Fatalf("want tokens-only hint, got %q", formatUsage(u))
+	}
+
+	cfg.PricePreset = "local"
+	u2 := o.snapshotUsage()
+	if !u2.CostConfigured {
+		t.Fatal("local preset is explicitly $0 — CostConfigured should be true")
+	}
+	if u2.CostUSD != 0 {
+		t.Fatalf("local cost=%v", u2.CostUSD)
+	}
+
+	cfg.PricePreset = "openai"
+	u3 := o.snapshotUsage()
+	if !u3.CostConfigured || u3.CostUSD <= 0 {
+		t.Fatalf("openai preset should yield ballpark $, got %+v", u3)
+	}
+
+	// Explicit rates win over preset.
+	cfg.PricePreset = "openai"
+	cfg.PricePromptPerMTok = 10
+	cfg.PriceCompletionPerMTok = 20
+	cost, ok := estimateCostUSD(cfg, TokenUsage{PromptTokens: 1_000_000, CompletionTokens: 0})
+	if !ok || cost < 9.9 || cost > 10.1 {
+		t.Fatalf("explicit win: ok=%v cost=%v", ok, cost)
+	}
+}
+
+func TestPricePresetUnknownNoFake(t *testing.T) {
+	pin, cout, ok := config.PricePresetRates("totally-unknown-cloud", "custom")
+	if ok || pin != 0 || cout != 0 {
+		t.Fatalf("unknown must not invent rates: %v %v %v", pin, cout, ok)
 	}
 }

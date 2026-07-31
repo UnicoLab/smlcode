@@ -17,6 +17,7 @@ type TokenUsage struct {
 	Estimated        bool    `json:"estimated,omitempty"`
 	CostUSD          float64 `json:"cost_usd,omitempty"`
 	CostConfigured   bool    `json:"cost_configured,omitempty"`
+	CostNote         string  `json:"cost_note,omitempty"`
 }
 
 func (o *Orchestrator) recordUsage(u llm.Usage, estimated bool) {
@@ -45,6 +46,7 @@ func (o *Orchestrator) recordResultUsage(r ggagent.SubAgentResult, input, output
 	est := r.UsageEstimated
 	if u.TotalTokens == 0 && u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		// Fallback estimate from role IO when GoLangGraph omitted usage.
+		// Prefer tiktoken (cl100k_base) via llm.EstimateTokens; heuristic only if unavailable.
 		u = llm.Usage{
 			PromptTokens:     llm.EstimateTokens(input),
 			CompletionTokens: llm.EstimateCompletionTokens(output, nil),
@@ -65,6 +67,8 @@ func (o *Orchestrator) snapshotUsage() *TokenUsage {
 	if cost, ok := estimateCostUSD(o.cfg, out); ok {
 		out.CostUSD = cost
 		out.CostConfigured = true
+	} else {
+		out.CostNote = "tokens only (set price_preset or price_*_per_mtok to enable $)"
 	}
 	return &out
 }
@@ -73,9 +77,8 @@ func estimateCostUSD(cfg *config.Config, u TokenUsage) (float64, bool) {
 	if cfg == nil {
 		return 0, false
 	}
-	pin := cfg.PricePromptPerMTok
-	cout := cfg.PriceCompletionPerMTok
-	if pin <= 0 && cout <= 0 {
+	pin, cout, ok := cfg.PriceRates()
+	if !ok {
 		return 0, false
 	}
 	cost := (float64(u.PromptTokens)/1_000_000.0)*pin + (float64(u.CompletionTokens)/1_000_000.0)*cout
@@ -94,6 +97,8 @@ func formatUsage(u *TokenUsage) string {
 		u.PromptTokens, u.CompletionTokens, u.TotalTokens, est)
 	if u.CostConfigured {
 		msg += fmt.Sprintf(" · ~$%.6f", u.CostUSD)
+	} else if u.CostNote != "" {
+		msg += " · " + u.CostNote
 	}
 	return msg
 }

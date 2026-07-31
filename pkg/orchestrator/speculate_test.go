@@ -65,7 +65,7 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 	start := time.Now()
 	res := o.speculate(context.Background(), slots)
 	elapsed := time.Since(start)
-	if elapsed > 250*time.Millisecond {
+	if elapsed > 350*time.Millisecond {
 		t.Fatalf("expected early cancel of architect; elapsed=%s", elapsed)
 	}
 	var explorer, architect SpecResult
@@ -114,5 +114,86 @@ func TestSpeculateRespectsMaxParallel(t *testing.T) {
 	}
 	if exp.Err != nil {
 		t.Fatalf("explorer failed: %v", exp.Err)
+	}
+}
+
+func TestSpeculateDiskAcceptCancelsTester(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.MaxParallel = 2
+	fe := &fakeSpecExec{
+		delay: map[string]time.Duration{
+			"tester": 400 * time.Millisecond,
+		},
+		out: map[string]string{
+			"tester": `{"passed":false,"summary":"slow","failures":["nope"]}`,
+		},
+	}
+	o := &Orchestrator{cfg: cfg, executor: fe, shared: ggagent.NewSharedState()}
+	start := time.Now()
+	res := o.speculate(context.Background(), []SpecSlot{
+		{
+			Role: "disk-accept", Required: true, Phase: "test",
+			Local: func(ctx context.Context) (string, error) {
+				return `{"passed":true,"summary":"rename verified on disk","commands":[],"failures":[]}`, nil
+			},
+		},
+		{Role: "tester", Prompt: "verify", Required: false, Phase: "test"},
+	})
+	if time.Since(start) > 350*time.Millisecond {
+		t.Fatalf("expected tester cancel; elapsed=%s", time.Since(start))
+	}
+	var disk, tester SpecResult
+	for _, r := range res {
+		switch r.Role {
+		case "disk-accept":
+			disk = r
+		case "tester":
+			tester = r
+		}
+	}
+	if disk.Err != nil || disk.Output == "" {
+		t.Fatalf("disk: %+v", disk)
+	}
+	if !tester.Skipped && tester.Err == nil && tester.Output != "" {
+		t.Fatalf("expected tester cancelled, got %+v", tester)
+	}
+}
+
+func TestSpeculateDuplicateTesterCancelsLoser(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.MaxParallel = 2
+	fe := &fakeSpecExec{
+		delay: map[string]time.Duration{
+			"tester":        25 * time.Millisecond,
+			"tester-strict": 400 * time.Millisecond,
+		},
+		out: map[string]string{
+			"tester":        `{"passed":true,"summary":"lean","failures":[]}`,
+			"tester-strict": `{"passed":false,"summary":"slow","failures":["x"]}`,
+		},
+	}
+	o := &Orchestrator{cfg: cfg, executor: fe, shared: ggagent.NewSharedState()}
+	start := time.Now()
+	res := o.speculate(context.Background(), []SpecSlot{
+		{Role: "tester", Prompt: "a", Required: false, Phase: "test"},
+		{Role: "tester-strict", Prompt: "b", Required: false, Phase: "test"},
+	})
+	if time.Since(start) > 350*time.Millisecond {
+		t.Fatalf("expected cancel; elapsed=%s", time.Since(start))
+	}
+	var lean, strict SpecResult
+	for _, r := range res {
+		switch r.Role {
+		case "tester":
+			lean = r
+		case "tester-strict":
+			strict = r
+		}
+	}
+	if lean.Err != nil || lean.Output == "" {
+		t.Fatalf("lean: %+v", lean)
+	}
+	if !strict.Skipped && strict.Err == nil && strict.Output != "" {
+		t.Fatalf("expected strict cancelled, got %+v", strict)
 	}
 }

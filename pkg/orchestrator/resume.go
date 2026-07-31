@@ -168,16 +168,6 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, skillPack string, board *plan.Board, runner *loop.Runner, start time.Time) (*Result, error) {
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseTest)
 
-	// Deterministic rename acceptance before LLM tester (avoids false rewrite).
-	if renameDiskOK(o.cfg.Root, query, board) {
-		promoteRenameTasksDone(board)
-		o.persistBoard(board)
-		o.emit("test", "rename acceptance satisfied on disk — skipping LLM tester reject path", "")
-		testOut := `{"passed":true,"summary":"rename verified on disk","commands":[],"failures":[]}`
-		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
-		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, start)
-	}
-
 	o.emitAgent("test", plan.RoleTester, "", "verification pass", "", "")
 	_, tasksMD := board.ToMarkdown()
 	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor("tester", query))
@@ -185,8 +175,18 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		"\n\nVerify THIS query's work. Return STRICT JSON: " +
 		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
 		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
-	testOut, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPrompt)
+
+	// Speculative tester race: disk/rename acceptance can cancel tester LLM;
+	// duplicate tester strategies cancel on first decisive JSON.
+	testOut, fromDisk, _ := o.speculateTester(ctx, query, board, testPrompt)
 	testerRejected := false
+	if fromDisk {
+		promoteRenameTasksDone(board)
+		o.persistBoard(board)
+		o.emit("test", "rename/disk acceptance won — cancelled tester LLM losers", "")
+		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
+		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, start)
+	}
 	if strings.TrimSpace(testOut) == "" {
 		testOut = `{"passed":false,"summary":"empty tester finalize","failures":["empty or missing tester JSON — treat as failed"]}`
 		o.emitFull("test", stream.KindOutput, plan.RoleTester, "",

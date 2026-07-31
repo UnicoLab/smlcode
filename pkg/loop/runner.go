@@ -413,6 +413,84 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				review.Summary = "auto-approved: disk write evidence on focus files"
 			}
 			r.Log("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
+		} else if r.MaxParallel >= 2 {
+			// Race disk/acceptance probe vs reviewer LLM; acceptance win cancels reviewer.
+			// Optional second reviewer strategy when capacity allows (duplicate paths).
+			reviewIn := formatReviewPrompt(current)
+			cur := current
+			base := baseline
+			slots := []SpecSlot{{
+				Role: "acceptance", Required: false,
+				Local: func(ctx context.Context) (string, error) {
+					return acceptanceProbe(ctx, func() bool {
+						return renameOK(r.Root, cur) || alreadySatisfied(r.Root, cur) ||
+							r.hasRealWriteEvidence(cur, base)
+					}, `{"approved":true,"score":85,"summary":"auto-approved: acceptance race won"}`)
+				},
+			}, {
+				Role: plan.RoleReviewer, Prompt: reviewIn, Required: false,
+			}}
+			if r.MaxParallel >= 3 {
+				slots = append(slots, SpecSlot{
+					Role: "reviewer-strict", Required: false,
+					Prompt: reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
+				})
+			}
+			r.fire("agent_start", plan.RoleReviewer, current.ID, "speculative review race", strings.Join(current.Files, ", "), "")
+			r.Log("%s speculative review (%d paths, max_parallel=%d)", current.ID, len(slots), r.MaxParallel)
+			res := r.speculate(ctx, slots)
+			var acceptOut, revOut, strictOut string
+			var revErr error
+			for _, sr := range res {
+				switch sr.Role {
+				case "acceptance":
+					if !sr.Skipped && sr.Err == nil {
+						acceptOut = sr.Output
+					}
+				case plan.RoleReviewer:
+					revOut, revErr = sr.Output, sr.Err
+				case "reviewer-strict":
+					if !sr.Skipped && strings.TrimSpace(sr.Output) != "" {
+						strictOut = sr.Output
+					}
+				}
+			}
+			if strings.TrimSpace(acceptOut) != "" {
+				reviewRaw = acceptOut
+				review = plan.ParseReviewJSON(reviewRaw)
+				r.Log("%s review acceptance won — cancelled reviewer LLM", current.ID)
+			} else {
+				reviewRaw = revOut
+				if strings.TrimSpace(reviewRaw) == "" {
+					reviewRaw = strictOut
+				}
+				if revErr != nil && strings.TrimSpace(reviewRaw) == "" {
+					current.MoveTo(plan.ColBlocked)
+					current.Error = revErr.Error()
+					board.UpdateTask(current)
+					r.persist(board)
+					if r.FailureHandler != nil {
+						_ = r.FailureHandler.ReportTaskFailure(board, current, revErr, attempt)
+					}
+					return revErr
+				}
+				review = plan.ParseReviewJSON(reviewRaw)
+				if !review.Approved {
+					if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
+						review.Approved = true
+						review.Score = 80
+						switch {
+						case satisfied && !hasEvidence:
+							review.Summary = "auto-approved: acceptance already satisfied on disk"
+						case diskSection || diskWrite:
+							review.Summary = "auto-approved: disk write evidence on focus files"
+						default:
+							review.Summary = "auto-approved: worker completion + write evidence"
+						}
+						review.Issues = nil
+					}
+				}
+			}
 		} else {
 			r.fire("agent_start", plan.RoleReviewer, current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
 			reviewIn := formatReviewPrompt(current)

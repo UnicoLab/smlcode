@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.15-0f6e8c?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.16-0f6e8c?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -187,7 +187,7 @@ make install / make install-system
 RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
 
-Engine notes (0.5.15+): tagged GoLangGraph `v0.2.0` (no local `replace`), speculative explore digs with loser cancel, early-exit token accounting in Result/`/stats` (optional `$` via `price_*_per_mtok`). Prior (0.5.14+): mid-ReAct HITL resume, local embeddings, rename fast-path.
+Engine notes (0.5.16+): GoLangGraph `v0.2.1` tiktoken (`cl100k_base`) usage estimates; speculative cancel for reviewer/tester races; optional `price_preset=local|openai|anthropic|…` (or `price_*_per_mtok`) — TUI shows tokens-only until configured. Prior (0.5.15+): explore digs cancel, early-exit accounting.
 
 Dependency: `github.com/piotrlaczkowski/GoLangGraph@v0.2.0` (set `GOPRIVATE=github.com/piotrlaczkowski/*` if the module proxy rejects the capital path). Optional local override: `go mod edit -replace github.com/piotrlaczkowski/GoLangGraph=../GoLangGraph-Project/GoLangGraph`.
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -15,6 +16,9 @@ type SpecSlot struct {
 	Role     string
 	Prompt   string
 	Required bool // required slots always waited for; optional losers are cancelled
+	// Local, when set, runs in-process instead of an LLM role call (e.g. disk acceptance).
+	Local func(ctx context.Context) (string, error)
+	Phase string // observability phase label (explore/review/test); defaults to "speculate"
 }
 
 // SpecResult is the outcome of one speculative slot.
@@ -82,8 +86,18 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 					continue
 				default:
 				}
-				o.emit("explore", fmt.Sprintf("speculative %s", j.slot.Role), "")
-				out, err := o.runRoleTracked(gctx, j.slot.Role, "", j.slot.Prompt)
+				phase := j.slot.Phase
+				if phase == "" {
+					phase = "speculate"
+				}
+				o.emit(phase, fmt.Sprintf("speculative %s", j.slot.Role), "")
+				var out string
+				var err error
+				if j.slot.Local != nil {
+					out, err = j.slot.Local(gctx)
+				} else {
+					out, err = o.runRoleTracked(gctx, j.slot.Role, "", j.slot.Prompt)
+				}
 				mu.Lock()
 				results[j.idx] = SpecResult{Role: j.slot.Role, Output: out, Err: err}
 				if j.slot.Required && err == nil && strings.TrimSpace(out) != "" {
@@ -116,7 +130,7 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 // think_passes and max_parallel allow, cancelling optional losers when explorer wins.
 func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt string, inventory []string, wantDocs, wantArch bool) (exploreOut, archOut, docsOut string, err error) {
 	slots := []SpecSlot{{
-		Role: plan.RoleExplorer, Prompt: explorePrompt, Required: true,
+		Role: plan.RoleExplorer, Prompt: explorePrompt, Required: true, Phase: "explore",
 	}}
 	// Cap optional digs by remaining parallel capacity and think_passes.
 	budget := o.cfg.MaxParallel - 1
@@ -130,7 +144,7 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		docsPack, _ := o.packer.Build("docs", query,
 			[]string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
 		slots = append(slots, SpecSlot{
-			Role: "docs", Required: false,
+			Role: "docs", Required: false, Phase: "explore",
 			Prompt: docsPack.Render() + "\nMap docs/conventions for this query. Return JSON.",
 		})
 		budget--
@@ -139,7 +153,7 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
 		hint := truncate(strings.Join(inventory, "\n"), 2000)
 		slots = append(slots, SpecSlot{
-			Role: "architect", Required: false,
+			Role: "architect", Required: false, Phase: "explore",
 			Prompt: archPack.Render() + "\nWorkspace files:\n" + hint + "\nReturn STRICT JSON design.",
 		})
 	}
@@ -171,4 +185,101 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		}
 	}
 	return exploreOut, archOut, docsOut, err
+}
+
+// speculateTester races disk/rename acceptance (required when it can win) against
+// one or more tester LLM strategies. Cancels optional tester losers on acceptance win
+// or on the first decisive tester JSON when racing duplicates.
+func (o *Orchestrator) speculateTester(ctx context.Context, query string, board *plan.Board, basePrompt string) (testOut string, fromDisk bool, err error) {
+	diskOK := renameDiskOK(o.cfg.Root, query, board)
+	if diskOK && o.cfg.MaxParallel < 2 {
+		// Serial fast-path: no need to start tester at all.
+		return `{"passed":true,"summary":"rename verified on disk","commands":[],"failures":[]}`, true, nil
+	}
+
+	slots := make([]SpecSlot, 0, 3)
+	if diskOK || o.cfg.MaxParallel >= 2 {
+		slots = append(slots, SpecSlot{
+			Role: "disk-accept", Required: diskOK, Phase: "test",
+			Local: func(ctx context.Context) (string, error) {
+				// Poll briefly so a just-finished rename can win and cancel tester LLM.
+				for i := 0; i < 6; i++ {
+					if renameDiskOK(o.cfg.Root, query, board) {
+						return `{"passed":true,"summary":"rename verified on disk","commands":[],"failures":[]}`, nil
+					}
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-time.After(25 * time.Millisecond):
+					}
+				}
+				return "", fmt.Errorf("no disk acceptance")
+			},
+		})
+	}
+
+	slots = append(slots, SpecSlot{
+		Role: plan.RoleTester, Prompt: basePrompt, Required: !diskOK && o.cfg.MaxParallel < 2,
+		Phase: "test",
+	})
+
+	// Duplicate tester strategy when think_passes and parallel capacity allow.
+	budget := o.cfg.MaxParallel - len(slots)
+	if budget < 0 {
+		budget = 0
+	}
+	if o.cfg.ThinkPasses >= 2 && budget > 0 && !diskOK {
+		strict := basePrompt + "\n\nSTRICT mode: cite task IDs + file paths in failures[]. Prefer passed=false when uncertain."
+		slots = append(slots, SpecSlot{
+			Role: "tester-strict", Prompt: strict, Required: false, Phase: "test",
+		})
+	}
+
+	if len(slots) == 1 {
+		out, e := o.runRoleTracked(ctx, plan.RoleTester, "", basePrompt)
+		return out, false, e
+	}
+
+	o.emit("test", fmt.Sprintf("speculative tester race (%d paths, max_parallel=%d)", len(slots), o.cfg.MaxParallel), "")
+	res := o.speculate(ctx, slots)
+
+	var testerOut, strictOut, diskOut string
+	var testerErr error
+	for _, r := range res {
+		switch r.Role {
+		case "disk-accept":
+			if !r.Skipped && strings.TrimSpace(r.Output) != "" && r.Err == nil {
+				diskOut = r.Output
+			}
+		case plan.RoleTester:
+			testerOut, testerErr = r.Output, r.Err
+			if r.Skipped {
+				testerErr = r.Err
+			}
+		case "tester-strict":
+			if !r.Skipped && strings.TrimSpace(r.Output) != "" {
+				strictOut = r.Output
+			}
+		}
+	}
+	if diskOut != "" {
+		return diskOut, true, nil
+	}
+	// Prefer first decisive JSON among tester strategies.
+	for _, cand := range []string{testerOut, strictOut} {
+		if strings.TrimSpace(cand) == "" {
+			continue
+		}
+		tr := plan.ParseTesterJSON(cand)
+		if tr.Passed || len(tr.Failures) > 0 || strings.TrimSpace(tr.Summary) != "" {
+			return cand, false, nil
+		}
+	}
+	if strings.TrimSpace(testerOut) != "" {
+		return testerOut, false, testerErr
+	}
+	if strings.TrimSpace(strictOut) != "" {
+		return strictOut, false, nil
+	}
+	return testerOut, false, testerErr
 }

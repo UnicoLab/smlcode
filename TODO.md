@@ -282,8 +282,14 @@ We need everything to be self evolving and improving all the time !!!
 - [x] **Stream early-exit token accounting** — estimate chars/4 when Usage empty; surface in Result + TUI `/stats` + `KindUsage` events; optional `$` only when `price_*_per_mtok` configured
 - [x] Tests: speculate cancel + usage estimate; `go test ./...` + race pkgs; `make build` + `make install-system`
 
+### Closed this pass (2026-07-31 — 0.5.16)
+- [x] **Speculative cancel beyond explore** — reviewer↔acceptance race + duplicate reviewer/tester strategies; disk acceptance / first decisive JSON cancels losers; respects `max_parallel`
+- [x] **True tiktoken usage** — GoLangGraph `v0.2.1` offline `cl100k_base` via tiktoken-go; heuristic fallback only if tokenizer unavailable; empty-Usage path covered in tests
+- [x] **Cost presets** — `price_preset=local|omlx|openai|anthropic|openrouter|off` + explicit `price_*_per_mtok`; TUI `/stats` shows “tokens only (set price_preset or price_*_per_mtok to enable $)” when unset; never invent $ for unknown models
+- [x] **GoLangGraph sibling tree** — dirty WIP discarded/reset to published main; tiktoken committed+tagged `v0.2.1` + pushed; working tree clean (no fragile `replace`)
+- [x] Tests: review/tester cancel-on-win, tokenizer vs empty Usage, preset vs off; `go test ./...` + race pkgs; `make install-system` → **0.5.16**
+
 ### Honest remaining gaps vs “best in world”
-- [ ] Broader speculative digs (tester/reviewer races) beyond explore-phase specialists
 - [ ] Full per-tool call cost breakdown in Studio UI charts
 
 

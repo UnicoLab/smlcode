@@ -467,7 +467,7 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/provider <name>")+"  switch provider")
 	fmt.Fprintln(s.out, "  "+Cyan("/permission …")+"     auto|dry-run|review  or  shell=allow|ask|deny")
 	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle compact live stream")
-	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run latency + tokens")
+	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run latency + tokens (+$ if price_preset/price_* set)")
 	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
 	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             cancel in-flight run (checkpoint board)")
 	fmt.Fprintln(s.out, "  "+Cyan("/resume [id]")+"      continue interrupted run from last board/tasks")

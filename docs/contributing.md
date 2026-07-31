@@ -1,58 +1,54 @@
 # 🤝 Contributing
 
-SLMCode is intentionally a **public baseline**. Bring better prompts, tighter gates, smarter scheduling, new specialists, and evals — especially ones that make **small models** more reliable.
-
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+Public baseline on purpose. Bring prompts, gates, evals, and UX that make **small models** more reliable.
 
 ---
 
-## 🛠️ Dev setup
+## Dev setup
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git
 cd smlcode
-make tidy
-make lint
-make test
-make install   # or install-system
+make tidy && make lint && make test
+make install
 ```
 
-Docs site (this one!):
+### Docs site
 
 ```bash
-python3 -m venv .venv-docs
-source .venv-docs/bin/activate
-pip install -r requirements-docs.txt
-mkdocs serve          # http://127.0.0.1:8000
-mkdocs build --strict
+make docs-serve    # http://127.0.0.1:8000
+make docs-build    # strict → site/
 ```
 
+Stack: **MkDocs Material**, custom CSS, GitHub Pages via Actions.
+
 ---
 
-## ✅ Before you PR
+## Before a PR
 
 - [ ] `make lint && make test`
-- [ ] Docs still build: `mkdocs build --strict`
-- [ ] Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, …
-- [ ] No secrets in the diff (yes, even “temporary” ones)
-
-!!! warning "Commit messages"
-    Keep them human. No tool trailers. No ANSI art from your pager. Future archaeologists will thank you.
+- [ ] `make docs-build`
+- [ ] Conventional commits (`feat:`, `fix:`, `docs:`, …)
+- [ ] No secrets
+- [ ] Human commit messages (no tool trailers, no ANSI art)
 
 ---
 
-## 💡 Good first contributions
+## Good first contributions
 
-- SLM-specific eval tasks / fixtures
-- Better JSON repair edge cases
-- Studio UX polish (still offline!)
-- Provider presets for new gateways
-- Docs examples that fail less often than reality
+- SLM eval fixtures
+- JSON repair edge cases
+- Studio/TUI polish (stay offline!)
+- Provider presets
+- Docs recipes that fail less often than reality
 
 ---
 
-## 🔗 Links
+## Links
 
-- Repo: [github.com/UnicoLab/smlcode](https://github.com/UnicoLab/smlcode)
-- UnicoLab: [unicolab.ai](https://unicolab.ai)
-- Releases: [GitHub Releases](https://github.com/UnicoLab/smlcode/releases)
+- [GitHub](https://github.com/UnicoLab/smlcode)
+- [Docs](https://unicolab.github.io/smlcode/)
+- [UnicoLab](https://unicolab.ai)
+- [Releases](https://github.com/UnicoLab/smlcode/releases)
+
+Made with ♥ by [UnicoLab](https://unicolab.ai)

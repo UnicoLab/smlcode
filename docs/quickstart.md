@@ -1,15 +1,19 @@
 # 🚀 Quick start
 
-Goal: go from “installed binary” to “oh, it actually edited my file” without reading a novel.
+Goal: installed binary → “oh, it edited my file” in about a minute.
 
 !!! info "Assumptions"
-    You already ran an [install one-liner](install.md). You have **some** model server reachable (oMLX, Ollama, LM Studio, cloud…).
+    You ran an [install](install.md) one-liner. You have **some** model reachable
+    (oMLX, Ollama, LM Studio, cloud…). See [Providers](providers.md) if not.
 
 ---
 
-## 1. Point at a model (30 seconds)
+<ol class="slm-steps" markdown>
 
-=== "oMLX (Apple Silicon default)"
+<li markdown>
+**Point at a model**
+
+=== "oMLX"
 
     ```bash
     omlx start
@@ -19,20 +23,21 @@ Goal: go from “installed binary” to “oh, it actually edited my file” wit
 === "Ollama"
 
     ```bash
-    ollama serve   # if not already running
+    ollama serve
     slmcode config set provider ollama
     slmcode config set model qwen2.5-coder:14b
     slmcode config set endpoint http://127.0.0.1:11434
     slmcode doctor
     ```
 
-=== "Anything else"
+=== "Other"
 
-    See [Providers](providers.md) — flags, env vars, Studio Settings. Same harness.
+    Use flags/env/Studio Settings — [Providers](providers.md).
 
----
+</li>
 
-## 2. Init a playground
+<li markdown>
+**Init a playground**
 
 ```bash
 mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
@@ -41,71 +46,68 @@ printf '# Agents\n\nPrefer tiny Go edits and clear godoc comments.\n' > AGENTS.m
 slmcode init
 ```
 
-Peek at `.slmcode/PROJECT.md` and write two sentences about the stack. Future-you will thank present-you.
+Edit `.slmcode/PROJECT.md` with two honest sentences about the stack.
 
----
+</li>
 
-## 3. Run the pipeline
+<li markdown>
+**Run the pipeline**
 
 ```bash
 slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting. Keep it tiny."
 ```
 
-Watch the live stream: specialists appear, tasks move, reviewer argues with reality (politely).
-
-**Pass criteria (aka “did the robot behave?”):**
+**Pass checklist**
 
 - [ ] `hello.go` has a real `// Hello …` comment
-- [ ] `slmcode board` shows work completed
+- [ ] `slmcode board` shows completed work
 - [ ] `slmcode session list` has a run
-- [ ] `.slmcode/SKILLS.md` exists (the flywheel woke up)
+- [ ] `.slmcode/SKILLS.md` exists
+
+</li>
+
+<li markdown>
+**Open a cockpit**
+
+```bash
+slmcode studio    # http://127.0.0.1:7420
+# and/or
+slmcode           # premium TUI
+```
+
+</li>
+
+</ol>
 
 ---
 
-## 4. Open the cockpit
+## Level-ups
 
 ```bash
-slmcode studio
-# → http://127.0.0.1:7420
-```
-
-Type a query, hit **Run**, stare at the pipeline strip like it's a music visualizer.
-
-Or stay in the terminal:
-
-```bash
-slmcode          # premium TUI
-slmcode chat     # classic REPL
-```
-
----
-
-## 5. Level-ups (optional, spicy)
-
-```bash
-# Safer first: stage writes instead of applying them
+# Safer on real repos
 slmcode config set permission review
 slmcode run -v "Add a unit test for Hello()"
 slmcode apply
-slmcode diff
 
-# Make small models think twice
+# Help small models
 slmcode config set think_passes 2
 slmcode config set retries 2
 
-# One specialist only
+# One specialist
 slmcode run --agent explorer "Where is Hello defined?"
 ```
 
 ---
 
-## 🎉 You're in
+## Where next?
 
-Next stops:
+<div class="grid cards" markdown>
 
-- [User guide](guide.md) — skills, permissions, sessions, day-to-day
-- [Studio](studio.md) — GUI + API
-- [Agents](agents.md) — the 14-person circus
-- [Testing](testing.md) — prove it on your machine
+-   [Concepts](concepts.md) — why the loop looks like this
+-   [User guide](guide.md) — daily driving
+-   [Recipes](recipes.md) — copy-paste workflows
+-   [TUI & chat](tui.md) — terminal UX deep dive
+
+</div>
 
 Made with ♥ by [UnicoLab](https://unicolab.ai)

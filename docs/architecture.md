@@ -4,128 +4,70 @@ How SLMCode stays sharp when the model is small, tired, or both.
 
 ---
 
-## 🎯 Design thesis
+## Design thesis
 
-30B-class SLMs fail when asked to “be a frontier agent” in one giant free-form loop.
+30B-class SLMs fail when asked to “be a frontier agent” in one free-form loop.
 
-SLMCode keeps **routing in Go** and gives each specialist a **tiny scoped pack**:
+**Routing in Go. Tiny packs per specialist. Disk evidence over vibes.**
 
-- selected `.slmcode/*.md` slices
-- a few focus files
-- matched + learned skills
-- **one** atomic task
+!!! quote "Turkey rule"
+    If you stuff the whole repo into context, don't be surprised when the model naps.
 
-!!! quote "The turkey rule"
-    If you stuff the whole repo into context, don't be surprised when the model falls asleep at the table.
+→ Narrative version: [Concepts](concepts.md)
 
 ---
 
-## 📦 Package map
+## Package map
 
 ```text
-cmd/slmcode          CLI + embedded Studio UI
-pkg/orchestrator     Code-driven pipeline + coordinator + sessions
-pkg/loop             Parallel execute → review → correct (+ live events)
-pkg/agents           Specialist prompts + factory (14 roles)
-pkg/plan             Kanban, sanitize, filesystem discover
+cmd/slmcode          CLI + embedded Studio (go:embed ui/)
+pkg/orchestrator     Pipeline + coordinator + sessions
+pkg/loop             Parallel execute → review → correct
+pkg/agents           14 specialist prompts + factory
+pkg/plan             Kanban, sanitize, discover
 pkg/context          Markdown store + TaskPack budgeter
-pkg/knowledge        Auto SKILLS.md + learned skill evolution
-pkg/learning         Wave lessons / context deltas
+pkg/knowledge        SKILLS.md + learned evolution
+pkg/learning         Wave lessons / deltas
 pkg/instructions     AGENTS.md / PROJECT loader
-pkg/session          Resumable run snapshots
-pkg/permissions      auto | dry-run | review write policy
+pkg/session          Resumable snapshots + ReAct resume
+pkg/permissions      auto | dry-run | review
 pkg/multipass        Think → critique → refine
-pkg/stream           Live event schema (CLI + SSE)
+pkg/stream           Live events (CLI + SSE)
 pkg/server           Studio HTTP + SSE
 pkg/skills           SKILL.md loader
-pkg/workspace        Real FS/git tools (ws_*, git_*)
-pkg/backends         OpenAI-compat / Ollama / optional CLI backends
-pkg/harness          Public New / OpenWorkspace API
-pkg/cli              Colored terminal + live event formatter
-pkg/config           Provider presets + project config
-pkg/repair           SLM JSON repair helpers
+pkg/workspace        Real FS/git tools
+pkg/backends         OpenAI-compat / Ollama / optional CLIs
+pkg/harness          Public embed API
+pkg/cli              Terminal UX
+pkg/config           Presets + project config
+pkg/repair           SLM JSON repair
+pkg/retrieval        Embeddings / lexical ranking
 ```
 
 ---
 
-## 📡 Live streaming
+## Live streaming
 
-`stream.Event` (alias `orchestrator.Event`):
-
-| Field | Meaning |
-|-------|---------|
-| `phase` | Pipeline stage |
-| `kind` | `phase` / `agent_start` / `agent_end` / `coord` / `learn` / `output` |
-| `agent` | Specialist id |
-| `task_id` | Kanban task |
-| `scope` | Focus files |
-| `output` | Truncated agent output |
-
-Consumed by CLI (`cli.PrintEvent`), Studio SSE (`GET /api/events`), and `GET /api/runs/latest`.
+`stream.Event` fields: `phase`, `kind`, `agent`, `task_id`, `scope`, `output`.
+Consumers: CLI, Studio SSE (`/api/events`), `/api/runs/latest`.
 
 ---
 
-## ♻️ Explore reuse
+## Explore reuse · critic · flywheel
 
-If CONTEXT is rich, MEMORY/PROJECT exist, and filesystem discovery finds relevant files, the explorer deep-dive is **skipped**. Later runs stay fast and consistent with accumulated knowledge.
-
-```bash
-SLMCODE_FORCE_EXPLORE=1 slmcode run "…"   # force a fresh dig
-```
+- **Reuse** when CONTEXT/MEMORY are rich (override with `SLMCODE_FORCE_EXPLORE=1`)
+- **Critic**: worker → reviewer → corrector loop; disk evidence preferred
+- **Flywheel**: MEMORY / CONTEXT / SKILLS / sessions after each run
 
 ---
 
-## 🔁 Self-critic loop
+## Parallelism
 
-```text
-worker/deep → reviewer (JSON) → corrector (tools) → reviewer …
-```
-
-Heuristics trust clear `status:done` + `files_changed` when reviewers get flaky. Disk evidence beats vibes.
+`SubAgentExecutor` runs ready tasks up to `max_parallel`. Soft-skip blocked deps so one stuck locate can't freeze the board.
 
 ---
 
-## 🦋 Knowledge flywheel
-
-After each run:
-
-1. MEMORY.md append (lessons)
-2. CONTEXT.md append (run complete)
-3. `knowledge.Evolve` → `SKILLS.md` + `skills/learned/SKILL.md`
-4. PROJECT.md auto-notes for touched files
-5. Session JSON under `.slmcode/sessions/`
-
-The project gets smarter. You get less typing. Everybody wins (except bugs).
-
----
-
-## 🧵 Parallelism & deps
-
-`SubAgentExecutor` runs ready kanban tasks up to `max_parallel`.
-Blocked upstream deps are soft-skipped so one failed locate task cannot freeze the whole board.
-
----
-
-## 🔐 Permissions
-
-Workspace tools honor `config.permission`:
-
-| Mode | Behavior |
-|------|----------|
-| `auto` | Write |
-| `dry-run` | Simulate |
-| `review` | Stage JSON patches under `.slmcode/pending/` for `slmcode apply` |
-
----
-
-## 📎 Dependency
-
-```text
-slmcode ──go.mod──► github.com/piotrlaczkowski/GoLangGraph
-                       └── optional local replace for hacking
-```
-
-Embed the harness:
+## Embed
 
 ```go
 import "github.com/UnicoLab/slmcode/pkg/harness"
@@ -134,5 +76,9 @@ h, _ := harness.New("/path/to/project")
 _ = h.Init()
 res, err := h.Run(ctx, "refactor pkg/auth")
 ```
+
+Dependency: `github.com/piotrlaczkowski/GoLangGraph` (optional local replace for hacking).
+
+→ [Contributing](contributing.md)
 
 Made with ♥ by [UnicoLab](https://unicolab.ai)

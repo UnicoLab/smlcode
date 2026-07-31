@@ -182,18 +182,15 @@ TUI: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/res
 
 ## 📚 Docs
 
-**Site (MkDocs → GitHub Pages):** [unicolab.github.io/smlcode](https://unicolab.github.io/smlcode/)
+**Premium site (MkDocs Material → GitHub Pages):**
+[unicolab.github.io/smlcode](https://unicolab.github.io/smlcode/)
 
-| Page | When |
-|------|------|
-| [Install](docs/install.md) | One-liners, brew, Windows, uninstall |
-| [Quick start](docs/quickstart.md) | First green run in ~60s |
-| [Providers](docs/providers.md) | Any LLM — presets, keys, per-agent |
-| [User guide](docs/guide.md) | Daily CLI / Studio workflow |
-| [Studio](docs/studio.md) | GUI + HTTP/SSE API |
-| [Agents](docs/agents.md) | Specialist roster |
-| [Testing](docs/testing.md) | Smoke test, Studio, e2e |
-| [Architecture](docs/architecture.md) | Internals |
+| Section | Pages |
+|---------|--------|
+| Getting started | Install · Quick start · Concepts · Providers |
+| Handbook | Guide · TUI · Skills · Studio · Agents · Recipes |
+| Reference | CLI · Config · Testing · FAQ |
+| Internals | Architecture · Contributing |
 
 Local preview: `make docs-serve` → http://127.0.0.1:8000
 

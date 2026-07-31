@@ -1,11 +1,11 @@
 site_name: SLMCode
-site_description: Coding harness for SLMs — and any OpenAI-compatible LLM
+site_description: Premium coding harness for SLMs — and any OpenAI-compatible LLM
 site_author: UnicoLab
 site_url: https://unicolab.github.io/smlcode/
 repo_name: UnicoLab/smlcode
 repo_url: https://github.com/UnicoLab/smlcode
 edit_uri: edit/main/docs/
-copyright: Made with ♥ by <a href="https://unicolab.ai" target="_blank" rel="noopener">UnicoLab</a>
+copyright: Made with ♥ by <a href="https://unicolab.ai" target="_blank" rel="noopener">UnicoLab</a> · MIT License
 
 theme:
   name: material
@@ -19,15 +19,15 @@ theme:
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: cyan
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: cyan
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to system preference
@@ -35,23 +35,39 @@ theme:
     text: IBM Plex Sans
     code: IBM Plex Mono
   features:
+    - announce.dismiss
     - navigation.instant
+    - navigation.instant.prefetch
     - navigation.tracking
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
     - navigation.expand
+    - navigation.path
     - navigation.top
     - navigation.footer
     - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
     - content.action.edit
+    - content.tooltips
     - toc.follow
   icon:
     repo: fontawesome/brands/github
+    edit: material/pencil-outline
+    admonition:
+      tip: material/lightbulb-on-outline
+      note: material/information-outline
+      warning: material/alert-outline
+      danger: material/fire
+      success: material/check-decagram
 
 plugins:
-  - search
+  - search:
+      separator: '[\s\-,:!=\[\]()"/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
   - minify:
       minify_html: true
 
@@ -65,7 +81,12 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      toc_depth: 3
   - pymdownx.details
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.tilde
+  - pymdownx.keys
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
@@ -74,6 +95,8 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -81,33 +104,54 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
   - pymdownx.tasklist:
       custom_checkbox: true
-  - pymdownx.snippets
 
 extra:
+  homepage: https://unicolab.github.io/smlcode/
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/UnicoLab/smlcode
+      name: GitHub
     - icon: fontawesome/solid/heart
       link: https://unicolab.ai
       name: UnicoLab
+    - icon: fontawesome/solid/box-open
+      link: https://github.com/UnicoLab/smlcode/releases
+      name: Releases
   generator: false
+  status:
+    new: Recently added
+    deprecated: Deprecated
 
 extra_css:
   - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/extra.js
 
 nav:
   - Home: index.md
   - Getting started:
       - Install: install.md
       - Quick start: quickstart.md
-      - Providers (any LLM): providers.md
-  - Using SLMCode:
+      - Concepts: concepts.md
+      - Providers: providers.md
+  - Handbook:
       - User guide: guide.md
-      - Studio GUI: studio.md
+      - TUI & chat: tui.md
+      - Skills: skills.md
+      - Studio: studio.md
       - Agents: agents.md
+      - Recipes: recipes.md
+  - Reference:
+      - CLI reference: cli.md
+      - Config reference: config.md
       - Testing: testing.md
+      - FAQ & troubleshooting: faq.md
   - Internals:
       - Architecture: architecture.md
   - Project:

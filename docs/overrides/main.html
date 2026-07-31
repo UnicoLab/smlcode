@@ -2,6 +2,14 @@
 
 {% block announce %}
   <a href="https://unicolab.ai" target="_blank" rel="noopener">
-    Made with ♥ by <strong>UnicoLab</strong> — local-first coding agents that don't melt your wallet
+    Made with ♥ by <strong>UnicoLab</strong>
+    <span> — local-first coding agents that don’t melt your wallet</span>
   </a>
+{% endblock %}
+
+{% block fonts %}
+  {{ super() }}
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,550;9..144,700&display=swap" rel="stylesheet" />
 {% endblock %}

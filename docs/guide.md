@@ -1,168 +1,93 @@
 # 🧭 User guide
 
-Daily-driving SLMCode: TUI, chat, skills, permissions, memory, and the little knobs that keep small models honest.
+Daily-driving SLMCode without turning your repo into modern art.
 
-!!! tip "New here?"
-    [Install](install.md) → [Quick start](quickstart.md) → [Providers](providers.md) → this page.
+!!! tip "Path"
+    [Install](install.md) → [Quick start](quickstart.md) → [Concepts](concepts.md) → here.
 
 ---
 
-## 🎬 Day-to-day loop
+## Day-to-day loop
 
 ```bash
 cd your-project
 slmcode init
-# optional: AGENTS.md at repo root (auto-loaded)
-# edit .slmcode/PROJECT.md with stack + conventions
+# optional: AGENTS.md at repo root
+# edit .slmcode/PROJECT.md
 
-slmcode                      # premium TUI (default)
+slmcode                      # premium TUI
 slmcode run -v "Add validation to the login handler"
-slmcode run --agent explorer "Where is auth handled?"
-slmcode run --skill atomic-coding "Refactor helpers"
 slmcode board
-slmcode watch                # live terminal kanban
-slmcode chat
-slmcode studio               # http://127.0.0.1:7420
+slmcode studio
 ```
+
+| Habit | Command |
+|-------|---------|
+| Explore only | `run --agent explorer "…"` |
+| Pin craft | `run --skill atomic-coding "…"` |
+| Watch board | `watch` |
+| Safe writes | `config set permission review` → `apply` |
+
+More copy-paste → [Recipes](recipes.md).
 
 ---
 
-## 🧬 Pipeline (what actually happens)
+## Pipeline (what happens)
 
 ```mermaid
 flowchart TD
-  Q[Query] --> I[Load PROJECT / AGENTS instructions]
-  I --> S[Match skills]
-  S --> C[Context agent]
-  C --> E{Explore or reuse?}
-  E -->|rich memory| R[Reuse CONTEXT/MEMORY]
-  E -->|cold / forced| X[Explorer]
-  R --> P[Planner → Splitter]
-  X --> P
+  Q[Query] --> I[Instructions + skills]
+  I --> C[Context]
+  C --> E{Explore?}
+  E -->|reuse| P[Plan / split]
+  E -->|deep| X[Explorer] --> P
   P --> Coord[Coordinator]
-  Coord --> W[Parallel workers]
-  W --> Rev[Reviewer ↔ Corrector]
-  Rev --> L[Learn + test + memory]
-  L --> Sk[Evolve SKILLS.md]
-  Sk --> Sess[Save session]
+  Coord --> W[Workers]
+  W --> R[Review ↔ correct]
+  R --> L[Learn / test / skills]
 ```
 
-Force a fresh deep explore when memory feels stale:
+Force a fresh dig: `SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"`.
 
-```bash
-SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"
-```
+Deep dive → [Concepts](concepts.md).
 
 ---
 
-## ⌨️ CLI cheat sheet
+## Surfaces
 
-| Command | Purpose |
-|---------|---------|
-| `init` / `doctor` / `config` | Workspace + provider health |
-| `run -v` | Full pipeline + live stream |
-| `tui` / bare `slmcode` | Premium interactive TUI |
-| `chat` | Classic REPL |
-| `board` / `watch` | Colored kanban |
-| `task …` | add / show / edit / move / delegate / promote |
-| `context` / `docs` / `plan` / `skills` | Markdown memory |
-| `session list` / `resume` | Time travel (sort of) |
-| `diff` / `commit` | Inspect & land changes |
-| `studio` | GUI + SSE API |
-| `update` | Refresh install |
+| Surface | Doc |
+|---------|-----|
+| Premium TUI + chat | [TUI & chat](tui.md) |
+| Studio GUI + API | [Studio](studio.md) |
+| Full CLI | [CLI reference](cli.md) |
 
-### Handy run flags
+---
+
+## Skills & specialists
+
+Skills teach house style; specialists execute roles.
 
 ```bash
-slmcode run --think-passes 2 --parallel 3 --retries 2 "…"
-slmcode run --agent explorer "…"
+slmcode skills
 slmcode run --skill multipass-quality "…"
 slmcode run "Fix login @skill:atomic-coding"
 ```
 
----
-
-## 🖥️ Premium TUI
-
-```bash
-slmcode
-# or
-slmcode tui
-```
-
-Slash commands worth tattooing on your muscle memory:
-
-| Command | Effect |
-|---------|--------|
-| `/compact` | Shrink context noise |
-| `/sessions` | Browse runs |
-| `/stats` | Latency / tokens |
-| `/permission` | Write / shell policy |
-| `/agents` | List / CRUD agents |
-| `/stop` | Checkpoint mid-run |
-| `/resume` | Continue from checkpoint |
-
-!!! note "Ctrl+C mid-run"
-    Checkpoints board + ReAct history under `.slmcode/queries/<id>/react/`. `/resume` continues — not a cold replan from the void.
+→ [Skills](skills.md) · [Agents](agents.md)
 
 ---
 
-## 💬 Chat REPL
-
-```bash
-slmcode chat
-```
-
-| Command | Effect |
-|---------|--------|
-| `/help` | List commands |
-| `/run <q>` | Full pipeline |
-| `/board` `/status` `/diff` `/skills` `/doctor` | Inspect |
-| `/permission auto\|dry-run\|review` | Write policy |
-| `/model <id>` | Switch model |
-| `/quit` | Exit |
-
-Plain lines (no `/`) also run the full pipeline. Yes, you can just talk to it.
-
----
-
-## 🦋 Skills
-
-Every specialist ships with a bundled `specialist-<role>` skill, plus shared packs like `atomic-coding`, `markdown-memory`, `multipass-quality`.
-
-```yaml
----
-name: my-skill
-description: How we do the thing around here
-triggers: keyword1, keyword2
-agents: worker, reviewer   # or * / omit for all
-user-invocable: true
----
-```
-
-| Action | How |
-|--------|-----|
-| List | `slmcode skills` / Studio → Skills |
-| Create | `slmcode skills new my-skill --agents worker` |
-| Edit | `slmcode skills edit my-skill` → `.slmcode/skills/` |
-| Reference | `@skill:name` or `/skill name` in the query |
-| Pin | `--skill name` · Studio chips · `config.pinned_skills` |
-| Full engine | `mode: full` (default) |
-| One specialist | `--agent worker` or `mode: specialist` |
-
----
-
-## 🧠 Shared project knowledge
+## Project memory (the real DB)
 
 | File | Role |
 |------|------|
-| `.slmcode/PROJECT.md` | Durable project facts |
-| `.slmcode/CONTEXT.md` | Working focus + discovered files + wave deltas |
-| `.slmcode/MEMORY.md` | Lessons / pitfalls (“never trust that helper”) |
-| `.slmcode/SKILLS.md` | Auto index of skills + latest lessons |
-| `.slmcode/skills/learned/SKILL.md` | Auto-grown conventions |
-| `.slmcode/sessions/*.json` | Resumable runs |
-| `.slmcode/pending/` | Staged writes when `permission=review` |
+| `.slmcode/PROJECT.md` | Durable facts |
+| `.slmcode/CONTEXT.md` | Working focus + discoveries |
+| `.slmcode/MEMORY.md` | Lessons / pitfalls |
+| `.slmcode/SKILLS.md` | Index + recent lessons |
+| `.slmcode/skills/learned/` | Auto-grown conventions |
+| `.slmcode/sessions/` | Resumable runs |
+| `.slmcode/pending/` | Staged review writes |
 | `AGENTS.md` / `CLAUDE.md` / `.cursorrules` | Auto-injected instructions |
 
 ```bash
@@ -172,49 +97,58 @@ slmcode docs show MEMORY.md
 
 ---
 
-## 🔐 Permissions (don't yeet production by accident)
+## Permissions
 
 | Mode | Behavior |
 |------|----------|
-| `auto` | Write immediately |
-| `dry-run` | Never write (simulate — great for demos) |
-| `review` | Stage under `.slmcode/pending/` → `slmcode apply` |
+| `auto` | Write now |
+| `dry-run` | Simulate |
+| `review` | Stage → `slmcode apply` |
 
 ```bash
 slmcode config set permission review
 slmcode run "refactor foo"
-slmcode apply
-slmcode diff
-slmcode commit -m "slmcode: refactor foo"
+slmcode apply && slmcode diff
 ```
 
-Shell tool modes (`ws_shell`): `allow` | `ask` | `deny` — independent of file writes.
+Shell: `shell_permission: allow | ask | deny` — independent of file writes.
+→ [Config](config.md)
 
 ---
 
-## 🎛️ Quality knobs (especially for SLMs)
+## Quality knobs
 
 ```bash
-slmcode config set think_passes 2   # draft → critique → refine
-slmcode config set parallel 3
+slmcode config set think_passes 2
 slmcode config set retries 2
+slmcode config set parallel 2
 slmcode config set max_context_kb 16
 ```
 
-More passes ≠ always better. Sometimes it just means more confident nonsense. Dial with taste.
+| Symptom | Try |
+|---------|-----|
+| Wanders | Lower context, pin `atomic-coding`, stern `AGENTS.md` |
+| Weak JSON | More think passes / retries; better tool-calling model |
+| Too slow | Lower parallel; explore reuse; faster provider |
+
+→ [FAQ](faq.md)
 
 ---
 
-## 🧩 Specialists
-
-See [Agents](agents.md) for the full roster (14 roles), custom agents, and coordinator actions.
-
----
-
-## 🧪 From a checkout
+## Sessions & resume
 
 ```bash
-make lint && make test
+slmcode session list
+slmcode session resume run-…
+# TUI: /stop then /resume
+```
+
+---
+
+## Develop from a checkout
+
+```bash
+make lint && make test && make docs-build
 RUN_E2E=1 make e2e
 ```
 

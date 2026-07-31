@@ -1,6 +1,6 @@
 # 🔌 Providers — SLMCode ♥ any LLM
 
-SLMCode is **SLM-first**, but it is a **generic coding harness**.  
+SLMCode is **SLM-first**, but it is a **generic coding harness**.
 If a model speaks **OpenAI Chat Completions** (or Ollama’s native API), you can plug it in.
 
 Defaults love **oMLX** on Apple Silicon. Everything else is one flag (or Studio setting) away.

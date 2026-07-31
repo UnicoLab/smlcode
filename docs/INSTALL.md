@@ -25,7 +25,7 @@ Pin a version:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
-  | bash -s -- --version v0.5.16
+  | bash -s -- --version v0.5.17
 ```
 
 ### Windows (PowerShell)

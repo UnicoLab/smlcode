@@ -29,11 +29,23 @@ func TestLeanDocsAndPackBudget(t *testing.T) {
 	if !pack.LeanFiles {
 		t.Fatal("expected lean role")
 	}
-	if pack.BudgetUsed > 24*1024 {
+	if pack.BudgetUsed > 16*1024 {
 		t.Fatalf("budget too large: %d", pack.BudgetUsed)
 	}
-	if body := pack.Files["big.go"]; len(body) > 4000 {
+	if body := pack.Files["big.go"]; len(body) > 3200 {
 		t.Fatalf("file excerpt too large: %d", len(body))
+	}
+	// Cache reuse
+	pack2, err := p.Build("worker", "q", docs, []string{"big.go"}, longText(5000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack2.BudgetUsed != pack.BudgetUsed {
+		t.Fatalf("cache miss / diverge: %d vs %d", pack2.BudgetUsed, pack.BudgetUsed)
+	}
+	p.ClearCache()
+	if len(p.cache) != 0 {
+		t.Fatal("cache not cleared")
 	}
 }
 

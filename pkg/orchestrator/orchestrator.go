@@ -150,7 +150,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		registry:   registry,
 		executor:   exec,
 		shared:     ggagent.NewSharedState(),
-		think:      multipass.New(cfg.ThinkPasses),
+		think:      multipass.New(thinkRefinePasses(cfg.ThinkPasses)),
 		claude:     backends.NewClaudeCodeRunner(cfg),
 		onEvent:    func(Event) {},
 	}
@@ -201,6 +201,9 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 		return nil, fmt.Errorf("empty query")
 	}
 	runID := fmt.Sprintf("run-%d", start.UnixNano())
+	if o.packer != nil {
+		o.packer.ClearCache()
+	}
 
 	o.emit("init", "starting "+runID, "")
 	// Fresh query-scoped plan/tasks — never patch the previous interaction's board
@@ -223,10 +226,10 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	o.emit("init", "query-scoped plan/tasks reset for "+runID, "")
 
 	_ = o.store.SetQuery(query)
-	if prior := session.RecentSummaries(o.cfg.SlmDir(), 5); prior != "" {
+	if prior := session.RecentSummaries(o.cfg.SlmDir(), 3); prior != "" {
 		_ = o.store.Append(contextstore.DocContext, "Prior query summaries (knowledge only — write a NEW plan for this query)",
-			truncate(prior, 6000))
-		o.shared.SetGlobal("prior_summaries", truncate(prior, 4000))
+			truncate(prior, 2500))
+		o.shared.SetGlobal("prior_summaries", truncate(prior, 2000))
 		o.emit("init", "enriched context from prior query summaries", "")
 	}
 	o.shared.SetGlobal("query", query)
@@ -241,8 +244,8 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	if o.cfg.Mode == config.ModeSpecialist {
 		roleHint = o.cfg.Specialist
 	}
-	matched := o.skills.ResolveForRun(query, roleHint, o.cfg.PinnedSkills, 6)
-	skillPack := skills.RenderPack(matched, 3500)
+	matched := o.skills.ResolveForRun(query, roleHint, o.cfg.PinnedSkills, 4)
+	skillPack := skills.RenderPack(matched, 2000)
 	if len(matched) > 0 {
 		names := make([]string, len(matched))
 		for i, s := range matched {
@@ -265,8 +268,20 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 
 // skillPackFor builds a role-targeted skill pack (pins + @skill + agent defaults).
 func (o *Orchestrator) skillPackFor(role, query string) string {
-	list := o.skills.ResolveForRun(query, role, o.cfg.PinnedSkills, 6)
-	return skills.RenderPack(list, 3000)
+	list := o.skills.ResolveForRun(query, role, o.cfg.PinnedSkills, 4)
+	return skills.RenderPack(list, 1600)
+}
+
+// thinkRefinePasses maps config think_passes → multipass critique loops.
+// think_passes=1 → unused (single-shot path). =2 → one critique. ≥3 → two.
+func thinkRefinePasses(thinkPasses int) int {
+	if thinkPasses <= 1 {
+		return 1
+	}
+	if thinkPasses == 2 {
+		return 1
+	}
+	return 2
 }
 
 func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, start time.Time) (*Result, error) {
@@ -415,6 +430,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// 2 Explore — skip deep dive when CONTEXT + FS discovery already enough.
 	// Higher think_passes forces deeper / parallel antigravity-style digs for SLMs.
 	var exploreOut string
+	var archOut string
 	deep, reason := o.shouldDeepExplore(query)
 	if !deep {
 		o.emit("explore", reason, "")
@@ -468,6 +484,39 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 				exploreOut += "\n\n" + docsOut
 				o.shared.SetGlobal("docs_exploration", docsOut)
 			}
+		} else if wantsArchitect(query) && o.cfg.ThinkPasses >= 2 {
+			// Overlap explorer + architect (architect uses early FS inventory when explore lags).
+			o.emit("explore", "parallel digs (explorer + architect)", "")
+			type res struct {
+				role string
+				out  string
+				err  error
+			}
+			ch := make(chan res, 2)
+			go func() {
+				out, e := o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
+				ch <- res{plan.RoleExplorer, out, e}
+			}()
+			go func() {
+				o.emitAgent("architect", "architect", "", "minimal design pass (parallel)", "", "")
+				archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
+				hint := truncate(strings.Join(inventory, "\n"), 2000)
+				out, e := o.runRoleTracked(ctx, "architect", "", archPack.Render()+"\nWorkspace files:\n"+hint+"\nReturn STRICT JSON design.")
+				ch <- res{"architect", out, e}
+			}()
+			for i := 0; i < 2; i++ {
+				r := <-ch
+				if r.role == plan.RoleExplorer {
+					exploreOut, err = r.out, r.err
+				} else if strings.TrimSpace(r.out) != "" {
+					archOut = r.out
+					_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+					o.shared.SetGlobal("architecture", archOut)
+				}
+			}
+			if err != nil {
+				return nil, fmt.Errorf("explorer: %w", err)
+			}
 		} else {
 			exploreOut, err = o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
 			if err != nil {
@@ -489,49 +538,52 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.shared.SetGlobal("explore_mode", "deep")
 	}
 
-	// 2b Architect pass for larger / design-ish queries
-	var archOut string
-	if wantsArchitect(query) {
+	// 2b Architect pass for larger / design-ish queries (skip if already ran in parallel)
+	if wantsArchitect(query) && strings.TrimSpace(archOut) == "" {
 		o.emitAgent("architect", "architect", "", "minimal design pass", "", "")
-		archPack, _ := o.packer.Build("architect", query, contextstore.DefaultDocsForRole("planner"), nil, o.skillPackFor("architect", query))
-		archOut, _ = o.runRoleTracked(ctx, "architect", "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 4000)+"\nReturn STRICT JSON design.")
+		archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
+		archOut, _ = o.runRoleTracked(ctx, "architect", "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
 		if strings.TrimSpace(archOut) != "" {
 			_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
 			o.shared.SetGlobal("architecture", archOut)
 		}
 	}
 
-	// 3 Plan (multipass)
-	o.emitAgent("plan", plan.RolePlanner, "", "creating plan (multi-pass)", "", "")
-	planPack, _ := o.packer.Build("planner", query, contextstore.DefaultDocsForRole("planner"), nil, o.skillPackFor("planner", query))
-	planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, 5000)
-	if archOut != "" {
-		planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 2500)
+	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
+	o.emitAgent("plan", plan.RolePlanner, "", "creating plan", "", "")
+	planDocs := contextstore.LeanDocsForRole("planner")
+	planPack, _ := o.packer.Build("planner", query, planDocs, nil, o.skillPackFor("planner", query))
+	exploreCap := 2500
+	if o.cfg.ThinkPasses >= 3 {
+		exploreCap = 4000
 	}
-	planPrompt += "\n\nIMPORTANT: Write a brand-new plan for THIS query only (query_id=" + runID + "). " +
-		"Do NOT continue, append, or patch any previous plan/tasks. Prior summaries are project knowledge only.\n" +
-		"Return STRICT JSON plan."
+	planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
+	if archOut != "" {
+		planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
+	}
+	planPrompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
+		"Do NOT continue prior plans. STRICT JSON plan only."
 	planOut, err := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", planPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("planner: %w", err)
 	}
-	// SLM planning depth: critique + refine when think_passes >= 2
-	if o.cfg.ThinkPasses >= 2 {
+	// Extra plan critique only when think_passes≥3 (think_passes=2 already uses
+	// multipass critique — avoid a redundant reviewer+refine round-trip).
+	if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
 		o.emitAgent("plan", plan.RoleReviewer, "", "plan critique pass", "", "")
-		critiquePrompt := "You critique a coding plan for a small local model.\n" +
-			"Check: missing files, oversized tasks, unclear acceptance criteria, wrong order, skipped tests.\n" +
-			"Query:\n" + query + "\n\nPlan JSON:\n" + truncate(planOut, 6000) +
-			"\n\nReturn STRICT JSON: {\"ok\":bool,\"issues\":[string],\"revised_summary\":string,\"hints\":[string]}"
+		critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
+			"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
+			"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
 		critique, _ := o.runRoleTracked(ctx, plan.RoleReviewer, "", critiquePrompt)
 		if strings.TrimSpace(critique) != "" {
 			_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
-			o.emitFull("plan", stream.KindOutput, plan.RoleReviewer, "", "plan critique", "", truncate(critique, 1000))
+			o.emitFull("plan", stream.KindOutput, plan.RoleReviewer, "", "plan critique", "", truncate(critique, 800))
 			if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
 				!strings.Contains(strings.ToLower(critique), `"ok":true`) {
 				o.emitAgent("plan", plan.RolePlanner, "", "refining plan from critique", "", "")
-				refine := planPrompt + "\n\n## Critique to address\n" + truncate(critique, 3000) +
-					"\n\nRevise the plan. Keep it atomic for an SLM. Return STRICT JSON plan."
-				if refined, rerr := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
+				refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
+					"\n\nRevise. Atomic for SLM. STRICT JSON plan."
+				if refined, rerr := o.runRoleTracked(ctx, plan.RolePlanner, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
 					planOut = refined
 				}
 			}
@@ -547,11 +599,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 	// 4 Split
 	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
-	splitPack, _ := o.packer.Build("splitter", query, contextstore.DefaultDocsForRole("splitter"), nil, o.skillPackFor("splitter", query))
-	splitPrompt := splitPack.Render() + "\nPlan:\n" + planOut +
-		"\n\nSplit for THIS query only (fresh task list — do not keep prior-query tasks).\nReturn STRICT JSON tasks."
+	splitDocs := contextstore.LeanDocsForRole("splitter")
+	splitPack, _ := o.packer.Build("splitter", query, splitDocs, nil, o.skillPackFor("splitter", query))
+	splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500) +
+		"\n\nFresh task list for THIS query. STRICT JSON tasks."
 	if o.cfg.ThinkPasses >= 2 {
-		splitPrompt += "\nPrefer ≤6 tiny tasks, each with clear files + acceptance checks. Include a tester task when code changes."
+		splitPrompt += "\nPrefer ≤5 tiny tasks with files + acceptance. Tester when code changes."
 	}
 	tasksOut, err := o.runRoleMultipassTracked(ctx, "splitter", "", splitPrompt)
 	if err != nil {
@@ -829,6 +882,7 @@ func (o *Orchestrator) runRole(ctx context.Context, role, input string) (string,
 
 // roleTimeout gives planning/coord roles a tighter budget than full task timeout
 // so slow oMLX multi-turn runs don't stall for 12 minutes on a stuck planner call.
+// Floors avoid false failures on cold SLM loads; caps stop runaway generations.
 func (o *Orchestrator) roleTimeout(role string) time.Duration {
 	full := o.cfg.TaskTimeout
 	if full <= 0 {
@@ -837,14 +891,31 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 	switch role {
 	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs", plan.RoleTester:
 		return full
-	default:
-		// planner / splitter / reviewer / coordinator / context / memory / architect
-		d := full / 2
-		if d < 2*time.Minute {
-			d = 2 * time.Minute
+	case plan.RolePlanner, "splitter":
+		d := full / 3
+		if d < 90*time.Second {
+			d = 90 * time.Second
 		}
-		if d > 6*time.Minute {
-			d = 6 * time.Minute
+		if d > 4*time.Minute {
+			d = 4 * time.Minute
+		}
+		return d
+	case plan.RoleReviewer, "coordinator", "architect", plan.RoleContext, "memory":
+		d := full / 4
+		if d < 60*time.Second {
+			d = 60 * time.Second
+		}
+		if d > 3*time.Minute {
+			d = 3 * time.Minute
+		}
+		return d
+	default:
+		d := full / 2
+		if d < 90*time.Second {
+			d = 90 * time.Second
+		}
+		if d > 5*time.Minute {
+			d = 5 * time.Minute
 		}
 		return d
 	}
@@ -852,8 +923,11 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 
 func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input string) (string, error) {
 	o.emitFull(role, stream.KindAgentStart, role, taskID, "started", scopeFromInput(input), "")
-	results, err := o.executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-		AgentID: role, Input: input, Timeout: o.roleTimeout(role), ShareState: true,
+	timeout := o.roleTimeout(role)
+	rctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	results, err := o.executor.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
+		AgentID: role, Input: input, Timeout: timeout, ShareState: true,
 	}}, o.shared)
 	if len(results) == 0 {
 		o.emitFull(role, stream.KindAgentEnd, role, taskID, "no result", "", "")

@@ -3,11 +3,12 @@ package agents
 import (
 	"fmt"
 
+	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
-	"github.com/UnicoLab/slmcode/pkg/plan"
-	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // RoleSpec describes a specialist sub-agent.
@@ -31,20 +32,20 @@ type RoleSpec struct {
 func Specs() []RoleSpec {
 	coding := workspace.ToolNames()
 	return []RoleSpec{
-		{ID: "coordinator", Title: "Coordinate board & specialists", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1024},
-		{ID: "orchestrator", Title: "High-level orchestration", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 1024},
-		{ID: plan.RoleContext, Title: "Maintain CONTEXT.md", SystemPrompt: PromptContext, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 2048},
-		{ID: plan.RoleExplorer, Title: "Codebase explorer", SystemPrompt: PromptExplorer, Tools: coding, MaxIter: 12, Temperature: 0.1, MaxTokens: 2048},
-		{ID: "docs", Title: "Documentation explorer", SystemPrompt: PromptDocsExplorer, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 2048},
-		{ID: "architect", Title: "Minimal design / approach", SystemPrompt: PromptArchitect, Tools: nil, MaxIter: 2, Temperature: 0.25, MaxTokens: 2048},
-		{ID: plan.RolePlanner, Title: "High-level plan", SystemPrompt: PromptPlanner, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 2048},
-		{ID: "splitter", Title: "Atomic task split", SystemPrompt: PromptTaskSplitter, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 3072},
-		{ID: plan.RoleWorker, Title: "Implement scoped change", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 16, Temperature: 0.15, MaxTokens: 4096},
-		{ID: "deep", Title: "Deep multi-step worker", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 20, Temperature: 0.15, MaxTokens: 4096},
-		{ID: plan.RoleReviewer, Title: "Self-critic / approve", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.1, MaxTokens: 1024},
-		{ID: plan.RoleCorrector, Title: "Fix review issues", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 12, Temperature: 0.15, MaxTokens: 4096},
-		{ID: plan.RoleTester, Title: "Verify / run tests", SystemPrompt: PromptTester, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 2048},
-		{ID: "memory", Title: "Distill MEMORY.md", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1024},
+		{ID: "coordinator", Title: "Coordinate board & specialists", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 512},
+		{ID: "orchestrator", Title: "High-level orchestration", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 512},
+		{ID: plan.RoleContext, Title: "Maintain CONTEXT.md", SystemPrompt: PromptContext, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1024},
+		{ID: plan.RoleExplorer, Title: "Codebase explorer", SystemPrompt: PromptExplorer, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 1536},
+		{ID: "docs", Title: "Documentation explorer", SystemPrompt: PromptDocsExplorer, Tools: coding, MaxIter: 8, Temperature: 0.1, MaxTokens: 1536},
+		{ID: "architect", Title: "Minimal design / approach", SystemPrompt: PromptArchitect, Tools: nil, MaxIter: 2, Temperature: 0.25, MaxTokens: 1024},
+		{ID: plan.RolePlanner, Title: "High-level plan", SystemPrompt: PromptPlanner, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1024},
+		{ID: "splitter", Title: "Atomic task split", SystemPrompt: PromptTaskSplitter, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536},
+		{ID: plan.RoleWorker, Title: "Implement scoped change", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 14, Temperature: 0.15, MaxTokens: 3072},
+		{ID: "deep", Title: "Deep multi-step worker", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 18, Temperature: 0.15, MaxTokens: 3072},
+		{ID: plan.RoleReviewer, Title: "Self-critic / approve", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.1, MaxTokens: 512},
+		{ID: plan.RoleCorrector, Title: "Fix review issues", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 10, Temperature: 0.15, MaxTokens: 3072},
+		{ID: plan.RoleTester, Title: "Verify / run tests", SystemPrompt: PromptTester, Tools: coding, MaxIter: 8, Temperature: 0.1, MaxTokens: 1536},
+		{ID: "memory", Title: "Distill MEMORY.md", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
 	}
 }
 
@@ -237,12 +238,9 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	if spec.Model != "" {
 		cfg.Model = spec.Model
 	}
-	cfg.Provider = f.Provider
-	if spec.Provider != "" {
-		cfg.Provider = spec.Provider
-	}
-	// Endpoint is used only at ProviderManager registration time (EnsureAgentProviders).
-	// AgentConfig selects the registered provider name + model.
+	// Friendly YAML/UI names stay on RoleSpec; AgentConfig.Provider is the unique
+	// registry key when endpoint differs (openai@http://host:port/v1).
+	cfg.Provider = backends.ResolveAgentProviderKey(f.Provider, spec.Provider, spec.Endpoint, "")
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature

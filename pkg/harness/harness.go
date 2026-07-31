@@ -70,6 +70,20 @@ func (h *Harness) Status() (string, error) {
 		clip(query, 800), clip(planDoc, 1200), clip(tasks, 1600)), nil
 }
 
+// RebuildOrchestrator recreates the orchestrator after agent/config changes
+// (same path Studio uses after Agents API CRUD).
+func (h *Harness) RebuildOrchestrator() error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("harness not initialized")
+	}
+	orch, err := orchestrator.New(h.Config)
+	if err != nil {
+		return err
+	}
+	h.Orchestrator = orch
+	return nil
+}
+
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s

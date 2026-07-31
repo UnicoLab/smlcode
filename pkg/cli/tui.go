@@ -390,6 +390,7 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/diff")+"             git dirty files")
 	fmt.Fprintln(s.out, "  "+Cyan("/queries")+"          recent query turns")
 	fmt.Fprintln(s.out, "  "+Cyan("/agents")+"           list specialists")
+	fmt.Fprintln(s.out, "  "+Cyan("/agent …")+"          show|new|edit|delete agents (Studio parity)")
 	fmt.Fprintln(s.out, "  "+Cyan("/skills")+"           list skills")
 	fmt.Fprintln(s.out, "  "+Cyan("/studio")+"           print Studio URL hint")
 	fmt.Fprintln(s.out, "  "+Cyan("/model <id>")+"       switch model (persists)")

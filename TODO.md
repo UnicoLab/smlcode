@@ -251,4 +251,9 @@ We need everything to be self evolving and improving all the time !!!
 - [x] Skip worker LLM when acceptance already satisfied; reviewer disk-evidence fast-path regression test (`TestReviewFastPathSkipsExecutor`)
 - [x] Lean SLM defaults: skip coordinator LLM when `think_passes≤1`; tighter planning-role timeouts
 
+## Remaining risks closed (2026-07-31 — 0.5.11)
+- [x] **oMLX multi-turn latency (non-skippable work):** shorter planner/splitter/worker prompts; tighter planning max_tokens; pack cache + leaner CONTEXT; multipass JSON early-exit; skip redundant plan critique at think_passes=2; role timeouts with cancel; parallel explorer+architect; lean docs for planning roles
+- [x] **Same-provider / different-endpoint sharing bug:** unique registry keys (`openai@http://host:port/v1`) + agent `Provider` points at key; unit tests for distinct backends
+- [x] **TUI full agent CRUD:** `/agents`, `/agent new|edit|delete|show` (wizard + `key=value`); wires `agents.WriteCustom` / rebuild like Studio API; non-TTY list/show + inline fields
+
 

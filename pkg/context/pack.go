@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // TaskPack is the minimal context handed to one specialist — never the whole repo.
@@ -25,18 +26,45 @@ type Packer struct {
 	Store    *Store
 	Root     string
 	MaxBytes int
+
+	cacheMu sync.Mutex
+	cache   map[string]*TaskPack // reuse identical packs within a run
 }
 
 func NewPacker(store *Store, root string, maxKB int) *Packer {
 	if maxKB <= 0 {
 		maxKB = 16
 	}
-	return &Packer{Store: store, Root: root, MaxBytes: maxKB * 1024}
+	return &Packer{Store: store, Root: root, MaxBytes: maxKB * 1024, cache: map[string]*TaskPack{}}
+}
+
+// ClearCache drops reused packs (call at the start of each orchestrator Run).
+func (p *Packer) ClearCache() {
+	if p == nil {
+		return
+	}
+	p.cacheMu.Lock()
+	p.cache = map[string]*TaskPack{}
+	p.cacheMu.Unlock()
 }
 
 // Build creates a role-specific pack. docNames select .slmcode markdown slices;
 // filePaths are optional workspace files (truncated per file).
 func (p *Packer) Build(role, query string, docNames []string, filePaths []string, skillsMarkdown string) (*TaskPack, error) {
+	cacheKey := role + "\x00" + query + "\x00" + strings.Join(docNames, ",") + "\x00" +
+		strings.Join(filePaths, ",") + "\x00" + skillsMarkdown
+	if p != nil {
+		p.cacheMu.Lock()
+		if cached, ok := p.cache[cacheKey]; ok && cached != nil {
+			p.cacheMu.Unlock()
+			cp := *cached
+			cp.Docs = copyStringMap(cached.Docs)
+			cp.Files = copyStringMap(cached.Files)
+			return &cp, nil
+		}
+		p.cacheMu.Unlock()
+	}
+
 	pack := &TaskPack{
 		Query:  query,
 		Role:   role,
@@ -54,12 +82,12 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	skillCap := budget
 	if lean {
 		// Faster SLM inference: tighter excerpts + smaller docs/skills.
-		if budget > 24*1024 {
-			budget = 24 * 1024
+		if budget > 16*1024 {
+			budget = 16 * 1024
 		}
-		fileLimit = 3500
-		docLimit = 2500
-		skillCap = 1200
+		fileLimit = 2800
+		docLimit = 1800
+		skillCap = 900
 	}
 	take := func(label, content string, dest map[string]string, fileCap bool) {
 		content = strings.TrimSpace(content)
@@ -114,12 +142,35 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	}
 
 	pack.BudgetUsed = used
+	if p != nil {
+		p.cacheMu.Lock()
+		if p.cache == nil {
+			p.cache = map[string]*TaskPack{}
+		}
+		stored := *pack
+		stored.Docs = copyStringMap(pack.Docs)
+		stored.Files = copyStringMap(pack.Files)
+		p.cache[cacheKey] = &stored
+		p.cacheMu.Unlock()
+	}
 	return pack, nil
+}
+
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func isLeanRole(role string) bool {
 	switch role {
-	case "worker", "corrector", "deep", "reviewer", "tester":
+	case "worker", "corrector", "deep", "reviewer", "tester",
+		"planner", "splitter", "coordinator", "architect", "context", "memory":
 		return true
 	default:
 		return false
@@ -156,36 +207,38 @@ func (p *TaskPack) Render() string {
 func DefaultDocsForRole(role string) []string {
 	switch role {
 	case "context":
-		return []string{DocProject, DocContext, DocMemory, DocQuery}
+		return []string{DocProject, DocContext, DocQuery}
 	case "explorer":
 		return []string{DocProject, DocQuery, DocContext}
 	case "docs":
-		return []string{DocProject, DocQuery, DocContext, DocMemory}
+		return []string{DocProject, DocQuery, DocContext}
 	case "architect", "coordinator":
-		return []string{DocQuery, DocContext, DocScratch, DocPlan, DocProject}
+		return []string{DocQuery, DocContext, DocPlan}
 	case "planner":
-		return []string{DocQuery, DocContext, DocScratch, DocProject}
+		return []string{DocQuery, DocContext, DocProject}
 	case "splitter":
-		return []string{DocPlan, DocQuery, DocScratch}
+		return []string{DocPlan, DocQuery}
 	case "worker", "corrector", "deep":
-		return []string{DocQuery, DocContext, DocPlan, DocMemory}
+		return []string{DocQuery, DocContext}
 	case "reviewer":
-		return []string{DocQuery, DocTasks}
+		return []string{DocQuery}
 	case "tester":
 		return []string{DocProject, DocTasks}
 	case "memory":
-		return []string{DocMemory, DocPlan, DocTasks}
+		return []string{DocMemory, DocPlan}
 	default:
 		return []string{DocQuery, DocContext}
 	}
 }
 
-// LeanDocsForRole returns a minimal doc set for execute-time worker packs.
+// LeanDocsForRole returns a minimal doc set for execute-time / multi-turn packs.
 func LeanDocsForRole(role string) []string {
 	switch role {
 	case "worker", "corrector", "deep":
 		return []string{DocQuery, DocContext}
-	case "reviewer":
+	case "planner", "splitter", "architect":
+		return []string{DocQuery, DocContext}
+	case "reviewer", "coordinator":
 		return []string{DocQuery}
 	case "tester":
 		return []string{DocProject}

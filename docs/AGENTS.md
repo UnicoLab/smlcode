@@ -24,7 +24,30 @@ See also: [GUIDE](GUIDE.md) · [ARCHITECTURE](ARCHITECTURE.md)
 | `tester` | yes | JSON passed | End validation |
 | `memory` | — | markdown bullets | End + wave learn |
 
-List live: `curl -s localhost:7420/api/agents | jq` or Studio → Agents.
+List live: `curl -s localhost:7420/api/agents | jq`, Studio → Agents, or TUI `/agents`.
+
+## Custom agents (Studio + TUI)
+
+Persist under `.slmcode/agents/<id>.yaml` (or `~/.slmcode/agents/`).
+
+```bash
+# TUI (interactive wizard or key=value)
+/agent new
+/agent new id=night-auditor title=Night provider=openai endpoint=http://127.0.0.1:9000/v1
+/agent edit worker model=qwen2.5-coder:14b   # builtin override
+/agent show night-auditor
+/agent delete night-auditor
+```
+
+Fields: `skills`, `model`, `provider`, `endpoint`, `tools`, `temperature`, `max_tokens`,
+`max_iter`, `system_prompt` — same store as `POST/PUT/DELETE /api/agents`.
+
+### Per-agent provider endpoints
+
+YAML/UI keep friendly names (`provider: openai`). When `endpoint` (or API key) differs,
+the runtime registers a unique backend key such as `openai@http://host:9000/v1` and
+points the agent at that key so two agents with the same provider name never share the
+wrong gateway.
 
 ## Coordinator actions
 

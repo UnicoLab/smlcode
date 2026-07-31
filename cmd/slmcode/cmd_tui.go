@@ -126,18 +126,8 @@ func runPremiumTUI() error {
 				fmt.Printf("  %s  %s\n", cli.Accent(q.ID), cli.Dim(cli.Clip(q.Query, 60)))
 			}
 			return false, nil
-		case "/agents":
-			custom, _ := agents.LoadCustomSpecs(append([]string{h.Config.AgentsDir()}, agents.GlobalAgentRoots()...)...)
-			for _, a := range agents.PublicSpecsWithCustom(custom) {
-				id, _ := a["id"].(string)
-				title, _ := a["title"].(string)
-				mark := "·"
-				if c, _ := a["custom"].(bool); c {
-					mark = "★"
-				}
-				fmt.Printf("  %s @%-14s %s\n", mark, id, title)
-			}
-			return false, nil
+		case "/agents", "/agent":
+			return false, handleTUIAgentCmd(h, sess, line)
 		case "/skills":
 			list, _ := h.Orchestrator.Skills().List()
 			for _, sk := range list {
@@ -181,6 +171,115 @@ func runPremiumTUI() error {
 
 	fmt.Print(cli.Banner())
 	return sess.RunInteractive()
+}
+
+func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) error {
+	cmd, err := cli.ParseAgentCommand(line)
+	if err != nil {
+		return err
+	}
+	custom, _ := cli.LoadProjectCustoms(h.Config.AgentsDir())
+	switch cmd.Action {
+	case "list":
+		fmt.Print(cli.FormatAgentList(custom))
+		return nil
+	case "help":
+		fmt.Println(cli.Bold("Agent CRUD (Studio parity)"))
+		fmt.Println("  " + cli.Cyan("/agents") + "                         list specialists")
+		fmt.Println("  " + cli.Cyan("/agent show <id>") + "                show one agent")
+		fmt.Println("  " + cli.Cyan("/agent new") + "                       interactive create / builtin override")
+		fmt.Println("  " + cli.Cyan("/agent new id=… provider=… …") + "   non-interactive create")
+		fmt.Println("  " + cli.Cyan("/agent edit <id>") + "                 interactive edit")
+		fmt.Println("  " + cli.Cyan("/agent edit <id> model=…") + "         patch fields")
+		fmt.Println("  " + cli.Cyan("/agent delete <id>") + "               delete custom / clear override")
+		fmt.Println(cli.Dim("  Fields: title description provider model endpoint skills tools max_iter max_tokens temperature system_prompt"))
+		return nil
+	case "show":
+		a := cli.FindPublicAgent(custom, cmd.ID)
+		if a == nil {
+			return fmt.Errorf("agent %q not found", cmd.ID)
+		}
+		fmt.Print(cli.FormatAgentShow(a))
+		return nil
+	case "delete":
+		if err := agents.DeleteCustom(h.Config.AgentsDir(), cmd.ID); err != nil {
+			return err
+		}
+		if err := h.RebuildOrchestrator(); err != nil {
+			return fmt.Errorf("deleted but rebuild failed: %w", err)
+		}
+		h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+		fmt.Println(cli.Success("deleted " + cmd.ID + " (orchestrator rebuilt)"))
+		return nil
+	case "new", "edit":
+		var base agents.CustomSpec
+		if cmd.Action == "edit" {
+			path := filepath.Join(h.Config.AgentsDir(), cmd.ID+".yaml")
+			if got, rerr := agents.ReadCustomFile(path); rerr == nil {
+				base = got
+			} else if got, rerr := agents.ReadCustomFile(filepath.Join(h.Config.AgentsDir(), cmd.ID+".yml")); rerr == nil {
+				base = got
+			} else {
+				// Seed from builtin public view when overriding.
+				if pub := cli.FindPublicAgent(custom, cmd.ID); pub != nil {
+					base.ID = cmd.ID
+					if t, _ := pub["title"].(string); t != "" {
+						base.Title = t
+					}
+					if sp, _ := pub["system_prompt"].(string); sp != "" {
+						base.SystemPrompt = sp
+					}
+					if p, _ := pub["provider"].(string); p != "" {
+						base.Provider = p
+					}
+					if m, _ := pub["model"].(string); m != "" {
+						base.Model = m
+					}
+					if e, _ := pub["endpoint"].(string); e != "" {
+						base.Endpoint = e
+					}
+				} else {
+					return fmt.Errorf("agent %q not found — use /agent new", cmd.ID)
+				}
+			}
+		}
+		var spec agents.CustomSpec
+		if len(cmd.Fields) > 0 {
+			id := cmd.ID
+			if id == "" {
+				id = cmd.Fields["id"]
+			}
+			spec = cli.SpecFromFields(id, cmd.Fields, &base)
+		} else if cli.IsInteractive() {
+			seed := base
+			if cmd.Action == "new" && seed.ID == "" {
+				seed.ID = cmd.Fields["id"]
+			}
+			var ferr error
+			spec, ferr = cli.PromptAgentForm(os.Stdin, os.Stdout, seed, cmd.Action == "new")
+			if ferr != nil {
+				return ferr
+			}
+		} else {
+			return fmt.Errorf("non-interactive: provide fields, e.g. /agent new id=foo title=Foo provider=openai")
+		}
+		path, err := agents.WriteCustom(h.Config.AgentsDir(), spec)
+		if err != nil {
+			return err
+		}
+		if err := h.RebuildOrchestrator(); err != nil {
+			return fmt.Errorf("saved %s but rebuild failed: %w", path, err)
+		}
+		h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+		kind := "created"
+		if cmd.Action == "edit" || agents.BuiltinIDs()[spec.ID] {
+			kind = "saved"
+		}
+		fmt.Println(cli.Success(kind + " @" + spec.ID + " → " + path + " (orchestrator rebuilt)"))
+		return nil
+	default:
+		return fmt.Errorf("unknown /agent action")
+	}
 }
 
 func loadDashboard(ws *harness.Workspace) cli.DashboardState {

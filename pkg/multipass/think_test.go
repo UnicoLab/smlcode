@@ -68,3 +68,58 @@ func TestNewDefaultPasses(t *testing.T) {
 		t.Fatalf("passes=%d", r.Passes)
 	}
 }
+
+type jsonDraftAgent struct {
+	calls    int
+	critiques int
+}
+
+func (s *jsonDraftAgent) Execute(_ context.Context, input string) (*agent.AgentExecution, error) {
+	s.calls++
+	if strings.Contains(input, "CRITIQUE") || strings.Contains(input, "REFINE") {
+		s.critiques++
+		return &agent.AgentExecution{Output: "LOOKS_GOOD"}, nil
+	}
+	return &agent.AgentExecution{Output: `{"summary":"ok","goals":["g"],"steps":["s1"]}`}, nil
+}
+func (s *jsonDraftAgent) GetConfig() *agent.AgentConfig {
+	return agent.DefaultAgentConfig()
+}
+func (s *jsonDraftAgent) UpdateConfig(*agent.AgentConfig)            {}
+func (s *jsonDraftAgent) GetGraph() *core.Graph                      { return nil }
+func (s *jsonDraftAgent) IsRunning() bool                            { return false }
+func (s *jsonDraftAgent) GetConversation() []llm.Message             { return nil }
+func (s *jsonDraftAgent) ClearConversation()                         {}
+func (s *jsonDraftAgent) GetExecutionHistory() []agent.AgentExecution { return nil }
+func (s *jsonDraftAgent) ClearHistory()                               {}
+func (s *jsonDraftAgent) Name() string                                { return "json-stub" }
+
+func TestEarlyExitSkipsCritiqueOnCompleteJSON(t *testing.T) {
+	r := New(2)
+	a := &jsonDraftAgent{}
+	out, err := r.Execute(context.Background(), a, "plan this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.calls != 1 || a.critiques != 0 {
+		t.Fatalf("expected single draft, no critique; calls=%d critiques=%d", a.calls, a.critiques)
+	}
+	if !strings.Contains(out, `"steps"`) {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+func TestLooksCompleteJSON(t *testing.T) {
+	if !LooksCompleteJSON(`{"tasks":[{"id":"T1"}]}`) {
+		t.Fatal("tasks")
+	}
+	if !LooksCompleteJSON(`here\n{"status":"done","summary":"x"}`) {
+		t.Fatal("status done")
+	}
+	if LooksCompleteJSON(`not json`) {
+		t.Fatal("plain text")
+	}
+	if LooksCompleteJSON(`{"foo":1}`) {
+		t.Fatal("unrelated object")
+	}
+}

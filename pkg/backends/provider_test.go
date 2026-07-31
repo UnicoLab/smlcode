@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -121,5 +122,77 @@ func TestNormalizeProviderAliases(t *testing.T) {
 	}
 	if !config.IsOllama("ollama") {
 		t.Fatal("ollama")
+	}
+}
+
+func TestProviderInstanceKey(t *testing.T) {
+	if got := ProviderInstanceKey("openai", "", ""); got != "openai" {
+		t.Fatalf("empty endpoint → friendly name, got %q", got)
+	}
+	k1 := ProviderInstanceKey("openai", "http://127.0.0.1:9000", "")
+	k2 := ProviderInstanceKey("openai", "http://127.0.0.1:9001/v1", "")
+	if k1 == "openai" || k2 == "openai" {
+		t.Fatalf("explicit endpoints must uniquify: %q %q", k1, k2)
+	}
+	if k1 == k2 {
+		t.Fatalf("different endpoints must differ: %q", k1)
+	}
+	if !strings.HasPrefix(k1, "openai@") || !strings.Contains(k1, "9000") {
+		t.Fatalf("key shape: %q", k1)
+	}
+	// Trailing slash / missing /v1 normalize to same key.
+	if ProviderInstanceKey("openai", "http://host:1", "") != ProviderInstanceKey("openai", "http://host:1/v1/", "") {
+		t.Fatal("endpoint canonicalization")
+	}
+	withKey := ProviderInstanceKey("openai", "https://api.openai.com/v1", "sk-secret")
+	if !strings.Contains(withKey, "#") {
+		t.Fatalf("api key should fingerprint: %q", withKey)
+	}
+}
+
+func TestSameProviderDifferentEndpointsGetDistinctBackends(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.Provider = "omlx"
+	cfg.Endpoint = config.DefaultEndpointFor("omlx")
+	m := llm.NewProviderManager()
+	if err := RegisterLLM(m, cfg); err != nil {
+		t.Fatal(err)
+	}
+	epA := "http://127.0.0.1:9000/v1"
+	epB := "http://127.0.0.1:9001/v1"
+	overrides := []AgentProviderOverride{
+		{Provider: "openai", Model: "model-a", Endpoint: epA, APIKey: "key-a"},
+		{Provider: "openai", Model: "model-b", Endpoint: epB, APIKey: "key-b"},
+	}
+	if err := EnsureAgentProviders(m, cfg, overrides); err != nil {
+		t.Fatal(err)
+	}
+	keyA := ProviderInstanceKey("openai", epA, "key-a")
+	keyB := ProviderInstanceKey("openai", epB, "key-b")
+	if keyA == keyB {
+		t.Fatalf("keys collided: %q", keyA)
+	}
+	pa, err := m.GetProvider(keyA)
+	if err != nil {
+		t.Fatalf("missing %s: %v", keyA, err)
+	}
+	pb, err := m.GetProvider(keyB)
+	if err != nil {
+		t.Fatalf("missing %s: %v", keyB, err)
+	}
+	ea, _ := pa.GetConfig()["endpoint"].(string)
+	eb, _ := pb.GetConfig()["endpoint"].(string)
+	if ea == "" || eb == "" || ea == eb {
+		t.Fatalf("backends must hit different endpoints: %q vs %q", ea, eb)
+	}
+	if !strings.Contains(ea, "9000") || !strings.Contains(eb, "9001") {
+		t.Fatalf("endpoint mismatch: %q %q", ea, eb)
+	}
+	// Agent Complete() uses ResolveAgentProviderKey — must match registered keys.
+	if got := ResolveAgentProviderKey("omlx", "openai", epA, "key-a"); got != keyA {
+		t.Fatalf("resolve A: %q want %q", got, keyA)
+	}
+	if got := ResolveAgentProviderKey("omlx", "openai", epB, "key-b"); got != keyB {
+		t.Fatalf("resolve B: %q want %q", got, keyB)
 	}
 }

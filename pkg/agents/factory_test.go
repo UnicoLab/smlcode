@@ -93,3 +93,25 @@ func TestWorkerPromptAntiWander(t *testing.T) {
 		t.Fatal("reviewer should trust Disk evidence")
 	}
 }
+
+func TestDefinitionUsesUniqueProviderKeyForEndpoint(t *testing.T) {
+	f := &Factory{Provider: "omlx", Model: "m"}
+	spec := RoleSpec{
+		ID: "a1", Title: "A", SystemPrompt: "x", Provider: "openai",
+		Endpoint: "http://127.0.0.1:9000/v1", MaxTokens: 128, MaxIter: 2,
+	}
+	def := f.definition(spec)
+	cfg := def.GetConfig()
+	if cfg == nil {
+		t.Fatal("nil config")
+	}
+	want := "openai@http://127.0.0.1:9000/v1"
+	if cfg.Provider != want {
+		t.Fatalf("provider=%q want %q", cfg.Provider, want)
+	}
+	spec2 := RoleSpec{ID: "a2", SystemPrompt: "x", Provider: "openai", MaxTokens: 128, MaxIter: 2}
+	def2 := f.definition(spec2)
+	if def2.GetConfig().Provider != "openai" {
+		t.Fatalf("friendly name lost: %q", def2.GetConfig().Provider)
+	}
+}

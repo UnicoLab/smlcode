@@ -2,6 +2,7 @@ package multipass
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -23,6 +24,9 @@ func New(passes int) *Runner {
 
 // Execute runs agent with optional critique/refine loops. The agent should be
 // a chat/react specialist; input is the scoped task pack.
+//
+// Early-exit: if the draft already looks like complete structured JSON, skip
+// critique/refine (saves 1–2 SLM round-trips on planner/splitter/worker).
 func (r *Runner) Execute(ctx context.Context, a agent.Agent, input string) (string, error) {
 	draftExec, err := a.Execute(ctx, input+"\n\nPass: DRAFT. Produce your best answer now.")
 	if err != nil {
@@ -31,7 +35,14 @@ func (r *Runner) Execute(ctx context.Context, a agent.Agent, input string) (stri
 	draft := asString(draftExec.Output)
 	current := draft
 
+	if LooksCompleteJSON(draft) {
+		return draft, nil
+	}
+
 	for i := 1; i <= r.Passes; i++ {
+		if err := ctx.Err(); err != nil {
+			return current, err
+		}
 		critiquePrompt := fmt.Sprintf(`Pass: CRITIQUE (%d/%d).
 You previously produced:
 
@@ -40,7 +51,7 @@ You previously produced:
 ---
 
 List concrete defects only (missing acceptance, wrong APIs, scope creep, incomplete edits).
-Be brief. If quality is already high, reply exactly: LOOKS_GOOD`, i, r.Passes, truncate(current, 6000))
+Be brief. If quality is already high, reply exactly: LOOKS_GOOD`, i, r.Passes, truncate(current, 4000))
 
 		critExec, err := a.Execute(ctx, critiquePrompt)
 		if err != nil {
@@ -61,15 +72,70 @@ Previous answer:
 Critique to address:
 %s
 
-Produce an improved final answer. Keep the required output schema.`, i, r.Passes, truncate(input, 4000), truncate(current, 6000), critique)
+Produce an improved final answer. Keep the required output schema.`, i, r.Passes, truncate(input, 3000), truncate(current, 4000), truncate(critique, 1500))
 
 		refExec, err := a.Execute(ctx, refinePrompt)
 		if err != nil {
 			return current, nil
 		}
 		current = asString(refExec.Output)
+		if LooksCompleteJSON(current) && i >= r.Passes {
+			break
+		}
 	}
 	return current, nil
+}
+
+// LooksCompleteJSON reports whether s contains a parseable JSON object with
+// enough structure that further critique/refine is unlikely to help latency.
+func LooksCompleteJSON(s string) bool {
+	raw := extractJSONObject(s)
+	if raw == "" {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || len(m) == 0 {
+		return false
+	}
+	// Common planning / task / worker / review shapes.
+	if _, ok := m["tasks"]; ok {
+		return true
+	}
+	if _, ok := m["steps"]; ok {
+		return true
+	}
+	if _, ok := m["approved"]; ok {
+		return true
+	}
+	if status, ok := m["status"].(string); ok {
+		st := strings.ToLower(status)
+		return st == "done" || st == "blocked"
+	}
+	if _, ok := m["passed"]; ok {
+		return true
+	}
+	if _, ok := m["summary"]; ok {
+		if _, ok2 := m["goals"]; ok2 {
+			return true
+		}
+		if _, ok2 := m["relevant_files"]; ok2 {
+			return true
+		}
+		if _, ok2 := m["actions"]; ok2 {
+			return true
+		}
+	}
+	return false
+}
+
+func extractJSONObject(s string) string {
+	s = strings.TrimSpace(s)
+	i := strings.Index(s, "{")
+	j := strings.LastIndex(s, "}")
+	if i < 0 || j <= i {
+		return ""
+	}
+	return s[i : j+1]
 }
 
 func asString(v interface{}) string {

@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.14-0f6e8c?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.15-0f6e8c?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -187,14 +187,9 @@ make install / make install-system
 RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
 
-Engine notes (0.5.14+): mid-ReAct HITL resume with message history, local hashing embeddings offline, rename disk fast-path before reviewer. Prior (0.5.12+): token-stream early-exit, tool-arg JSON repair, phase latency, shell permission modes, TUI compact/sessions/stats.
+Engine notes (0.5.15+): tagged GoLangGraph `v0.2.0` (no local `replace`), speculative explore digs with loser cancel, early-exit token accounting in Result/`/stats` (optional `$` via `price_*_per_mtok`). Prior (0.5.14+): mid-ReAct HITL resume, local embeddings, rename fast-path.
 
-Local layout during development:
-
-```
-~/Desktop/PROJECT/slmcode/                           ← this project
-~/Desktop/PROJECT/GoLangGraph-Project/GoLangGraph/   ← Go dependency (go.mod replace)
-```
+Dependency: `github.com/piotrlaczkowski/GoLangGraph@v0.2.0` (set `GOPRIVATE=github.com/piotrlaczkowski/*` if the module proxy rejects the capital path). Optional local override: `go mod edit -replace github.com/piotrlaczkowski/GoLangGraph=../GoLangGraph-Project/GoLangGraph`.
 
 ## Embed
 

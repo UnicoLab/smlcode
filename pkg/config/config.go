@@ -147,6 +147,10 @@ type Config struct {
 	EmbeddingAPIKey   string `yaml:"embedding_api_key,omitempty" json:"embedding_api_key,omitempty"`
 	EmbeddingTopK     int    `yaml:"embedding_top_k" json:"embedding_top_k"`
 
+	// Optional $/MTok rates for estimated cost in /stats (omit to report tokens only).
+	PricePromptPerMTok     float64 `yaml:"price_prompt_per_mtok" json:"price_prompt_per_mtok"`
+	PriceCompletionPerMTok float64 `yaml:"price_completion_per_mtok" json:"price_completion_per_mtok"`
+
 	// SkillsDirs are extra skill roots (in addition to bundled + .slmcode/skills).
 	SkillsDirs []string `yaml:"skills_dirs" json:"skills_dirs"`
 

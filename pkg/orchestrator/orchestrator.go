@@ -45,6 +45,8 @@ type Result struct {
 	Backend     string `json:"backend"`
 	// LatencyMs is wall time per phase/role for SLM tuning (plan/split/worker/…).
 	LatencyMs map[string]int64 `json:"latency_ms,omitempty"`
+	// Usage aggregates prompt/completion tokens (estimated when providers omit on early_exit).
+	Usage *TokenUsage `json:"usage,omitempty"`
 }
 
 type Orchestrator struct {
@@ -58,7 +60,7 @@ type Orchestrator struct {
 	focus      *workspace.FocusGuard
 	factory    *agents.Factory
 	registry   *ggagent.AgentRegistry
-	executor   *ggagent.SubAgentExecutor
+	executor   loop.SubAgentRunner
 	shared     *ggagent.SharedState
 	think      *multipass.Runner
 	claude     *backends.ClaudeCodeRunner
@@ -73,6 +75,8 @@ type Orchestrator struct {
 
 	// latencyMs accumulates phase/role durations for the in-flight run.
 	latencyMs map[string]int64
+	// usage accumulates token counts for the in-flight run.
+	usage TokenUsage
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -212,6 +216,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	}
 	o.mu.Lock()
 	o.latencyMs = map[string]int64{}
+	o.usage = TokenUsage{}
 	o.mu.Unlock()
 
 	o.emit("init", "starting "+runID, "")
@@ -357,6 +362,7 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 		Success: err == nil, FailedTasks: board.FailedCount(),
 		Duration: time.Since(start), Summary: firstSentence(out),
 		Backend: config.BackendSLMCode, LatencyMs: o.snapshotLatency(),
+		Usage: o.snapshotUsage(),
 	}
 	if res.Summary == "" {
 		res.Summary = fmt.Sprintf("specialist %s finished", role)
@@ -453,90 +459,20 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		expPack, _ := o.packer.Build("explorer", query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor("explorer", query))
 		explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
 		needDocs := wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3
-		if needDocs && o.cfg.ThinkPasses >= 2 {
-			// Parallel deep-dives: explorer + docs simultaneously.
-			o.emit("explore", "parallel deep-dives (explorer + docs)", "")
-			type res struct {
-				role string
-				out  string
-				err  error
-			}
-			ch := make(chan res, 2)
-			go func() {
-				out, e := o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
-				ch <- res{plan.RoleExplorer, out, e}
-			}()
-			go func() {
-				o.emitAgent("docs", "docs", "", "documentation explorer", "docs/, README*", "")
-				docsPack, _ := o.packer.Build("docs", query, []string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
-				out, e := o.runRoleTracked(ctx, "docs", "", docsPack.Render()+"\nMap docs/conventions for this query. Return JSON.")
-				ch <- res{"docs", out, e}
-			}()
-			var docsOut string
-			for i := 0; i < 2; i++ {
-				r := <-ch
-				if r.role == plan.RoleExplorer {
-					exploreOut, err = r.out, r.err
-				} else if strings.TrimSpace(r.out) != "" {
-					docsOut = r.out
-				}
-			}
-			if err != nil {
-				return nil, fmt.Errorf("explorer: %w", err)
-			}
-			if docsOut != "" {
-				_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
-				exploreOut += "\n\n" + docsOut
-				o.shared.SetGlobal("docs_exploration", docsOut)
-			}
-		} else if wantsArchitect(query) && o.cfg.ThinkPasses >= 2 {
-			// Overlap explorer + architect (architect uses early FS inventory when explore lags).
-			o.emit("explore", "parallel digs (explorer + architect)", "")
-			type res struct {
-				role string
-				out  string
-				err  error
-			}
-			ch := make(chan res, 2)
-			go func() {
-				out, e := o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
-				ch <- res{plan.RoleExplorer, out, e}
-			}()
-			go func() {
-				o.emitAgent("architect", "architect", "", "minimal design pass (parallel)", "", "")
-				archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
-				hint := truncate(strings.Join(inventory, "\n"), 2000)
-				out, e := o.runRoleTracked(ctx, "architect", "", archPack.Render()+"\nWorkspace files:\n"+hint+"\nReturn STRICT JSON design.")
-				ch <- res{"architect", out, e}
-			}()
-			for i := 0; i < 2; i++ {
-				r := <-ch
-				if r.role == plan.RoleExplorer {
-					exploreOut, err = r.out, r.err
-				} else if strings.TrimSpace(r.out) != "" {
-					archOut = r.out
-					_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
-					o.shared.SetGlobal("architecture", archOut)
-				}
-			}
-			if err != nil {
-				return nil, fmt.Errorf("explorer: %w", err)
-			}
-		} else {
-			exploreOut, err = o.runRoleTracked(ctx, plan.RoleExplorer, "", explorePrompt)
-			if err != nil {
-				return nil, fmt.Errorf("explorer: %w", err)
-			}
-			if wantsDocsExplorer(query) {
-				o.emitAgent("docs", "docs", "", "documentation explorer", "docs/, README*", "")
-				docsPack, _ := o.packer.Build("docs", query, []string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
-				docsOut, _ := o.runRoleTracked(ctx, "docs", "", docsPack.Render()+"\nMap docs/conventions for this query. Return JSON.")
-				if strings.TrimSpace(docsOut) != "" {
-					_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
-					exploreOut += "\n\n" + docsOut
-					o.shared.SetGlobal("docs_exploration", docsOut)
-				}
-			}
+		needArch := wantsArchitect(query) && o.cfg.ThinkPasses >= 2
+		var docsOut string
+		exploreOut, archOut, docsOut, err = o.speculateDigs(ctx, query, explorePrompt, inventory, needDocs, needArch)
+		if err != nil {
+			return nil, fmt.Errorf("explorer: %w", err)
+		}
+		if docsOut != "" {
+			_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
+			exploreOut += "\n\n" + docsOut
+			o.shared.SetGlobal("docs_exploration", docsOut)
+		}
+		if archOut != "" {
+			_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+			o.shared.SetGlobal("architecture", archOut)
 		}
 		_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
 		o.shared.SetGlobal("exploration", exploreOut)
@@ -682,6 +618,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
 	}
+	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
+		o.recordUsage(u, estimated)
+	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.coordinate(ctx, query, board, "after-wave")
@@ -746,23 +685,30 @@ func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
 
 
 func (o *Orchestrator) emitLatencySummary(res *Result) {
-	if res == nil || len(res.LatencyMs) == 0 {
+	if res == nil {
 		return
 	}
-	parts := make([]string, 0, len(res.LatencyMs))
-	for k, v := range res.LatencyMs {
-		parts = append(parts, fmt.Sprintf("%s=%dms", k, v))
-	}
-	// Stable-ish order for logs.
-	for i := 0; i < len(parts); i++ {
-		for j := i + 1; j < len(parts); j++ {
-			if parts[j] < parts[i] {
-				parts[i], parts[j] = parts[j], parts[i]
+	if len(res.LatencyMs) > 0 {
+		parts := make([]string, 0, len(res.LatencyMs))
+		for k, v := range res.LatencyMs {
+			parts = append(parts, fmt.Sprintf("%s=%dms", k, v))
+		}
+		for i := 0; i < len(parts); i++ {
+			for j := i + 1; j < len(parts); j++ {
+				if parts[j] < parts[i] {
+					parts[i], parts[j] = parts[j], parts[i]
+				}
 			}
 		}
+		msg := fmt.Sprintf("total=%s · %s", res.Duration.Round(time.Millisecond), strings.Join(parts, " "))
+		o.emitFull("latency", stream.KindLatency, "", "", msg, "", "")
 	}
-	msg := fmt.Sprintf("total=%s · %s", res.Duration.Round(time.Millisecond), strings.Join(parts, " "))
-	o.emitFull("latency", stream.KindLatency, "", "", msg, "", "")
+	if res.Usage == nil {
+		res.Usage = o.snapshotUsage()
+	}
+	if head := usageHead(res.Usage); head != "" {
+		o.emitFull("usage", stream.KindUsage, "", "", head, "", "")
+	}
 }
 
 func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPack string, start time.Time) (*Result, error) {
@@ -872,6 +818,7 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	if results[0].Output != nil {
 		out = fmt.Sprintf("%v", results[0].Output)
 	}
+	o.recordResultUsage(results[0], input, out)
 	if results[0].Error != nil && out == "" {
 		o.emitFull(role, stream.KindAgentEnd, role, taskID, "error: "+results[0].Error.Error(), "", "")
 		return "", results[0].Error

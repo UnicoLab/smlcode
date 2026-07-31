@@ -13,6 +13,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 )
 
 // Logger is an optional progress sink.
@@ -24,6 +25,9 @@ type AfterWave func(ctx context.Context, board *plan.Board, wave []plan.Task)
 
 // AgentEvent reports live agent activity for CLI/GUI streaming.
 type AgentEvent func(kind, agent, taskID, message, scope, output string)
+
+// UsageEvent reports token usage from a subagent result (may be estimated).
+type UsageEvent func(usage llm.Usage, estimated bool, input, output string)
 
 // BuildInput optionally builds the worker/corrector prompt for a task.
 // When set, packs stay ephemeral and are not persisted into task.Description.
@@ -40,6 +44,7 @@ type Runner struct {
 	Focus          *workspace.FocusGuard
 	AfterWave      AfterWave
 	OnEvent        AgentEvent
+	OnUsage        UsageEvent
 	BuildInput     BuildInput
 	MaxRetries     int
 	MaxParallel    int
@@ -241,6 +246,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		i := needIdx[j]
 		t := needExec[j]
 		role := roles[i]
+		r.noteUsage(res, reqs[j].Input, outputString(res))
 		if isCancelResult(err, res) || (res.Error != nil && isCancelResult(res.Error, res)) {
 			r.saveReactFromResult(t.ID, role, res)
 			canceled = true
@@ -276,16 +282,18 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		if looksLikeToolJunk(t.Output) {
 			r.Log("%s produced tool-junk finalize; running corrector once", t.ID)
 			r.fire("agent_start", plan.RoleCorrector, t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
+			corrIn := formatCorrectPrompt(t, plan.ReviewResult{
+				Approved: false,
+				Issues:   []string{"Finish the task and return status JSON. Do not end on a tool call. Use ws_edit/ws_write first."},
+				Summary:  "incomplete finalize",
+			})
 			corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
 				AgentID: plan.RoleCorrector,
-				Input: formatCorrectPrompt(t, plan.ReviewResult{
-					Approved: false,
-					Issues:   []string{"Finish the task and return status JSON. Do not end on a tool call. Use ws_edit/ws_write first."},
-					Summary:  "incomplete finalize",
-				}),
+				Input:   corrIn,
 				Timeout: r.Timeout, ShareState: true,
 			}}, r.Shared)
 			if len(corr) > 0 {
+				r.noteUsage(corr[0], corrIn, outputString(corr[0]))
 				if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
 					t.Output = out
 				}
@@ -335,6 +343,23 @@ func (r *Runner) fire(kind, agent, taskID, msg, scope, output string) {
 	if r.OnEvent != nil {
 		r.OnEvent(kind, agent, taskID, msg, scope, output)
 	}
+}
+
+func (r *Runner) noteUsage(res ggagent.SubAgentResult, input, output string) {
+	if r.OnUsage == nil {
+		return
+	}
+	u := res.Usage
+	est := res.UsageEstimated
+	if u.TotalTokens == 0 && u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		u = llm.Usage{
+			PromptTokens:     llm.EstimateTokens(input),
+			CompletionTokens: llm.EstimateCompletionTokens(output, nil),
+		}
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+		est = true
+	}
+	r.OnUsage(u, est, input, output)
 }
 
 func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan.Task, baseline map[string]string) error {
@@ -390,10 +415,14 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			r.Log("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
 		} else {
 			r.fire("agent_start", plan.RoleReviewer, current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
+			reviewIn := formatReviewPrompt(current)
 			results, err := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-				AgentID: plan.RoleReviewer, Input: formatReviewPrompt(current),
+				AgentID: plan.RoleReviewer, Input: reviewIn,
 				Timeout: r.Timeout, ShareState: true,
 			}}, r.Shared)
+			if len(results) > 0 {
+				r.noteUsage(results[0], reviewIn, outputString(results[0]))
+			}
 			if err != nil && len(results) == 0 {
 				current.MoveTo(plan.ColBlocked)
 				current.Error = err.Error()
@@ -518,10 +547,14 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		r.Log("%s correcting (attempt %d)", current.ID, attempt+1)
 		r.fire("agent_start", plan.RoleCorrector, current.ID, "correction pass", strings.Join(current.Files, ", "), "")
 
+		corrIn := formatCorrectPrompt(current, review)
 		corrResults, corrErr := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-			AgentID: plan.RoleCorrector, Input: formatCorrectPrompt(current, review),
+			AgentID: plan.RoleCorrector, Input: corrIn,
 			Timeout: r.Timeout, ShareState: true,
 		}}, r.Shared)
+		if len(corrResults) > 0 {
+			r.noteUsage(corrResults[0], corrIn, outputString(corrResults[0]))
+		}
 		if corrErr != nil && len(corrResults) == 0 {
 			current.MoveTo(plan.ColBlocked)
 			current.Error = corrErr.Error()

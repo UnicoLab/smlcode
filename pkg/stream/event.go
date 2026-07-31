@@ -13,6 +13,7 @@ const (
 	KindTool       = "tool"
 	KindFileChange = "file_change" // partial apply / ws_edit / ws_write / ws_patch
 	KindLatency    = "latency"     // phase/role wall-time telemetry for SLM tuning
+	KindUsage      = "usage"       // token/cost accounting (estimated on early_exit when needed)
 )
 
 // Event is a live progress unit streamed to CLI + Studio SSE.

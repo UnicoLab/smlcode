@@ -36,6 +36,7 @@ type DashboardState struct {
 	DiffHead        string
 	Queries         []string // recent query turn ids / titles
 	LatencyHead     string   // last-run phase latency summary
+	UsageHead       string   // last-run token/cost summary
 	Settings        string
 	Message         string
 }
@@ -173,6 +174,9 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	if strings.TrimSpace(st.LatencyHead) != "" {
 		fmt.Fprintln(w, Accent("│")+padRight(Yellow(" Latency ")+Dim(clipMid(st.LatencyHead, width-12)), min(width-2, 96))+Accent("│"))
 	}
+	if strings.TrimSpace(st.UsageHead) != "" {
+		fmt.Fprintln(w, Accent("│")+padRight(Cyan(" Tokens ")+Dim(clipMid(st.UsageHead, width-12)), min(width-2, 96))+Accent("│"))
+	}
 
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 	help := Dim(" keys ") + White("[enter]") + Dim(" run  ") +
@@ -277,6 +281,9 @@ func (s *LiveSession) SetState(st DashboardState) {
 	if st.LatencyHead == "" {
 		st.LatencyHead = s.state.LatencyHead
 	}
+	if st.UsageHead == "" {
+		st.UsageHead = s.state.UsageHead
+	}
 	if !st.Compact && s.state.Compact {
 		st.Compact = true
 	}
@@ -329,6 +336,10 @@ func (s *LiveSession) Observe(e stream.Event) {
 		if e.Message != "" {
 			s.state.LatencyHead = e.Message
 		}
+	case stream.KindUsage:
+		if e.Message != "" {
+			s.state.UsageHead = e.Message
+		}
 	}
 	if e.Phase == "done" {
 		s.state.Running = false
@@ -355,6 +366,13 @@ func (s *LiveSession) LatencyHead() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state.LatencyHead
+}
+
+// UsageHead returns the last token/cost summary line.
+func (s *LiveSession) UsageHead() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.UsageHead
 }
 
 func (s *LiveSession) OnRun(fn func(string) error)   { s.onRun = fn }
@@ -449,7 +467,7 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/provider <name>")+"  switch provider")
 	fmt.Fprintln(s.out, "  "+Cyan("/permission …")+"     auto|dry-run|review  or  shell=allow|ask|deny")
 	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle compact live stream")
-	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run phase latency")
+	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run latency + tokens")
 	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
 	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             cancel in-flight run (checkpoint board)")
 	fmt.Fprintln(s.out, "  "+Cyan("/resume [id]")+"      continue interrupted run from last board/tasks")

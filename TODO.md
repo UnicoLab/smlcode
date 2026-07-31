@@ -276,8 +276,14 @@ We need everything to be self evolving and improving all the time !!!
 - [x] **Local embedding fallback** — pure-Go hashing/n-gram `LocalEmbedder`; cascade openai → local → lexical; doctor reports `openai` / `local` / `lexical`; offline ranking test without network
 - [x] **Rename mid-review escalate fix** — `RenameSatisfied` before reviewer LLM; `ws_mv`/delete+create/git rename as write evidence; tester gate skips reopen when rename on disk; regression: weak tool log + disk rename → no reviewer / no escalate / Success
 
+### Closed this pass (2026-07-31 — 0.5.15)
+- [x] **GoLangGraph production dependency** — resume/early-exit/usage shipped as `v0.2.0` on `piotrlaczkowski/GoLangGraph`; slmcode `go.mod` uses the tagged module (local `replace` removed)
+- [x] **Speculative parallel specialists** — explorer required + optional docs/architect; cancel losers when explorer wins; respects `max_parallel` / `think_passes`
+- [x] **Stream early-exit token accounting** — estimate chars/4 when Usage empty; surface in Result + TUI `/stats` + `KindUsage` events; optional `$` only when `price_*_per_mtok` configured
+- [x] Tests: speculate cancel + usage estimate; `go test ./...` + race pkgs; `make build` + `make install-system`
+
 ### Honest remaining gaps vs “best in world”
-- [ ] Speculative parallel specialists beyond explorer/architect (bounded by oMLX contention)
-- [ ] Per-tool token/cost accounting when providers omit usage on stream early-exit
+- [ ] Broader speculative digs (tester/reviewer races) beyond explore-phase specialists
+- [ ] Full per-tool call cost breakdown in Studio UI charts
 
 

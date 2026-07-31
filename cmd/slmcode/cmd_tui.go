@@ -204,12 +204,19 @@ func runPremiumTUI() error {
 			return false, nil
 		case "/stats":
 			head := sess.LatencyHead()
-			if head == "" {
-				fmt.Println(cli.Dim("no latency stats yet — run a query first"))
+			usage := sess.UsageHead()
+			if head == "" && usage == "" {
+				fmt.Println(cli.Dim("no stats yet — run a query first"))
 				return false, nil
 			}
-			fmt.Println(cli.Bold("Latency (last run)"))
-			fmt.Println("  " + head)
+			if head != "" {
+				fmt.Println(cli.Bold("Latency (last run)"))
+				fmt.Println("  " + head)
+			}
+			if usage != "" {
+				fmt.Println(cli.Bold("Tokens (last run)"))
+				fmt.Println("  " + usage)
+			}
 			return false, nil
 		case "/permission":
 			if arg == "" {

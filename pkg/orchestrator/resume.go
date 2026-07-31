@@ -16,6 +16,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/stream"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 )
 
 // Resume continues an interrupted query turn from the last board/tasks checkpoint
@@ -120,6 +121,9 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	}
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
+	}
+	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
+		o.recordUsage(u, estimated)
 	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
@@ -300,6 +304,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		Success: success, FailedTasks: failed,
 		Duration: time.Since(start), Summary: summarize(board, board.Plan),
 		Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
+		Usage: o.snapshotUsage(),
 	}
 	if testerRejected {
 		res.Success = false
@@ -345,6 +350,7 @@ func (o *Orchestrator) checkpointInterrupt(board *plan.Board, phase string, err 
 			Success: false, FailedTasks: board.FailedCount(),
 			Summary: fmt.Sprintf("interrupted at %s — resume with /resume", phase),
 			Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
+			Usage: o.snapshotUsage(),
 		}
 		return res, err
 	}

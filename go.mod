@@ -3,7 +3,7 @@ module github.com/UnicoLab/slmcode
 go 1.23.0
 
 require (
-	github.com/piotrlaczkowski/GoLangGraph v0.0.0
+	github.com/piotrlaczkowski/GoLangGraph v0.2.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/term v0.33.0
@@ -23,7 +23,3 @@ require (
 	github.com/spf13/pflag v1.0.6 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 )
-
-// Local development: GoLangGraph as a sibling under GoLangGraph-Project.
-// For publishing, remove this replace and depend on a tagged release.
-replace github.com/piotrlaczkowski/GoLangGraph => ../GoLangGraph-Project/GoLangGraph

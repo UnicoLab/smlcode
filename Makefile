@@ -1,12 +1,13 @@
 MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.5.14
+VERSION ?= 0.5.15
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.SourceRoot=$(CURDIR) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
-# Local GoLangGraph checkout used via go.mod replace
+# Optional local GoLangGraph checkout for hacking (use: go mod edit -replace ...).
+# Production builds use the tagged module github.com/piotrlaczkowski/GoLangGraph@v0.2.0+.
 GOLANGGRAPH ?= $(CURDIR)/../GoLangGraph-Project/GoLangGraph
 
 # System prefix: Homebrew on Apple Silicon, else /usr/local
@@ -18,7 +19,6 @@ SYSTEM_PREFIX := $(shell \
 .PHONY: tidy build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean
 
 tidy:
-	@test -d "$(GOLANGGRAPH)" || (echo "GoLangGraph not found at $(GOLANGGRAPH)"; exit 1)
 	go mod tidy
 
 # Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed (no npm bundle step).

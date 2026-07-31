@@ -43,6 +43,8 @@ type Result struct {
 	Duration    time.Duration
 	Summary     string `json:"summary"`
 	Backend     string `json:"backend"`
+	// LatencyMs is wall time per phase/role for SLM tuning (plan/split/worker/…).
+	LatencyMs map[string]int64 `json:"latency_ms,omitempty"`
 }
 
 type Orchestrator struct {
@@ -68,6 +70,9 @@ type Orchestrator struct {
 
 	// currentTurn scopes plan/tasks/summary to one user query (rewritten each Run).
 	currentTurn *session.Turn
+
+	// latencyMs accumulates phase/role durations for the in-flight run.
+	latencyMs map[string]int64
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -99,6 +104,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	focus := workspace.NewFocusGuard()
 	toolReg := tools.NewToolRegistry()
 	if err := workspace.RegisterCodingToolsOpts(toolReg, cfg.Root, workspace.ToolOpts{
+		ShellPermission: cfg.ShellPermission,
 		DryRun: cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
 		Focus: focus,
 		OnFileChange: func(path, kind, detail string) {
@@ -204,6 +210,9 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	if o.packer != nil {
 		o.packer.ClearCache()
 	}
+	o.mu.Lock()
+	o.latencyMs = map[string]int64{}
+	o.mu.Unlock()
 
 	o.emit("init", "starting "+runID, "")
 	// Fresh query-scoped plan/tasks — never patch the previous interaction's board
@@ -352,7 +361,7 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 		ID: runID, Query: query, Board: *board,
 		Success: err == nil, FailedTasks: board.FailedCount(),
 		Duration: time.Since(start), Summary: firstSentence(out),
-		Backend: config.BackendSLMCode,
+		Backend: config.BackendSLMCode, LatencyMs: o.snapshotLatency(),
 	}
 	if res.Summary == "" {
 		res.Summary = fmt.Sprintf("specialist %s finished", role)
@@ -360,6 +369,7 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	if o.currentTurn != nil {
 		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, res.Summary)
 	}
+	o.emitLatencySummary(res)
 	o.emit("done", res.Summary, "")
 	return res, err
 }
@@ -689,9 +699,13 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	o.persistBoard(board)
 
+	execStart := time.Now()
 	if err := runner.RunBoard(ctx, board); err != nil {
 		return nil, err
 	}
+	o.recordLatency("execute", time.Since(execStart))
+	o.emitFull("execute", stream.KindLatency, "worker", "",
+		fmt.Sprintf("execute %dms", time.Since(execStart).Milliseconds()), "", "")
 	snap = o.boardStore.Snapshot()
 	board = &snap
 	o.persistBoard(board)
@@ -802,7 +816,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		ID: runID, Query: query, Board: *board,
 		Success: success, FailedTasks: failed,
 		Duration: time.Since(start), Summary: summarize(board, pl),
-		Backend: config.BackendSLMCode,
+		Backend: config.BackendSLMCode, LatencyMs: o.snapshotLatency(),
 	}
 	if testerRejected && success {
 		res.Success = false
@@ -832,8 +846,29 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 			o.emit("session", "archived "+filepath.Base(arch), "")
 		}
 	}
+	o.emitLatencySummary(res)
 	o.emit("done", res.Summary, "")
 	return res, nil
+}
+
+func (o *Orchestrator) emitLatencySummary(res *Result) {
+	if res == nil || len(res.LatencyMs) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(res.LatencyMs))
+	for k, v := range res.LatencyMs {
+		parts = append(parts, fmt.Sprintf("%s=%dms", k, v))
+	}
+	// Stable-ish order for logs.
+	for i := 0; i < len(parts); i++ {
+		for j := i + 1; j < len(parts); j++ {
+			if parts[j] < parts[i] {
+				parts[i], parts[j] = parts[j], parts[i]
+			}
+		}
+	}
+	msg := fmt.Sprintf("total=%s · %s", res.Duration.Round(time.Millisecond), strings.Join(parts, " "))
+	o.emitFull("latency", stream.KindLatency, "", "", msg, "", "")
 }
 
 func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPack string, start time.Time) (*Result, error) {
@@ -923,12 +958,15 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 
 func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input string) (string, error) {
 	o.emitFull(role, stream.KindAgentStart, role, taskID, "started", scopeFromInput(input), "")
+	start := time.Now()
 	timeout := o.roleTimeout(role)
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	results, err := o.executor.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
 		AgentID: role, Input: input, Timeout: timeout, ShareState: true,
 	}}, o.shared)
+	elapsed := time.Since(start)
+	o.recordLatency(role, elapsed)
 	if len(results) == 0 {
 		o.emitFull(role, stream.KindAgentEnd, role, taskID, "no result", "", "")
 		if err != nil {
@@ -944,8 +982,37 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 		o.emitFull(role, stream.KindAgentEnd, role, taskID, "error: "+results[0].Error.Error(), "", "")
 		return "", results[0].Error
 	}
-	o.emitFull(role, stream.KindAgentEnd, role, taskID, "finished", scopeFromInput(input), truncate(out, 1500))
+	o.emitFull(role, stream.KindAgentEnd, role, taskID,
+		fmt.Sprintf("finished (%s)", elapsed.Round(time.Millisecond)),
+		scopeFromInput(input), truncate(out, 1500))
+	o.emitFull(role, stream.KindLatency, role, taskID,
+		fmt.Sprintf("%s %dms", role, elapsed.Milliseconds()), "", "")
 	return out, nil
+}
+
+func (o *Orchestrator) recordLatency(key string, d time.Duration) {
+	if key == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.latencyMs == nil {
+		o.latencyMs = map[string]int64{}
+	}
+	o.latencyMs[key] += d.Milliseconds()
+}
+
+func (o *Orchestrator) snapshotLatency() map[string]int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.latencyMs) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(o.latencyMs))
+	for k, v := range o.latencyMs {
+		out[k] = v
+	}
+	return out
 }
 
 func (o *Orchestrator) runRoleMultipass(ctx context.Context, role, input string) (string, error) {

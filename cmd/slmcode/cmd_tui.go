@@ -49,6 +49,7 @@ func runPremiumTUI() error {
 
 	sess := cli.NewLiveSession()
 	sess.SetState(loadDashboardFromHarness(h))
+	sess.SetCompact(h.Config.CompactMode)
 
 	var runMu sync.Mutex
 	var cancelRun func()
@@ -116,15 +117,90 @@ func runPremiumTUI() error {
 			return false, nil
 		case "/diff":
 			return false, showDiff(h.Config.Root, "")
-		case "/queries":
+		case "/queries", "/sessions":
 			list, err := session.ListQueries(h.Config.SlmDir())
 			if err != nil || len(list) == 0 {
 				fmt.Println(cli.Dim("no query turns yet"))
 				return false, nil
 			}
-			for _, q := range list {
-				fmt.Printf("  %s  %s\n", cli.Accent(q.ID), cli.Dim(cli.Clip(q.Query, 60)))
+			if arg != "" {
+				// Session picker: /sessions <id|N> shows plan/summary for that turn.
+				var pick *session.Turn
+				for i := range list {
+					q := &list[i]
+					if q.ID == arg || fmt.Sprintf("%d", i+1) == arg {
+						pick = q
+						break
+					}
+				}
+				if pick == nil {
+					return false, fmt.Errorf("unknown session %q — use /sessions to list", arg)
+				}
+				fmt.Println(cli.Bold("Session " + pick.ID))
+				fmt.Println(cli.Dim(pick.Query))
+				if pick.Summary != "" {
+					fmt.Println(cli.Accent("summary"))
+					fmt.Println(cli.Clip(pick.Summary, 800))
+				}
+				if pick.Board.Plan.Summary != "" {
+					fmt.Println(cli.Accent("plan"))
+					fmt.Println(cli.Clip(pick.Board.Plan.Summary, 600))
+				}
+				if planBytes, err := os.ReadFile(filepath.Join(session.TurnDir(h.Config.SlmDir(), pick.ID), "PLAN.md")); err == nil && len(planBytes) > 0 {
+					fmt.Println(cli.Accent("PLAN.md"))
+					fmt.Println(cli.Clip(string(planBytes), 800))
+				}
+				return false, nil
 			}
+			for i, q := range list {
+				fmt.Printf("  %2d  %s  %s\n", i+1, cli.Accent(q.ID), cli.Dim(cli.Clip(q.Query, 60)))
+			}
+			fmt.Println(cli.Dim("  /sessions <n|id>  show plan + summary"))
+			return false, nil
+		case "/compact":
+			on := !sess.Compact()
+			if arg == "on" || arg == "1" || arg == "true" {
+				on = true
+			}
+			if arg == "off" || arg == "0" || arg == "false" {
+				on = false
+			}
+			sess.SetCompact(on)
+			h.Config.CompactMode = on
+			_ = h.Config.Save()
+			if on {
+				fmt.Println(cli.Success("compact mode on"))
+			} else {
+				fmt.Println(cli.Success("compact mode off"))
+			}
+			return false, nil
+		case "/stats":
+			head := sess.LatencyHead()
+			if head == "" {
+				fmt.Println(cli.Dim("no latency stats yet — run a query first"))
+				return false, nil
+			}
+			fmt.Println(cli.Bold("Latency (last run)"))
+			fmt.Println("  " + head)
+			return false, nil
+		case "/permission":
+			if arg == "" {
+				fmt.Printf("permission=%s  shell=%s\n", h.Config.Permission, h.Config.ShellPermission)
+				fmt.Println(cli.Dim("usage: /permission auto|dry-run|review  or  /permission shell=allow|ask|deny"))
+				return false, nil
+			}
+			if strings.HasPrefix(arg, "shell=") {
+				h.Config.ShellPermission = strings.TrimPrefix(arg, "shell=")
+			} else {
+				h.Config.Permission = arg
+			}
+			_ = h.Config.Save()
+			if err := h.RebuildOrchestrator(); err != nil {
+				return false, err
+			}
+			h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+			fmt.Println(cli.Success(fmt.Sprintf("permission=%s shell=%s (rebuilt)", h.Config.Permission, h.Config.ShellPermission)))
+			sess.SetState(loadDashboardFromHarness(h))
 			return false, nil
 		case "/agents", "/agent":
 			return false, handleTUIAgentCmd(h, sess, line)
@@ -286,13 +362,15 @@ func loadDashboard(ws *harness.Workspace) cli.DashboardState {
 	_ = ws.Board.Load()
 	b := ws.Board.Snapshot()
 	st := cli.DashboardState{
-		Root:       ws.Config.Root,
-		Provider:   ws.Config.Provider,
-		Model:      ws.Config.Model,
-		Endpoint:   ws.Config.Endpoint,
-		Backend:    ws.Config.Backend,
-		Permission: ws.Config.Permission,
-		Board:      &b,
+		Root:            ws.Config.Root,
+		Provider:        ws.Config.Provider,
+		Model:           ws.Config.Model,
+		Endpoint:        ws.Config.Endpoint,
+		Backend:         ws.Config.Backend,
+		Permission:      ws.Config.Permission,
+		ShellPermission: ws.Config.ShellPermission,
+		Compact:         ws.Config.CompactMode,
+		Board:           &b,
 	}
 	if data, err := os.ReadFile(filepath.Join(ws.Config.SlmDir(), "errors", "errors.md")); err == nil {
 		st.ErrorsHead = firstNonEmptyLine(string(data))
@@ -306,13 +384,15 @@ func loadDashboardFromHarness(h *harness.Harness) cli.DashboardState {
 	_ = h.Orchestrator.Board().Load()
 	b := h.Orchestrator.Board().Snapshot()
 	st := cli.DashboardState{
-		Root:       h.Config.Root,
-		Provider:   h.Config.Provider,
-		Model:      h.Config.Model,
-		Endpoint:   h.Config.Endpoint,
-		Backend:    h.Config.Backend,
-		Permission: h.Config.Permission,
-		Board:      &b,
+		Root:            h.Config.Root,
+		Provider:        h.Config.Provider,
+		Model:           h.Config.Model,
+		Endpoint:        h.Config.Endpoint,
+		Backend:         h.Config.Backend,
+		Permission:      h.Config.Permission,
+		ShellPermission: h.Config.ShellPermission,
+		Compact:         h.Config.CompactMode,
+		Board:           &b,
 	}
 	if data, err := os.ReadFile(filepath.Join(h.Config.SlmDir(), "errors", "errors.md")); err == nil {
 		st.ErrorsHead = firstNonEmptyLine(string(data))

@@ -10,9 +10,16 @@ import (
 
 // Modes mirror Claude Code permission styles for local SLMs.
 const (
-	ModeAuto   = "auto"   // write immediately
+	ModeAuto   = "auto"    // write immediately
 	ModeDryRun = "dry-run" // never write
-	ModeReview = "review" // write proposed diffs under .slmcode/pending/
+	ModeReview = "review"  // write proposed diffs under .slmcode/pending/
+)
+
+// Shell permission modes for ws_shell (independent of file write policy).
+const (
+	ShellAllow = "allow" // run commands (default)
+	ShellAsk   = "ask"   // record pending; do not execute
+	ShellDeny  = "deny"  // reject shell tools
 )
 
 func Normalize(m string) string {
@@ -29,6 +36,21 @@ func Normalize(m string) string {
 			return ModeAuto
 		}
 		return ModeAuto
+	}
+}
+
+// NormalizeShell normalizes ws_shell policy.
+func NormalizeShell(m string) string {
+	m = strings.ToLower(strings.TrimSpace(m))
+	switch m {
+	case ShellAllow, "auto", "yes", "":
+		return ShellAllow
+	case ShellAsk, "review", "pending":
+		return ShellAsk
+	case ShellDeny, "no", "block", "off":
+		return ShellDeny
+	default:
+		return ShellAllow
 	}
 }
 

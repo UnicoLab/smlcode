@@ -18,23 +18,26 @@ import (
 
 // DashboardState is everything the premium TUI renders (parity with Studio + more).
 type DashboardState struct {
-	Root       string
-	Provider   string
-	Model      string
-	Endpoint   string
-	Backend    string
-	Permission string
-	Running    bool
-	Phase      string
-	Query      string
-	Board      *plan.Board
-	Events     []stream.Event
-	Agents     []string // active "@agent:task"
-	ErrorsHead string
-	DiffHead   string
-	Queries    []string // recent query turn ids / titles
-	Settings   string
-	Message    string
+	Root            string
+	Provider        string
+	Model           string
+	Endpoint        string
+	Backend         string
+	Permission      string
+	ShellPermission string
+	Compact         bool
+	Running         bool
+	Phase           string
+	Query           string
+	Board           *plan.Board
+	Events          []stream.Event
+	Agents          []string // active "@agent:task"
+	ErrorsHead      string
+	DiffHead        string
+	Queries         []string // recent query turn ids / titles
+	LatencyHead     string   // last-run phase latency summary
+	Settings        string
+	Message         string
 }
 
 // IsInteractive reports whether stdin is a TTY suitable for the premium TUI.
@@ -167,15 +170,18 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	if len(st.Queries) > 0 {
 		fmt.Fprintln(w, Accent("│")+padRight(Blue(" Queries ")+Dim(strings.Join(st.Queries, " · ")), min(width-2, 96))+Accent("│"))
 	}
+	if strings.TrimSpace(st.LatencyHead) != "" {
+		fmt.Fprintln(w, Accent("│")+padRight(Yellow(" Latency ")+Dim(clipMid(st.LatencyHead, width-12)), min(width-2, 96))+Accent("│"))
+	}
 
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 	help := Dim(" keys ") + White("[enter]") + Dim(" run  ") +
 		White("?") + Dim(" help  ") +
-		White("/board") + Dim("  ") +
-		White("/studio") + Dim("  ") +
+		White("/compact") + Dim("  ") +
+		White("/stats") + Dim("  ") +
+		White("/sessions") + Dim("  ") +
 		White("/stop") + Dim("  ") +
-		White("/q") + Dim(" quit  ") +
-		White("smlcode") + Dim("=") + White("slmcode")
+		White("/q")
 	fmt.Fprintln(w, Accent("│")+padRight(help, min(width-2, 96))+Accent("│"))
 	if st.Message != "" {
 		fmt.Fprintln(w, Accent("│")+padRight(" "+Yellow(clipMid(st.Message, width-4)), min(width-2, 96))+Accent("│"))
@@ -197,6 +203,12 @@ func PrintStaticDashboard(st DashboardState) {
 	KeyVal("endpoint", st.Endpoint)
 	KeyVal("backend", st.Backend)
 	KeyVal("permission", st.Permission)
+	if st.ShellPermission != "" {
+		KeyVal("shell", st.ShellPermission)
+	}
+	if st.Compact {
+		KeyVal("compact", "on")
+	}
 	fmt.Println()
 	RenderBoardGlance(st.Board)
 	fmt.Println()
@@ -257,9 +269,15 @@ func NewLiveSession() *LiveSession {
 func (s *LiveSession) SetState(st DashboardState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// preserve events if caller omitted
+	// preserve events / latency / compact if caller omitted
 	if st.Events == nil {
 		st.Events = s.state.Events
+	}
+	if st.LatencyHead == "" {
+		st.LatencyHead = s.state.LatencyHead
+	}
+	if !st.Compact && s.state.Compact {
+		st.Compact = true
 	}
 	s.state = st
 }
@@ -270,9 +288,17 @@ func (s *LiveSession) Observe(e stream.Event) {
 	if s.status != nil {
 		s.status.Observe(e)
 	}
+	// Compact mode: keep latency + phase/agent/file events; drop noisy output dumps.
+	if s.state.Compact && e.Kind == stream.KindOutput {
+		return
+	}
 	s.state.Events = append(s.state.Events, e)
-	if len(s.state.Events) > 200 {
-		s.state.Events = s.state.Events[len(s.state.Events)-200:]
+	maxEv := 200
+	if s.state.Compact {
+		maxEv = 80
+	}
+	if len(s.state.Events) > maxEv {
+		s.state.Events = s.state.Events[len(s.state.Events)-maxEv:]
 	}
 	if e.Phase != "" {
 		s.state.Phase = e.Phase
@@ -298,11 +324,36 @@ func (s *LiveSession) Observe(e stream.Event) {
 			}
 			s.state.Agents = next
 		}
+	case stream.KindLatency:
+		if e.Message != "" {
+			s.state.LatencyHead = e.Message
+		}
 	}
 	if e.Phase == "done" {
 		s.state.Running = false
 		s.state.Agents = nil
 	}
+}
+
+// SetCompact toggles compact live-event mode.
+func (s *LiveSession) SetCompact(on bool) {
+	s.mu.Lock()
+	s.state.Compact = on
+	s.mu.Unlock()
+}
+
+// Compact reports whether compact mode is enabled.
+func (s *LiveSession) Compact() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.Compact
+}
+
+// LatencyHead returns the last latency summary line.
+func (s *LiveSession) LatencyHead() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.LatencyHead
 }
 
 func (s *LiveSession) OnRun(fn func(string) error)   { s.onRun = fn }
@@ -395,6 +446,10 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/studio")+"           print Studio URL hint")
 	fmt.Fprintln(s.out, "  "+Cyan("/model <id>")+"       switch model (persists)")
 	fmt.Fprintln(s.out, "  "+Cyan("/provider <name>")+"  switch provider")
+	fmt.Fprintln(s.out, "  "+Cyan("/permission …")+"     auto|dry-run|review  or  shell=allow|ask|deny")
+	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle compact live stream")
+	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run phase latency")
+	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
 	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             request stop of current run")
 	fmt.Fprintln(s.out, "  "+Cyan("/refresh")+"          redraw dashboard")
 	fmt.Fprintln(s.out, "  "+Cyan("/q")+"                quit")

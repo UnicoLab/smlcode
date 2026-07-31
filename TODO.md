@@ -256,4 +256,21 @@ We need everything to be self evolving and improving all the time !!!
 - [x] **Same-provider / different-endpoint sharing bug:** unique registry keys (`openai@http://host:port/v1`) + agent `Provider` points at key; unit tests for distinct backends
 - [x] **TUI full agent CRUD:** `/agents`, `/agent new|edit|delete|show` (wizard + `key=value`); wires `agents.WriteCustom` / rebuild like Studio API; non-TTY list/show + inline fields
 
+## World-class local SLM pass (2026-07-31 — 0.5.12)
+- [x] **True token-stream early-exit** in GoLangGraph `CompleteStream` / `CollectStream` — cancel when complete JSON or tool-call args form; agents enable `StreamModeForced` + `DefaultEarlyExit`; live oMLX shows `finish_reason=early_exit`
+- [x] **Tool / plan JSON repair** — `pkg/repair` + GenericTool trailing-comma/single-quote/close-brace fixes; ParsePlan/Tasks/Tester/Review use repair
+- [x] **Phase latency telemetry** — `Result.LatencyMs`, `KindLatency` events, TUI `/stats`, execute+role timings
+- [x] **oMLX auth/doctor** — clearer 401 tips; broader `~/.omlx/settings.json` key spellings; doctor shows shell permission
+- [x] **Shell permission modes** — `shell_permission: allow|ask|deny` + `/permission shell=…`
+- [x] **TUI UX** — `/compact`, `/sessions` picker, `/stats`, latency strip
+- [x] **Live oMLX benchmark** — `TestLiveOMLXLatencyBenchmark` + `docs/omlx-latency-bench.txt` (t1 ~32s success; early-exit confirmed)
+- [x] Tests: stream early-exit, repair, shell normalize; `go test ./...` + race pkgs green
+
+### Honest remaining gaps vs “best in world”
+- [ ] Speculative parallel specialists beyond explorer/architect (bounded by oMLX contention)
+- [ ] Per-tool token/cost accounting when providers omit usage on stream early-exit
+- [ ] Stronger interrupt/resume checkpoints mid-ReAct (HITL exists in GoLangGraph; not fully exposed in TUI)
+- [ ] Memory retrieval ranking beyond summary index (embedding/Falkor-style still optional)
+- [ ] Worker-phase success rate on rename/multi-file turns still SLM-dependent (t2 rename wrote file but board success=false after tester rewrite)
+
 

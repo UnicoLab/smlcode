@@ -303,6 +303,7 @@ func runDoctor() error {
 	cli.KeyVal("endpoint", ws.Config.Endpoint)
 	cli.KeyVal("backend", ws.Config.Backend)
 	cli.KeyVal("permission", ws.Config.Permission)
+	cli.KeyVal("shell", ws.Config.ShellPermission)
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
 	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
@@ -338,13 +339,24 @@ func runDoctor() error {
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			fmt.Println(cli.Success(fmt.Sprintf("LLM ok — %s / %s (HTTP %d)", ws.Config.Provider, ws.Config.Model, resp.StatusCode)))
+		} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			fmt.Println(cli.Error(fmt.Sprintf("LLM auth failed (HTTP %d) at %s", resp.StatusCode, url)))
+			if ws.Config.APIKey == "" {
+				fmt.Println(cli.Dim("  tip: set OMLX_API_KEY / SLMCODE_API_KEY, or ~/.omlx/settings.json → auth.api_key"))
+			} else {
+				fmt.Println(cli.Dim("  tip: api_key is set but rejected — refresh key from provider settings"))
+			}
 		} else {
 			fmt.Println(cli.Warn(fmt.Sprintf("LLM responded %d at %s", resp.StatusCode, url)))
 		}
 	}
-	if ws.Config.APIKey == "" && !config.IsOllama(ws.Config.Provider) && ws.Config.Provider != "omlx" && ws.Config.Provider != "lmstudio" {
-		fmt.Println(cli.Warn("api_key empty — set SLMCODE_API_KEY or OPENAI_API_KEY if the provider requires auth"))
-	} else if ws.Config.APIKey != "" {
+	if ws.Config.APIKey == "" {
+		if config.NormalizeProvider(ws.Config.Provider) == "omlx" {
+			fmt.Println(cli.Warn("api_key empty — oMLX often requires auth; set OMLX_API_KEY or ~/.omlx/settings.json"))
+		} else if !config.IsOllama(ws.Config.Provider) && ws.Config.Provider != "lmstudio" {
+			fmt.Println(cli.Warn("api_key empty — set SLMCODE_API_KEY or OPENAI_API_KEY if the provider requires auth"))
+		}
+	} else {
 		fmt.Println(cli.Success("api_key present"))
 	}
 	sk, _ := ws.Skills.List()

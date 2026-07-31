@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.11-0f6e8c?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.12-0f6e8c?style=flat-square" />
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-2dd4bf?style=flat-square" />
@@ -41,6 +41,11 @@ Small local models need a different loop.
 - **Shared evolving context** — later agents inherit CONTEXT / MEMORY / skills
 - **Skills flywheel** — auto-updated `SKILLS.md` + `skills/learned/`
 - **Explore reuse** — no deep dive every run when memory is rich
+- **Token-stream early-exit** — cancel wasted decode once JSON / tool-call args are complete (GoLangGraph `CompleteStream`)
+- **SLM JSON repair** — trailing commas, single quotes, truncated braces, KV fallbacks for weak tool-calling
+- **Phase latency telemetry** — plan/split/execute/worker timings in logs + TUI `/stats`
+- **Shell permission modes** — `allow` | `ask` | `deny` for `ws_shell` (independent of file writes)
+- **Premium TUI** — `/compact`, `/sessions`, `/permission`, `/stats`, agent CRUD, stop/cancel
 - **Live streaming** in CLI and Studio
 - **Offline Studio GUI** (vendored React) at `http://127.0.0.1:7420`
 - Optional **Claude Code CLI** backend
@@ -149,13 +154,16 @@ slmcode doctor               # shows active provider + model + reachability
 | Command | Purpose |
 |---------|---------|
 | `init` / `doctor` / `config` | Workspace + active provider/model health |
-| `run -v` | Full pipeline with live agent stream |
-| `chat` | Interactive REPL |
+| `run -v` | Full pipeline with live agent stream + latency |
+| `tui` / bare `slmcode` | Premium interactive TUI (default) |
+| `chat` | Classic REPL |
 | `board` / `watch` | Colored kanban |
 | `task …` | add / show / edit / move / delegate / check / promote |
 | `context` / `docs` / `plan` / `skills` | Markdown memory |
 | `studio` | GUI + SSE API |
 | `update` | Rebuild & reinstall from source |
+
+TUI slash commands worth knowing: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`.
 
 ## Studio
 
@@ -177,7 +185,7 @@ make install / make install-system
 RUN_E2E=1 make e2e              # also live multi-agent + oMLX pipeline
 ```
 
-Engine notes (0.5.8+): focus allowlists with greenfield scaffold support, create-path reconciliation, lean worker packs, Studio professional light/dark themes.
+Engine notes (0.5.12+): token-stream early-exit in GoLangGraph `CompleteStream`, tool-arg JSON repair, phase latency telemetry, shell permission modes, TUI compact/sessions/stats. Prior: focus allowlists, lean packs, Studio themes, query-scoped turns.
 
 Local layout during development:
 

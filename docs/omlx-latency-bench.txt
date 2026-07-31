@@ -1,0 +1,28 @@
+
+=== oMLX multi-turn latency benchmark ===
+provider=omlx model=Qwen3-Coder-30B-A3B-Instruct-MLX-4bit endpoint=http://127.0.0.1:8000/v1
+
+--- t1-doc success=true wall=31.943s ---
+  context          2010ms
+  explorer         7960ms
+  memory           2629ms
+  planner          6944ms
+  splitter         3508ms
+  tester           8755ms
+  TOTAL           31943ms
+
+--- t2-rename success=false wall=1m16.206s ---
+  context          2270ms
+  explorer         6493ms
+  memory           2797ms
+  planner         13307ms
+  splitter         4723ms
+  tester          15362ms
+  TOTAL           76206ms
+
+final greet.go:
+package greet
+
+// Greet returns hello
+func Greet() string { return "hello" }
+

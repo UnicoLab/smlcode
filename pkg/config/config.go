@@ -134,6 +134,10 @@ type Config struct {
 
 	// Permission: auto | dry-run | review (Claude Code–style write policy)
 	Permission string `yaml:"permission" json:"permission"`
+	// ShellPermission: allow | ask | deny (ws_shell policy; independent of file writes)
+	ShellPermission string `yaml:"shell_permission" json:"shell_permission"`
+	// CompactMode trims live event verbosity in TUI/CLI.
+	CompactMode bool `yaml:"compact_mode" json:"compact_mode"`
 
 	// SkillsDirs are extra skill roots (in addition to bundled + .slmcode/skills).
 	SkillsDirs []string `yaml:"skills_dirs" json:"skills_dirs"`
@@ -168,6 +172,7 @@ func Default(root string) *Config {
 		Listen:          "127.0.0.1:7420",
 		ClaudeCodeBin:   "claude",
 		Permission:      "auto",
+		ShellPermission: "allow",
 	}
 }
 
@@ -258,15 +263,24 @@ func readOmlxAPIKey() string {
 	if err != nil {
 		return ""
 	}
+	// Support common key spellings across oMLX versions.
 	var s struct {
-		Auth struct {
-			APIKey string `json:"api_key"`
+		APIKey string `json:"api_key"`
+		Auth   struct {
+			APIKey    string `json:"api_key"`
+			APIKeyAlt string `json:"apiKey"`
 		} `json:"auth"`
 	}
 	if json.Unmarshal(data, &s) != nil {
 		return ""
 	}
-	return s.Auth.APIKey
+	if k := strings.TrimSpace(s.Auth.APIKey); k != "" {
+		return k
+	}
+	if k := strings.TrimSpace(s.Auth.APIKeyAlt); k != "" {
+		return k
+	}
+	return strings.TrimSpace(s.APIKey)
 }
 
 func Load(root string) (*Config, error) {
@@ -360,6 +374,7 @@ func normalize(c *Config) {
 	} else if c.Permission == permissions.ModeDryRun {
 		c.DryRun = true
 	}
+	c.ShellPermission = permissions.NormalizeShell(c.ShellPermission)
 }
 
 // Patch is a partial config update. Nil fields are left unchanged.
@@ -382,6 +397,8 @@ type Patch struct {
 	DryRun          *bool     `json:"dry_run,omitempty"`
 	Verbose         *bool     `json:"verbose,omitempty"`
 	Permission      *string   `json:"permission,omitempty"`
+	ShellPermission *string   `json:"shell_permission,omitempty"`
+	CompactMode     *bool     `json:"compact_mode,omitempty"`
 	Listen          *string   `json:"listen,omitempty"`
 }
 
@@ -469,6 +486,12 @@ func (c *Config) ApplyPatch(p Patch) {
 		} else if c.Permission == permissions.ModeDryRun {
 			c.Permission = permissions.ModeAuto
 		}
+	}
+	if p.ShellPermission != nil && *p.ShellPermission != "" {
+		c.ShellPermission = permissions.NormalizeShell(*p.ShellPermission)
+	}
+	if p.CompactMode != nil {
+		c.CompactMode = *p.CompactMode
 	}
 	normalize(c)
 }

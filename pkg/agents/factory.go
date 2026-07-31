@@ -252,6 +252,11 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	if cfg.MaxIterations == 0 {
 		cfg.MaxIterations = 8
 	}
+	// Token-stream early-exit: cancel remaining decode once a complete JSON /
+	// tool-call is formed. Critical for slow local SLMs (oMLX / Ollama).
+	cfg.EnableStreaming = true
+	cfg.StreamingMode = llm.StreamModeForced
+	cfg.EarlyExit = llm.DefaultEarlyExit
 
 	def := agent.NewBaseAgentDefinition(cfg)
 	def.Initialize(f.LLM, f.Tools)

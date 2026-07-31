@@ -25,3 +25,15 @@ func TestNormalizeAndPending(t *testing.T) {
 		t.Fatal(p)
 	}
 }
+
+func TestNormalizeShell(t *testing.T) {
+	if NormalizeShell("") != ShellAllow {
+		t.Fatal("default allow")
+	}
+	if NormalizeShell("ASK") != ShellAsk {
+		t.Fatal(NormalizeShell("ASK"))
+	}
+	if NormalizeShell("block") != ShellDeny {
+		t.Fatal(NormalizeShell("block"))
+	}
+}

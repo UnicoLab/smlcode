@@ -18,11 +18,12 @@ type FileChangeFunc func(path, kind, detail string)
 
 // ToolOpts configures workspace tool safety (Claude Code–style permissions).
 type ToolOpts struct {
-	DryRun       bool
-	Permission   string // auto | dry-run | review
-	SlmDir       string
-	OnFileChange FileChangeFunc
-	Focus        *FocusGuard // optional anti-wander write allowlist
+	DryRun          bool
+	Permission      string // auto | dry-run | review (file writes)
+	ShellPermission string // allow | ask | deny (ws_shell)
+	SlmDir          string
+	OnFileChange    FileChangeFunc
+	Focus           *FocusGuard // optional anti-wander write allowlist
 }
 
 // RegisterCodingTools adds workspace-aware file, shell, and git tools that
@@ -43,7 +44,8 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 	}
 	ws := &Workspace{
 		Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm,
-		SlmDir: opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
+		ShellPermission: permissions.NormalizeShell(opts.ShellPermission),
+		SlmDir:          opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
 	}
 
 	defs := []tools.Tool{
@@ -181,12 +183,13 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 
 // Workspace is the root-jailed project filesystem.
 type Workspace struct {
-	Root         string
-	DryRun       bool
-	Permission   string
-	SlmDir       string
-	OnFileChange FileChangeFunc
-	Focus        *FocusGuard
+	Root            string
+	DryRun          bool
+	Permission      string
+	ShellPermission string
+	SlmDir          string
+	OnFileChange    FileChangeFunc
+	Focus           *FocusGuard
 }
 
 func (w *Workspace) checkFocus(path string) error {
@@ -487,6 +490,19 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 	}
 	if w.DryRun {
 		return "dry-run: " + command, nil
+	}
+	switch permissions.NormalizeShell(w.ShellPermission) {
+	case permissions.ShellDeny:
+		return nil, fmt.Errorf("shell denied by permission mode (shell=deny)")
+	case permissions.ShellAsk:
+		if w.SlmDir != "" {
+			p, err := permissions.RecordPending(w.SlmDir, "shell.sh", "shell", command)
+			if err != nil {
+				return nil, fmt.Errorf("shell ask: %w", err)
+			}
+			return fmt.Sprintf("shell pending approval: %s\ncommand: %s", p, command), nil
+		}
+		return fmt.Sprintf("shell pending approval (no slm dir): %s", command), nil
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	cmd.Dir = w.Root

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/repair"
 )
 
 // Status values for atomic tasks.
@@ -282,6 +284,9 @@ func escapePipe(s string) string {
 // ParsePlanJSON extracts a Plan from model output (JSON or fenced JSON).
 func ParsePlanJSON(raw string) (Plan, error) {
 	raw = extractJSON(raw)
+	if fixed, err := repair.RepairJSON(raw); err == nil {
+		raw = fixed
+	}
 	var p Plan
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		// Fallback: treat entire text as summary/steps
@@ -298,6 +303,9 @@ func ParsePlanJSON(raw string) (Plan, error) {
 // ParseTasksJSON extracts tasks from model output.
 func ParseTasksJSON(raw string) ([]Task, error) {
 	raw = extractJSON(raw)
+	if fixed, err := repair.RepairJSON(raw); err == nil {
+		raw = fixed
+	}
 	var payload struct {
 		Tasks []Task `json:"tasks"`
 	}
@@ -354,6 +362,9 @@ func ParseTesterJSON(raw string) TesterResult {
 		}
 	}
 	extracted := extractJSON(raw)
+	if fixed, err := repair.RepairJSON(extracted); err == nil {
+		extracted = fixed
+	}
 	var r TesterResult
 	if err := json.Unmarshal([]byte(extracted), &r); err == nil {
 		if len(r.Failures) == 0 && len(r.Issues) > 0 {
@@ -426,6 +437,9 @@ func firstNonEmpty(vals ...string) string {
 // ParseReviewJSON extracts a review result.
 func ParseReviewJSON(raw string) ReviewResult {
 	extracted := extractJSON(raw)
+	if fixed, err := repair.RepairJSON(extracted); err == nil {
+		extracted = fixed
+	}
 	var r ReviewResult
 	if err := json.Unmarshal([]byte(extracted), &r); err != nil {
 		lower := strings.ToLower(raw)

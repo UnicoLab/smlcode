@@ -61,10 +61,16 @@ jobs:
           build darwin arm64 ""
           build linux amd64 ""
           build linux arm64 ""
+          build windows amd64 ".exe"
+          build windows arm64 ".exe"
+
+          cp scripts/install-remote.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
+          cp scripts/install.cmd dist/install.cmd
 
           (
             cd dist
-            shasum -a 256 slmcode_* > SHA256SUMS
+            shasum -a 256 slmcode_* install.sh install.ps1 install.cmd > SHA256SUMS
           )
           ls -lah dist
 
@@ -74,8 +80,30 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: SLMCode ${{ steps.ver.outputs.tag }}
           generate_release_notes: true
+          body: |
+            ## Install
+
+            **macOS / Linux / WSL**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
+            ```
+
+            **Windows (PowerShell)**
+            ```powershell
+            irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
+            ```
+
+            **Homebrew**
+            ```bash
+            brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
+            ```
+
+            Made with ♥ by [UnicoLab](https://unicolab.ai)
           files: |
             dist/slmcode_*
+            dist/install.sh
+            dist/install.ps1
+            dist/install.cmd
             dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

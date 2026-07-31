@@ -135,6 +135,12 @@ func TestDefaultEndpointFor(t *testing.T) {
 	if DefaultEndpointFor("openrouter") != "https://openrouter.ai/api/v1" {
 		t.Fatal("openrouter")
 	}
+	if DefaultEndpointFor("mistral") != "https://api.mistral.ai/v1" {
+		t.Fatal("mistral")
+	}
+	if DefaultEndpointFor("gemini") == DefaultEndpoint {
+		t.Fatal("gemini should have a dedicated OpenAI-compat default")
+	}
 	if DefaultEndpointFor("my-gateway") != DefaultEndpoint {
 		t.Fatal("unknown gateway should keep local default endpoint")
 	}

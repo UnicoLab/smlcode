@@ -75,6 +75,13 @@ func DefaultEndpointFor(provider string) string {
 		return "https://api.deepseek.com/v1"
 	case "fireworks":
 		return "https://api.fireworks.ai/inference/v1"
+	case "mistral":
+		return "https://api.mistral.ai/v1"
+	case "gemini", "google":
+		return "https://generativelanguage.googleapis.com/v1beta/openai/"
+	case "anthropic":
+		// Prefer an OpenAI-compatible proxy; Anthropic native API needs a gateway.
+		return "https://openrouter.ai/api/v1"
 	case "vllm", "litellm", "custom":
 		return "http://127.0.0.1:8000/v1"
 	default: // omlx and unknown local gateways

@@ -119,14 +119,18 @@ fi
 
 if ! command -v go >/dev/null 2>&1; then
   echo "error: Go toolchain required (https://go.dev/dl/)" >&2
+  echo "  Prefer the no-Go one-liner instead:" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash" >&2
   exit 1
 fi
 
+# Optional local GoLangGraph checkout for hacking (go.mod replace).
 GG="${GOLANGGRAPH:-${ROOT}/../GoLangGraph-Project/GoLangGraph}"
-if [[ ! -d "${GG}" ]]; then
-  echo "error: GoLangGraph not found at ${GG}" >&2
-  echo "  clone it beside slmcode or set GOLANGGRAPH=/path/to/GoLangGraph" >&2
-  exit 1
+if [[ -d "${GG}" ]]; then
+  echo "→ Using local GoLangGraph at ${GG}"
+  export GOFLAGS="${GOFLAGS:-} -mod=mod"
+else
+  GG=""
 fi
 
 VERSION="$(grep -E '^\s*Version\s*=' "${ROOT}/cmd/slmcode/version.go" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "dev")"
@@ -170,9 +174,11 @@ cat > "${META_DIR}/install.json" <<EOF
   "golanggraph": "${GG}",
   "prefix": "${PREFIX}",
   "mode": "${MODE}",
+  "method": "source",
   "version": "${VERSION}",
   "git_commit": "${GIT_COMMIT}",
   "binary": "${TARGET}",
+  "repo": "UnicoLab/smlcode",
   "installed_at": "${BUILD_TIME}"
 }
 EOF
@@ -256,11 +262,12 @@ echo "  cd your-project"
 echo "  slmcode init"
 echo "  slmcode run -v \"your task\""
 echo "  slmcode studio             # http://127.0.0.1:7420"
-echo "  slmcode chat               # Claude Code–style REPL"
+echo "  slmcode chat               # interactive REPL"
 echo
 if command -v omlx >/dev/null 2>&1; then
   echo "oMLX detected — ensure: omlx start"
 else
-  echo "Tip: install oMLX for Apple Silicon local SLMs."
+  echo "Tip: point provider at any OpenAI-compatible LLM (see docs/PROVIDERS.md)."
 fi
 echo "Built ${BUILD_TIME}"
+echo "Made with ♥ by UnicoLab — https://unicolab.ai"

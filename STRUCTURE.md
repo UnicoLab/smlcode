@@ -1,18 +1,20 @@
-# SLMCode layout
+# 🗂️ SLMCode layout
 
 Dedicated project — **not** inside the GoLangGraph repo.
 
-```
-~/Desktop/PROJECT/slmcode/
+Made with ♥ by [UnicoLab](https://unicolab.ai)
+
+```text
+slmcode/
 ├── cmd/slmcode/                 CLI + embedded Studio UI (ui/)
 ├── pkg/
 │   ├── agents/                  14 specialist prompts + factory
-│   ├── backends/                oMLX / Ollama / Claude Code
+│   ├── backends/                OpenAI-compat / Ollama / optional CLI backends
 │   ├── cli/                     Colored TTY + live event formatter
-│   ├── config/                  .slmcode/config.yaml
+│   ├── config/                  .slmcode/config.yaml + provider presets
 │   ├── context/                 Markdown memory + scoped packs
 │   ├── harness/                 Public New / OpenWorkspace API
-│   ├── instructions/            AGENTS.md / CLAUDE.md loader
+│   ├── instructions/            AGENTS.md / PROJECT loader
 │   ├── knowledge/               SKILLS.md + learned skill evolution
 │   ├── learning/                Wave lessons / context deltas
 │   ├── loop/                    Parallel execute + review/correct
@@ -27,26 +29,32 @@ Dedicated project — **not** inside the GoLangGraph repo.
 │   └── workspace/               Real FS / git tools
 ├── skills/default/              Default skill packs (source)
 ├── test/e2e/                    Board + Studio API + live oMLX
-├── docs/                        GUIDE / TESTING / ARCHITECTURE / …
-├── scripts/install.sh
-└── go.mod                       replace → ../GoLangGraph-Project/GoLangGraph
+├── docs/                        INSTALL / PROVIDERS / GUIDE / …
+├── Formula/slmcode.rb           Homebrew formula
+├── scripts/
+│   ├── install-remote.sh        curl one-liner (prebuilt)
+│   ├── install.ps1 / install.cmd
+│   ├── install.sh               build-from-source installer
+│   └── lint.sh
+└── go.mod                       → github.com/piotrlaczkowski/GoLangGraph
 ```
 
 ## Dependency
 
-```
+```text
 slmcode  ──go.mod──►  github.com/piotrlaczkowski/GoLangGraph
-                         └── local replace: ../GoLangGraph-Project/GoLangGraph
+                         └── optional local replace for hacking
 ```
 
 ## Commands
 
 ```bash
-cd ~/Desktop/PROJECT/slmcode
-make tidy && make test && make install-system
-RUN_E2E=1 go test ./test/e2e/ -run TestLiveOMLX -timeout 45m -v
+# Users
+curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
+
+# Developers
+make tidy && make lint && make test && make install-system
+RUN_E2E=1 make e2e
 slmcode studio
 slmcode chat
 ```
-
-Docs index: [docs/README.md](docs/README.md)

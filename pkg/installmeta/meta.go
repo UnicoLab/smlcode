@@ -12,15 +12,17 @@ const (
 	FileName = "install.json"
 )
 
-// Meta records where SLMCode was built from so `slmcode update` can rebuild.
+// Meta records how SLMCode was installed so `slmcode update` can refresh it.
 type Meta struct {
 	Source      string `json:"source"`
 	GoLangGraph string `json:"golanggraph,omitempty"`
 	Prefix      string `json:"prefix"`
-	Mode        string `json:"mode"` // user | system
+	Mode        string `json:"mode"`   // user | system
+	Method      string `json:"method"` // source | binary
 	Version     string `json:"version"`
 	GitCommit   string `json:"git_commit,omitempty"`
 	Binary      string `json:"binary"`
+	Repo        string `json:"repo,omitempty"`
 	InstalledAt string `json:"installed_at"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,90 +23,169 @@ func updateCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Rebuild from source and reinstall system-wide (or --user)",
-		Long: `Rebuild SLMCode from your local checkout and reinstall onto PATH.
+		Short: "Update SLMCode (binary release or rebuild from source)",
+		Long: `Refresh the installed SLMCode binary.
 
-Looks for the source tree in this order:
+Binary installs (curl / PowerShell / brew download):
+  Re-download the latest GitHub Release for your OS/arch.
+
+Source installs (make install / scripts/install.sh):
+  Rebuild from your local checkout and reinstall onto PATH.
+
+Looks for source in this order when method=source:
   1. --src / SLMCODE_SRC
-  2. ~/.config/slmcode/install.json (written by install.sh)
+  2. ~/.config/slmcode/install.json
   3. Source path baked into this binary at build time
-  4. Common local paths (~/Desktop/PROJECT/slmcode, …)
+  4. Common local paths
 
 Examples:
-  slmcode update              # same mode as last install (default: system)
-  slmcode update --system     # force Homebrew /usr/local install
+  slmcode update              # binary or source, matching last install mode
+  slmcode update --system     # force system prefix
   slmcode update --user       # ~/.local/bin only
-  slmcode update --check      # show current vs source without installing
-  slmcode update --src ~/Desktop/PROJECT/slmcode
+  slmcode update --check      # show status without installing
+  slmcode update --src ~/code/slmcode
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			src, how, err := resolveUpdateSource(srcFlag)
-			if err != nil {
-				return err
-			}
 			meta, _ := installmeta.Load()
-
-			srcVer := readSourceVersion(src)
-			srcCommit := readSourceCommit(src)
+			method := "source"
+			if meta != nil && meta.Method != "" {
+				method = meta.Method
+			}
+			// Prefer binary update when there is no checkout.
+			if method != "binary" {
+				if _, _, err := resolveUpdateSource(srcFlag); err != nil && (meta == nil || meta.Source == "") {
+					method = "binary"
+				}
+			}
+			if meta != nil && meta.Method == "binary" {
+				method = "binary"
+			}
 
 			cli.Header("Update")
 			cli.KeyVal("installed", Version+" ("+GitCommit+")")
 			cli.KeyVal("binary", resolveBinaryPath())
-			cli.KeyVal("source", src)
-			cli.KeyVal("source_via", how)
-			cli.KeyVal("source_ver", srcVer+" ("+srcCommit+")")
+			cli.KeyVal("method", method)
 			if meta != nil && meta.InstalledAt != "" {
 				cli.KeyVal("last_install", meta.InstalledAt)
 			}
 
-			if checkOnly {
-				if srcVer != Version || (srcCommit != "unknown" && srcCommit != GitCommit) {
-					fmt.Println(cli.Warn("source differs from installed binary — run: slmcode update"))
-				} else {
-					fmt.Println(cli.Success("installed binary matches source checkout"))
-				}
-				return nil
+			if method == "binary" {
+				return updateFromBinary(meta, checkOnly, userMode, system)
 			}
-
-			mode := "system"
-			if meta != nil && meta.Mode != "" {
-				mode = meta.Mode
-			}
-			if userMode {
-				mode = "user"
-			}
-			if system {
-				mode = "system"
-			}
-
-			script := filepath.Join(src, "scripts", "install.sh")
-			if _, err := os.Stat(script); err != nil {
-				return fmt.Errorf("install script missing: %s (is --src a slmcode checkout?)", script)
-			}
-
-			fmt.Println(cli.Info("rebuilding + installing (" + mode + ")…"))
-			argsInstall := []string{script, "--" + mode}
-			c := exec.Command("bash", argsInstall...)
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			c.Stdin = os.Stdin
-			c.Dir = src
-			if gg := os.Getenv("GOLANGGRAPH"); gg != "" {
-				c.Env = append(os.Environ(), "GOLANGGRAPH="+gg)
-			}
-			if err := c.Run(); err != nil {
-				return fmt.Errorf("install failed: %w", err)
-			}
-			fmt.Println(cli.Success("update complete — open a new shell only if the binary path changed"))
-			fmt.Println(cli.Dim("verify: slmcode version && slmcode doctor"))
-			return nil
+			return updateFromSource(meta, checkOnly, userMode, system, srcFlag)
 		},
 	}
-	cmd.Flags().BoolVar(&checkOnly, "check", false, "compare installed vs source without installing")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "compare installed vs available without installing")
 	cmd.Flags().BoolVar(&userMode, "user", false, "install to ~/.local/bin")
 	cmd.Flags().BoolVar(&system, "system", false, "install system-wide (Homebrew /usr/local)")
 	cmd.Flags().StringVar(&srcFlag, "src", "", "path to slmcode source checkout")
 	return cmd
+}
+
+func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system bool) error {
+	repo := "UnicoLab/smlcode"
+	if meta != nil && meta.Repo != "" {
+		repo = meta.Repo
+	}
+	cli.KeyVal("repo", repo)
+	if checkOnly {
+		fmt.Println(cli.Info("re-run without --check to download the latest release binary"))
+		fmt.Println(cli.Dim("or: curl -fsSL https://raw.githubusercontent.com/" + repo + "/main/scripts/install-remote.sh | bash"))
+		return nil
+	}
+
+	mode := "user"
+	if meta != nil && meta.Mode != "" {
+		mode = meta.Mode
+	}
+	if userMode {
+		mode = "user"
+	}
+	if system {
+		mode = "system"
+	}
+
+	if runtime.GOOS == "windows" {
+		fmt.Println(cli.Info("downloading latest Windows release via PowerShell…"))
+		ps := `irm https://raw.githubusercontent.com/` + repo + `/main/scripts/install.ps1 | iex`
+		c := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps)
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		c.Stdin = os.Stdin
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("binary update failed: %w", err)
+		}
+	} else {
+		fmt.Println(cli.Info("downloading latest release binary (" + mode + ")…"))
+		url := "https://raw.githubusercontent.com/" + repo + "/main/scripts/install-remote.sh"
+		script := fmt.Sprintf("curl -fsSL %q | bash -s -- --%s", url, mode)
+		c := exec.Command("bash", "-c", script)
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		c.Stdin = os.Stdin
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("binary update failed: %w", err)
+		}
+	}
+	fmt.Println(cli.Success("update complete"))
+	fmt.Println(cli.Dim("verify: slmcode version && slmcode doctor"))
+	return nil
+}
+
+func updateFromSource(meta *installmeta.Meta, checkOnly, userMode, system bool, srcFlag string) error {
+	src, how, err := resolveUpdateSource(srcFlag)
+	if err != nil {
+		return err
+	}
+
+	srcVer := readSourceVersion(src)
+	srcCommit := readSourceCommit(src)
+
+	cli.KeyVal("source", src)
+	cli.KeyVal("source_via", how)
+	cli.KeyVal("source_ver", srcVer+" ("+srcCommit+")")
+
+	if checkOnly {
+		if srcVer != Version || (srcCommit != "unknown" && srcCommit != GitCommit) {
+			fmt.Println(cli.Warn("source differs from installed binary — run: slmcode update"))
+		} else {
+			fmt.Println(cli.Success("installed binary matches source checkout"))
+		}
+		return nil
+	}
+
+	mode := "system"
+	if meta != nil && meta.Mode != "" {
+		mode = meta.Mode
+	}
+	if userMode {
+		mode = "user"
+	}
+	if system {
+		mode = "system"
+	}
+
+	script := filepath.Join(src, "scripts", "install.sh")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("install script missing: %s (is --src a slmcode checkout?)", script)
+	}
+
+	fmt.Println(cli.Info("rebuilding + installing (" + mode + ")…"))
+	argsInstall := []string{script, "--" + mode}
+	c := exec.Command("bash", argsInstall...)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	c.Stdin = os.Stdin
+	c.Dir = src
+	if gg := os.Getenv("GOLANGGRAPH"); gg != "" {
+		c.Env = append(os.Environ(), "GOLANGGRAPH="+gg)
+	}
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("install failed: %w", err)
+	}
+	fmt.Println(cli.Success("update complete — open a new shell only if the binary path changed"))
+	fmt.Println(cli.Dim("verify: slmcode version && slmcode doctor"))
+	return nil
 }
 
 func resolveBinaryPath() string {

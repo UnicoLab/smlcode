@@ -1,44 +1,58 @@
-# SLMCode User Guide
+# 🧭 SLMCode User Guide
 
-SLMCode is a **Claude Code–style harness for local SLMs** (default: oMLX + Qwen3-Coder-30B).
+SLMCode is a **coding harness that loves SLMs** — and happily drives **any**
+OpenAI-compatible LLM. Default stack: oMLX + Qwen3-Coder-30B on Apple Silicon.
+
 It turns a query into **plan → atomic tasks → parallel specialists → self-critic → learning**,
 with live CLI + Studio streaming.
 
-> New here? Follow **[TESTING.md](TESTING.md)** first.
+> New here? **[INSTALL.md](INSTALL.md)** → **[PROVIDERS.md](PROVIDERS.md)** → **[TESTING.md](TESTING.md)**
+> Made with ♥ by [UnicoLab](https://unicolab.ai)
 
-## Install (system-wide)
+## 📦 Install
+
+One-liners (no Go required):
 
 ```bash
-cd ~/Desktop/PROJECT/slmcode
-make install-system   # → /opt/homebrew/bin/slmcode (or /usr/local/bin)
-# or:  ./scripts/install.sh --system
-# user: make install  → ~/.local/bin/slmcode
+# macOS / Linux / WSL
+curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
 
-omlx start            # OpenAI-compatible API on :8000
+# system-wide
+curl -fsSL …/install-remote.sh | bash -s -- --system
+
+# Homebrew
+brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
+```
+
+From a checkout (developers):
+
+```bash
+make install-system   # → brew prefix or /usr/local/bin
+make install          # → ~/.local/bin
+```
+
+```bash
 slmcode doctor
-slmcode version       # shows path — use from any directory
+slmcode version
 ```
 
-API key: `~/.omlx/settings.json` → `auth.api_key`, or `OMLX_API_KEY` / `SLMCODE_API_KEY`.
+Full matrix: **[INSTALL.md](INSTALL.md)**. Any LLM: **[PROVIDERS.md](PROVIDERS.md)**.
 
-Tab completion (installed automatically with `--system` on zsh/Homebrew):
+### Updating
 
 ```bash
-slmcode completion zsh > "$(brew --prefix)/share/zsh/site-functions/_slmcode"
+slmcode update                 # binary re-download or source rebuild
+slmcode update --check
+make update                    # from a source checkout
 ```
 
-### Updating the installed binary
-
-After you change SLMCode (or GoLangGraph), refresh the system install:
-
-```bash
-slmcode update                 # from any directory
-slmcode update --check         # show installed vs source versions
-make update                    # from the checkout (= make install-system)
-```
-
-`install.sh` writes `~/.config/slmcode/install.json` (source path + mode).
-Override with `SLMCODE_SRC=/path/to/slmcode` or `slmcode update --src …`.
+Install meta: `~/.config/slmcode/install.json`.
 
 ## Day-to-day
 
@@ -62,7 +76,7 @@ slmcode studio                # http://127.0.0.1:7420
 ### Skills & specialists
 
 Every specialist has a bundled `specialist-<role>` skill (plus shared packs like
-`atomic-coding`, `markdown-memory`, `multipass-quality`). Skills use Claude Code–style
+`atomic-coding`, `markdown-memory`, `multipass-quality`). Skills use
 `SKILL.md` frontmatter:
 
 ```yaml
@@ -180,7 +194,7 @@ slmcode commit -m "slmcode: refactor foo"
 
 See **[AGENTS.md](AGENTS.md)** for the full roster (14 agents including `coordinator`, `docs`, `architect`, `deep`).
 
-## Quality knobs for SLMs
+## 🎛️ Quality knobs (especially for SLMs)
 
 ```bash
 slmcode config set think_passes 2   # draft → critique → refine
@@ -190,18 +204,15 @@ slmcode config set max_context_kb 16
 slmcode config set model Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
 ```
 
-## Hybrid Claude Code
+Switch providers anytime — see **[PROVIDERS.md](PROVIDERS.md)**.
+
+## 🧪 Automated tests
 
 ```bash
-slmcode run --backend claude-code "…"
+make lint && make test
+RUN_E2E=1 make e2e
 ```
 
-Scoped packs + Claude Code CLI when available on `PATH`.
+---
 
-## Automated tests
-
-```bash
-cd ~/Desktop/PROJECT/slmcode
-go test ./...
-RUN_E2E=1 go test ./test/e2e/ -run 'TestLiveOMLX|TestStudioAPI' -timeout 45m -v
-```
+Made with ♥ by [UnicoLab](https://unicolab.ai)

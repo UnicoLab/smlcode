@@ -1,9 +1,10 @@
-# Specialist Agents Reference
+# 🧩 Specialist Agents Reference
 
 All agents are registered with GoLangGraph `SubAgentExecutor` and receive
-**scoped TaskPacks** (never the whole repo).
+**scoped TaskPacks** (never the whole repo). Per-agent providers let you mix
+local SLMs and cloud LLMs in one run — see [PROVIDERS](PROVIDERS.md).
 
-See also: [GUIDE](GUIDE.md) · [ARCHITECTURE](ARCHITECTURE.md)
+See also: [GUIDE](GUIDE.md) · [ARCHITECTURE](ARCHITECTURE.md) · [UnicoLab](https://unicolab.ai)
 
 ## Roster (14)
 

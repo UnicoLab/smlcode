@@ -1,29 +1,27 @@
-# SLMCode — Testing Guide (local / offline)
+# ✅ SLMCode — Testing Guide
 
-**Version:** 0.5.0
-**Binary:** `/opt/homebrew/bin/slmcode` (or `~/.local/bin/slmcode`)
 **Studio:** http://127.0.0.1:7420
+Works fully offline with local oMLX (or Ollama — see [PROVIDERS](PROVIDERS.md)).
 
-No cloud required. Uses local oMLX.
-
-Docs index: [README.md](README.md)
+Docs index: [README.md](README.md) · Made with ♥ by [UnicoLab](https://unicolab.ai)
 
 ---
 
 ## 0. Prerequisites (once)
 
 ```bash
-# Terminal A
+# Install (pick one)
+curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
+# or from a checkout: make install-system
+
+# Terminal A — local model server
 omlx start
+# or: ollama serve
 
 # Terminal B
-cd ~/Desktop/PROJECT/slmcode
-make install-system   # system-wide on PATH (like Claude Code)
-# or: make install    # ~/.local/bin only
-slmcode version          # expect 0.5.0 + binary/source paths
+slmcode version
 slmcode doctor
-# later, after code changes from anywhere:
-slmcode update --check && slmcode update
+slmcode update --check
 ```
 
 API key comes from `~/.omlx/settings.json` (`auth.api_key`).

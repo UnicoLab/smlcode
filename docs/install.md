@@ -1,17 +1,26 @@
 # 📦 Install
 
-Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs — fewer zeros on the invoice.
+Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs —
+fewer zeros on the invoice. 💅
 
-!!! success "No Go required"
-    One-liners download a **prebuilt GitHub Release**. Keep the compiler for contributing.
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🪄</span>
+<p class="slm-banner__text" markdown>
+<strong>Plot twist:</strong> you do <em>not</em> need Go installed.
+One-liners fetch a shiny GitHub Release. Keep the compiler for contributing (or vibes).
+</p>
+</div>
+
+!!! success "🎉 No Go required"
+    Prebuilt binaries for macOS / Linux / Windows. Your laptop can stay a laptop.
 
 ---
 
-## Choose your path
+## Choose your path 🗺️
 
 <div class="grid cards" markdown>
 
--   :material-apple: **macOS / Linux / WSL**
+-   :material-apple: **🍎 macOS / Linux / WSL**
 
     ---
 
@@ -19,7 +28,9 @@ Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs — 
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
     ```
 
--   :material-microsoft-windows: **Windows**
+    Classic. Reliable. Slightly mysterious until `doctor` smiles.
+
+-   :material-microsoft-windows: **🪟 Windows**
 
     ---
 
@@ -27,7 +38,9 @@ Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs — 
     irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
     ```
 
--   :material-glass-mug-variant: **Homebrew**
+    PowerShell one-liner. SmartScreen may raise an eyebrow — unblock and proceed.
+
+-   :material-glass-mug-variant: **🍺 Homebrew**
 
     ---
 
@@ -35,46 +48,49 @@ Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs — 
     brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
     ```
 
+    For people who install everything with brew, including existential dread.
+
 </div>
 
 ---
 
-## One-liners (all options)
+## One-liners (all the flavors) 🍦
 
-=== "macOS / Linux / WSL — user"
+=== "🍎 User install"
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
     ```
 
-=== "macOS / Linux — system"
+=== "🧰 System install"
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash -s -- --system
     ```
 
-    Installs to Homebrew prefix or `/usr/local` (may prompt for `sudo`). Also symlinks into `~/.local/bin` so PATH priority doesn't fork your brain.
+    Lands in Homebrew prefix or `/usr/local` (may ask for `sudo`). Also symlinks into
+    `~/.local/bin` so PATH priority doesn't fork your brain. 🧠
 
-=== "Pin a version"
+=== "📌 Pin a version"
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
       | bash -s -- --version v0.5.17
     ```
 
-=== "Windows PowerShell"
+=== "🪟 PowerShell"
 
     ```powershell
     irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
     ```
 
-=== "Windows CMD"
+=== "🪟 CMD"
 
     ```bat
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd
     ```
 
-=== "Homebrew tap"
+=== "🍺 Brew tap"
 
     ```bash
     brew tap UnicoLab/smlcode https://github.com/UnicoLab/smlcode
@@ -83,33 +99,33 @@ Get one `slmcode` binary on your `PATH`. Same energy as the big coding CLIs — 
 
 ---
 
-## Verify
+## Verify ✅
 
 ```bash
 slmcode version
 slmcode doctor
 ```
 
-You want a binary on `PATH`, a provider/model listed, and a reachable model server.
+You want: binary on `PATH`, a provider/model listed, and a model server that answers the phone.
 
 <div class="slm-cmd" markdown>
-<div class="slm-cmd__bar" markdown><span>next</span><span>quick start</span></div>
+<div class="slm-cmd__bar" markdown><span>next up</span><span>quick start 🚀</span></div>
 
 ```bash
 cd your-project
 slmcode init
-slmcode                 # premium TUI
+slmcode                 # premium TUI — board goes brrr
 ```
 
 </div>
 
-→ [Quick start](quickstart.md) · [Providers](providers.md)
+→ [⏱️ Quick start](quickstart.md) · [🔌 Providers](providers.md)
 
 ---
 
-## Update / uninstall
+## Update / uninstall ♻️
 
-=== "Update"
+=== "⬆️ Update"
 
     ```bash
     slmcode update
@@ -117,15 +133,16 @@ slmcode                 # premium TUI
     ```
 
     Binary installs re-download the latest release. Source installs rebuild from your checkout.
+    Fancy!
 
-=== "Uninstall (curl)"
+=== "🗑️ Uninstall (curl)"
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
       | bash -s -- --uninstall
     ```
 
-=== "Uninstall (brew)"
+=== "🍺 Uninstall (brew)"
 
     ```bash
     brew uninstall slmcode
@@ -133,20 +150,20 @@ slmcode                 # premium TUI
 
 ---
 
-## Where does it land?
+## Where does it land? 📍
 
 | Mode | Location |
 |------|----------|
-| User | `~/.local/bin/slmcode` |
-| System | `$(brew --prefix)/bin` or `/usr/local/bin` |
-| Windows | `%LOCALAPPDATA%\slmcode\bin\slmcode.exe` |
-| Homebrew | Cellar → linked on `PATH` |
+| 👤 User | `~/.local/bin/slmcode` |
+| 🧰 System | `$(brew --prefix)/bin` or `/usr/local/bin` |
+| 🪟 Windows | `%LOCALAPPDATA%\slmcode\bin\slmcode.exe` |
+| 🍺 Homebrew | Cellar → linked on `PATH` |
 
 Metadata: `~/.config/slmcode/install.json` (Windows: `%APPDATA%\slmcode\install.json`).
 
 ---
 
-## Build from source
+## Build from source 🛠️
 
 Needs **Go 1.23+**. Module proxy pulls GoLangGraph — no sibling clone required.
 
@@ -157,19 +174,27 @@ make install-system
 # or make install
 ```
 
-Optional: `GOLANGGRAPH=/path/to/GoLangGraph` for local framework hacking.
+Optional: `GOLANGGRAPH=/path/to/GoLangGraph` for local framework hacking. Bring snacks.
 
 ---
 
-## Troubleshooting
+## Troubleshooting 🧯
 
 | Symptom | Fix |
 |---------|-----|
-| `command not found` | Fix `PATH`, new shell |
-| Checksum mismatch | Re-run; check proxies |
-| SmartScreen | Unblock or use PowerShell one-liner |
-| Go build fails | Use the **one-liner** |
+| `command not found` 👻 | Fix `PATH`, open a **new** shell |
+| Checksum mismatch 🔐 | Re-run; check proxies / TLS inspection |
+| SmartScreen 🛡️ | Unblock or use PowerShell one-liner |
+| Go build fails 💥 | Use the **one-liner** (seriously) |
 
-More → [FAQ](faq.md)
+More comedy → [❓ FAQ](faq.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+<div class="slm-joke" markdown>
+<span class="slm-joke__emoji">💚</span>
+<p markdown>
+<strong>Pro tip:</strong> if <code>slmcode doctor</code> is green, resist the urge to
+“just tweak one more config”. Ship a tiny task first. Future-you will send a thank-you emoji.
+</p>
+</div>
+
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

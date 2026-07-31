@@ -1,6 +1,14 @@
 # ⌨️ CLI reference
 
-Binary name: **`slmcode`** (docs sometimes say *smlcode* — same project).
+Binary name: **`slmcode`** (docs sometimes say *smlcode* — same project, same vibes). 💚
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🛠️</span>
+<p class="slm-banner__text" markdown>
+<strong>Power-user tip:</strong> every command has <code>--help</code>.
+When in doubt, be loud with <code>-v</code> and green with <code>doctor</code>.
+</p>
+</div>
 
 ```bash
 slmcode --help
@@ -9,7 +17,7 @@ slmcode <command> --help
 
 ---
 
-## Global flags
+## Global flags 🌐
 
 | Flag | Env / notes |
 |------|-------------|
@@ -22,59 +30,59 @@ slmcode <command> --help
 | `--parallel` | Max parallel workers |
 | `--retries` | Review/correct retries |
 | `--think-passes` | Multipass think loops |
-| `--dry-run` | Don't write code files |
-| `-v` / `--verbose` | Loud agent logs |
+| `--dry-run` | Don't write code files 🎭 |
+| `-v` / `--verbose` | Loud agent logs 📢 |
 | `--no-banner` | Hide ASCII banner on help |
 
 ---
 
-## Commands
+## Commands 📚
 
-### Core loop
+### Core loop 🔁
 
 | Command | Purpose |
 |---------|---------|
-| `slmcode` / `tui` | Premium interactive TUI (**default**) |
-| `run` | Full pipeline or single specialist |
-| `chat` | Classic REPL |
-| `studio` | GUI + HTTP/SSE (`--listen host:port`) |
-| `doctor` | Provider/model/workspace health |
-| `init` | Create `.slmcode/` scaffolding |
-| `update` | Refresh binary (release) or rebuild from source |
+| `slmcode` / `tui` | Premium interactive TUI (**default**) 🖥️ |
+| `run` | Full pipeline or single specialist 🚀 |
+| `chat` | Classic REPL 💬 |
+| `studio` | GUI + HTTP/SSE (`--listen host:port`) 🎨 |
+| `doctor` | Provider/model/workspace health 🩺 |
+| `init` | Create `.slmcode/` scaffolding 🌱 |
+| `update` | Refresh binary (release) or rebuild from source ⬆️ |
 | `version` | Print version metadata |
 
-### Board & tasks
+### Board & tasks 📋
 
 | Command | Purpose |
 |---------|---------|
 | `board` | Show kanban |
-| `watch` | Live-refreshing kanban |
+| `watch` | Live-refreshing kanban 👀 |
 | `task` | add / show / edit / move / delegate / checklist / promote |
 | `status` | Query + plan head + board counts |
 | `plan` | Show `PLAN.md` |
 
-### Memory & skills
+### Memory & skills 💾
 
 | Command | Purpose |
 |---------|---------|
 | `context` | Show / edit `CONTEXT.md` |
 | `docs` | List / show / edit markdown memory |
-| `skills` | List / show / new / edit |
-| `session` | list / show / resume |
+| `skills` | List / show / new / edit 🦋 |
+| `session` | list / show / resume 🛟 |
 
-### Git helpers & safety
+### Git helpers & safety 🛡️
 
 | Command | Purpose |
 |---------|---------|
 | `diff` | Working tree diff |
 | `commit` | `git add -A && commit` helper |
 | `apply` | Apply `.slmcode/pending/` (review mode) |
-| `config` | Show / set harness config |
+| `config` | Show / set harness config ⚙️ |
 | `completion` | Shell completion scripts |
 
 ---
 
-## `run` deep dive
+## `run` deep dive 🚀
 
 ```bash
 slmcode run -v "add JWT auth"
@@ -97,7 +105,7 @@ Query sugar: `@skill:name`, `@file:path`, `@folder:path` (when supported by inst
 
 ---
 
-## `config`
+## `config` ⚙️
 
 ```bash
 slmcode config                 # show
@@ -106,22 +114,22 @@ slmcode config set model qwen2.5-coder:14b
 slmcode config set permission review
 ```
 
-Full field list → [Config reference](config.md).
+Full field list → [⚙️ Config reference](config.md).
 
 ---
 
-## `doctor` reads as
+## `doctor` reads as 🩺
 
-- Active provider / model / endpoint  
-- Reachability  
-- Embedding mode (`openai` / `local` / `lexical`)  
-- Workspace / board / skills sanity  
+- Active provider / model / endpoint
+- Reachability
+- Embedding mode (`openai` / `local` / `lexical`)
+- Workspace / board / skills sanity
 
-Green → ship. Red → [FAQ](faq.md).
+Green → ship. 💚 Red → [❓ FAQ](faq.md).
 
 ---
 
-## Completions
+## Completions 🐚
 
 ```bash
 slmcode completion zsh > "$(brew --prefix)/share/zsh/site-functions/_slmcode"
@@ -133,6 +141,9 @@ Installers may place these automatically on system installs.
 
 ---
 
-## Exit philosophy
+## Exit philosophy 🚪
 
-SLMCode prefers **visible failure** over silent “done” theater. Check the board, the diff, and `doctor` when something smells off.
+SLMCode prefers **visible failure** over silent “done” theater.
+Check the board, the diff, and `doctor` when something smells off. 👃
+
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

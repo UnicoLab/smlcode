@@ -1,7 +1,15 @@
 # 🎨 Studio
 
 Offline cockpit: kanban, live feed, markdown memory, settings.
-No CDN at runtime — React/Babel are vendored.
+No CDN at runtime — React/Babel are vendored. Cafe Wi‑Fi can implode; Studio will not. ✈️
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🕹️</span>
+<p class="slm-banner__text" markdown>
+<strong>Mission control vibes:</strong> start a run, watch agents stream, drag cards mid-flight,
+edit CONTEXT while the loop is still thinking. Feel powerful. Use responsibly.
+</p>
+</div>
 
 ```bash
 slmcode studio
@@ -9,12 +17,12 @@ slmcode studio
 slmcode studio --listen 127.0.0.1:7421
 ```
 
-!!! success "Airplane mode"
-    Cafe Wi‑Fi can implode. Studio will not.
+!!! success "✈️ Airplane mode"
+    Cafe Wi‑Fi can implode. Studio will not. Bring snacks either way.
 
 ---
 
-## Layout
+## Layout 🗺️
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
@@ -30,23 +38,23 @@ slmcode studio --listen 127.0.0.1:7421
 
 | Zone | Job |
 |------|-----|
-| Query bar | Start / stop |
-| Pipeline strip | Phase visibility |
-| Live | `@agent`, scope, patches, output |
-| Kanban | Drag, promote, edit mid-run |
-| Docs | Live markdown memory |
-| Settings | Provider, knobs, safety |
+| 🎯 Query bar | Start / stop |
+| 🏭 Pipeline strip | Phase visibility |
+| 📡 Live | `@agent`, scope, patches, output |
+| 📋 Kanban | Drag, promote, edit mid-run |
+| 💾 Docs | Live markdown memory |
+| ⚙️ Settings | Provider, knobs, safety |
 
 ---
 
-## Mid-run editing
+## Mid-run editing ✏️
 
 While agents run you can drag cards, promote columns, edit CONTEXT/MEMORY, and add notes.
-The loop reloads `board.json` each wave.
+The loop reloads `board.json` each wave. Chaos, but *structured* chaos.
 
 ---
 
-## Live events (SSE)
+## Live events (SSE) 📡
 
 Same stream as `slmcode run -v`:
 
@@ -64,7 +72,7 @@ curl -N http://127.0.0.1:7420/api/events
 
 ---
 
-## HTTP API
+## HTTP API 🔌
 
 | Method | Path |
 |--------|------|
@@ -86,7 +94,7 @@ curl -s -X POST http://127.0.0.1:7420/api/runs \
 
 ---
 
-## Pair with the TUI
+## Pair with the TUI 🥊
 
 ```bash
 # A
@@ -95,6 +103,6 @@ slmcode studio
 slmcode watch
 ```
 
-→ [TUI](tui.md) · [Recipes](recipes.md)
+→ [🖥️ TUI](tui.md) · [🧪 Recipes](recipes.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

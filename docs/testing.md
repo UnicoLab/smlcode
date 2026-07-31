@@ -1,10 +1,18 @@
 # ✅ Testing
 
-Prove it on your machine — offline if you want.
+Prove it on your machine — offline if you want. Green checks taste better than vibes. 🥒
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🔬</span>
+<p class="slm-banner__text" markdown>
+<strong>Definition of done:</strong> a tiny file changed for real, the board shows completed work,
+and you can explain what happened without inventing lore.
+</p>
+</div>
 
 ---
 
-## Prerequisites
+## Prerequisites 🧰
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
@@ -25,11 +33,11 @@ slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting
 cat hello.go && slmcode board && slmcode session list
 ```
 
-**Pass:** doc comment present · board done · session saved · skills touched.
+**Pass:** doc comment present · board done · session saved · skills touched. 🎉
 
 ---
 
-## Studio / API
+## Studio / API 🎨
 
 ```bash
 slmcode studio
@@ -41,7 +49,7 @@ Checklist: Run → pipeline moves → Live shows `@agent` → drag a card → Se
 
 ---
 
-## Chat + permissions
+## Chat + permissions 🛡️
 
 ```bash
 slmcode chat
@@ -51,13 +59,13 @@ slmcode apply
 
 | Mode | Verify |
 |------|--------|
-| `auto` | file changed |
-| `dry-run` | log only |
-| `review` | `.slmcode/pending/` |
+| `auto` | file changed ✍️ |
+| `dry-run` | log only 🎭 |
+| `review` | `.slmcode/pending/` 👀 |
 
 ---
 
-## Automated (devs)
+## Automated (devs) 🤖
 
 ```bash
 make lint && make test && make docs-build
@@ -66,18 +74,18 @@ RUN_E2E=1 make e2e
 
 ---
 
-## Feature matrix
+## Feature matrix 🧪
 
 | Feature | Verify |
 |---------|--------|
 | Plan/split/parallel | `run -v` |
 | Coordinator | `@coordinator` |
 | Self-critic | approve / corrector |
-| Explore reuse | 2nd run skips deep dive |
-| Skills flywheel | `.slmcode/SKILLS.md` |
-| Resume | `/stop` → `/resume` |
+| Explore reuse | 2nd run skips deep dive ♻️ |
+| Skills flywheel | `.slmcode/SKILLS.md` 🦋 |
+| Resume | `/stop` → `/resume` 🛟 |
 | 14 agents | `/api/agents` |
 
-Stuck? → [FAQ](faq.md)
+Stuck? → [❓ FAQ](faq.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

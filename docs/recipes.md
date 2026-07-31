@@ -1,10 +1,19 @@
 # 🧪 Recipes
 
 Copy-paste workflows that survive contact with reality.
+Less theory. More “paste this and win”. 🏆
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🍳</span>
+<p class="slm-banner__text" markdown>
+<strong>Chef’s note:</strong> if a recipe asks for a tiny change, keep it tiny.
+The turkey rule applies in the kitchen too. 🦃
+</p>
+</div>
 
 ---
 
-## Recipe: first green run (playground)
+## Recipe: first green run 🟢
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
@@ -19,7 +28,7 @@ cat hello.go
 
 ---
 
-## Recipe: safe edits on a real repo
+## Recipe: safe edits on a real repo 🛡️
 
 ```bash
 cd ~/code/my-app
@@ -33,7 +42,7 @@ slmcode commit -m "slmcode: validate login input"
 
 ---
 
-## Recipe: “where is X?” without writing code
+## Recipe: “where is X?” without writing code 🔎
 
 ```bash
 slmcode run --agent explorer --dry-run "Where is authentication handled?"
@@ -41,9 +50,11 @@ slmcode run --agent explorer --dry-run "Where is authentication handled?"
 slmcode run --agent docs "Summarize the public HTTP API surface"
 ```
 
+Maps without mayhem. Excellent for onboarding days and panic Mondays.
+
 ---
 
-## Recipe: slow SLM survival kit
+## Recipe: slow SLM survival kit 🐢➡️🐇
 
 ```bash
 slmcode config set think_passes 2
@@ -61,7 +72,9 @@ SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"
 
 ---
 
-## Recipe: hybrid brains (local worker, sharper reviewer)
+## Recipe: hybrid brains 🧬
+
+Local worker, sharper reviewer — budget diplomacy at its finest.
 
 ```bash
 slmcode tui
@@ -74,7 +87,7 @@ Or edit YAML under `.slmcode/agents/`.
 
 ---
 
-## Recipe: resume after lunch (or panic Ctrl+C)
+## Recipe: resume after lunch (or panic Ctrl+C) 🥪
 
 ```bash
 # during a run: Ctrl+C or /stop
@@ -83,9 +96,11 @@ slmcode session resume run-…
 # TUI: /resume
 ```
 
+Your checkpoint remembers. Your sandwich does not. Prioritize accordingly.
+
 ---
 
-## Recipe: OpenRouter weekend
+## Recipe: OpenRouter weekend 🌈
 
 ```bash
 export SLMCODE_PROVIDER=openrouter
@@ -98,7 +113,7 @@ slmcode run -v "Refactor the retry helper and add tests"
 
 ---
 
-## Recipe: Studio + TUI dual wield
+## Recipe: Studio + TUI dual wield 🥊
 
 ```bash
 # terminal A
@@ -113,7 +128,7 @@ Edit CONTEXT in Studio; watch the board in the terminal. Feel powerful. Use resp
 
 ---
 
-## Recipe: teach house style once
+## Recipe: teach house style once 🏠
 
 ```markdown
 # AGENTS.md
@@ -127,3 +142,13 @@ Edit CONTEXT in Studio; watch the board in the terminal. Feel powerful. Use resp
 slmcode skills new house-style --agents worker,reviewer,corrector
 slmcode run --skill house-style "…"
 ```
+
+<div class="slm-joke" markdown>
+<span class="slm-joke__emoji">📜</span>
+<p markdown>
+<strong>Bonus tip:</strong> vague skills make vague agents.
+“Be careful” is not a skill. “Never rewrite unrelated files” is a skill.
+</p>
+</div>
+
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

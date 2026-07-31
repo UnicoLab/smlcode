@@ -182,17 +182,17 @@ TUI: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/res
 
 ## 📚 Docs
 
-**Premium site (MkDocs Material → GitHub Pages):**
-[unicolab.github.io/smlcode](https://unicolab.github.io/smlcode/)
+**Premium + playful site (MkDocs Material → GitHub Pages):**
+☀️ [unicolab.github.io/smlcode](https://unicolab.github.io/smlcode/)
 
 | Section | Pages |
 |---------|--------|
-| Getting started | Install · Quick start · Concepts · Providers |
-| Handbook | Guide · TUI · Skills · Studio · Agents · Recipes |
-| Reference | CLI · Config · Testing · FAQ |
-| Internals | Architecture · Contributing |
+| 🚀 Getting started | 📦 Install · ⏱️ Quick start · 🧠 Concepts · 🔌 Providers |
+| 📘 Handbook | 🧭 Guide · 🖥️ TUI · 🦋 Skills · 🎨 Studio · 🧩 Agents · 🧪 Recipes |
+| 📚 Reference | ⌨️ CLI · ⚙️ Config · ✅ Testing · ❓ FAQ |
+| 🔧 Internals | 🏗️ Architecture · 🤝 Contributing |
 
-Local preview: `make docs-serve` → http://127.0.0.1:8000
+Local preview: `make docs-serve` → http://127.0.0.1:8000 — bring snacks. 🍿
 
 ---
 

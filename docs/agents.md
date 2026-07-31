@@ -1,30 +1,35 @@
 # 🧩 Agents
 
-Fourteen specialists. Scoped packs. No “hold the monorepo in your head” cosplay.
+Fourteen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
-!!! tip "Mix brains"
-    Cheap local explorer + sharper cloud reviewer in one run — [Providers](providers.md).
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🧬</span>
+<p class="slm-banner__text" markdown>
+<strong>Mix brains:</strong> cheap local explorer + sharper cloud reviewer in one run —
+see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
+</p>
+</div>
 
 ---
 
-## Roster
+## Roster 📋
 
 | ID | Tools | Output | When |
 |----|-------|--------|------|
-| `coordinator` | — | JSON actions | Pre-exec + each wave |
+| `coordinator` | — | JSON actions | Pre-exec + each wave 🧭 |
 | `orchestrator` | — | decisions | Reserved |
-| `context` | — | CONTEXT body | Run start |
-| `explorer` | ✅ | file map | Deep explore |
-| `docs` | ✅ | docs map | Docs/API queries |
-| `architect` | — | design JSON | Large/refactor |
-| `planner` | — | plan JSON | Always |
-| `splitter` | — | tasks JSON | Always |
-| `worker` | ✅ | status | Execute |
-| `deep` | ✅ | status | Multi-step |
-| `reviewer` | — | approve JSON | Critic |
-| `corrector` | ✅ | status | On reject |
-| `tester` | ✅ | passed | End validation |
-| `memory` | — | bullets | Learn |
+| `context` | — | CONTEXT body | Run start 📝 |
+| `explorer` | ✅ | file map | Deep explore 🔎 |
+| `docs` | ✅ | docs map | Docs/API queries 📚 |
+| `architect` | — | design JSON | Large/refactor 🏛️ |
+| `planner` | — | plan JSON | Always 📋 |
+| `splitter` | — | tasks JSON | Always ✂️ |
+| `worker` | ✅ | status | Execute 🛠️ |
+| `deep` | ✅ | status | Multi-step 🧪 |
+| `reviewer` | — | approve JSON | Critic 🔍 |
+| `corrector` | ✅ | status | On reject 🔧 |
+| `tester` | ✅ | passed | End validation ✅ |
+| `memory` | — | bullets | Learn 💾 |
 
 ```bash
 curl -s localhost:7420/api/agents | jq '.[].id'
@@ -33,7 +38,7 @@ curl -s localhost:7420/api/agents | jq '.[].id'
 
 ---
 
-## Custom agents
+## Custom agents ✨
 
 `.slmcode/agents/<id>.yaml` or `~/.slmcode/agents/`.
 
@@ -49,7 +54,7 @@ Different endpoints → unique backend keys (no accidental shared gateway).
 
 ---
 
-## Coordinator actions
+## Coordinator actions 🧭
 
 ```json
 {
@@ -64,9 +69,11 @@ Different endpoints → unique backend keys (no accidental shared gateway).
 }
 ```
 
+Air-traffic control, not pilot. Let workers fly the plane.
+
 ---
 
-## Delegating
+## Delegating 📬
 
 ```bash
 slmcode task add "Deep refactor auth" --role deep --column ready_to_dev
@@ -75,7 +82,7 @@ slmcode task delegate T1 docs
 
 ---
 
-## Project instructions
+## Project instructions 📜
 
 Auto-loaded from:
 
@@ -84,7 +91,7 @@ Auto-loaded from:
 - `.cursorrules`
 - `.slmcode/PROJECT.md`
 
-!!! example "Tiny AGENTS.md"
+!!! example "✨ Tiny AGENTS.md"
     ```markdown
     # Agents
     - Tiny, reviewable diffs
@@ -92,6 +99,6 @@ Auto-loaded from:
     - Match existing style
     ```
 
-→ [Skills](skills.md) · [Concepts](concepts.md)
+→ [🦋 Skills](skills.md) · [🧠 Concepts](concepts.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

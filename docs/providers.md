@@ -1,26 +1,32 @@
 # 🔌 Providers
 
 SLM-first defaults. Generic harness underneath.
-If it speaks **OpenAI Chat Completions** (or Ollama’s native API), you’re in.
+If it speaks **OpenAI Chat Completions** (or Ollama’s native API), you’re in. 🎟️
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🧠</span>
+<p class="slm-banner__text" markdown>
+<strong>Mental model:</strong> the harness owns structure. The model owns tokens.
+Swap brains without rewriting the play. Bring your own GPU drama.
+</p>
+</div>
 
 ---
 
-## Mental model
+## The adapter picture 🖼️
 
 ```mermaid
 flowchart LR
-  M[Model server] --> C[provider + endpoint + model + key]
-  C --> H[SLMCode harness]
-  H --> Out[Plan / specialists / critic / memory]
+  M[Model server 🤖] --> C[provider + endpoint + model + key]
+  C --> H[SLMCode harness 🧰]
+  H --> Out[Plan / specialists / critic / memory ✨]
 ```
-
-The harness owns structure. The model owns tokens.
 
 ---
 
-## Quick switches
+## Quick switches ⚡
 
-=== "oMLX"
+=== "🍎 oMLX"
 
     ```bash
     slmcode config set provider omlx
@@ -28,21 +34,21 @@ The harness owns structure. The model owns tokens.
     slmcode doctor
     ```
 
-=== "Ollama"
+=== "🦙 Ollama"
 
     ```bash
     slmcode run --provider ollama --model qwen2.5-coder:14b \
-      --endpoint http://127.0.0.1:11434 "fix the flaky test"
+      --endpoint http://127.0.0.1:11434 "Fix the flaky test"
     ```
 
-=== "LM Studio / vLLM"
+=== "🖥️ LM Studio / vLLM"
 
     ```bash
     slmcode run --provider lmstudio --model local-coder \
       --endpoint http://127.0.0.1:1234/v1 "…"
     ```
 
-=== "OpenAI"
+=== "☁️ OpenAI"
 
     ```bash
     slmcode run --provider openai --model gpt-4o-mini \
@@ -50,7 +56,7 @@ The harness owns structure. The model owns tokens.
       --api-key "$OPENAI_API_KEY" "…"
     ```
 
-=== "OpenRouter"
+=== "🌈 OpenRouter"
 
     ```bash
     export SLMCODE_PROVIDER=openrouter
@@ -68,64 +74,68 @@ slmcode config set model qwen2.5-coder:14b
 slmcode config set endpoint http://127.0.0.1:11434
 ```
 
-Studio → **Settings** writes the same file.
+Studio → **Settings** writes the same file. One source of truth. Less “which config is lying?”.
 
 ---
 
-## Built-in presets
+## Built-in presets 🗂️
 
 | Provider | Default endpoint | Notes |
 |----------|------------------|-------|
-| `omlx` | `http://127.0.0.1:8000/v1` | Default on Apple Silicon |
-| `ollama` | `http://127.0.0.1:11434` | Native Ollama API |
+| `omlx` | `http://127.0.0.1:8000/v1` | Default on Apple Silicon 🍎 |
+| `ollama` | `http://127.0.0.1:11434` | Native Ollama API 🦙 |
 | `lmstudio` | `http://127.0.0.1:1234/v1` | OpenAI-compat |
-| `openai` | `https://api.openai.com/v1` | Needs key |
-| `openrouter` | `https://openrouter.ai/api/v1` | Many models |
-| `groq` | `https://api.groq.com/openai/v1` | Fast |
+| `openai` | `https://api.openai.com/v1` | Needs key 🔑 |
+| `openrouter` | `https://openrouter.ai/api/v1` | Many models 🌈 |
+| `groq` | `https://api.groq.com/openai/v1` | Fast ⚡ |
 | `together` | `https://api.together.xyz/v1` | |
 | `deepseek` | `https://api.deepseek.com/v1` | |
 | `mistral` | `https://api.mistral.ai/v1` | |
 | `fireworks` | `https://api.fireworks.ai/inference/v1` | |
 | `gemini` / `google` | Google OpenAI-compat URL | |
 | `vllm` / `litellm` / `custom` | `http://127.0.0.1:8000/v1` | Self-hosted |
-| **anything else** | you set `endpoint` | Treated as OpenAI-compat |
+| **anything else** | you set `endpoint` | Treated as OpenAI-compat ✨ |
 
-!!! tip "Unknown names are features"
+!!! tip "🎁 Unknown names are features"
     `provider: my-corp-gateway` + `endpoint` + key just works.
+    Fancy DNS optional.
 
 ---
 
-## API keys
+## API keys 🔑
 
 1. `--api-key` / `config.api_key`
 2. `SLMCODE_API_KEY`
 3. Provider env (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OMLX_API_KEY`, …)
 4. oMLX `~/.omlx/settings.json`
 
-!!! danger "Please don't"
-    Commit keys. Future-you will sigh in stereo.
+!!! danger "🚨 Please don't"
+    Commit keys. Future-you will sigh in stereo. HR will invent new verbs.
 
 ---
 
-## Per-agent providers
+## Per-agent providers 🧩
+
+Cheap local explorer + sharper cloud reviewer = budget diplomacy.
 
 ```bash
 /agent edit reviewer provider=openai model=gpt-4o-mini endpoint=https://api.openai.com/v1
 /agent edit worker provider=ollama model=qwen2.5-coder:14b
 ```
 
-YAML: `.slmcode/agents/<id>.yaml`. Unique backend keys prevent gateway mix-ups.
+YAML: `.slmcode/agents/<id>.yaml`. Unique backend keys prevent gateway mix-ups
+(“why is my local worker billing OpenAI?” — never again).
 
 ---
 
-## Knobs by model size
+## Knobs by model size 📏
 
 | Class | Try |
 |-------|-----|
-| 7–14B SLM | `think_passes 2`, low context KB, `retries 2+`, `parallel 1` |
-| ~30B | Defaults |
-| Frontier | Raise parallel; keep `permission: review` on serious repos |
+| 🐣 7–14B SLM | `think_passes 2`, low context KB, `retries 2+`, `parallel 1` |
+| 🐦 ~30B | Defaults |
+| 🦅 Frontier | Raise parallel; keep `permission: review` on serious repos |
 
-→ [Config](config.md) · [Recipes](recipes.md) · [FAQ](faq.md)
+→ [⚙️ Config](config.md) · [🧪 Recipes](recipes.md) · [❓ FAQ](faq.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

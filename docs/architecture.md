@@ -1,23 +1,31 @@
 # 🏗️ Architecture
 
-How SLMCode stays sharp when the model is small, tired, or both.
+How SLMCode stays sharp when the model is small, tired, or both. 😴➡️😎
+
+<div class="slm-banner" markdown>
+<span class="slm-banner__emoji">🦃</span>
+<p class="slm-banner__text" markdown>
+<strong>Design thesis:</strong> routing in Go. Tiny packs per specialist. Disk evidence over vibes.
+If you stuff the whole repo into context, don’t be surprised when the model naps.
+</p>
+</div>
 
 ---
 
-## Design thesis
+## Design thesis 🧠
 
 30B-class SLMs fail when asked to “be a frontier agent” in one free-form loop.
 
 **Routing in Go. Tiny packs per specialist. Disk evidence over vibes.**
 
-!!! quote "Turkey rule"
+!!! quote "🦃 Turkey rule"
     If you stuff the whole repo into context, don't be surprised when the model naps.
 
-→ Narrative version: [Concepts](concepts.md)
+→ Narrative version: [🧠 Concepts](concepts.md)
 
 ---
 
-## Package map
+## Package map 📦
 
 ```text
 cmd/slmcode          CLI + embedded Studio (go:embed ui/)
@@ -46,28 +54,29 @@ pkg/retrieval        Embeddings / lexical ranking
 
 ---
 
-## Live streaming
+## Live streaming 📡
 
 `stream.Event` fields: `phase`, `kind`, `agent`, `task_id`, `scope`, `output`.
 Consumers: CLI, Studio SSE (`/api/events`), `/api/runs/latest`.
 
 ---
 
-## Explore reuse · critic · flywheel
+## Explore reuse · critic · flywheel 🔁
 
-- **Reuse** when CONTEXT/MEMORY are rich (override with `SLMCODE_FORCE_EXPLORE=1`)
-- **Critic**: worker → reviewer → corrector loop; disk evidence preferred
-- **Flywheel**: MEMORY / CONTEXT / SKILLS / sessions after each run
+- **Reuse** when CONTEXT/MEMORY are rich (override with `SLMCODE_FORCE_EXPLORE=1`) ♻️
+- **Critic**: worker → reviewer → corrector loop; disk evidence preferred 🔍
+- **Flywheel**: MEMORY / CONTEXT / SKILLS / sessions after each run 🦋
 
 ---
 
-## Parallelism
+## Parallelism ⚡
 
 `SubAgentExecutor` runs ready tasks up to `max_parallel`. Soft-skip blocked deps so one stuck locate can't freeze the board.
+One blocked task should not become a board-wide existential crisis.
 
 ---
 
-## Embed
+## Embed 🧩
 
 ```go
 import "github.com/UnicoLab/slmcode/pkg/harness"
@@ -79,6 +88,6 @@ res, err := h.Run(ctx, "refactor pkg/auth")
 
 Dependency: `github.com/piotrlaczkowski/GoLangGraph` (optional local replace for hacking).
 
-→ [Contributing](contributing.md)
+→ [🤝 Contributing](contributing.md)
 
-Made with ♥ by [UnicoLab](https://unicolab.ai)
+☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

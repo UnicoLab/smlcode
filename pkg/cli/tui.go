@@ -37,6 +37,9 @@ type DashboardState struct {
 	Queries         []string // recent query turn ids / titles
 	LatencyHead     string   // last-run phase latency summary
 	UsageHead       string   // last-run token/cost summary
+	TurnHead        string   // turn budget meter (e.g. turn 12/16)
+	Intervention    string   // latest harness intervention banner
+	ProgressHead    string   // per-task progress strip
 	Settings        string
 	Message         string
 }
@@ -81,6 +84,9 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	if st.Phase != "" {
 		conn += "  phase=" + Cyan(st.Phase)
 	}
+	if st.TurnHead != "" {
+		conn += "  " + Yellow("⟳ "+st.TurnHead)
+	}
 	fmt.Fprintln(w, Accent("│")+padRight(conn, min(width-2, 96))+Accent("│"))
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 
@@ -113,7 +119,7 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	}
 	fmt.Fprintln(w, Accent("│")+padRight(prog, min(width-2, 96))+Accent("│"))
 
-	// Active agents
+	// Active agents + progress strip
 	active := " agents "
 	if len(st.Agents) == 0 {
 		active += Dim("none active")
@@ -121,6 +127,12 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 		active += Cyan(strings.Join(st.Agents, "  "))
 	}
 	fmt.Fprintln(w, Accent("│")+padRight(active, min(width-2, 96))+Accent("│"))
+	if st.ProgressHead != "" {
+		fmt.Fprintln(w, Accent("│")+padRight(" progress "+Dim(clipMid(st.ProgressHead, width-14)), min(width-2, 96))+Accent("│"))
+	}
+	if st.Intervention != "" {
+		fmt.Fprintln(w, Accent("│")+padRight(Yellow(" ⚠ ")+White(clipMid(st.Intervention, width-6)), min(width-2, 96))+Accent("│"))
+	}
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 
 	// Tasks panel (top cards)
@@ -185,11 +197,11 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 	help := Dim(" keys ") + White("[enter]") + Dim(" run  ") +
 		White("?") + Dim(" help  ") +
+		White("/clear") + Dim("  ") +
+		White("/plan") + Dim("  ") +
 		White("/compact") + Dim("  ") +
-		White("/stats") + Dim("  ") +
-		White("/sessions") + Dim("  ") +
+		White("/history") + Dim("  ") +
 		White("/stop") + Dim("  ") +
-		White("/resume") + Dim("  ") +
 		White("/q")
 	fmt.Fprintln(w, Accent("│")+padRight(help, min(width-2, 96))+Accent("│"))
 	if st.Message != "" {
@@ -259,6 +271,7 @@ type LiveSession struct {
 	mu             sync.Mutex
 	state          DashboardState
 	status         *StatusTracker
+	history        *PromptHistory
 	onRun          func(query string) error
 	onStop         func()
 	onSlash        func(cmd string) (quit bool, err error)
@@ -272,11 +285,34 @@ type LiveSession struct {
 // NewLiveSession constructs a TUI session. Call SetState / Observe as events arrive.
 func NewLiveSession() *LiveSession {
 	return &LiveSession{
-		status: NewStatusTracker(),
-		in:     os.Stdin,
-		out:    os.Stdout,
-		state:  DashboardState{Compact: true},
+		status:  NewStatusTracker(),
+		history: LoadPromptHistory(DefaultPromptHistoryPath()),
+		in:      os.Stdin,
+		out:     os.Stdout,
+		state:   DashboardState{Compact: true},
 	}
+}
+
+// History returns the session prompt history (may be nil).
+func (s *LiveSession) History() *PromptHistory {
+	if s == nil {
+		return nil
+	}
+	return s.history
+}
+
+// ClearLive resets live stream state (events, agents, banners) without quitting.
+func (s *LiveSession) ClearLive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Events = nil
+	s.state.Agents = nil
+	s.state.Intervention = ""
+	s.state.TurnHead = ""
+	s.state.ProgressHead = ""
+	s.state.Message = "cleared"
+	s.state.Running = false
+	s.status = NewStatusTracker()
 }
 
 // OnBoardRefresh registers a callback used to refresh the board mid-run.
@@ -298,6 +334,15 @@ func (s *LiveSession) SetState(st DashboardState) {
 	}
 	if st.UsageHead == "" {
 		st.UsageHead = s.state.UsageHead
+	}
+	if st.TurnHead == "" {
+		st.TurnHead = s.state.TurnHead
+	}
+	if st.Intervention == "" {
+		st.Intervention = s.state.Intervention
+	}
+	if st.ProgressHead == "" {
+		st.ProgressHead = s.state.ProgressHead
 	}
 	if !st.Compact && s.state.Compact {
 		st.Compact = true
@@ -384,10 +429,40 @@ func (s *LiveSession) Observe(e stream.Event) {
 		if e.Message != "" {
 			s.state.UsageHead = e.Message
 		}
+	case stream.KindIntervention:
+		banner := e.Message
+		if e.Scope != "" {
+			banner = "[" + e.Scope + "] " + banner
+		}
+		s.state.Intervention = banner
+		s.state.Message = banner
+	case stream.KindTurn:
+		if e.Message != "" {
+			s.state.TurnHead = e.Message
+		}
+		if e.Scope != "" {
+			s.state.TurnHead = e.Scope
+			if e.Message != "" {
+				s.state.TurnHead = e.Message
+			}
+		}
 	}
+	// Progress strip: phase · agents · turn
+	parts := []string{}
+	if s.state.Phase != "" {
+		parts = append(parts, s.state.Phase)
+	}
+	if len(s.state.Agents) > 0 {
+		parts = append(parts, strings.Join(s.state.Agents, ","))
+	}
+	if s.state.TurnHead != "" {
+		parts = append(parts, s.state.TurnHead)
+	}
+	s.state.ProgressHead = strings.Join(parts, " · ")
 	if e.Phase == "done" {
 		s.state.Running = false
 		s.state.Agents = nil
+		s.state.TurnHead = ""
 		refreshBoard = true
 	}
 	fn := s.onBoardRefresh
@@ -401,7 +476,8 @@ func (s *LiveSession) Observe(e stream.Event) {
 		}
 	}
 	s.scheduleRedraw(e.Kind == stream.KindAgentStart || e.Kind == stream.KindAgentEnd ||
-		e.Kind == stream.KindFileChange || e.Phase == "done")
+		e.Kind == stream.KindFileChange || e.Kind == stream.KindIntervention ||
+		e.Kind == stream.KindTurn || e.Phase == "done")
 }
 
 // scheduleRedraw paints the dashboard live during runs (throttled).
@@ -509,11 +585,17 @@ func (s *LiveSession) RunInteractive() error {
 			continue
 		}
 		if s.onRun != nil {
+			if s.history != nil {
+				s.history.Add(line)
+			}
 			s.setMsg("running…")
 			s.mu.Lock()
 			s.state.Running = true
 			s.state.Query = line
 			s.state.Events = nil
+			s.state.Intervention = ""
+			s.state.TurnHead = ""
+			s.state.ProgressHead = ""
 			s.status = NewStatusTracker()
 			s.mu.Unlock()
 			s.redraw()
@@ -548,8 +630,11 @@ func (s *LiveSession) setMsg(m string) {
 
 func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out)
-	fmt.Fprintln(s.out, Bold("Premium TUI — commands"))
+	fmt.Fprintln(s.out, Bold("Premium TUI — shortcuts"))
 	fmt.Fprintln(s.out, "  "+Cyan("<query>")+"          run full SLM pipeline")
+	fmt.Fprintln(s.out, "  "+Cyan("/clear")+"            reset live stream / banners (fresh view)")
+	fmt.Fprintln(s.out, "  "+Cyan("/plan [auto|ask]")+"  plan-approve gate (ask = review before execute)")
+	fmt.Fprintln(s.out, "  "+Cyan("/history")+"          show recent prompts")
 	fmt.Fprintln(s.out, "  "+Cyan("/board")+"            refresh + show board")
 	fmt.Fprintln(s.out, "  "+Cyan("/status")+"           connection / settings glance")
 	fmt.Fprintln(s.out, "  "+Cyan("/errors")+"           tail .slmcode/errors/errors.md")
@@ -570,7 +655,12 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/resume [id]")+"      continue interrupted run from last board/tasks")
 	fmt.Fprintln(s.out, "  "+Cyan("/refresh")+"          redraw dashboard")
 	fmt.Fprintln(s.out, "  "+Cyan("/q")+"                quit")
-	fmt.Fprintln(s.out, Dim("  Binary is slmcode (docs sometimes say smlcode)."))
+	fmt.Fprintln(s.out)
+	fmt.Fprintln(s.out, Bold("Harness UX"))
+	fmt.Fprintln(s.out, "  "+Yellow("⚠ banner")+"       quality / loop / whitelist / thinking interventions")
+	fmt.Fprintln(s.out, "  "+Yellow("⟳ turn N/M")+"     MaxIter budget (finalize soon when low)")
+	fmt.Fprintln(s.out, "  "+Dim("progress")+"         phase · active agents · turn")
+	fmt.Fprintln(s.out, Dim("  Studio Live shows the same intervention + turn chips via SSE."))
 }
 
 func padRight(s string, n int) string {

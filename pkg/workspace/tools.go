@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/augment"
 	"github.com/UnicoLab/slmcode/pkg/hitl"
 	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
@@ -34,6 +35,26 @@ type ToolOpts struct {
 	ShellAskTimeout time.Duration
 	OnShellAsk      ShellAskNotify
 	AutoApprove     bool // when true, shell ask acts as allow
+
+	// SLM invariants (little-coder ports). Zero value = enabled (default ON).
+	// Set the *Disable flags to opt out.
+	DisableWriteGuard      bool // allow ws_write to overwrite existing files
+	DisableReadBeforeEdit  bool // allow edit/patch without prior ws_read
+	DisableShellWriteGuard bool // allow cat>/tee redirects that clobber files
+	DisableOverEditGuard   bool // allow whole-file-style edits
+	Reads                  *ReadTracker // optional shared tracker; created if nil
+	ReadHeadLines          int          // auto-trim head lines (default 80)
+	MaxContextKB           int          // for read-guard budget (default 32)
+	// QualityMonitor enables mid-ReAct repeated-tool refusal (loopguard).
+	QualityMonitor bool
+	// ShellWhitelist enforces SAFE_PREFIXES (little-coder permission-gate).
+	ShellWhitelist bool
+	ShellAllow     []string
+	// Checkpoints enables first-write-wins file backups.
+	Checkpoints       bool
+	CheckpointSession string
+	// OnIntervention reports harness gate refusals to TUI/Studio.
+	OnIntervention func(reason, message string)
 }
 
 // RegisterCodingTools adds workspace-aware file, shell, and git tools that
@@ -52,33 +73,61 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 	if opts.DryRun {
 		perm = permissions.ModeDryRun
 	}
+	reads := opts.Reads
+	if reads == nil {
+		reads = NewReadTracker()
+	}
 	ws := &Workspace{
 		Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm,
 		ShellPermission: permissions.NormalizeShell(opts.ShellPermission),
 		SlmDir:          opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
 		ShellAskTimeout: opts.ShellAskTimeout, OnShellAsk: opts.OnShellAsk,
 		AutoApprove:     opts.AutoApprove,
+		WriteGuard:      !opts.DisableWriteGuard,
+		ReadBeforeEdit:  !opts.DisableReadBeforeEdit,
+		ShellWriteGuard: !opts.DisableShellWriteGuard,
+		OverEditGuard:   !opts.DisableOverEditGuard,
+		Reads:           reads,
+		ReadHeadLines:   opts.ReadHeadLines,
+		MaxContextKB:    opts.MaxContextKB,
+		ShellWhitelist:  opts.ShellWhitelist,
+		ShellAllow:      opts.ShellAllow,
+		OnIntervention:  opts.OnIntervention,
+	}
+	if opts.Checkpoints && opts.SlmDir != "" {
+		ws.Checkpointer = NewFileCheckpointer(opts.SlmDir, root, opts.CheckpointSession)
+	}
+	var loop *CallTracker
+	if opts.QualityMonitor {
+		loop = NewCallTracker()
+		loop.OnIntervention = opts.OnIntervention
 	}
 	wrap := func(name string, fn tools.ToolExecutor) tools.ToolExecutor {
-		return hooks.WrapHandler(opts.Hooks, name, fn)
+		fn = hooks.WrapHandler(opts.Hooks, name, fn)
+		if loop != nil {
+			fn = loop.Wrap(name, fn)
+		}
+		return fn
 	}
 
 	defs := []tools.Tool{
 		tools.NewGenericTool(
 			"ws_read",
-			"Read a file from the project workspace. Path is relative to project root.",
+			"Read a file (numbered lines). Required before ws_edit/ws_patch. Use offset/limit for large files — oversized reads are auto-trimmed.",
 			wrap("ws_read", ws.readFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"path": map[string]interface{}{"type": "string", "description": "Relative file path"},
+					"path":   map[string]interface{}{"type": "string", "description": "Relative file path"},
+					"offset": map[string]interface{}{"type": "integer", "description": "1-based start line (optional)"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max lines to return (optional)"},
 				},
 				"required": []string{"path"},
 			},
 		),
 		tools.NewGenericTool(
 			"ws_write",
-			"Write/overwrite a file in the project workspace.",
+			"Create a NEW file only. Refuses if the file already exists — use ws_edit/ws_patch to modify existing files.",
 			wrap("ws_write", ws.writeFile),
 			map[string]interface{}{
 				"type": "object",
@@ -91,7 +140,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		),
 		tools.NewGenericTool(
 			"ws_edit",
-			"Replace old_str with new_str in a workspace file (exact match). Prefer small patches.",
+			"Replace exact old_str with new_str in an existing file. File must be ws_read first this session. Prefer over ws_write for any change.",
 			wrap("ws_edit", ws.editFile),
 			map[string]interface{}{
 				"type": "object",
@@ -106,7 +155,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		),
 		tools.NewGenericTool(
 			"ws_patch",
-			"Apply a small unified-diff style patch (---/+++/@@ hunks) or a SEARCH/REPLACE block to a file. Prefer over full rewrites for SLMs.",
+			"Apply a small unified-diff or SEARCH/REPLACE block. Prefer over full rewrites for SLMs. Existing files must be ws_read first.",
 			wrap("ws_patch", ws.patchFile),
 			map[string]interface{}{
 				"type": "object",
@@ -246,6 +295,32 @@ type Workspace struct {
 	ShellAskTimeout time.Duration
 	OnShellAsk      ShellAskNotify
 	AutoApprove     bool
+
+	WriteGuard      bool
+	ReadBeforeEdit  bool
+	ShellWriteGuard bool
+	OverEditGuard   bool
+	ShellWhitelist  bool
+	ShellAllow      []string
+	Reads           *ReadTracker
+	Checkpointer    *FileCheckpointer
+	OnIntervention  func(reason, message string)
+	// ReadHeadLines caps auto-trimmed full-file reads (0 = default 80).
+	ReadHeadLines int
+	// MaxContextKB informs read-guard trim decisions (0 = 32).
+	MaxContextKB int
+}
+
+func (w *Workspace) intervene(reason, message string) {
+	if w != nil && w.OnIntervention != nil && message != "" {
+		w.OnIntervention(reason, message)
+	}
+}
+
+func (w *Workspace) backup(path string) {
+	if w != nil && w.Checkpointer != nil {
+		w.Checkpointer.BackupIfNeeded(path)
+	}
 }
 
 func (w *Workspace) checkFocus(path string) error {
@@ -305,22 +380,112 @@ func (w *Workspace) readFile(_ context.Context, args map[string]interface{}) (in
 	if err != nil {
 		return nil, err
 	}
-	const max = 100_000
-	if len(data) > max {
-		return string(data[:max]) + "\n...[truncated]", nil
+	w.markRead(path)
+	text := string(data)
+	lines := strings.Split(text, "\n")
+	total := len(lines)
+
+	offset := intArg(args, "offset", 1)
+	limit := intArg(args, "limit", 0)
+	if offset < 1 {
+		offset = 1
 	}
-	return string(data), nil
+	if offset > total {
+		return fmt.Sprintf("(file has %d lines; offset %d is past EOF)", total, offset), nil
+	}
+
+	headN := w.ReadHeadLines
+	if headN <= 0 {
+		headN = 80
+	}
+	// Auto-trim by live context % (little-coder read-guard getContextUsage).
+	if limit <= 0 {
+		ctxKB := w.MaxContextKB
+		if ctxKB <= 0 {
+			ctxKB = 32
+		}
+		windowTok := (ctxKB * 1024) / 4
+		estTok := (len(text) + 3) / 4
+		// Never let one read consume >15% of the context window.
+		budget := windowTok * 15 / 100
+		if budget < 256 {
+			budget = 256
+		}
+		if total > headN && estTok > budget {
+			limit = headN
+			if limit < 40 {
+				limit = 40
+			}
+		} else if total > 400 {
+			limit = 200
+		}
+	}
+
+	end := total
+	if limit > 0 {
+		end = offset - 1 + limit
+		if end > total {
+			end = total
+		}
+	}
+	start := offset - 1
+	slice := lines[start:end]
+	var b strings.Builder
+	for i, ln := range slice {
+		fmt.Fprintf(&b, "%6d|%s\n", start+i+1, ln)
+	}
+	out := strings.TrimRight(b.String(), "\n")
+	if end < total || (limit > 0 && limit < total && offset == 1 && limit == headN && total > headN) {
+		out += fmt.Sprintf(
+			"\n\n⚠️ Showing lines %d–%d of %d (~%d tokens if read whole). "+
+				"Use ws_grep to locate symbols, then ws_read with offset/limit for the exact span. "+
+				"Do NOT re-read the whole file — it will be trimmed again.",
+			start+1, end, total, (len(text)+2)/3,
+		)
+	}
+	const max = 100_000
+	if len(out) > max {
+		return truncateToolOutput(out, max), nil
+	}
+	return out, nil
+}
+
+func intArg(args map[string]interface{}, key string, def int) int {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	default:
+		return def
+	}
 }
 
 func (w *Workspace) writeFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
 	path, _ := args["path"].(string)
 	content, _ := args["content"].(string)
+	path = w.normalizeRelPath(path)
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
 	}
 	if err := w.checkFocus(path); err != nil {
 		return nil, err
+	}
+	if w.WriteGuard {
+		if refuse, reason := CheckWriteDestination(abs, true); refuse {
+			return reason + augment.FailureRecovery("ws_write", path), nil
+		}
 	}
 	if msg, stop, err := w.guardWrite(path, "write", content); stop {
 		kind := "review"
@@ -330,12 +495,14 @@ func (w *Workspace) writeFile(_ context.Context, args map[string]interface{}) (i
 		w.notify(path, kind, truncateSnippet(content, 400))
 		return msg, err
 	}
+	w.backup(path)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
+	w.markRead(path) // authored → known for follow-up edit
 	msg := fmt.Sprintf("wrote %s (%d bytes)", path, len(content))
 	w.notify(path, "write", truncateSnippet(content, 400))
 	return msg, nil
@@ -346,6 +513,7 @@ func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (in
 	oldStr, _ := args["old_str"].(string)
 	newStr, _ := args["new_str"].(string)
 	replaceAll, _ := args["replace_all"].(bool)
+	path = w.normalizeRelPath(path)
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
@@ -353,20 +521,41 @@ func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (in
 	if err := w.checkFocus(path); err != nil {
 		return nil, err
 	}
+	if err := w.requireRead(path); err != nil {
+		return err.Error(), nil
+	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, err
 	}
 	text := string(data)
-	if !strings.Contains(text, oldStr) {
-		return nil, fmt.Errorf("old_str not found in %s", path)
+	if oldStr == newStr {
+		return "No-op edit refused — old_str and new_str are identical. Change something real, or finish with status JSON.", nil
 	}
-	var next string
+	if !strings.Contains(text, oldStr) {
+		msg := EditNotFoundReason(path)
+		if tip := fuzzyEditHint(text, oldStr); tip != "" {
+			msg += "\n\n" + tip
+		}
+		return msg + augment.FailureRecovery("ws_edit", path), nil
+	}
+	if w.OverEditGuard {
+		if msg := AssessOverEdit(text, oldStr, newStr); msg != "" {
+			return msg + augment.FailureRecovery("ws_edit", path), nil
+		}
+	}
 	count := 1
+	var next string
 	if replaceAll {
 		count = strings.Count(text, oldStr)
 		next = strings.ReplaceAll(text, oldStr, newStr)
 	} else {
+		if n := strings.Count(text, oldStr); n > 1 {
+			return fmt.Sprintf(
+				"old_str found %d times in %s — pass replace_all:true or include more surrounding context to make the match unique. Do NOT use ws_write.",
+				n, path,
+			) + augment.FailureRecovery("ws_edit", path), nil
+		}
 		next = strings.Replace(text, oldStr, newStr, 1)
 	}
 	snippet := diffSnippet(oldStr, newStr)
@@ -379,9 +568,11 @@ func (w *Workspace) editFile(_ context.Context, args map[string]interface{}) (in
 		w.notify(path, "review", snippet)
 		return msg, err
 	}
+	w.backup(path)
 	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
 		return nil, err
 	}
+	w.markRead(path)
 	msg := fmt.Sprintf("edited %s (%d replacement(s))", path, count)
 	w.notify(path, "edit", snippet)
 	return msg, nil
@@ -393,6 +584,7 @@ func (w *Workspace) patchFile(_ context.Context, args map[string]interface{}) (i
 	if strings.TrimSpace(patch) == "" {
 		return nil, fmt.Errorf("patch required")
 	}
+	path = w.normalizeRelPath(path)
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
@@ -407,10 +599,12 @@ func (w *Workspace) patchFile(_ context.Context, args map[string]interface{}) (i
 			return nil, err
 		}
 		data = nil
+	} else if err := w.requireRead(path); err != nil {
+		return err.Error(), nil
 	}
 	next, summary, err := ApplyPatch(string(data), patch)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w%s", err, augment.FailureRecovery("ws_patch", path))
 	}
 	if msg, stop, err := w.guardWrite(path, "patch", next); stop {
 		kind := "review"
@@ -420,12 +614,14 @@ func (w *Workspace) patchFile(_ context.Context, args map[string]interface{}) (i
 		w.notify(path, kind, summary)
 		return msg, err
 	}
+	w.backup(path)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
 		return nil, err
 	}
+	w.markRead(path)
 	msg := fmt.Sprintf("patched %s (%s)", path, summary)
 	w.notify(path, "patch", summary)
 	return msg, nil
@@ -640,6 +836,28 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 	if w.DryRun {
 		return "dry-run: " + command, nil
 	}
+	if w.ShellWriteGuard {
+		if err := GuardShellWrites(w.Root, command); err != nil {
+			return err.Error(), nil
+		}
+	}
+	// SAFE_PREFIXES gate (little-coder permission-gate). In ask mode, non-safe
+	// commands still go through approval; in allow mode they are refused.
+	if w.ShellWhitelist {
+		if refuse, blocked := GuardShellWhitelist(command, w.ShellAllow); blocked {
+			mode := permissions.NormalizeShell(w.ShellPermission)
+			if mode == permissions.ShellAllow || mode == "" {
+				w.intervene("shell_whitelist", refuse)
+				return refuse, nil
+			}
+			if mode == permissions.ShellDeny {
+				w.intervene("shell_whitelist", refuse)
+				return refuse, nil
+			}
+			// ask: still notify, then fall through for approval
+			w.intervene("shell_whitelist", refuse)
+		}
+	}
 	switch permissions.NormalizeShell(w.ShellPermission) {
 	case permissions.ShellDeny:
 		return nil, fmt.Errorf("shell denied by permission mode (shell=deny)")
@@ -661,12 +879,130 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 	out, err := cmd.CombinedOutput()
 	text := string(out)
 	if len(text) > 80_000 {
-		text = text[:80_000] + "\n...[truncated]"
+		text = truncateToolOutput(text, 80_000)
 	}
 	if err != nil {
 		return fmt.Sprintf("exit error: %v\n%s", err, text), nil
 	}
 	return text, nil
+}
+
+func (w *Workspace) markRead(rel string) {
+	if w == nil || w.Reads == nil {
+		return
+	}
+	w.Reads.Mark(filepath.Clean(rel))
+}
+
+func (w *Workspace) requireRead(rel string) error {
+	if w == nil || !w.ReadBeforeEdit {
+		return nil
+	}
+	if w.Reads == nil {
+		w.Reads = NewReadTracker()
+	}
+	rel = filepath.Clean(rel)
+	if w.Reads.Has(rel) {
+		return nil
+	}
+	return fmt.Errorf("%s", EditBeforeReadReason(rel))
+}
+
+func (w *Workspace) normalizeRelPath(path string) string {
+	if w == nil || path == "" {
+		return path
+	}
+	resolved, from := NormalizeWritePath(path, w.Root)
+	if from == "" && filepath.IsAbs(path) {
+		if rel, err := filepath.Rel(w.Root, resolved); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+		return path
+	}
+	if rel, err := filepath.Rel(w.Root, resolved); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return path
+}
+
+// fuzzyEditHint suggests nearby lines when old_str misses (SLM whitespace drift).
+func fuzzyEditHint(fileText, oldStr string) string {
+	needle := strings.TrimSpace(oldStr)
+	if needle == "" || len(needle) < 4 {
+		return ""
+	}
+	// Use first non-empty line of old_str as search key.
+	key := needle
+	if i := strings.IndexByte(needle, '\n'); i > 0 {
+		key = strings.TrimSpace(needle[:i])
+	}
+	if len(key) < 4 {
+		return ""
+	}
+	keyNorm := squashWS(key)
+	lines := strings.Split(fileText, "\n")
+	var hits []string
+	for i, ln := range lines {
+		trim := strings.TrimSpace(ln)
+		if trim == "" {
+			continue
+		}
+		lnNorm := squashWS(trim)
+		matched := strings.Contains(ln, key) ||
+			strings.Contains(key, trim) ||
+			(len(keyNorm) >= 4 && (strings.Contains(lnNorm, keyNorm) || strings.Contains(keyNorm, lnNorm)))
+		if !matched {
+			continue
+		}
+		start := i - 1
+		if start < 0 {
+			start = 0
+		}
+		end := i + 2
+		if end > len(lines) {
+			end = len(lines)
+		}
+		var chunk strings.Builder
+		for j := start; j < end; j++ {
+			fmt.Fprintf(&chunk, "%6d|%s\n", j+1, lines[j])
+		}
+		hits = append(hits, chunk.String())
+		if len(hits) >= 3 {
+			break
+		}
+	}
+	if len(hits) == 0 {
+		return ""
+	}
+	return "Closest matching lines in the file (copy exact text into old_str):\n" + strings.Join(hits, "---\n")
+}
+
+func squashWS(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// truncateToolOutput keeps head + tail (little-coder style) to preserve context.
+func truncateToolOutput(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	head := max * 2 / 3
+	tail := max - head - 40
+	if tail < 80 {
+		tail = 80
+		head = max - tail - 40
+	}
+	if head < 100 {
+		return s[:max] + "\n...[truncated]"
+	}
+	return s[:head] + fmt.Sprintf("\n...[%d chars truncated]...\n", len(s)-head-tail) + s[len(s)-tail:]
 }
 
 func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool, error) {

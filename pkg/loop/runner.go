@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/compact"
+	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
@@ -57,6 +59,33 @@ type Runner struct {
 	// PostWorkerSmoke runs deterministic Go py_compile/go test after workers
 	// before review can auto-approve (default true).
 	PostWorkerSmoke bool
+	// QualityMonitor nudges corrector on empty / tool-junk / looped finalizes
+	// (little-coder quality-monitor port).
+	QualityMonitor bool
+	// StaticQuality rejects stub/placeholder code before approve.
+	StaticQuality bool
+	// RequireSmoke blocks fast-path approve for coding tasks without smoke pass.
+	RequireSmoke bool
+	// ClaimsGate rejects hallucinated files_changed paths.
+	ClaimsGate bool
+	// WorkerCritique runs one auto self-fix pass on weak worker output.
+	WorkerCritique bool
+	// ThinkPasses deepens worker output when >1 (critique/refine on incomplete JSON).
+	ThinkPasses int
+	// ThinkingBudget enables hard-abort recovery when deliberation exceeds tokens.
+	ThinkingBudget bool
+	// ThinkingBudgetTokens is the hard threshold (0 = default 4096).
+	ThinkingBudgetTokens int
+	// AutoTextTools strengthens recovery when prose embeds tool JSON (default off).
+	AutoTextTools bool
+	// FinalizeWarn injects mid-run turn-budget steer on ReAct resume.
+	FinalizeWarn bool
+	// ReactCompact enables conversation compaction when usage crosses the threshold.
+	ReactCompact bool
+	// ReactCompactAtPercent is the usage trigger (default 80).
+	ReactCompactAtPercent int
+	// MaxContextKB is the soft conversation window used by the react watchdog.
+	MaxContextKB int
 	// WaveSnapshots enables pre-wave file rewind points.
 	WaveSnapshots bool
 	// RewindMgr stores wave file snapshots when WaveSnapshots is on.
@@ -65,6 +94,8 @@ type Runner struct {
 	// ResumedReact is set true when any task continued from message history
 	// (used by tests / observability to assert no cold replan).
 	ResumedReact bool
+	// reactWatch is the mid-run conversation compaction hysteresis state.
+	reactWatch *compact.Watchdog
 }
 
 func NewRunner(exec SubAgentRunner, shared *ggagent.SharedState) *Runner {
@@ -301,13 +332,50 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		}
 		r.clearReact(t.ID)
 		t.Output = outputString(res)
-		// SLMs sometimes emit a bare tool call as "final" — nudge one corrective pass.
-		if looksLikeToolJunk(t.Output) {
-			r.Log("%s produced tool-junk finalize; running corrector once", t.ID)
+		if res.Iteration > 0 {
+			r.fireTurn(t.ID, res.Iteration, roleMaxIter(role))
+		}
+		// SLMs sometimes emit a bare tool call / empty finalize — nudge one corrective pass.
+		needNudge := looksLikeToolJunk(t.Output)
+		nudgeIssue := "Finish the task and return status JSON. Do not end on a tool call. Prefer ws_edit/ws_patch (ws_read first); ws_write only for NEW files."
+		if r.QualityMonitor && !needNudge {
+			assess := quality.AssessResponse(t.Output, nil, nil, nil)
+			if !assess.OK {
+				needNudge = true
+				nudgeIssue = quality.CorrectionMessage(assess.Reason)
+				if strings.HasPrefix(assess.Reason, "text_tool_calls:") {
+					if calls := quality.ParseTextToolCalls(t.Output); len(calls) > 0 {
+						nudgeIssue = quality.TextToolNudge(calls)
+					}
+				}
+				r.Log("%s quality-monitor: %s", t.ID, quality.PhraseForUser(assess.Reason))
+				r.fireIntervention(t.ID, assess.Reason, quality.PhraseForUser(assess.Reason), assess.Reason)
+			}
+		}
+		if !needNudge {
+			if calls := quality.ParseTextToolCalls(t.Output); len(calls) > 0 {
+				needNudge = true
+				nudgeIssue = quality.TextToolNudge(calls)
+				if r.AutoTextTools {
+					nudgeIssue = "AUTO_TEXT_TOOLS: re-issue these as NATIVE tool calls immediately, then status JSON.\n" + nudgeIssue
+				}
+				r.Log("%s text-tool-parser: recovered %d call(s)", t.ID, len(calls))
+				r.fireIntervention(t.ID, "text_tool_calls", "text tool calls recovered", nudgeIssue)
+			}
+		}
+		if !needNudge && r.ThinkingBudget &&
+			quality.ThinkingBudgetExceeded(t.Output, r.ThinkingBudgetTokens) {
+			needNudge = true
+			nudgeIssue = quality.ThinkingBudgetBreachMessage()
+			r.Log("%s thinking-budget: exceeded — forcing commit pass", t.ID)
+			r.fireIntervention(t.ID, "thinking_budget_exceeded", "thinking budget exceeded", nudgeIssue)
+		}
+		if needNudge {
+			r.Log("%s produced incomplete finalize; running corrector once", t.ID)
 			r.fire("agent_start", plan.RoleCorrector, t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
 			corrIn := formatCorrectPrompt(t, plan.ReviewResult{
 				Approved: false,
-				Issues:   []string{"Finish the task and return status JSON. Do not end on a tool call. Use ws_edit/ws_write first."},
+				Issues:   []string{nudgeIssue},
 				Summary:  "incomplete finalize",
 			})
 			corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
@@ -341,6 +409,101 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 					strings.Join(t.Files, ", "), truncate(sr.Output, 800))
 			} else if sr.Ran {
 				r.Log("%s deterministic smoke PASSED: %s", t.ID, sr.Command)
+			}
+		}
+		// Static stub/placeholder gate — beats "looks done" claims from giant LLMs too.
+		if r.StaticQuality {
+			if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
+				t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+				r.Log("%s static quality FAILED (%d issue(s))", t.ID, len(issues))
+				r.fire("agent_end", "qa", t.ID, "static quality failed",
+					strings.Join(t.Files, ", "), truncate(quality.FormatStaticSection(issues), 600))
+			}
+		}
+		if r.ClaimsGate && role != plan.RoleTester && role != plan.RoleExplorer {
+			if issues := quality.CheckClaimedFiles(r.Root, t); len(issues) > 0 {
+				t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+				r.Log("%s claims gate FAILED (%d path(s))", t.ID, len(issues))
+				r.fire("agent_end", "qa", t.ID, "claims gate failed",
+					strings.Join(t.Files, ", "), truncate(quality.FormatClaimsSection(issues), 600))
+			}
+		}
+		// Auto self-critique when output is weak, or when think_passes>=2 and
+		// status JSON looks incomplete (worker multipass port).
+		wantCritique := r.WorkerCritique || r.ThinkPasses >= 2
+		if wantCritique && (role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector) {
+			coreOut := stripPostSections(t.Output)
+			incomplete := !multipass.LooksCompleteJSON(coreOut)
+			weak := quality.SmokeFailedInOutput(t.Output) ||
+				quality.StaticFailedInOutput(t.Output) ||
+				quality.ClaimsFailedInOutput(t.Output) ||
+				(!hasToolWriteEvidence(t.Output) && looksLikeEditTask(t) && !alreadySatisfied(r.Root, t)) ||
+				(r.ThinkPasses >= 2 && incomplete)
+			if weak {
+				passes := 1
+				if r.ThinkPasses >= 3 && incomplete {
+					passes = 2
+				}
+				for pass := 1; pass <= passes; pass++ {
+					r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
+					r.fire("agent_start", plan.RoleCorrector, t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
+					issues := []string{
+						"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
+					}
+					if r.ThinkPasses >= 2 && incomplete {
+						issues = append(issues,
+							"think_passes: previous answer lacked complete status JSON — refine and finish the task.")
+					}
+					if quality.StaticFailedInOutput(t.Output) {
+						issues = append(issues, "Replace stubs/placeholders with real code")
+					}
+					if quality.ClaimsFailedInOutput(t.Output) {
+						issues = append(issues, "Only list files_changed paths that exist on disk")
+					}
+					if quality.SmokeFailedInOutput(t.Output) {
+						issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
+					}
+					corrIn := formatCorrectPrompt(t, plan.ReviewResult{
+						Approved: false, Issues: issues, Summary: "worker self-critique",
+					})
+					corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+						AgentID: plan.RoleCorrector, Input: corrIn,
+						Timeout: r.Timeout, ShareState: true,
+					}}, r.Shared)
+					if len(corr) > 0 {
+						r.noteUsage(corr[0], corrIn, outputString(corr[0]))
+						if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
+							t.Output = out
+							mergeFilesChanged(&t)
+							if hint := r.diskEvidenceHint(t, snapshots[i]); hint != "" {
+								t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
+							}
+							if r.PostWorkerSmoke && quality.ShouldSmokeTask(t) {
+								sr := quality.RunPostWorkerSmoke(ctx, r.Root, t, r.Timeout)
+								if sec := quality.FormatSmokeSection(sr); sec != "" {
+									t.Output = strings.TrimSpace(t.Output) + sec
+								}
+							}
+							if r.StaticQuality {
+								if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
+									t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+								}
+							}
+							if r.ClaimsGate {
+								if issues := quality.CheckClaimedFiles(r.Root, t); len(issues) > 0 {
+									t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+								}
+							}
+						}
+					}
+					r.fire("agent_end", plan.RoleCorrector, t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
+					coreOut = stripPostSections(t.Output)
+					incomplete = !multipass.LooksCompleteJSON(coreOut)
+					if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
+						!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) {
+						break
+					}
+				}
 			}
 		}
 		r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
@@ -381,6 +544,26 @@ func (r *Runner) fire(kind, agent, taskID, msg, scope, output string) {
 	if r.OnEvent != nil {
 		r.OnEvent(kind, agent, taskID, msg, scope, output)
 	}
+}
+
+func (r *Runner) fireIntervention(taskID, reason, msg, detail string) {
+	code := quality.ClassifyIntervention(reason)
+	if msg == "" {
+		msg = quality.PhraseForUser(reason)
+	}
+	scope := code
+	r.fire("intervention", "harness", taskID, msg, scope, detail)
+}
+
+func (r *Runner) fireTurn(taskID string, iter, maxIter int) {
+	if maxIter <= 0 {
+		return
+	}
+	msg := fmt.Sprintf("turn %d/%d", iter, maxIter)
+	if quality.ShouldFinalizeSteer(iter, maxIter) {
+		msg += " · finalize soon"
+	}
+	r.fire("turn", "harness", taskID, msg, fmt.Sprintf("%d/%d", iter, maxIter), "")
 }
 
 func (r *Runner) noteUsage(res ggagent.SubAgentResult, input, output string) {
@@ -439,11 +622,17 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		scopeWhy := r.scopeOK(current)
 		shellFail := hasShellFailureEvidence(current.Output)
 		smokeFail := quality.SmokeFailedInOutput(current.Output)
+		staticFail := quality.StaticFailedInOutput(current.Output)
+		claimsFail := quality.ClaimsFailedInOutput(current.Output)
+		smokeFiles := append([]string{}, current.Files...)
+		smokeFiles = append(smokeFiles, parseFilesChanged(current.Output)...)
+		smokeMissing := r.RequireSmoke && quality.HasSmokeCommand(r.Root, smokeFiles) &&
+			!quality.SmokePassedInOutput(current.Output) && !smokeFail && !renameDisk
 		// Rename on disk wins even when scope claims are noisy (weak tool log).
 		// Never disk-auto-approve tester roles (they need passed JSON) or workers
-		// whose own ws_shell / deterministic smoke failed — except rename.
+		// whose own ws_shell / deterministic smoke / static / claims gate failed — except rename.
 		fastPath := renameDisk ||
-			(current.Role != plan.RoleTester && !shellFail && !smokeFail &&
+			(current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing &&
 				(satisfied || diskWrite || diskSection) && scopeWhy == "")
 		if fastPath {
 			review.Approved = true
@@ -519,7 +708,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					return revErr
 				}
 				review = plan.ParseReviewJSON(reviewRaw)
-				if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail {
+				if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing {
 					if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 						review.Approved = true
 						review.Score = 80
@@ -563,7 +752,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			}
 			review = plan.ParseReviewJSON(reviewRaw)
 			// SLM fallback: trust clear worker completion + tool/disk evidence.
-			if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail {
+			if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing {
 				if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 					review.Approved = true
 					review.Score = 80
@@ -579,18 +768,28 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				}
 			}
 		}
-		// Deterministic smoke / shell failure beats any earlier auto-approve.
-		if review.Approved && (shellFail || smokeFail) && current.Role != plan.RoleTester && !renameDisk {
+		// Deterministic smoke / shell / static / claims failure beats any earlier auto-approve.
+		if review.Approved && (shellFail || smokeFail || staticFail || claimsFail || smokeMissing) && current.Role != plan.RoleTester && !renameDisk {
 			review.Approved = false
 			review.Score = 20
-			if smokeFail {
+			switch {
+			case claimsFail:
+				review.Summary = "rejected: hallucinated files_changed paths"
+				review.Issues = []string{"files_changed lists paths missing on disk — reconcile claims"}
+			case staticFail:
+				review.Summary = "rejected: static quality gate (stubs/placeholders)"
+				review.Issues = []string{"stub/placeholder code detected — replace with real implementation"}
+			case smokeFail:
 				review.Summary = "rejected: deterministic smoke failed"
 				review.Issues = []string{"Go ran py_compile/go test on focus files and it failed — corrector must fix"}
-			} else {
+			case smokeMissing:
+				review.Summary = "rejected: coding task missing deterministic smoke pass"
+				review.Issues = []string{"run py_compile / go test / node --check via tools before claiming done"}
+			default:
 				review.Summary = "rejected: ws_shell failure evidence in worker output"
 				review.Issues = []string{"worker ran a command that failed — fix before approve"}
 			}
-			r.Log("%s overriding approve: smoke/shell failure", current.ID)
+			r.Log("%s overriding approve: %s", current.ID, review.Summary)
 		}
 		// Tester gate: never accept "does not work" / passed:false / empty finalize as done.
 		// Exception: rename already satisfied on disk — do not reopen/escalate.
@@ -754,10 +953,10 @@ func formatWorkerPrompt(t plan.Task) string {
 	}
 	b.WriteString(`
 ## Required finish
-1. Use ws_read / ws_edit / ws_patch / ws_write on focus files only.
-2. Prefer small patches; never invent unrelated new files.
-3. After edits: ws_shell smoke (python -m py_compile PATH / go test ./pkg -short). Fix failures before done.
-4. Never add argparse --help (stdlib already provides -h/--help).
+1. ws_read focus files first, then ws_edit / ws_patch (prefer over rewrites).
+2. ws_write is NEW files only — refused on existing paths. No cat> overwrites.
+3. After edits: ws_shell smoke (python -m py_compile PATH / go test ./pkg -short / node --check). Fix failures before done.
+4. No stubs (pass / … / NotImplemented / TODO panic). Never add argparse --help.
 5. End with STRICT JSON only:
 {"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}
 Never claim done without tool edits. Never end on a tool call.
@@ -796,6 +995,8 @@ Rules:
 - Reject if output is only claims/JSON with no tool or disk evidence for edit tasks.
 - Reject if files_changed includes paths outside focus scope (especially unwanted main.go).
 - Reject if "## Deterministic smoke" shows FAILED or Observation has exit error / SyntaxError / traceback.
+- Reject if "## Static quality gate" shows FAILED (stubs/placeholders).
+- Reject if "## Claimed files gate" shows FAILED (hallucinated paths).
 - @explorer: approve if a real file path was found.
 - @tester: approve ONLY when output JSON has "passed":true AND real shell Observation (not fabricated commands[]). Reject if passed:false, failures listed, or "does not work".
 - Reject only if work is clearly missing or out of scope.
@@ -844,6 +1045,37 @@ func looksLikeToolJunk(raw string) bool {
 	lower := strings.ToLower(raw)
 	return strings.Contains(lower, "<function") || strings.Contains(lower, "<tool_call>") ||
 		strings.Contains(lower, "</tool_call>")
+}
+
+// stripPostSections removes harness-appended evidence/gate sections so JSON
+// completeness checks look at the model answer, not smoke/claims appendices.
+func stripPostSections(s string) string {
+	for _, marker := range []string{
+		"\n## Disk evidence\n",
+		"\n## Deterministic smoke\n",
+		"\n## Static quality\n",
+		"\n## Claims gate\n",
+	} {
+		if i := strings.Index(s, marker); i >= 0 {
+			s = s[:i]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func roleMaxIter(role string) int {
+	switch role {
+	case "deep":
+		return 20
+	case plan.RoleCorrector, plan.RoleTester:
+		return 12
+	case plan.RoleExplorer, "docs":
+		return 10
+	case plan.RoleWorker, "implementer", "":
+		return 16
+	default:
+		return 16
+	}
 }
 
 func looksLikeBrokenReview(raw string) bool {

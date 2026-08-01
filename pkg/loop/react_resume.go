@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/compact"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
@@ -52,6 +54,8 @@ func (r *Runner) saveReactFromResult(taskID, agentID string, res ggagent.SubAgen
 	if dir == "" {
 		return
 	}
+	msgs := toSessionMessages(res.Messages)
+	msgs = r.maybeCompactReact(msgs, agentID, res.Iteration)
 	cp := session.ReactCheckpoint{
 		SchemaVersion:    session.ReactSchemaVersion,
 		TurnID:           r.TurnID,
@@ -60,8 +64,9 @@ func (r *Runner) saveReactFromResult(taskID, agentID string, res ggagent.SubAgen
 		Provider:         res.Provider,
 		Model:            res.Model,
 		Iteration:        res.Iteration,
+		MaxIterations:    roleMaxIter(agentID),
 		Status:           "interrupted",
-		Messages:         toSessionMessages(res.Messages),
+		Messages:         msgs,
 		PendingToolCalls: toSessionToolCalls(res.PendingToolCalls),
 	}
 	_ = session.SaveReactCheckpoint(dir, cp)
@@ -88,16 +93,97 @@ func (r *Runner) applyResumeRequest(req *ggagent.SubAgentRequest, taskID string)
 	}
 	req.TaskID = taskID
 	req.Resume = true
-	req.Messages = fromSessionMessages(cp.Messages)
+	msgs := cp.Messages
+	agentID := cp.AgentID
+	if agentID == "" {
+		agentID = req.AgentID
+	}
+	msgs = r.maybeCompactReact(msgs, agentID, cp.Iteration)
+	req.Messages = fromSessionMessages(msgs)
 	req.Iteration = cp.Iteration
 	req.PendingToolCalls = fromSessionToolCalls(cp.PendingToolCalls)
 	if strings.TrimSpace(req.Input) == "" {
 		req.Input = "Continue from the interrupted ReAct step using the restored conversation. Finish pending tools, then return status JSON."
 	}
+	maxIter := cp.MaxIterations
+	if maxIter <= 0 {
+		maxIter = roleMaxIter(agentID)
+	}
+	if r.FinalizeWarn && quality.ShouldFinalizeSteer(cp.Iteration, maxIter) {
+		remaining := maxIter - cp.Iteration
+		steer := quality.FinalizeSteerMessage(remaining)
+		req.Input = strings.TrimSpace(req.Input) + "\n\n" + steer
+		req.Messages = append(req.Messages, llm.Message{Role: "user", Content: steer})
+		if r.Log != nil {
+			r.Log("%s finalize-steer: ~%d turns left", taskID, remaining)
+		}
+	}
 	if r.Log != nil {
 		r.Log("%s resuming ReAct with %d messages (iter=%d) — no cold replan", taskID, len(req.Messages), req.Iteration)
 	}
 	return true
+}
+
+// maybeCompactReact shrinks oversized ReAct transcripts (little-coder context-watchdog).
+func (r *Runner) maybeCompactReact(msgs []session.ReactMessage, agentID string, iteration int) []session.ReactMessage {
+	if !r.ReactCompact || len(msgs) < 10 {
+		return msgs
+	}
+	pct := r.ReactCompactAtPercent
+	if pct <= 0 {
+		pct = compact.DefaultCompactAtPercent
+	}
+	if r.reactWatch == nil {
+		r.reactWatch = compact.NewWatchdog(pct)
+	}
+	chat := sessionToChat(msgs)
+	tokens := compact.EstimateTokens(compact.MessagesBytes(chat))
+	window := compact.WindowTokensFromKB(r.MaxContextKB)
+	usage := compact.UsagePercent(tokens, window)
+	r.reactWatch.MaybeRearm(usage)
+	if !r.reactWatch.ShouldCompact(usage) {
+		return msgs
+	}
+	keep := 8
+	if iteration > 0 && iteration < 4 {
+		keep = 10
+	}
+	compacted, ok := compact.CompactChatMessages(chat, keep)
+	if !ok {
+		return msgs
+	}
+	postTokens := compact.EstimateTokens(compact.MessagesBytes(compacted))
+	postUsage := compact.UsagePercent(postTokens, window)
+	r.reactWatch.RecordPostCompact(postUsage)
+	if r.Log != nil {
+		r.Log("%s react-compact: %d→%d msgs (usage %.0f%%→%.0f%%)",
+			agentID, len(msgs), len(compacted), usage, postUsage)
+	}
+	return chatToSession(compacted)
+}
+
+func sessionToChat(msgs []session.ReactMessage) []compact.ChatMsg {
+	out := make([]compact.ChatMsg, 0, len(msgs))
+	for _, m := range msgs {
+		content := m.Content
+		if len(m.ToolCalls) > 0 {
+			var names []string
+			for _, tc := range m.ToolCalls {
+				names = append(names, tc.Name)
+			}
+			content = strings.TrimSpace(content + " [tools:" + strings.Join(names, ",") + "]")
+		}
+		out = append(out, compact.ChatMsg{Role: m.Role, Content: content})
+	}
+	return out
+}
+
+func chatToSession(msgs []compact.ChatMsg) []session.ReactMessage {
+	out := make([]session.ReactMessage, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, session.ReactMessage{Role: m.Role, Content: m.Content})
+	}
+	return out
 }
 
 func toSessionMessages(msgs []llm.Message) []session.ReactMessage {

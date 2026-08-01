@@ -535,6 +535,26 @@ h3 { font-size: 0.9rem; color: var(--muted); }
   color: var(--text);
 }
 .event-item.kind-file_change { border-left: 2px solid var(--ok); padding-left: 0.5rem; }
+.event-item.kind-intervention { border-left: 2px solid var(--warn); padding-left: 0.5rem; background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.event-item.kind-turn { border-left: 2px solid var(--info); padding-left: 0.5rem; }
+.intervention-banner {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+  margin: 0.5rem 0; padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, var(--bg-elev));
+  font-size: 0.85rem;
+}
+.intervention-banner .intervention-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem; padding: 0.1rem 0.35rem; border-radius: 4px;
+  background: var(--bg-muted); color: var(--warn);
+}
+.intervention-banner pre { width: 100%; margin: 0.2rem 0 0; max-height: 80px; }
+.turn-meter {
+  font-size: 0.78rem; font-weight: 600; color: var(--warn);
+  padding: 0.2rem 0.5rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg-muted));
+}
 
 .dep-graph-flow {
   margin: 0 0 0.75rem;

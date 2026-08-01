@@ -170,6 +170,48 @@ func TestReactMidExecuteInterruptResume(t *testing.T) {
 	}
 }
 
+func TestApplyResumeInjectsFinalizeSteer(t *testing.T) {
+	root := t.TempDir()
+	slm := filepath.Join(root, ".slmcode")
+	_ = os.MkdirAll(slm, 0o755)
+	turn, err := session.BeginTurn(slm, "run-steer", "finish task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := session.ReactCheckpoint{
+		TurnID: turn.ID, TaskID: "T9", AgentID: plan.RoleWorker,
+		Iteration: 13, MaxIterations: 16,
+		Messages: []session.ReactMessage{
+			{Role: "user", Content: "do it"},
+			{Role: "assistant", Content: "working"},
+		},
+	}
+	if err := session.SaveReactCheckpoint(slm, cp); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(nil, ggagent.NewSharedState())
+	r.SlmDir = slm
+	r.TurnID = turn.ID
+	r.FinalizeWarn = true
+	req := &ggagent.SubAgentRequest{AgentID: plan.RoleWorker, Input: "continue"}
+	if !r.applyResumeRequest(req, "T9") {
+		t.Fatal("expected resume")
+	}
+	if !strings.Contains(req.Input, "TURN BUDGET") {
+		t.Fatalf("expected finalize steer in input: %q", req.Input)
+	}
+	found := false
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, "TURN BUDGET") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected steer user message in history")
+	}
+}
+
 func TestSaveLoadReactCheckpoint(t *testing.T) {
 	slm := t.TempDir()
 	cp := session.ReactCheckpoint{

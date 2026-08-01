@@ -101,6 +101,44 @@ func runPremiumTUI() error {
 			return true, nil
 		case "/help", "/?":
 			return false, nil
+		case "/clear":
+			sess.ClearLive()
+			fmt.Println(cli.Dim("live stream cleared — type a query to run"))
+			return false, nil
+		case "/plan":
+			mode := strings.ToLower(strings.TrimSpace(arg))
+			switch mode {
+			case "", "toggle":
+				if h.Config.PlanApprove == "ask" {
+					h.Config.PlanApprove = "auto"
+				} else {
+					h.Config.PlanApprove = "ask"
+				}
+			case "auto", "off":
+				h.Config.PlanApprove = "auto"
+			case "ask", "on":
+				h.Config.PlanApprove = "ask"
+			default:
+				return false, fmt.Errorf("usage: /plan [auto|ask]")
+			}
+			_ = h.Config.Save()
+			cli.KeyVal("plan_approve", h.Config.PlanApprove)
+			return false, nil
+		case "/history":
+			hist := sess.History()
+			if hist == nil {
+				fmt.Println(cli.Dim("no prompt history"))
+				return false, nil
+			}
+			recent := hist.Recent(15)
+			if len(recent) == 0 {
+				fmt.Println(cli.Dim("no prompt history yet"))
+				return false, nil
+			}
+			for i, q := range recent {
+				fmt.Printf("  %2d  %s\n", i+1, cli.Dim(cli.Clip(q, 72)))
+			}
+			return false, nil
 		case "/refresh", "/board", "/status":
 			_ = h.Orchestrator.Board().Load()
 			sess.SetState(loadDashboardFromHarness(h))

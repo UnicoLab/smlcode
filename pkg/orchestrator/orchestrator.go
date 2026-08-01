@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/augment"
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/compact"
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -22,6 +23,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/mcp"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
@@ -133,6 +135,23 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		Focus: focus, Hooks: hooksRunner,
 		ShellAskTimeout: cfg.ShellAskTimeout,
 		AutoApprove:     cfg.AutoApprove,
+		DisableWriteGuard:      !cfg.WriteGuard,
+		DisableReadBeforeEdit:  !cfg.ReadBeforeEdit,
+		DisableShellWriteGuard: !cfg.ShellWriteGuard,
+		DisableOverEditGuard:   !cfg.OverEditGuard,
+		ReadHeadLines:          cfg.ReadHeadLines,
+		MaxContextKB:           cfg.MaxContextKB,
+		QualityMonitor:         cfg.QualityMonitor,
+		ShellWhitelist:         cfg.ShellWhitelist,
+		ShellAllow:             cfg.ShellAllow,
+		Checkpoints:            cfg.FileCheckpoints,
+		OnIntervention: func(reason, message string) {
+			if o != nil {
+				code := quality.ClassifyIntervention(reason)
+				o.emitFull("execute", stream.KindIntervention, "harness", "",
+					message, code, reason)
+			}
+		},
 		OnFileChange: func(path, kind, detail string) {
 			if o != nil {
 				o.emitFull("execute", stream.KindFileChange, "worker", "",
@@ -176,6 +195,11 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
 	factory.CustomDirs = append([]string{cfg.AgentsDir()}, agents.GlobalAgentRoots()...)
+	if prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model); prof.MaxTokens > 0 || prof.MaxTurns > 0 || prof.Temperature > 0 {
+		factory.ProfileMaxTokens = prof.MaxTokens
+		factory.ProfileMaxTurns = prof.MaxTurns
+		factory.ProfileTemp = prof.Temperature
+	}
 
 	// Auto-register providers for per-agent overrides (custom agents / builtin patches)
 	// so rebuild never leaves an agent pointing at an unregistered provider.
@@ -721,6 +745,22 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	// Ephemeral scoped packs — never persist fat context into TASKS.md / board descriptions.
 	// Workers get lean docs + tight file excerpts for faster SLM inference.
+	runner.QualityMonitor = o.cfg.QualityMonitor
+	runner.StaticQuality = o.cfg.StaticQuality
+	runner.RequireSmoke = o.cfg.RequireSmoke
+	runner.ClaimsGate = o.cfg.ClaimsGate
+	runner.WorkerCritique = o.cfg.WorkerCritique
+	runner.ThinkPasses = o.cfg.ThinkPasses
+	runner.ThinkingBudget = o.cfg.ThinkingBudget
+	runner.ThinkingBudgetTokens = o.resolvedProfile().ThinkingBudgetTokens
+	if runner.ThinkingBudgetTokens <= 0 {
+		runner.ThinkingBudgetTokens = o.cfg.ThinkingBudgetTokens
+	}
+	runner.AutoTextTools = o.cfg.AutoTextTools
+	runner.FinalizeWarn = o.cfg.FinalizeWarn
+	runner.ReactCompact = o.cfg.ReactCompact
+	runner.ReactCompactAtPercent = o.cfg.ReactCompactAtPercent
+	runner.MaxContextKB = o.cfg.MaxContextKB
 	runner.BuildInput = func(t plan.Task) string {
 		lean := loop.StripScopedPack(t.Description)
 		docs := contextstore.LeanDocsForRole(t.Role)
@@ -728,7 +768,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		tp.TaskID = t.ID
 		tp.TaskTitle = t.Title
 		t.Description = tp.Render() + "\n## Task instructions\n\n" + lean
-		return formatWorkerPromptFor(t)
+		return o.formatWorkerPrompt(query, t)
 	}
 	snap := o.boardStore.Snapshot()
 	board = &snap
@@ -1452,6 +1492,49 @@ func extractFileRefs(query string) []string {
 	return out
 }
 
+func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
+	base := formatWorkerPromptFor(t)
+	if o == nil || o.cfg == nil {
+		return base
+	}
+	var extras strings.Builder
+	if o.cfg.ThinkingBudget && t.Role != plan.RoleTester {
+		extras.WriteString(quality.ThinkingBudgetNudge(true))
+	}
+	if o.cfg.FinalizeWarn {
+		maxIter := 16
+		if spec := agents.FindSpec(t.Role); spec != nil && spec.MaxIter > 0 {
+			maxIter = spec.MaxIter
+		}
+		extras.WriteString(quality.FinalizeWarnMessage(maxIter))
+	}
+	if o.cfg.ToolGuidance || o.cfg.KnowledgeInject {
+		opt := augment.Options{}
+		prof := o.resolvedProfile()
+		if !o.cfg.ToolGuidance {
+			opt.SkillBudget = -1
+		} else if prof.SkillTokenBudget > 0 {
+			opt.SkillBudget = prof.SkillTokenBudget
+		}
+		if !o.cfg.KnowledgeInject {
+			opt.KnowledgeBudget = -1
+		} else if prof.KnowledgeTokenBudget > 0 {
+			opt.KnowledgeBudget = prof.KnowledgeTokenBudget
+		}
+		prompt := query + "\n" + t.Title + "\n" + t.Description + "\n" + t.Acceptance
+		// Tail injection preserves any cached system/prefix tokens (little-coder #73).
+		extras.WriteString(augment.InjectForPrompt(prompt, opt))
+	}
+	return base + extras.String()
+}
+
+func (o *Orchestrator) resolvedProfile() config.ModelProfile {
+	if o == nil || o.cfg == nil {
+		return config.ResolveModelProfile(nil, "")
+	}
+	return config.ResolveModelProfile(o.cfg.ModelProfiles, o.cfg.Model)
+}
+
 func formatWorkerPromptFor(t plan.Task) string {
 	// Keep ephemeral scoped packs (injected by BuildInput); only strip when absent.
 	desc := t.Description
@@ -1491,8 +1574,8 @@ Never end on a tool call. Never soft-pass broken code.
 	}
 	b.WriteString(`
 ## Required finish
-1. Use ws_read / ws_edit / ws_patch / ws_write on focus files only.
-2. Prefer small patches; never invent unrelated new files.
+1. ws_read focus files first, then ws_edit / ws_patch (prefer over rewrites).
+2. ws_write is for NEW files only — refused on existing paths. Never cat> overwrite via shell.
 3. End with STRICT JSON only:
 {"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}
 Never claim done without tool edits. Never end on a tool call.

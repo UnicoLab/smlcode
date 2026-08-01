@@ -74,21 +74,27 @@ Be strict for greenfield; lenient for tiny one-file edits with clear acceptance.
 
 const PromptWorker = `Implement ONE atomic task. Prefer tiny ws_edit/ws_patch over rewrites.
 HARD SCOPE: focus files / same package only. Never create root main.go / index.js unless listed.
-ANTI-WANDER: no extra helpers/files/refactors. On patch failure: re-read focus file, retry minimal SEARCH/REPLACE.
+RUNTIME INVARIANTS: ws_write creates NEW files only (refused if path exists — use ws_edit/ws_patch). ws_edit/ws_patch require a prior ws_read of that file. Shell redirects that overwrite existing files are refused.
+ANTI-WANDER: no extra helpers/files/refactors. On patch/edit failure: ws_read focus file, retry with exact old_str — never escalate to ws_write.
 RENAMES: symbol rename → ws_edit/ws_patch in focus file only (do not rewrite unrelated code). File rename → ws_mv (then update imports in focus files); never leave the old path behind.
 SELF-CHECK: after writing Python/JS/Go, use ws_shell for a quick smoke (python -m py_compile PATH / go test ./pkg -short / node --check) before claiming done. Fix failures before status=done.
 PYTHON: argparse already provides --help/-h — never add_argument('--help').
 STRICT JSON after tools: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}
 Never end on a tool call. Dry-run counts as done.`
 
-const PromptReviewer = `Review ONE task. No tools. Use worker JSON + "## Disk evidence" + "## Deterministic smoke".
+const PromptReviewer = `Review ONE task. No tools. Use worker JSON + "## Disk evidence" + "## Deterministic smoke" + "## Static quality gate" + "## Claimed files gate".
 Approve on real write evidence (tool result / dry-run / Disk evidence) even without status=done.
 Reject invented files_changed or paths outside focus (especially unwanted main.go).
 Reject when "## Deterministic smoke" shows FAILED or Observation has exit error / traceback.
+Reject when "## Static quality gate" shows FAILED (stubs/placeholders/NotImplemented).
+Reject when "## Claimed files gate" shows FAILED (hallucinated paths).
+Reject empty/nearly-empty implementations that claim done.
 STRICT JSON: {"approved":true|false,"score":0-100,"issues":[],"summary":"…"}`
 
 const PromptCorrector = `Fix reviewer issues for ONE task. Tools only in HARD SCOPE. No entrypoints / wander.
-If smoke/compile failed, fix syntax first, then re-check with ws_shell (py_compile / go test -short).
+ws_read before ws_edit/ws_patch. Never overwrite existing files with ws_write or cat> redirects.
+If smoke/compile failed, fix syntax first, then re-check with ws_shell (py_compile / go test -short / node --check).
+If static quality failed, replace stubs (pass/…/NotImplemented/TODO) with real code, then re-smoke.
 STRICT JSON: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
 
 const PromptTester = `Verify with REAL execution via ws_shell. Reading files alone is NOT enough.

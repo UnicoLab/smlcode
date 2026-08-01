@@ -9,3 +9,5 @@ web/node_modules/
 web/dist/
 .env
 .env.*
+# Reference checkout used during development; not part of the slmcode release.
+little-coder/

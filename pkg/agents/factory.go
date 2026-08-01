@@ -42,11 +42,11 @@ func Specs() []RoleSpec {
 		{ID: "architect", Title: "Minimal design / approach", Description: "Proposes a minimal approach without full implementations.", SystemPrompt: PromptArchitect, Tools: nil, MaxIter: 2, Temperature: 0.25, MaxTokens: 1024},
 		{ID: plan.RolePlanner, Title: "High-level plan", Description: "Writes a concise structured plan for this query only.", SystemPrompt: PromptPlanner, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1024},
 		{ID: "splitter", Title: "Atomic task split", Description: "Splits the plan into tiny SLM-sized tasks.", SystemPrompt: PromptTaskSplitter, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536},
-		{ID: plan.RoleWorker, Title: "Implement scoped change", Description: "Implements one atomic task with coding tools.", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 14, Temperature: 0.15, MaxTokens: 3072},
-		{ID: "deep", Title: "Deep multi-step worker", Description: "Handles deeper multi-step implementation within scope.", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 18, Temperature: 0.15, MaxTokens: 3072},
-		{ID: plan.RoleReviewer, Title: "Self-critic / approve", Description: "Approves or rejects one task from disk evidence.", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.1, MaxTokens: 512},
-		{ID: plan.RoleCorrector, Title: "Fix review issues", Description: "Patches reviewer issues inside HARD SCOPE.", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 10, Temperature: 0.15, MaxTokens: 3072},
-		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks (pytest/go test/smoke) before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 2048},
+		{ID: plan.RoleWorker, Title: "Implement scoped change", Description: "Implements one atomic task with coding tools.", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 16, Temperature: 0.12, MaxTokens: 3072},
+		{ID: "deep", Title: "Deep multi-step worker", Description: "Handles deeper multi-step implementation within scope.", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 20, Temperature: 0.12, MaxTokens: 3072},
+		{ID: plan.RoleReviewer, Title: "Self-critic / approve", Description: "Approves or rejects one task from disk evidence.", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.05, MaxTokens: 768},
+		{ID: plan.RoleCorrector, Title: "Fix review issues", Description: "Patches reviewer issues inside HARD SCOPE.", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 12, Temperature: 0.12, MaxTokens: 3072},
+		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks (pytest/go test/smoke) before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 12, Temperature: 0.08, MaxTokens: 2048},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
 	}
 }
@@ -202,6 +202,10 @@ type Factory struct {
 	Model      string
 	Provider   string
 	CustomDirs []string
+	// Optional model-profile caps (little-coder benchmark-profiles).
+	ProfileMaxTokens int
+	ProfileMaxTurns  int
+	ProfileTemp      float64
 }
 
 // NewFactory constructs a specialist factory.
@@ -293,13 +297,22 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature
+	if f.ProfileTemp > 0 && isCodingRole(spec.ID) {
+		cfg.Temperature = f.ProfileTemp
+	}
 	cfg.MaxTokens = spec.MaxTokens
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = 2048
 	}
+	if f.ProfileMaxTokens > 0 && isCodingRole(spec.ID) && cfg.MaxTokens > f.ProfileMaxTokens {
+		cfg.MaxTokens = f.ProfileMaxTokens
+	}
 	cfg.MaxIterations = spec.MaxIter
 	if cfg.MaxIterations == 0 {
 		cfg.MaxIterations = 8
+	}
+	if f.ProfileMaxTurns > 0 && isCodingRole(spec.ID) && cfg.MaxIterations > f.ProfileMaxTurns {
+		cfg.MaxIterations = f.ProfileMaxTurns
 	}
 	// Token-stream early-exit: cancel remaining decode once a complete JSON /
 	// tool-call is formed. Critical for slow local SLMs (oMLX / Ollama).
@@ -310,4 +323,14 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	def := agent.NewBaseAgentDefinition(cfg)
 	def.Initialize(f.LLM, f.Tools)
 	return def
+}
+
+func isCodingRole(id string) bool {
+	switch id {
+	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleTester,
+		plan.RoleExplorer, "docs":
+		return true
+	default:
+		return false
+	}
 }

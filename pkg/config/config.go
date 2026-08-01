@@ -169,16 +169,51 @@ type Config struct {
 	Permission string `yaml:"permission" json:"permission"`
 	// ShellPermission: allow | ask | deny (ws_shell policy; independent of file writes)
 	ShellPermission string `yaml:"shell_permission" json:"shell_permission"`
+	// ShellWhitelist enforces SAFE_PREFIXES on ws_shell (little-coder permission-gate).
+	ShellWhitelist bool `yaml:"shell_whitelist" json:"shell_whitelist"`
+	// ShellAllow adds extra SAFE_PREFIXES (also SLMCODE_BASH_ALLOW env).
+	ShellAllow []string `yaml:"shell_allow" json:"shell_allow"`
 	// ShellAskTimeout for interactive shell approval when shell_permission=ask.
 	ShellAskTimeout time.Duration `yaml:"shell_ask_timeout" json:"shell_ask_timeout"`
 	// CompactMode trims live event verbosity in TUI/CLI.
 	CompactMode bool `yaml:"compact_mode" json:"compact_mode"`
 	// ContextCompact enables mid-run CONTEXT.md summarization when oversized.
 	ContextCompact bool `yaml:"context_compact" json:"context_compact"`
+	// ReactCompact enables mid-run ReAct conversation compaction (context watchdog).
+	ReactCompact bool `yaml:"react_compact" json:"react_compact"`
+	// ReactCompactAtPercent triggers ReAct compaction at this % of MaxContextKB
+	// (little-coder default 80). <=0 or >=100 disables.
+	ReactCompactAtPercent int `yaml:"react_compact_at_percent" json:"react_compact_at_percent"`
 	// WaveSnapshots stores per-wave file rewind points under .slmcode/waves/.
 	WaveSnapshots bool `yaml:"wave_snapshots" json:"wave_snapshots"`
+	// FileCheckpoints snapshots each file before first write/edit (first-write-wins).
+	FileCheckpoints bool `yaml:"file_checkpoints" json:"file_checkpoints"`
 	// HooksEnabled loads .slmcode/hooks.json Pre/PostToolUse.
 	HooksEnabled bool `yaml:"hooks_enabled" json:"hooks_enabled"`
+
+	// SLM harness invariants (little-coder ports). Defaults ON.
+	WriteGuard      bool `yaml:"write_guard" json:"write_guard"`             // ws_write refuses existing files
+	ReadBeforeEdit  bool `yaml:"read_before_edit" json:"read_before_edit"`   // edit/patch require prior read
+	ShellWriteGuard bool `yaml:"shell_write_guard" json:"shell_write_guard"` // block cat>/tee clobber
+	ToolGuidance    bool `yaml:"tool_guidance" json:"tool_guidance"`         // per-turn tool skill cards
+	KnowledgeInject bool `yaml:"knowledge_inject" json:"knowledge_inject"`   // keyword knowledge cards
+	QualityMonitor  bool `yaml:"quality_monitor" json:"quality_monitor"`     // empty/loop/hallucinated tool nudge
+	StaticQuality   bool `yaml:"static_quality" json:"static_quality"`       // reject stub/placeholder code
+	ThinkingBudget  bool `yaml:"thinking_budget" json:"thinking_budget"`     // commit-to-implementation nudge
+	// ThinkingBudgetTokens hard-abort threshold for over-long deliberation (0=4096).
+	ThinkingBudgetTokens int `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
+	FinalizeWarn         bool `yaml:"finalize_warn" json:"finalize_warn"`     // warn before MaxIter exhaustion
+	RequireSmoke         bool `yaml:"require_smoke" json:"require_smoke"`     // coding tasks need smoke for approve
+	ClaimsGate           bool `yaml:"claims_gate" json:"claims_gate"`         // reject hallucinated files_changed
+	WorkerCritique       bool `yaml:"worker_critique" json:"worker_critique"` // auto self-fix pass on weak worker output
+	OverEditGuard        bool `yaml:"over_edit_guard" json:"over_edit_guard"` // refuse whole-file-style edits
+	ReadHeadLines        int  `yaml:"read_head_lines" json:"read_head_lines"` // auto-trim read head (default 80)
+	// AutoTextTools strengthens corrector recovery for prose-embedded tool JSON.
+	AutoTextTools bool `yaml:"auto_text_tools" json:"auto_text_tools"`
+
+	// ModelProfiles overrides skill/knowledge/thinking budgets by model id.
+	ModelProfiles map[string]ModelProfile `yaml:"model_profiles" json:"model_profiles"`
+
 	// MCPServers are thin read-only MCP connections (stdio or HTTP).
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 
@@ -236,13 +271,33 @@ func Default(root string) *Config {
 		Listen:              "127.0.0.1:7420",
 		ClaudeCodeBin:       "claude",
 		Permission:          "auto",
-		ShellPermission:     "allow",
-		ShellAskTimeout:     2 * time.Minute,
-		CompactMode:         true,
-		ContextCompact:      true,
-		WaveSnapshots:       true,
-		HooksEnabled:        true,
-		EmbeddingTopK:       5,
+		ShellPermission:       "allow",
+		ShellWhitelist:        true,
+		ShellAskTimeout:       2 * time.Minute,
+		CompactMode:           true,
+		ContextCompact:        true,
+		ReactCompact:          true,
+		ReactCompactAtPercent: 80,
+		WaveSnapshots:         true,
+		FileCheckpoints:       true,
+		HooksEnabled:          true,
+		WriteGuard:            true,
+		ReadBeforeEdit:        true,
+		ShellWriteGuard:       true,
+		ToolGuidance:          true,
+		KnowledgeInject:       true,
+		QualityMonitor:        true,
+		StaticQuality:         true,
+		ThinkingBudget:        true,
+		ThinkingBudgetTokens:  4096,
+		FinalizeWarn:          true,
+		RequireSmoke:          true,
+		ClaimsGate:            true,
+		WorkerCritique:        true,
+		OverEditGuard:         true,
+		ReadHeadLines:         80,
+		EmbeddingTopK:         5,
+		ModelProfiles:         DefaultModelProfiles(),
 	}
 }
 
@@ -472,6 +527,27 @@ func normalize(c *Config) {
 	c.ShellPermission = permissions.NormalizeShell(c.ShellPermission)
 	if c.EmbeddingTopK <= 0 {
 		c.EmbeddingTopK = 5
+	}
+	if c.ReadHeadLines <= 0 {
+		c.ReadHeadLines = 80
+	}
+	if c.ReactCompactAtPercent < 0 {
+		c.ReactCompactAtPercent = 0
+	}
+	if c.ReactCompactAtPercent > 100 {
+		c.ReactCompactAtPercent = 100
+	}
+	if c.ThinkingBudgetTokens < 0 {
+		c.ThinkingBudgetTokens = 0
+	}
+	if c.ModelProfiles == nil {
+		c.ModelProfiles = DefaultModelProfiles()
+	} else {
+		// Ensure default bucket exists for merges.
+		defs := DefaultModelProfiles()
+		if _, ok := c.ModelProfiles["default"]; !ok {
+			c.ModelProfiles["default"] = defs["default"]
+		}
 	}
 	// Default embedding endpoint to chat endpoint when enabled without explicit URL.
 	if c.EmbeddingEnabled && c.EmbeddingEndpoint == "" {

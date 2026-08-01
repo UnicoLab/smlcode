@@ -295,6 +295,8 @@ function App() {
   const [streamPaused, setStreamPaused] = useState(false);
   const [showDebugEvents, setShowDebugEvents] = useState(false);
   const showDebugEventsRef = useRef(false);
+  const [intervention, setIntervention] = useState(null);
+  const [turnMeter, setTurnMeter] = useState("");
   const [fileRef, setFileRef] = useState("");
   const [theme, setTheme] = useState(readStoredTheme);
   const [injectNote, setInjectNote] = useState("");
@@ -526,11 +528,24 @@ function App() {
             setPlanAsk(null);
             setShellAsk(null);
           }
+          if (e.kind === "intervention") {
+            const banner = {
+              code: e.scope || "quality",
+              message: e.message || "harness intervention",
+              detail: e.output || "",
+            };
+            setIntervention(banner);
+            showToast("⚠ " + banner.message);
+          }
+          if (e.kind === "turn") {
+            setTurnMeter(e.message || e.scope || "");
+          }
           if (e.phase === "done" || e.phase === "error" || e.kind === "run_end" || e.kind === "run_stop") {
             setRunning(false);
             setClarifyAsk(null);
             setPlanAsk(null);
             setShellAsk(null);
+            setTurnMeter("");
             showToast(e.phase === "error" ? (e.message || "Run error") : (e.message || "Run finished"));
             refresh();
           } else if (e.kind === "run_start" || e.kind === "agent_start" || e.phase === "init" || e.phase === "execute" || e.phase === "clarify") {
@@ -1029,6 +1044,7 @@ function App() {
                 <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
                   <h3 style={{ margin: 0 }}>Live stream</h3>
                   <div className="row">
+                    {turnMeter ? <span className="turn-meter" title="Tool/thinking turn budget">⟳ {turnMeter}</span> : null}
                     <button className={"sm" + (autoScroll ? "" : " ghost")} onClick={() => setAutoScroll((v) => !v)} title="Auto-scroll to latest">
                       {autoScroll ? "↓ Live scroll" : "Scroll paused"}
                     </button>
@@ -1038,9 +1054,18 @@ function App() {
                     <button className={"sm" + (showDebugEvents ? "" : " ghost")} onClick={() => setShowDebugEvents((v) => !v)} title="Show runner debug logs">
                       {showDebugEvents ? "Debug on" : "Debug"}
                     </button>
-                    <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); }}>Clear</button>
+                    <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); setIntervention(null); setTurnMeter(""); }}>Clear</button>
                   </div>
                 </div>
+                {intervention ? (
+                  <div className="intervention-banner" role="status">
+                    <strong>⚠ Harness</strong>
+                    <span className="intervention-code">{intervention.code}</span>
+                    <span>{intervention.message}</span>
+                    {intervention.detail ? <pre className="mini-out">{String(intervention.detail).slice(0, 280)}</pre> : null}
+                    <button className="sm ghost" onClick={() => setIntervention(null)}>Dismiss</button>
+                  </div>
+                ) : null}
                 {taskHistory.length > 0 && (
                   <div className="observability-strip">
                     {taskHistory.slice(-8).map((h, i) => (

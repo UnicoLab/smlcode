@@ -68,7 +68,7 @@ func RunPostWorkerSmoke(ctx context.Context, root string, t plan.Task, timeout t
 
 // DetectPostWorkerCommand picks a fast per-task smoke command for changed files.
 func DetectPostWorkerCommand(root string, files []string) string {
-	var py, goFiles []string
+	var py, goFiles, jsFiles []string
 	for _, f := range files {
 		f = strings.TrimSpace(f)
 		if f == "" || strings.Contains(f, "..") {
@@ -82,6 +82,10 @@ func DetectPostWorkerCommand(root string, files []string) string {
 		case ".go":
 			if fileExists(filepath.Join(root, f)) {
 				goFiles = append(goFiles, f)
+			}
+		case ".js", ".mjs", ".cjs":
+			if fileExists(filepath.Join(root, f)) {
+				jsFiles = append(jsFiles, f)
 			}
 		}
 	}
@@ -110,6 +114,14 @@ func DetectPostWorkerCommand(root string, files []string) string {
 			return "go test " + list[0] + " -short"
 		}
 		return "go test ./... -short"
+	}
+	if len(jsFiles) > 0 {
+		// Syntax-check each JS file (no test runner required).
+		parts := make([]string, 0, len(jsFiles))
+		for _, p := range jsFiles {
+			parts = append(parts, "node --check "+shellQuote(p))
+		}
+		return strings.Join(parts, " && ")
 	}
 	return ""
 }
@@ -253,6 +265,21 @@ func SmokeFailedInOutput(output string) bool {
 	}
 	rest := output[idx:]
 	return strings.Contains(rest, SmokeFailedMarker)
+}
+
+// SmokePassedInOutput reports a successful deterministic smoke section.
+func SmokePassedInOutput(output string) bool {
+	idx := strings.Index(output, SmokeSectionHeader)
+	if idx < 0 {
+		return false
+	}
+	rest := output[idx:]
+	return strings.Contains(rest, SmokePassedMarker) && !strings.Contains(rest, SmokeFailedMarker)
+}
+
+// HasSmokeCommand reports whether a post-worker smoke command exists for files.
+func HasSmokeCommand(root string, files []string) bool {
+	return DetectPostWorkerCommand(root, files) != ""
 }
 
 func runCommand(ctx context.Context, root, command string, timeout time.Duration) (string, error) {

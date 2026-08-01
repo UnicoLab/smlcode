@@ -126,6 +126,10 @@ func FormatEvent(e stream.Event) string {
 		icon = Cyan("$")
 	case stream.KindDebug:
 		icon = Dim("·")
+	case stream.KindIntervention:
+		icon = Yellow("⚠")
+	case stream.KindTurn:
+		icon = Yellow("⟳")
 	}
 
 	who := e.Phase
@@ -151,7 +155,8 @@ func FormatEvent(e stream.Event) string {
 	}
 
 	// Show short output snippets only for completions / file patches — not every token dump.
-	if kind == stream.KindAgentEnd || kind == stream.KindOutput || kind == stream.KindFileChange {
+	if kind == stream.KindAgentEnd || kind == stream.KindOutput || kind == stream.KindFileChange ||
+		kind == stream.KindIntervention {
 		out := summarizeOutput(e.Output)
 		if out != "" {
 			head += "\n  " + Dim("│ ") + White(out)

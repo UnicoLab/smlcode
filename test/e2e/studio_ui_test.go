@@ -64,6 +64,7 @@ func TestStudioUIInteraction(t *testing.T) {
 				"/api/runs/stop", "/api/events", "file_change", "autoScroll",
 				`id: "queries"`, "/api/queries", "openQuery", "queryDocTab",
 				"openAgent", "showDebugEvents", "/api/agents/",
+				"intervention", "turnMeter", "intervention-banner",
 			} {
 				if !strings.Contains(src, marker) {
 					t.Fatalf("app.jsx missing %q", marker)

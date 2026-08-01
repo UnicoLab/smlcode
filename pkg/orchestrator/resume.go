@@ -134,6 +134,22 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 		o.maybeCompactContext(ctx)
 		o.coordinate(ctx, query, board, "after-wave")
 	}
+	runner.QualityMonitor = o.cfg.QualityMonitor
+	runner.StaticQuality = o.cfg.StaticQuality
+	runner.RequireSmoke = o.cfg.RequireSmoke
+	runner.ClaimsGate = o.cfg.ClaimsGate
+	runner.WorkerCritique = o.cfg.WorkerCritique
+	runner.ThinkPasses = o.cfg.ThinkPasses
+	runner.ThinkingBudget = o.cfg.ThinkingBudget
+	runner.ThinkingBudgetTokens = o.resolvedProfile().ThinkingBudgetTokens
+	if runner.ThinkingBudgetTokens <= 0 {
+		runner.ThinkingBudgetTokens = o.cfg.ThinkingBudgetTokens
+	}
+	runner.AutoTextTools = o.cfg.AutoTextTools
+	runner.FinalizeWarn = o.cfg.FinalizeWarn
+	runner.ReactCompact = o.cfg.ReactCompact
+	runner.ReactCompactAtPercent = o.cfg.ReactCompactAtPercent
+	runner.MaxContextKB = o.cfg.MaxContextKB
 	runner.BuildInput = func(t plan.Task) string {
 		lean := loop.StripScopedPack(t.Description)
 		docs := contextstore.LeanDocsForRole(t.Role)
@@ -141,7 +157,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 		tp.TaskID = t.ID
 		tp.TaskTitle = t.Title
 		t.Description = tp.Render() + "\n## Task instructions\n\n" + lean
-		return formatWorkerPromptFor(t)
+		return o.formatWorkerPrompt(query, t)
 	}
 
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)

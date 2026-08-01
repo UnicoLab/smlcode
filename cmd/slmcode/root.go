@@ -111,6 +111,7 @@ Examples:
 		configCmd(),
 		doctorCmd(),
 		watchCmd(),
+		evalCmd(),
 		versionCmd(),
 		updateCmd(),
 		completionCmd(),

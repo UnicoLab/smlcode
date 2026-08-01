@@ -64,7 +64,7 @@ task_timeout: 12m
 
 | Key | SLM tip |
 |-----|---------|
-| `think_passes` | Try `2` on 7–14B 🐣 |
+| `think_passes` | Try `2` on 7–14B 🐣 (also deepens board workers) |
 | `max_context_kb` | Lower if models wander 🥴 |
 | `max_parallel` | `1` on slow local GPUs 🐢 |
 | `max_retries` | Critic stubbornness 💪 |
@@ -100,7 +100,14 @@ plan_approve: auto        # off | auto | ask  (Plan Mode gate before execute)
 auto_approve: false       # skip plan/shell/clarify HITL waits
 shell_permission: allow   # allow | ask | deny (ask = interactive approve)
 context_compact: true     # mid-run CONTEXT.md summarization
+react_compact: true       # ReAct conversation watchdog (compact at %)
+react_compact_at_percent: 80
 wave_snapshots: true      # per-wave rewind under .slmcode/waves/
+file_checkpoints: true    # first-write-wins backup before edit/write
+shell_whitelist: true     # SAFE_PREFIXES for ws_shell (little-coder)
+shell_allow: []           # extra prefixes (or SLMCODE_BASH_ALLOW env)
+thinking_budget_tokens: 4096
+model_profiles: {}        # optional per-model skill/knowledge/token budgets
 hooks_enabled: true       # load .slmcode/hooks.json Pre/PostToolUse
 mcp_servers: []           # thin read-only MCP (stdio or HTTP)
 qa_gate: true

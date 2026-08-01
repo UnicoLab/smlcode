@@ -143,8 +143,12 @@ func TestParseTesterDrivesRewriteFlag(t *testing.T) {
 	if !plan.TesterFailed(`{"passed":false,"failures":["broken"]}`) {
 		t.Fatal("expected failed")
 	}
-	if plan.TesterFailed(`{"passed":true,"summary":"ok"}`) {
-		t.Fatal("expected pass")
+	if plan.TesterFailed("Observation: go test ./... -short\nok\n" +
+		`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`) {
+		t.Fatal("expected pass with shell evidence")
+	}
+	if !plan.TesterFailed(`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`) {
+		t.Fatal("fabricated commands[] without Observation must fail")
 	}
 	if !plan.TesterFailed("") {
 		t.Fatal("empty finalize must fail (no silent skip)")

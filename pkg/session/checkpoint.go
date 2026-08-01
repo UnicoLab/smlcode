@@ -17,6 +17,7 @@ const (
 	PhaseInit    = "init"
 	PhaseContext = "context"
 	PhaseExplore = "explore"
+	PhaseClarify = "clarify"
 	PhasePlan    = "plan"
 	PhaseSplit   = "split"
 	PhaseExecute = "execute"

@@ -165,14 +165,32 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		}
 		p.WriteString("\n")
 	}
+	summary := strings.TrimSpace(b.Plan.Summary)
+	if looksLikeRawJSON(summary) {
+		summary = "Plan parsed incompletely — see Raw appendix."
+	}
 	p.WriteString("## Summary\n\n")
-	p.WriteString(b.Plan.Summary)
+	if summary == "" {
+		p.WriteString("_No summary yet._")
+	} else {
+		p.WriteString(summary)
+	}
 	p.WriteString("\n\n## Goals\n\n")
+	if len(b.Plan.Goals) == 0 {
+		p.WriteString("_None listed._\n")
+	}
 	for _, g := range b.Plan.Goals {
 		p.WriteString("- " + g + "\n")
 	}
 	p.WriteString("\n## Steps\n\n")
-	for i, s := range b.Plan.Steps {
+	steps := b.Plan.Steps
+	if len(steps) == 0 {
+		p.WriteString("_None listed._\n")
+	}
+	for i, s := range steps {
+		if looksLikeRawJSON(s) {
+			continue
+		}
 		p.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
 	}
 	if len(b.Plan.Assumptions) > 0 {
@@ -186,6 +204,12 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		for _, r := range b.Plan.Risks {
 			p.WriteString("- " + r + "\n")
 		}
+	}
+	if raw := strings.TrimSpace(b.Plan.Raw); raw != "" &&
+		(looksLikeRawJSON(b.Plan.Summary) || (len(b.Plan.Goals) == 0 && len(b.Plan.Steps) == 0)) {
+		p.WriteString("\n## Raw planner output\n\n```json\n")
+		p.WriteString(truncateMD(raw, 4000))
+		p.WriteString("\n```\n")
 	}
 
 	var t strings.Builder
@@ -283,21 +307,141 @@ func escapePipe(s string) string {
 
 // ParsePlanJSON extracts a Plan from model output (JSON or fenced JSON).
 func ParsePlanJSON(raw string) (Plan, error) {
+	original := strings.TrimSpace(raw)
 	raw = extractJSON(raw)
 	if fixed, err := repair.RepairJSON(raw); err == nil {
 		raw = fixed
 	}
-	var p Plan
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		// Fallback: treat entire text as summary/steps
+	// Flexible decode: SLMs often emit steps as objects instead of strings.
+	var flex struct {
+		Summary     string          `json:"summary"`
+		Goals       []string        `json:"goals"`
+		Assumptions []string        `json:"assumptions"`
+		Risks       []string        `json:"risks"`
+		Steps       json.RawMessage `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(raw), &flex); err != nil {
 		return Plan{
-			Summary: firstLine(raw),
-			Steps:   splitLines(raw),
-			Raw:     raw,
+			Summary: humanPlanFallback(original, raw),
+			Steps:   humanPlanSteps(original, raw),
+			Raw:     original,
 		}, nil
 	}
-	p.Raw = raw
+	p := Plan{
+		Summary:     strings.TrimSpace(flex.Summary),
+		Goals:       flex.Goals,
+		Assumptions: flex.Assumptions,
+		Risks:       flex.Risks,
+		Steps:       parsePlanSteps(flex.Steps),
+		Raw:         raw,
+	}
+	if looksLikeRawJSON(p.Summary) || strings.HasPrefix(p.Summary, `"summary"`) {
+		p.Summary = humanPlanFallback(original, raw)
+	}
+	var cleanSteps []string
+	for _, s := range p.Steps {
+		s = strings.TrimSpace(s)
+		if s == "" || looksLikeRawJSON(s) {
+			continue
+		}
+		cleanSteps = append(cleanSteps, s)
+	}
+	p.Steps = cleanSteps
 	return p, nil
+}
+
+func parsePlanSteps(raw json.RawMessage) []string {
+	if len(bytesTrimSpace(raw)) == 0 {
+		return nil
+	}
+	var asStrings []string
+	if err := json.Unmarshal(raw, &asStrings); err == nil {
+		return asStrings
+	}
+	var asObjs []map[string]interface{}
+	if err := json.Unmarshal(raw, &asObjs); err != nil {
+		return nil
+	}
+	var out []string
+	for _, obj := range asObjs {
+		for _, key := range []string{"description", "task", "action", "details", "text", "title", "step"} {
+			if v, ok := obj[key]; ok {
+				switch t := v.(type) {
+				case string:
+					if s := strings.TrimSpace(t); s != "" && key != "step" {
+						out = append(out, s)
+						goto next
+					}
+				case float64:
+					// skip numeric step ids
+				}
+			}
+		}
+		// Fallback: first string field.
+		for _, v := range obj {
+			if s, ok := v.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+					break
+				}
+			}
+		}
+	next:
+	}
+	return out
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
+}
+
+func looksLikeRawJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		return true
+	}
+	if strings.HasPrefix(s, "```") {
+		return true
+	}
+	return strings.Contains(s, `"summary"`) && strings.Contains(s, `"steps"`)
+}
+
+func humanPlanFallback(original, extracted string) string {
+	for _, candidate := range []string{original, extracted} {
+		for _, line := range strings.Split(candidate, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || looksLikeRawJSON(line) || strings.HasPrefix(line, "```") {
+				continue
+			}
+			line = strings.TrimLeft(line, "-*# ")
+			if line != "" {
+				return truncateMD(line, 240)
+			}
+		}
+	}
+	return "Plan available (structured fields incomplete — see raw appendix)."
+}
+
+func humanPlanSteps(original, extracted string) []string {
+	var out []string
+	for _, candidate := range []string{original, extracted} {
+		for _, line := range splitLines(candidate) {
+			if looksLikeRawJSON(line) || strings.HasPrefix(line, "```") {
+				continue
+			}
+			out = append(out, line)
+			if len(out) >= 6 {
+				return out
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return out
 }
 
 // ParseTasksJSON extracts tasks from model output.
@@ -385,6 +529,13 @@ func ParseTesterJSON(raw string) TesterResult {
 			// Contradictory: failures present → treat as failed.
 			r.Passed = false
 		}
+		// Soft-pass without real shell execution evidence is not verification
+		// (rename/disk acceptance summaries are an explicit exception).
+		if r.Passed && !TesterHasShellEvidence(raw) && !testerDiskPass(extracted+raw+r.Summary) {
+			r.Passed = false
+			r.Summary = firstNonEmpty(r.Summary, "tester claimed pass without execution")
+			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
+		}
 		// {} / incomplete JSON with no explicit passed:true → fail (no silent pass).
 		if !r.Passed && !explicitTrue && len(r.Failures) == 0 {
 			r.Summary = firstNonEmpty(r.Summary, "malformed or incomplete tester JSON")
@@ -396,6 +547,10 @@ func ParseTesterJSON(raw string) TesterResult {
 	switch {
 	case strings.Contains(lower, `"passed":true`) || strings.Contains(lower, `"passed": true`):
 		r.Passed = true
+		if !TesterHasShellEvidence(raw) && !testerDiskPass(raw) {
+			r.Passed = false
+			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
+		}
 	case strings.Contains(lower, `"passed":false`) || strings.Contains(lower, `"passed": false`):
 		r.Passed = false
 		r.Failures = []string{firstLine(raw)}
@@ -404,9 +559,6 @@ func ParseTesterJSON(raw string) TesterResult {
 		strings.Contains(lower, "test failed") || strings.Contains(lower, "still broken"):
 		r.Passed = false
 		r.Failures = []string{firstLine(raw)}
-	case strings.Contains(lower, "all tests passed") || strings.Contains(lower, "verification passed") ||
-		(strings.Contains(lower, "pass") && !strings.Contains(lower, "fail")):
-		r.Passed = true
 	default:
 		// Unknown / prose-only / broken JSON → do not auto-accept.
 		r.Passed = false
@@ -423,6 +575,38 @@ func ParseTesterJSON(raw string) TesterResult {
 // Empty/malformed finalize counts as failed (never a silent skip).
 func TesterFailed(raw string) bool {
 	return !ParseTesterJSON(raw).Passed
+}
+
+// TesterHasShellEvidence reports whether raw tester output contains a real
+// execution trace (ws_shell observation, deterministic smoke, or exit codes).
+// Fabricated commands[] JSON alone does NOT count.
+func TesterHasShellEvidence(raw string) bool {
+	lower := strings.ToLower(raw)
+	markers := []string{
+		"observation:",
+		"exit error:",
+		"exit status",
+		"## deterministic smoke",
+		"ws_shell",
+		"py_compile",
+		"compileall",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	// Successful short command outputs often appear after Observation:
+	if strings.Contains(lower, "passed") && strings.Contains(lower, "observation:") {
+		return true
+	}
+	return false
+}
+
+func testerDiskPass(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "rename") ||
+		strings.Contains(lower, "verified on disk") || strings.Contains(lower, "on disk")
 }
 
 func firstNonEmpty(vals ...string) string {

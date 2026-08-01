@@ -7,7 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/hitl"
+	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
 )
@@ -15,6 +18,9 @@ import (
 // FileChangeFunc is invoked after a successful (or staged) write/edit/patch.
 // kind is write|edit|patch|dry-run|review; detail is a short human summary / snippet.
 type FileChangeFunc func(path, kind, detail string)
+
+// ShellAskNotify is called when a shell command needs interactive approval.
+type ShellAskNotify func(ask ShellAsk)
 
 // ToolOpts configures workspace tool safety (Claude Code–style permissions).
 type ToolOpts struct {
@@ -24,6 +30,10 @@ type ToolOpts struct {
 	SlmDir          string
 	OnFileChange    FileChangeFunc
 	Focus           *FocusGuard // optional anti-wander write allowlist
+	Hooks           *hooks.Runner
+	ShellAskTimeout time.Duration
+	OnShellAsk      ShellAskNotify
+	AutoApprove     bool // when true, shell ask acts as allow
 }
 
 // RegisterCodingTools adds workspace-aware file, shell, and git tools that
@@ -46,13 +56,18 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		Root: root, DryRun: perm == permissions.ModeDryRun, Permission: perm,
 		ShellPermission: permissions.NormalizeShell(opts.ShellPermission),
 		SlmDir:          opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
+		ShellAskTimeout: opts.ShellAskTimeout, OnShellAsk: opts.OnShellAsk,
+		AutoApprove:     opts.AutoApprove,
+	}
+	wrap := func(name string, fn tools.ToolExecutor) tools.ToolExecutor {
+		return hooks.WrapHandler(opts.Hooks, name, fn)
 	}
 
 	defs := []tools.Tool{
 		tools.NewGenericTool(
 			"ws_read",
 			"Read a file from the project workspace. Path is relative to project root.",
-			ws.readFile,
+			wrap("ws_read", ws.readFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -64,7 +79,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_write",
 			"Write/overwrite a file in the project workspace.",
-			ws.writeFile,
+			wrap("ws_write", ws.writeFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -77,7 +92,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_edit",
 			"Replace old_str with new_str in a workspace file (exact match). Prefer small patches.",
-			ws.editFile,
+			wrap("ws_edit", ws.editFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -92,7 +107,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_patch",
 			"Apply a small unified-diff style patch (---/+++/@@ hunks) or a SEARCH/REPLACE block to a file. Prefer over full rewrites for SLMs.",
-			ws.patchFile,
+			wrap("ws_patch", ws.patchFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -105,7 +120,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_list",
 			"List files/directories under a workspace path.",
-			ws.listDir,
+			wrap("ws_list", ws.listDir),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -116,7 +131,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_glob",
 			"Glob files under the workspace (e.g. **/*.go).",
-			ws.glob,
+			wrap("ws_glob", ws.glob),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -128,7 +143,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_grep",
 			"Search file contents in the workspace with a substring or simple pattern.",
-			ws.grep,
+			wrap("ws_grep", ws.grep),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -142,7 +157,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_mv",
 			"Rename/move a file in the workspace (git mv when .git present, else os.Rename). Prefer for file renames over rewrite+leave-old.",
-			ws.moveFile,
+			wrap("ws_mv", ws.moveFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -155,7 +170,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_delete",
 			"Delete a file in the workspace after a successful rename/move. Focus-guarded; prefer ws_mv for renames.",
-			ws.deleteFile,
+			wrap("ws_delete", ws.deleteFile),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -167,7 +182,7 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"ws_shell",
 			"Run a shell command in the project root. Prefer tests/build over destructive ops.",
-			ws.shell,
+			wrap("ws_shell", ws.shell),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -179,13 +194,13 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 		tools.NewGenericTool(
 			"git_status",
 			"Show git status --short in the project.",
-			ws.gitStatus,
+			wrap("git_status", ws.gitStatus),
 			map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		),
 		tools.NewGenericTool(
 			"git_diff",
 			"Show git diff (optionally for a path).",
-			ws.gitDiff,
+			wrap("git_diff", ws.gitDiff),
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -206,6 +221,19 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 	return nil
 }
 
+// ShellAsk is the pending interactive shell approval payload.
+type ShellAsk struct {
+	ID        string `json:"id"`
+	Command   string `json:"command"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ShellAnswer is the user decision for a pending shell command.
+type ShellAnswer struct {
+	Decision   string `json:"decision"` // approve | deny
+	AnsweredAt string `json:"answered_at,omitempty"`
+}
+
 // Workspace is the root-jailed project filesystem.
 type Workspace struct {
 	Root            string
@@ -215,6 +243,9 @@ type Workspace struct {
 	SlmDir          string
 	OnFileChange    FileChangeFunc
 	Focus           *FocusGuard
+	ShellAskTimeout time.Duration
+	OnShellAsk      ShellAskNotify
+	AutoApprove     bool
 }
 
 func (w *Workspace) checkFocus(path string) error {
@@ -613,14 +644,17 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 	case permissions.ShellDeny:
 		return nil, fmt.Errorf("shell denied by permission mode (shell=deny)")
 	case permissions.ShellAsk:
-		if w.SlmDir != "" {
-			p, err := permissions.RecordPending(w.SlmDir, "shell.sh", "shell", command)
-			if err != nil {
-				return nil, fmt.Errorf("shell ask: %w", err)
-			}
-			return fmt.Sprintf("shell pending approval: %s\ncommand: %s", p, command), nil
+		if w.AutoApprove {
+			break // treat as allow
 		}
-		return fmt.Sprintf("shell pending approval (no slm dir): %s", command), nil
+		ok, err := w.waitShellApproval(ctx, command)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return "shell denied by user", nil
+		}
+		// approved → fall through to execute
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	cmd.Dir = w.Root
@@ -633,6 +667,40 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 		return fmt.Sprintf("exit error: %v\n%s", err, text), nil
 	}
 	return text, nil
+}
+
+func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool, error) {
+	if w.SlmDir == "" {
+		return false, fmt.Errorf("shell ask: no slm dir")
+	}
+	ask := ShellAsk{
+		ID:        fmt.Sprintf("shell-%d", time.Now().UnixNano()),
+		Command:   command,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := hitl.WriteAsk(w.SlmDir, "shell", ask); err != nil {
+		return false, err
+	}
+	// Also record classic pending for apply CLI visibility.
+	_, _ = permissions.RecordPending(w.SlmDir, "shell.sh", "shell", command)
+	if w.OnShellAsk != nil {
+		w.OnShellAsk(ask)
+	}
+	timeout := w.ShellAskTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	var ans ShellAnswer
+	ok, err := hitl.WaitAnswers(ctx, w.SlmDir, "shell", timeout, &ans)
+	hitl.Clear(w.SlmDir, "shell")
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("shell ask timeout — command not executed: %s", command)
+	}
+	d := strings.ToLower(strings.TrimSpace(ans.Decision))
+	return d == "" || d == "approve" || d == "allow" || d == "yes" || d == "ok", nil
 }
 
 func (w *Workspace) gitStatus(ctx context.Context, _ map[string]interface{}) (interface{}, error) {

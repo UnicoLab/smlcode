@@ -265,13 +265,22 @@ func (o *Orchestrator) speculateTester(ctx context.Context, query string, board 
 	if diskOut != "" {
 		return diskOut, true, nil
 	}
-	// Prefer first decisive JSON among tester strategies.
+	// Prefer first decisive pass with shell evidence; then any explicit failure.
 	for _, cand := range []string{testerOut, strictOut} {
 		if strings.TrimSpace(cand) == "" {
 			continue
 		}
 		tr := plan.ParseTesterJSON(cand)
-		if tr.Passed || len(tr.Failures) > 0 || strings.TrimSpace(tr.Summary) != "" {
+		if tr.Passed && plan.TesterHasShellEvidence(cand) {
+			return cand, false, nil
+		}
+	}
+	for _, cand := range []string{testerOut, strictOut} {
+		if strings.TrimSpace(cand) == "" {
+			continue
+		}
+		tr := plan.ParseTesterJSON(cand)
+		if !tr.Passed && (len(tr.Failures) > 0 || strings.TrimSpace(tr.Summary) != "") {
 			return cand, false, nil
 		}
 	}

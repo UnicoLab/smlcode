@@ -30,7 +30,7 @@ const COLUMNS = [
 ];
 
 const ROLES = ["worker", "deep", "explorer", "docs", "architect", "reviewer", "corrector", "tester", "context", "coordinator"];
-const PIPE = ["init", "skills", "context", "explore", "docs", "architect", "plan", "split", "coord", "execute", "learn", "test", "memory", "done"];
+const PIPE = ["init", "skills", "context", "explore", "docs", "architect", "clarify", "plan", "split", "coord", "execute", "learn", "test", "memory", "done"];
 
 function agentRoleClass(name) {
   const n = String(name || "").toLowerCase().replace(/^@/, "");
@@ -287,8 +287,14 @@ function App() {
   const [agentEdit, setAgentEdit] = useState(null);
   const [activeTask, setActiveTask] = useState(null);
   const [taskHistory, setTaskHistory] = useState([]);
+  const [clarifyAsk, setClarifyAsk] = useState(null);
+  const [clarifyAnswers, setClarifyAnswers] = useState({});
+  const [planAsk, setPlanAsk] = useState(null);
+  const [shellAsk, setShellAsk] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [streamPaused, setStreamPaused] = useState(false);
+  const [showDebugEvents, setShowDebugEvents] = useState(false);
+  const showDebugEventsRef = useRef(false);
   const [fileRef, setFileRef] = useState("");
   const [theme, setTheme] = useState(readStoredTheme);
   const [injectNote, setInjectNote] = useState("");
@@ -307,6 +313,7 @@ function App() {
   const esRef = useRef(null);
   selectedRef.current = selected;
   streamPausedRef.current = streamPaused;
+  showDebugEventsRef.current = showDebugEvents;
   autoScrollRef.current = autoScroll;
 
   useEffect(() => {
@@ -467,6 +474,7 @@ function App() {
           if (!e || e.kind === "connected") return;
           setEvents((prev) => {
             if (streamPausedRef.current) return prev;
+            if (e.kind === "debug" && !showDebugEventsRef.current) return prev;
             return [...prev.slice(-400), e];
           });
           if (e.phase) setPhase(e.phase);
@@ -493,11 +501,39 @@ function App() {
               return [...prev.slice(-80), row];
             });
           }
+          if (e.kind === "ask" && e.output) {
+            try {
+              const ask = JSON.parse(e.output);
+              if (ask && ask.questions) {
+                setClarifyAsk(ask);
+                const seed = {};
+                (ask.questions || []).forEach((q) => {
+                  seed[q.id] = q.recommended || (q.options && q.options.find((o) => o.recommended)?.label) || "";
+                });
+                setClarifyAnswers(seed);
+                showToast("Scope interview — choose options or use recommended");
+              } else if (ask && (ask.task_count != null || ask.tasks)) {
+                setPlanAsk(ask);
+                showToast("Plan ready — approve to execute");
+              } else if (ask && ask.command) {
+                setShellAsk(ask);
+                showToast("Shell approval required");
+              }
+            } catch (_) {}
+          }
+          if (e.kind === "ask_answered") {
+            setClarifyAsk(null);
+            setPlanAsk(null);
+            setShellAsk(null);
+          }
           if (e.phase === "done" || e.phase === "error" || e.kind === "run_end" || e.kind === "run_stop") {
             setRunning(false);
+            setClarifyAsk(null);
+            setPlanAsk(null);
+            setShellAsk(null);
             showToast(e.phase === "error" ? (e.message || "Run error") : (e.message || "Run finished"));
             refresh();
-          } else if (e.kind === "run_start" || e.kind === "agent_start" || e.phase === "init" || e.phase === "execute") {
+          } else if (e.kind === "run_start" || e.kind === "agent_start" || e.phase === "init" || e.phase === "execute" || e.phase === "clarify") {
             setRunning(true);
           }
           refreshBoard();
@@ -600,13 +636,39 @@ function App() {
     }
   }
 
+  async function openAgent(id) {
+    if (!id) return;
+    try {
+      const full = await api("/api/agents/" + encodeURIComponent(id));
+      setAgentEdit({
+        id: full.id,
+        title: full.title || full.role || "",
+        description: full.description || "",
+        system_prompt: full.system_prompt || "",
+        skills: full.skills || [],
+        model: full.model || "",
+        provider: full.provider || "",
+        endpoint: full.endpoint || "",
+        tools: !!full.tools,
+        max_iter: full.max_iter ?? 10,
+        temperature: full.temperature ?? 0.2,
+        max_tokens: full.max_tokens ?? 2048,
+        builtin: !!full.builtin,
+        override: !!full.override,
+      });
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
   async function saveAgentEdit() {
     if (!agentEdit?.id) return;
     try {
+      const { builtin, override, ...payload } = agentEdit;
       await api("/api/agents/" + encodeURIComponent(agentEdit.id), {
         method: "PUT",
         body: JSON.stringify({
-          ...agentEdit,
+          ...payload,
           skills: Array.isArray(agentEdit.skills) ? agentEdit.skills : [],
           max_iter: Number(agentEdit.max_iter) || 10,
           temperature: Number(agentEdit.temperature) || 0.2,
@@ -682,6 +744,45 @@ function App() {
   async function saveDoc() {
     await api("/api/docs/" + tab, { method: "PUT", body: JSON.stringify({ content: doc }) });
     showToast(tab + " saved — next packs will use it");
+  }
+
+  async function submitClarify(useRecommended) {
+    if (!clarifyAsk) return;
+    const answers = (clarifyAsk.questions || []).map((q) => ({
+      question_id: q.id,
+      selected: useRecommended
+        ? [q.recommended || (q.options && q.options.find((o) => o.recommended)?.label) || ""].filter(Boolean)
+        : [clarifyAnswers[q.id]].filter(Boolean),
+    }));
+    await api("/api/clarify/answer", {
+      method: "POST",
+      body: JSON.stringify({
+        answers,
+        use_all_recommended: !!useRecommended,
+      }),
+    });
+    setClarifyAsk(null);
+    showToast(useRecommended ? "Applied recommended scope" : "Scope answers saved");
+  }
+
+  async function submitPlan(decision) {
+    if (!planAsk) return;
+    await api("/api/plan/approve", {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    setPlanAsk(null);
+    showToast(decision === "approve" ? "Plan approved" : "Replan requested");
+  }
+
+  async function submitShell(decision) {
+    if (!shellAsk) return;
+    await api("/api/shell/approve", {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    setShellAsk(null);
+    showToast(decision === "approve" ? "Shell approved" : "Shell denied");
   }
 
   async function saveConfig(patch) {
@@ -934,6 +1035,9 @@ function App() {
                     <button className={"sm" + (streamPaused ? "" : " ghost")} onClick={() => setStreamPaused((v) => !v)} title="Pause appending events">
                       {streamPaused ? "Resume" : "Pause"}
                     </button>
+                    <button className={"sm" + (showDebugEvents ? "" : " ghost")} onClick={() => setShowDebugEvents((v) => !v)} title="Show runner debug logs">
+                      {showDebugEvents ? "Debug on" : "Debug"}
+                    </button>
                     <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); }}>Clear</button>
                   </div>
                 </div>
@@ -1153,7 +1257,12 @@ function App() {
                   <h3>Roster ({agents.length})</h3>
                   <ul className="event-list agent-roster">
                     {agents.map((a) => (
-                      <li key={a.id} className={a.custom ? "agent-custom" : "agent-builtin"}>
+                      <li
+                        key={a.id}
+                        className={(a.custom ? "agent-custom" : "agent-builtin") + (agentEdit?.id === a.id ? " active" : "")}
+                        onClick={() => openAgent(a.id)}
+                        style={{ cursor: "pointer" }}
+                      >
                         <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
                           <strong>@{a.id}</strong>
                           <span className={"badge " + (a.custom ? "ok" : "muted")}>
@@ -1169,23 +1278,10 @@ function App() {
                           {a.override ? " · overridden" : ""}
                           {a.skills?.length ? ` · skills: ${a.skills.join(", ")}` : ""}
                         </div>
-                        <div className="row" style={{ marginTop: 8 }}>
-                          <button className="sm ghost" onClick={() => setAgentEdit({
-                            id: a.id,
-                            title: a.title || a.role || "",
-                            description: a.description || "",
-                            system_prompt: a.system_prompt || "",
-                            skills: a.skills || [],
-                            model: a.model || "",
-                            provider: a.provider || "",
-                            endpoint: a.endpoint || "",
-                            tools: !!a.tools,
-                            max_iter: a.max_iter || 10,
-                            temperature: a.temperature ?? 0.2,
-                            max_tokens: a.max_tokens || 2048,
-                            builtin: !!a.builtin,
-                            override: !!a.override,
-                          })}>{a.custom ? "Edit" : (a.override ? "Edit override" : "Customize")}</button>
+                        <div className="row" style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+                          <button className="sm ghost" onClick={() => openAgent(a.id)}>
+                            {a.custom ? "Edit" : (a.override ? "Edit override" : "Customize")}
+                          </button>
                           {(a.custom || a.override) && (
                             <button className="sm ghost danger" onClick={() => deleteAgent(a.id)}>
                               {a.override ? "Reset" : "Delete"}
@@ -1643,6 +1739,86 @@ function App() {
                 <label>Max parallel<input type="number" min={1} max={8} defaultValue={config.max_parallel} onBlur={(e) => saveConfig({ max_parallel: Number(e.target.value) })} /></label>
                 <label>Review retries<input type="number" min={0} max={5} defaultValue={config.max_retries} onBlur={(e) => saveConfig({ max_retries: Number(e.target.value) })} /></label>
                 <label>Context budget KB<input type="number" min={4} max={64} defaultValue={config.max_context_kb} onBlur={(e) => saveConfig({ max_context_kb: Number(e.target.value) })} /></label>
+                <h3 style={{ marginTop: 14 }}>Planning / scope</h3>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!config.auto_approve}
+                    onChange={(e) => saveConfig({ auto_approve: e.target.checked })}
+                  />
+                  Auto-approve (skip plan/shell/clarify waits)
+                </label>
+                <label>Clarify mode
+                  <select
+                    value={config.clarify_mode || "auto"}
+                    onChange={(e) => saveConfig({ clarify_mode: e.target.value })}
+                  >
+                    <option value="auto">auto (recommended defaults)</option>
+                    <option value="ask">ask (interview user)</option>
+                    <option value="off">off</option>
+                  </select>
+                </label>
+                <label>Plan approve
+                  <select
+                    value={config.plan_approve || "auto"}
+                    onChange={(e) => saveConfig({ plan_approve: e.target.value })}
+                  >
+                    <option value="auto">auto (continue)</option>
+                    <option value="ask">ask (approve before execute)</option>
+                    <option value="off">off</option>
+                  </select>
+                </label>
+                <label>Shell permission
+                  <select
+                    value={config.shell_permission || "allow"}
+                    onChange={(e) => saveConfig({ shell_permission: e.target.value })}
+                  >
+                    <option value="allow">allow</option>
+                    <option value="ask">ask (interactive)</option>
+                    <option value="deny">deny</option>
+                  </select>
+                </label>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={config.context_compact !== false}
+                    onChange={(e) => saveConfig({ context_compact: e.target.checked })}
+                  />
+                  Context compact (mid-run CONTEXT.md summarization)
+                </label>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={config.wave_snapshots !== false}
+                    onChange={(e) => saveConfig({ wave_snapshots: e.target.checked })}
+                  />
+                  Wave snapshots (rewind)
+                </label>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={config.hooks_enabled !== false}
+                    onChange={(e) => saveConfig({ hooks_enabled: e.target.checked })}
+                  />
+                  Hooks (.slmcode/hooks.json)
+                </label>
+                <label>Clarify timeout (sec)
+                  <input type="number" min={15} max={600}
+                    defaultValue={(() => {
+                      const t = Number(config.clarify_timeout) || 0;
+                      if (t > 1e6) return Math.round(t / 1e9); // Go duration ns
+                      return t || 120;
+                    })()}
+                    onBlur={(e) => saveConfig({ clarify_timeout_sec: Number(e.target.value) })} />
+                </label>
+                <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={config.scope_judge !== false}
+                    onChange={(e) => saveConfig({ scope_judge: e.target.checked })}
+                  />
+                  Scope judge (PRD completeness before execute)
+                </label>
                 <h3 style={{ marginTop: 14 }}>QA gate</h3>
                 <label className="row" style={{ gap: 8, alignItems: "center" }}>
                   <input
@@ -1682,6 +1858,86 @@ function App() {
           </div>
         </aside>
       </div>
+
+      {clarifyAsk ? (
+        <div className="modal-backdrop" style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 80,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{
+            maxWidth: 520, width: "100%", maxHeight: "85vh", overflow: "auto",
+            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 16,
+          }}>
+            <h2 style={{ marginTop: 0 }}>Scope interview</h2>
+            <p className="lead" style={{ marginTop: 0 }}>
+              Pick options or use recommended defaults so the plan has a full PRD.
+            </p>
+            {(clarifyAsk.questions || []).map((q) => (
+              <div key={q.id} style={{ marginBottom: 14 }}>
+                <strong>{q.header || q.id}</strong>
+                <div style={{ color: "var(--muted)", marginBottom: 6 }}>{q.question}</div>
+                <select
+                  value={clarifyAnswers[q.id] || ""}
+                  onChange={(e) => setClarifyAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                  style={{ width: "100%" }}
+                >
+                  {(q.options || []).map((o) => (
+                    <option key={o.label} value={o.label}>
+                      {o.label}{o.recommended ? " (recommended)" : ""}{o.description ? ` — ${o.description}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+              <button className="ghost" onClick={() => submitClarify(true)}>Use all recommended</button>
+              <button onClick={() => submitClarify(false)}>Lock PRD & continue</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {planAsk ? (
+        <div className="modal-backdrop" style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 81,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{
+            maxWidth: 560, width: "100%", maxHeight: "85vh", overflow: "auto",
+            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 16,
+          }}>
+            <h2 style={{ marginTop: 0 }}>Approve plan</h2>
+            <p className="lead">{planAsk.summary || "Plan ready"}</p>
+            <p style={{ color: "var(--muted)" }}>{planAsk.task_count || 0} tasks</p>
+            <ul style={{ paddingLeft: 18 }}>
+              {(planAsk.tasks || []).map((t) => <li key={t}>{t}</li>)}
+            </ul>
+            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+              <button className="ghost" onClick={() => submitPlan("replan")}>Replan</button>
+              <button onClick={() => submitPlan("approve")}>Approve & execute</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {shellAsk ? (
+        <div className="modal-backdrop" style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 82,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{
+            maxWidth: 560, width: "100%",
+            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 16,
+          }}>
+            <h2 style={{ marginTop: 0 }}>Shell approval</h2>
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{shellAsk.command}</pre>
+            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+              <button className="ghost danger" onClick={() => submitShell("deny")}>Deny</button>
+              <button onClick={() => submitShell("approve")}>Approve</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <footer className="bottom">
         <span>

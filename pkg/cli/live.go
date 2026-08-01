@@ -124,6 +124,8 @@ func FormatEvent(e stream.Event) string {
 		icon = Yellow("⏱")
 	case stream.KindUsage:
 		icon = Cyan("$")
+	case stream.KindDebug:
+		icon = Dim("·")
 	}
 
 	who := e.Phase

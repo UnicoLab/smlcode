@@ -3,9 +3,32 @@ package plan
 import "testing"
 
 func TestParseTesterJSONPassed(t *testing.T) {
+	// Fabricated commands[] alone is not enough — need an execution trace.
 	r := ParseTesterJSON(`{"passed":true,"commands":["go test"],"summary":"ok"}`)
+	if r.Passed {
+		t.Fatal("commands[] without Observation/smoke must not pass")
+	}
+	r = ParseTesterJSON("Observation: go test ./... -short\nok\n" +
+		`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`)
 	if !r.Passed {
-		t.Fatal(r)
+		t.Fatalf("shell evidence should pass: %+v", r)
+	}
+	r = ParseTesterJSON("## Deterministic smoke\nPASSED\ncmd: python -m py_compile main.py\n" +
+		`{"passed":true,"commands":["python -m py_compile main.py"],"summary":"ok"}`)
+	if !r.Passed {
+		t.Fatalf("smoke section should pass: %+v", r)
+	}
+}
+
+func TestParseTesterJSONRejectsPassWithoutCommands(t *testing.T) {
+	r := ParseTesterJSON(`{"passed":true,"summary":"looks fine","failures":[]}`)
+	if r.Passed {
+		t.Fatal("pass without commands must fail")
+	}
+	// Disk/rename acceptance remains valid without shell commands.
+	r2 := ParseTesterJSON(`{"passed":true,"summary":"rename verified on disk","failures":[]}`)
+	if !r2.Passed {
+		t.Fatalf("disk pass should remain: %+v", r2)
 	}
 }
 

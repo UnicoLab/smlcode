@@ -145,8 +145,12 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	fmt.Fprintln(w, Accent("├"+bar+"┤"))
 	fmt.Fprintln(w, Accent("│")+padRight(Bold(" Live"), min(width-2, 96))+Accent("│"))
 	evStart := 0
-	if len(st.Events) > 6 {
-		evStart = len(st.Events) - 6
+	maxLive := 10
+	if st.Compact {
+		maxLive = 8
+	}
+	if len(st.Events) > maxLive {
+		evStart = len(st.Events) - maxLive
 	}
 	if len(st.Events) == 0 {
 		fmt.Fprintln(w, Accent("│")+padRight(Dim("  waiting for events…"), min(width-2, 96))+Accent("│"))
@@ -252,14 +256,17 @@ func RenderBoardGlance(board *plan.Board) {
 
 // LiveSession drives the interactive premium TUI REPL.
 type LiveSession struct {
-	mu      sync.Mutex
-	state   DashboardState
-	status  *StatusTracker
-	onRun   func(query string) error
-	onStop  func()
-	onSlash func(cmd string) (quit bool, err error)
-	in      io.Reader
-	out     io.Writer
+	mu             sync.Mutex
+	state          DashboardState
+	status         *StatusTracker
+	onRun          func(query string) error
+	onStop         func()
+	onSlash        func(cmd string) (quit bool, err error)
+	onBoardRefresh func() *plan.Board
+	lastRedraw     time.Time
+	redrawPending  bool
+	in             io.Reader
+	out            io.Writer
 }
 
 // NewLiveSession constructs a TUI session. Call SetState / Observe as events arrive.
@@ -268,7 +275,15 @@ func NewLiveSession() *LiveSession {
 		status: NewStatusTracker(),
 		in:     os.Stdin,
 		out:    os.Stdout,
+		state:  DashboardState{Compact: true},
 	}
+}
+
+// OnBoardRefresh registers a callback used to refresh the board mid-run.
+func (s *LiveSession) OnBoardRefresh(fn func() *plan.Board) {
+	s.mu.Lock()
+	s.onBoardRefresh = fn
+	s.mu.Unlock()
 }
 
 func (s *LiveSession) SetState(st DashboardState) {
@@ -292,12 +307,17 @@ func (s *LiveSession) SetState(st DashboardState) {
 
 func (s *LiveSession) Observe(e stream.Event) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.status != nil {
 		s.status.Observe(e)
 	}
-	// Compact mode: keep latency + phase/agent/file events; drop noisy output dumps.
+	// Always hide runner internals; compact also drops bulky output dumps.
+	if e.Kind == stream.KindDebug {
+		s.mu.Unlock()
+		return
+	}
 	if s.state.Compact && e.Kind == stream.KindOutput {
+		s.mu.Unlock()
+		s.scheduleRedraw(false)
 		return
 	}
 	s.state.Events = append(s.state.Events, e)
@@ -311,12 +331,20 @@ func (s *LiveSession) Observe(e stream.Event) {
 	if e.Phase != "" {
 		s.state.Phase = e.Phase
 	}
+	refreshBoard := false
 	switch e.Kind {
 	case stream.KindAgentStart:
-		if e.TaskID != "" {
+		if e.TaskID != "" || e.Agent != "" {
 			label := e.TaskID
+			if label == "" {
+				label = e.Phase
+			}
 			if e.Agent != "" {
-				label = "@" + e.Agent + ":" + e.TaskID
+				if e.TaskID != "" {
+					label = "@" + e.Agent + ":" + e.TaskID
+				} else {
+					label = "@" + e.Agent
+				}
 			}
 			s.state.Agents = appendUnique(s.state.Agents, label)
 			s.state.Running = true
@@ -331,6 +359,22 @@ func (s *LiveSession) Observe(e stream.Event) {
 				}
 			}
 			s.state.Agents = next
+		} else if e.Agent != "" {
+			filter := "@" + e.Agent
+			var next []string
+			for _, a := range s.state.Agents {
+				if a != filter && !strings.HasPrefix(a, filter+":") {
+					next = append(next, a)
+				}
+			}
+			s.state.Agents = next
+		}
+		refreshBoard = true
+	case stream.KindFileChange:
+		refreshBoard = true
+	case stream.KindPhase:
+		if e.Phase == "plan" || e.Phase == "split" || e.Phase == "execute" || e.Phase == "test" {
+			refreshBoard = true
 		}
 	case stream.KindLatency:
 		if e.Message != "" {
@@ -344,7 +388,58 @@ func (s *LiveSession) Observe(e stream.Event) {
 	if e.Phase == "done" {
 		s.state.Running = false
 		s.state.Agents = nil
+		refreshBoard = true
 	}
+	fn := s.onBoardRefresh
+	s.mu.Unlock()
+
+	if refreshBoard && fn != nil {
+		if b := fn(); b != nil {
+			s.mu.Lock()
+			s.state.Board = b
+			s.mu.Unlock()
+		}
+	}
+	s.scheduleRedraw(e.Kind == stream.KindAgentStart || e.Kind == stream.KindAgentEnd ||
+		e.Kind == stream.KindFileChange || e.Phase == "done")
+}
+
+// scheduleRedraw paints the dashboard live during runs (throttled).
+func (s *LiveSession) scheduleRedraw(force bool) {
+	s.mu.Lock()
+	if !s.state.Running && !force {
+		s.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	minGap := 200 * time.Millisecond
+	if force {
+		minGap = 80 * time.Millisecond
+	}
+	if !force && now.Sub(s.lastRedraw) < minGap {
+		if s.redrawPending {
+			s.mu.Unlock()
+			return
+		}
+		s.redrawPending = true
+		wait := minGap - now.Sub(s.lastRedraw)
+		s.mu.Unlock()
+		go func() {
+			time.Sleep(wait)
+			s.mu.Lock()
+			s.redrawPending = false
+			s.lastRedraw = time.Now()
+			st := s.state
+			s.mu.Unlock()
+			RenderDashboard(s.out, st)
+		}()
+		return
+	}
+	s.lastRedraw = now
+	s.redrawPending = false
+	st := s.state
+	s.mu.Unlock()
+	RenderDashboard(s.out, st)
 }
 
 // SetCompact toggles compact live-event mode.
@@ -422,6 +517,7 @@ func (s *LiveSession) RunInteractive() error {
 			s.status = NewStatusTracker()
 			s.mu.Unlock()
 			s.redraw()
+			// Blocking run; Observe() throttles live redraws. Ctrl+C / signal cancels.
 			err := s.onRun(line)
 			s.mu.Lock()
 			s.state.Running = false
@@ -466,7 +562,8 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/model <id>")+"       switch model (persists)")
 	fmt.Fprintln(s.out, "  "+Cyan("/provider <name>")+"  switch provider")
 	fmt.Fprintln(s.out, "  "+Cyan("/permission …")+"     auto|dry-run|review  or  shell=allow|ask|deny")
-	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle compact live stream")
+	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle stream · /compact context summarizes CONTEXT.md")
+	fmt.Fprintln(s.out, "  "+Cyan("/rewind")+"           list/restore wave snapshots")
 	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run latency + tokens (+$ if price_preset/price_* set)")
 	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
 	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             cancel in-flight run (checkpoint board)")

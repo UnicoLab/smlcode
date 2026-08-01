@@ -105,6 +105,47 @@ func TestPutConfigSetsPermission(t *testing.T) {
 	}
 }
 
+func TestGetBuiltinAgentDetailIncludesPrompt(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/worker", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	sp, _ := detail["system_prompt"].(string)
+	if !strings.Contains(sp, "HARD SCOPE") {
+		t.Fatalf("detail missing built-in prompt: %v", detail["system_prompt"])
+	}
+	// List must stay lean (no prompt dump for built-ins without override).
+	req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	var list []map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range list {
+		if a["id"] == "worker" {
+			if _, ok := a["system_prompt"]; ok {
+				t.Fatal("list must not include system_prompt for built-in worker")
+			}
+		}
+	}
+}
+
 func TestAgentsCRUD(t *testing.T) {
 	root := t.TempDir()
 	h, err := harness.New(root)

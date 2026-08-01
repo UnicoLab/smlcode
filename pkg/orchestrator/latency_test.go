@@ -30,7 +30,7 @@ func TestRoleTimeoutPlanningTighterThanWorkers(t *testing.T) {
 	if planTO >= workerTO || splitTO >= workerTO {
 		t.Fatalf("planning should be tighter: plan=%v split=%v worker=%v", planTO, splitTO, workerTO)
 	}
-	if planTO < 90*time.Second {
+	if planTO < 2*time.Minute {
 		t.Fatalf("planner floor too aggressive: %v", planTO)
 	}
 	rev := o.roleTimeout(plan.RoleReviewer)

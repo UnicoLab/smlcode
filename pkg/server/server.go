@@ -19,10 +19,13 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/hitl"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // Server exposes the SLMCode Studio API + optional embedded web UI.
@@ -70,6 +73,15 @@ func (s *Server) emit(e orchestrator.Event) {
 		select {
 		case ch <- e:
 		default:
+			// Prefer latest progress over silent drops under backpressure.
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- e:
+			default:
+			}
 		}
 	}
 }
@@ -102,6 +114,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/runs", s.handleStartRun)
 	s.mux.HandleFunc("POST /api/runs/stop", s.handleStopRun)
 	s.mux.HandleFunc("GET /api/runs/latest", s.handleLatestRun)
+	s.mux.HandleFunc("GET /api/clarify/pending", s.handleClarifyPending)
+	s.mux.HandleFunc("POST /api/clarify/answer", s.handleClarifyAnswer)
+	s.mux.HandleFunc("GET /api/plan/pending", s.handlePlanPending)
+	s.mux.HandleFunc("POST /api/plan/approve", s.handlePlanApprove)
+	s.mux.HandleFunc("GET /api/shell/pending", s.handleShellPending)
+	s.mux.HandleFunc("POST /api/shell/approve", s.handleShellApprove)
+	s.mux.HandleFunc("GET /api/rewind", s.handleRewindList)
+	s.mux.HandleFunc("POST /api/rewind/{id}", s.handleRewindRestore)
+	s.mux.HandleFunc("POST /api/compact", s.handleCompact)
 	s.mux.HandleFunc("GET /api/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
@@ -508,6 +529,143 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "started", "query": req.Query})
 }
 
+func (s *Server) handleClarifyPending(w http.ResponseWriter, r *http.Request) {
+	path := plan.ClarifyAskPath(s.h.Config.SlmDir())
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, map[string]any{"pending": false})
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	var ask plan.ScopeAsk
+	if err := json.Unmarshal(data, &ask); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+}
+
+func (s *Server) handleClarifyAnswer(w http.ResponseWriter, r *http.Request) {
+	var ans plan.ScopeAnswers
+	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
+		http.Error(w, "invalid answers JSON", 400)
+		return
+	}
+	if err := plan.WriteScopeAnswers(s.h.Config.SlmDir(), ans); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "clarify", Kind: "ask_answered", Message: "clarify answers saved", Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePlanPending(w http.ResponseWriter, r *http.Request) {
+	var ask plan.PlanApproveAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "plan", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]any{"pending": false})
+		return
+	}
+	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+}
+
+func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
+	var ans plan.PlanApproveAnswer
+	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if ans.AnsweredAt == "" {
+		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "plan", ans); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "plan", Kind: "ask_answered", Message: "plan decision: " + ans.Decision, Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleShellPending(w http.ResponseWriter, r *http.Request) {
+	var ask workspace.ShellAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "shell", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]any{"pending": false})
+		return
+	}
+	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+}
+
+func (s *Server) handleShellApprove(w http.ResponseWriter, r *http.Request) {
+	var ans workspace.ShellAnswer
+	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if ans.AnsweredAt == "" {
+		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "shell", ans); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "execute", Kind: "ask_answered", Message: "shell decision: " + ans.Decision, Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRewindList(w http.ResponseWriter, r *http.Request) {
+	mgr := &rewind.Manager{SlmDir: s.h.Config.SlmDir(), Root: s.h.Config.Root}
+	list, err := mgr.List()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{"snapshots": list})
+}
+
+func (s *Server) handleRewindRestore(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	mgr := &rewind.Manager{SlmDir: s.h.Config.SlmDir(), Root: s.h.Config.Root}
+	n, err := mgr.Restore(id)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "execute", Kind: "output", Message: fmt.Sprintf("rewound %d files from %s", n, id), Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true, "restored": n, "id": id})
+}
+
+func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
+	res, err := s.h.Orchestrator.CompactContextNow()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok": true, "compacted": res.Compacted,
+		"before_bytes": res.BeforeBytes, "after_bytes": res.AfterBytes,
+	})
+}
+
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	s.h.Orchestrator.Stop()
 	s.mu.Lock()
@@ -684,11 +842,9 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
-	for _, a := range agents.PublicSpecsWithCustom(s.loadCustomAgents()) {
-		if aid, _ := a["id"].(string); aid == id {
-			writeJSON(w, a)
-			return
-		}
+	if a := agents.AgentDetail(id, s.loadCustomAgents()); a != nil {
+		writeJSON(w, a)
+		return
 	}
 	http.Error(w, "not found", 404)
 }

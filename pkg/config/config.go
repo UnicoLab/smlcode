@@ -27,6 +27,16 @@ const (
 	DefaultQAGateRounds = 3
 )
 
+// MCPServerConfig is a thin read-only MCP server entry.
+type MCPServerConfig struct {
+	Name     string            `yaml:"name" json:"name"`
+	Command  string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args     []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env      map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	URL      string            `yaml:"url,omitempty" json:"url,omitempty"`
+	ReadOnly *bool             `yaml:"read_only,omitempty" json:"read_only,omitempty"`
+}
+
 // NormalizeProvider canonicalizes provider aliases.
 // Unknown names are kept (treated as OpenAI-compatible gateways).
 func NormalizeProvider(p string) string {
@@ -134,17 +144,43 @@ type Config struct {
 	QAGate          bool   `yaml:"qa_gate" json:"qa_gate"`
 	QAGateCommand   string `yaml:"qa_gate_command" json:"qa_gate_command"` // empty = auto-detect
 	QAGateMaxRounds int    `yaml:"qa_gate_max_rounds" json:"qa_gate_max_rounds"`
+	// PostWorkerSmoke runs deterministic py_compile/go test after each worker
+	// before review can approve (prevents broken-on-disk auto-approve).
+	PostWorkerSmoke bool `yaml:"post_worker_smoke" json:"post_worker_smoke"`
+
+	// ClarifyMode: auto (apply recommended) | ask (pause for user) | off.
+	// Inspired by Claude Code AskUserQuestion + pi-clarify.
+	ClarifyMode string `yaml:"clarify_mode" json:"clarify_mode"`
+	// ClarifyTimeout is how long ask mode waits before applying recommended.
+	ClarifyTimeout time.Duration `yaml:"clarify_timeout" json:"clarify_timeout"`
+	// ScopeJudge runs a post-split PRD completeness check (heuristic + optional LLM).
+	ScopeJudge bool `yaml:"scope_judge" json:"scope_judge"`
+	// PlanApprove: off | auto | ask — Claude Code Plan Mode gate before execute.
+	PlanApprove string `yaml:"plan_approve" json:"plan_approve"`
+	// PlanApproveTimeout for ask mode.
+	PlanApproveTimeout time.Duration `yaml:"plan_approve_timeout" json:"plan_approve_timeout"`
 
 	DryRun      bool `yaml:"dry_run" json:"dry_run"`
 	Verbose     bool `yaml:"verbose" json:"verbose"`
+	// AutoApprove skips plan/shell/clarify HITL waits (forces recommended/allow).
 	AutoApprove bool `yaml:"auto_approve" json:"auto_approve"`
 
 	// Permission: auto | dry-run | review (Claude Code–style write policy)
 	Permission string `yaml:"permission" json:"permission"`
 	// ShellPermission: allow | ask | deny (ws_shell policy; independent of file writes)
 	ShellPermission string `yaml:"shell_permission" json:"shell_permission"`
+	// ShellAskTimeout for interactive shell approval when shell_permission=ask.
+	ShellAskTimeout time.Duration `yaml:"shell_ask_timeout" json:"shell_ask_timeout"`
 	// CompactMode trims live event verbosity in TUI/CLI.
 	CompactMode bool `yaml:"compact_mode" json:"compact_mode"`
+	// ContextCompact enables mid-run CONTEXT.md summarization when oversized.
+	ContextCompact bool `yaml:"context_compact" json:"context_compact"`
+	// WaveSnapshots stores per-wave file rewind points under .slmcode/waves/.
+	WaveSnapshots bool `yaml:"wave_snapshots" json:"wave_snapshots"`
+	// HooksEnabled loads .slmcode/hooks.json Pre/PostToolUse.
+	HooksEnabled bool `yaml:"hooks_enabled" json:"hooks_enabled"`
+	// MCPServers are thin read-only MCP connections (stdio or HTTP).
+	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 
 	// Embedding retrieval for CONTEXT injection (OpenAI-compat /v1/embeddings).
 	// When disabled or unreachable, lexical TF-IDF ranking is used.
@@ -191,11 +227,22 @@ func Default(root string) *Config {
 		TaskTimeout:     DefaultTaskTimeout,
 		QAGate:          true,
 		QAGateMaxRounds: DefaultQAGateRounds,
-		Listen:          "127.0.0.1:7420",
-		ClaudeCodeBin:   "claude",
-		Permission:      "auto",
-		ShellPermission: "allow",
-		EmbeddingTopK:   5,
+		PostWorkerSmoke: true,
+		ClarifyMode:         "auto",
+		ClarifyTimeout:      2 * time.Minute,
+		ScopeJudge:          true,
+		PlanApprove:         "auto",
+		PlanApproveTimeout:  2 * time.Minute,
+		Listen:              "127.0.0.1:7420",
+		ClaudeCodeBin:       "claude",
+		Permission:          "auto",
+		ShellPermission:     "allow",
+		ShellAskTimeout:     2 * time.Minute,
+		CompactMode:         true,
+		ContextCompact:      true,
+		WaveSnapshots:       true,
+		HooksEnabled:        true,
+		EmbeddingTopK:       5,
 	}
 }
 
@@ -399,6 +446,17 @@ func normalize(c *Config) {
 	if c.QAGateMaxRounds <= 0 {
 		c.QAGateMaxRounds = DefaultQAGateRounds
 	}
+	c.ClarifyMode = NormalizeClarifyMode(c.ClarifyMode)
+	if c.ClarifyTimeout <= 0 {
+		c.ClarifyTimeout = 2 * time.Minute
+	}
+	c.PlanApprove = NormalizePlanApprove(c.PlanApprove)
+	if c.PlanApproveTimeout <= 0 {
+		c.PlanApproveTimeout = 2 * time.Minute
+	}
+	if c.ShellAskTimeout <= 0 {
+		c.ShellAskTimeout = 2 * time.Minute
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7420"
 	}
@@ -441,10 +499,21 @@ type Patch struct {
 	QAGate                 *bool     `json:"qa_gate,omitempty"`
 	QAGateCommand          *string   `json:"qa_gate_command,omitempty"`
 	QAGateMaxRounds        *int      `json:"qa_gate_max_rounds,omitempty"`
+	PostWorkerSmoke        *bool     `json:"post_worker_smoke,omitempty"`
+	ClarifyMode            *string   `json:"clarify_mode,omitempty"`
+	ClarifyTimeoutSec      *int      `json:"clarify_timeout_sec,omitempty"`
+	ScopeJudge             *bool     `json:"scope_judge,omitempty"`
+	PlanApprove            *string   `json:"plan_approve,omitempty"`
+	PlanApproveTimeoutSec  *int      `json:"plan_approve_timeout_sec,omitempty"`
+	AutoApprove            *bool     `json:"auto_approve,omitempty"`
+	ShellPermission        *string   `json:"shell_permission,omitempty"`
+	ShellAskTimeoutSec     *int      `json:"shell_ask_timeout_sec,omitempty"`
+	ContextCompact         *bool     `json:"context_compact,omitempty"`
+	WaveSnapshots          *bool     `json:"wave_snapshots,omitempty"`
+	HooksEnabled           *bool     `json:"hooks_enabled,omitempty"`
 	DryRun                 *bool     `json:"dry_run,omitempty"`
 	Verbose                *bool     `json:"verbose,omitempty"`
 	Permission             *string   `json:"permission,omitempty"`
-	ShellPermission        *string   `json:"shell_permission,omitempty"`
 	CompactMode            *bool     `json:"compact_mode,omitempty"`
 	Listen                 *string   `json:"listen,omitempty"`
 	EmbeddingEnabled       *bool     `json:"embedding_enabled,omitempty"`
@@ -523,6 +592,39 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.QAGateMaxRounds != nil && *p.QAGateMaxRounds > 0 {
 		c.QAGateMaxRounds = *p.QAGateMaxRounds
+	}
+	if p.PostWorkerSmoke != nil {
+		c.PostWorkerSmoke = *p.PostWorkerSmoke
+	}
+	if p.ClarifyMode != nil {
+		c.ClarifyMode = strings.TrimSpace(*p.ClarifyMode)
+	}
+	if p.ClarifyTimeoutSec != nil && *p.ClarifyTimeoutSec > 0 {
+		c.ClarifyTimeout = time.Duration(*p.ClarifyTimeoutSec) * time.Second
+	}
+	if p.ScopeJudge != nil {
+		c.ScopeJudge = *p.ScopeJudge
+	}
+	if p.PlanApprove != nil {
+		c.PlanApprove = strings.TrimSpace(*p.PlanApprove)
+	}
+	if p.PlanApproveTimeoutSec != nil && *p.PlanApproveTimeoutSec > 0 {
+		c.PlanApproveTimeout = time.Duration(*p.PlanApproveTimeoutSec) * time.Second
+	}
+	if p.AutoApprove != nil {
+		c.AutoApprove = *p.AutoApprove
+	}
+	if p.ShellAskTimeoutSec != nil && *p.ShellAskTimeoutSec > 0 {
+		c.ShellAskTimeout = time.Duration(*p.ShellAskTimeoutSec) * time.Second
+	}
+	if p.ContextCompact != nil {
+		c.ContextCompact = *p.ContextCompact
+	}
+	if p.WaveSnapshots != nil {
+		c.WaveSnapshots = *p.WaveSnapshots
+	}
+	if p.HooksEnabled != nil {
+		c.HooksEnabled = *p.HooksEnabled
 	}
 	if p.Verbose != nil {
 		c.Verbose = *p.Verbose
@@ -635,5 +737,33 @@ func PricePresetRates(preset, provider string) (prompt, completion float64, ok b
 		return 0.50, 1.50, true
 	default:
 		return 0, 0, false
+	}
+}
+
+// NormalizeClarifyMode maps clarify_mode aliases (auto|ask|off).
+func NormalizeClarifyMode(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "", "auto", "defaults", "recommend":
+		return "auto"
+	case "ask", "interview", "hitl":
+		return "ask"
+	case "off", "skip", "none", "false":
+		return "off"
+	default:
+		return "auto"
+	}
+}
+
+// NormalizePlanApprove maps plan_approve aliases (auto|ask|off).
+func NormalizePlanApprove(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "", "auto", "skip", "continue":
+		return "auto"
+	case "ask", "hitl", "approve", "gate":
+		return "ask"
+	case "off", "none", "false":
+		return "off"
+	default:
+		return "auto"
 	}
 }

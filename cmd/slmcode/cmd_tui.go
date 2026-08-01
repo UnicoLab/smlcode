@@ -14,6 +14,8 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 )
 
@@ -50,6 +52,11 @@ func runPremiumTUI() error {
 	sess := cli.NewLiveSession()
 	sess.SetState(loadDashboardFromHarness(h))
 	sess.SetCompact(h.Config.CompactMode)
+	sess.OnBoardRefresh(func() *plan.Board {
+		_ = h.Orchestrator.Board().Load()
+		snap := h.Orchestrator.Board().Snapshot()
+		return &snap
+	})
 
 	var runMu sync.Mutex
 	var cancelRun func()
@@ -186,6 +193,18 @@ func runPremiumTUI() error {
 			}
 			return false, nil
 		case "/compact":
+			if arg == "context" || arg == "ctx" {
+				res, err := h.Orchestrator.CompactContextNow()
+				if err != nil {
+					return false, err
+				}
+				if res.Compacted {
+					fmt.Println(cli.Success(fmt.Sprintf("CONTEXT compacted %d→%d bytes", res.BeforeBytes, res.AfterBytes)))
+				} else {
+					fmt.Println(cli.Dim(fmt.Sprintf("CONTEXT already lean (%d bytes)", res.BeforeBytes)))
+				}
+				return false, nil
+			}
 			on := !sess.Compact()
 			if arg == "on" || arg == "1" || arg == "true" {
 				on = true
@@ -197,10 +216,36 @@ func runPremiumTUI() error {
 			h.Config.CompactMode = on
 			_ = h.Config.Save()
 			if on {
-				fmt.Println(cli.Success("compact mode on"))
+				fmt.Println(cli.Success("compact stream on — /compact context to summarize CONTEXT.md"))
 			} else {
-				fmt.Println(cli.Success("compact mode off"))
+				fmt.Println(cli.Success("compact stream off"))
 			}
+			return false, nil
+		case "/rewind":
+			mgr := &rewind.Manager{SlmDir: h.Config.SlmDir(), Root: h.Config.Root}
+			if arg == "" || arg == "list" {
+				list, err := mgr.List()
+				if err != nil {
+					return false, err
+				}
+				if len(list) == 0 {
+					fmt.Println(cli.Dim("no wave snapshots yet"))
+					return false, nil
+				}
+				for i, s := range list {
+					if i >= 10 {
+						break
+					}
+					fmt.Printf("  %s  wave=%d  files=%d  %s\n", s.ID, s.Wave, len(s.Files), s.CreatedAt)
+				}
+				fmt.Println(cli.Dim("usage: /rewind <snapshot-id>"))
+				return false, nil
+			}
+			n, err := mgr.Restore(arg)
+			if err != nil {
+				return false, err
+			}
+			fmt.Println(cli.Success(fmt.Sprintf("restored %d files from %s", n, arg)))
 			return false, nil
 		case "/stats":
 			head := sess.LatencyHead()
@@ -306,7 +351,7 @@ func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) e
 		fmt.Println(cli.Dim("  Fields: title description provider model endpoint skills tools max_iter max_tokens temperature system_prompt"))
 		return nil
 	case "show":
-		a := cli.FindPublicAgent(custom, cmd.ID)
+		a := agents.AgentDetail(cmd.ID, custom)
 		if a == nil {
 			return fmt.Errorf("agent %q not found", cmd.ID)
 		}
@@ -331,11 +376,14 @@ func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) e
 			} else if got, rerr := agents.ReadCustomFile(filepath.Join(h.Config.AgentsDir(), cmd.ID+".yml")); rerr == nil {
 				base = got
 			} else {
-				// Seed from builtin public view when overriding.
-				if pub := cli.FindPublicAgent(custom, cmd.ID); pub != nil {
+				// Seed from full builtin detail (includes system prompt).
+				if pub := agents.AgentDetail(cmd.ID, custom); pub != nil {
 					base.ID = cmd.ID
 					if t, _ := pub["title"].(string); t != "" {
 						base.Title = t
+					}
+					if d, _ := pub["description"].(string); d != "" {
+						base.Description = d
 					}
 					if sp, _ := pub["system_prompt"].(string); sp != "" {
 						base.SystemPrompt = sp

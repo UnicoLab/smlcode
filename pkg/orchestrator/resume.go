@@ -13,6 +13,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/stream"
@@ -115,9 +116,12 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.Timeout = o.cfg.TaskTimeout
+	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
+	runner.WaveSnapshots = o.cfg.WaveSnapshots
+	runner.RewindMgr = o.rewindMgr
 	runner.FailureHandler = loop.NewEnhancedFailureHandler(o.cfg.Root)
 	runner.Log = func(format string, args ...interface{}) {
-		o.emit("execute", fmt.Sprintf(format, args...), "")
+		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")
 	}
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
@@ -127,6 +131,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
+		o.maybeCompactContext(ctx)
 		o.coordinate(ctx, query, board, "after-wave")
 	}
 	runner.BuildInput = func(t plan.Task) string {
@@ -168,17 +173,55 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, skillPack string, board *plan.Board, runner *loop.Runner, start time.Time) (*Result, error) {
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseTest)
 
+	// Deterministic project smoke BEFORE LLM tester — hard fail if code won't compile/run.
+	var preSmokeFail string
+	if o.cfg.QAGate || o.cfg.PostWorkerSmoke {
+		cmd := strings.TrimSpace(o.cfg.QAGateCommand)
+		if cmd == "" {
+			cmd = quality.DetectProjectCommand(o.cfg.Root)
+		}
+		if cmd != "" {
+			if prep := quality.BootstrapDeps(o.cfg.Root, cmd); prep != "" {
+				_ = quality.RunSmoke(ctx, o.cfg.Root, prep, o.cfg.TaskTimeout)
+			}
+			sr := quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
+			_ = o.store.Append(contextstore.DocScratch, "Deterministic pre-test",
+				fmt.Sprintf("cmd: %s\nok=%v\n\n%s", cmd, sr.OK, truncate(sr.Output, 3000)))
+			o.emitFull("test", stream.KindOutput, "qa", "",
+				fmt.Sprintf("pre-test %s", map[bool]string{true: "green", false: "RED"}[sr.OK]),
+				"", truncate(sr.Output, 800))
+			if !sr.OK {
+				preSmokeFail = fmt.Sprintf(
+					`{"passed":false,"commands":[%q],"summary":"deterministic pre-test failed","failures":[%q]}`,
+					cmd, truncate(strings.ReplaceAll(sr.Output, `"`, "'"), 400))
+			}
+		}
+	}
+
 	o.emitAgent("test", plan.RoleTester, "", "verification pass", "", "")
 	_, tasksMD := board.ToMarkdown()
 	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor("tester", query))
 	testPrompt := testPack.Render() + "\nTasks:\n" + truncate(tasksMD, 4000) +
-		"\n\nVerify THIS query's work. Return STRICT JSON: " +
+		"\n\nVerify THIS query's work with REAL execution.\n" +
+		"You MUST call ws_shell at least once (install deps if needed, then pytest/go test/python smoke).\n" +
+		"Reading files alone is not enough. Return STRICT JSON: " +
 		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
 		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
+	if preSmokeFail != "" {
+		testPrompt += "\n\n## Deterministic pre-test ALREADY FAILED\n" + preSmokeFail +
+			"\nYou must re-run commands and confirm fixes, or return passed=false with concrete failures."
+	}
 
 	// Speculative tester race: disk/rename acceptance can cancel tester LLM;
 	// duplicate tester strategies cancel on first decisive JSON.
 	testOut, fromDisk, _ := o.speculateTester(ctx, query, board, testPrompt)
+	if preSmokeFail != "" && !fromDisk {
+		// Never let a vague LLM pass override a failed deterministic pre-test.
+		// Only accept LLM pass when it includes real shell evidence (re-run after fix).
+		if !plan.TesterFailed(testOut) && !plan.TesterHasShellEvidence(testOut) {
+			testOut = preSmokeFail
+		}
+	}
 	testerRejected := false
 	if fromDisk {
 		promoteRenameTasksDone(board)

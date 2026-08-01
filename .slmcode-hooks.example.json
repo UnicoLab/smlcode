@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "ws_shell",
+        "command": "echo \"PreToolUse shell: $SLMCODE_HOOK_TOOL\" >&2; exit 0",
+        "timeout_sec": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ws_write|ws_edit|ws_patch",
+        "command": "python -m compileall -q . 2>/dev/null || true",
+        "timeout_sec": 60
+      }
+    ]
+  }
+}

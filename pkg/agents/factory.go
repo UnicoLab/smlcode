@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -15,6 +16,7 @@ import (
 type RoleSpec struct {
 	ID           string   `json:"id"`
 	Title        string   `json:"title"`
+	Description  string   `json:"description,omitempty"`
 	SystemPrompt string   `json:"-"`
 	Tools        []string `json:"tools,omitempty"`
 	MaxIter      int      `json:"max_iter"`
@@ -32,20 +34,20 @@ type RoleSpec struct {
 func Specs() []RoleSpec {
 	coding := workspace.ToolNames()
 	return []RoleSpec{
-		{ID: "coordinator", Title: "Coordinate board & specialists", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 512},
-		{ID: "orchestrator", Title: "High-level orchestration", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 512},
-		{ID: plan.RoleContext, Title: "Maintain CONTEXT.md", SystemPrompt: PromptContext, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1024},
-		{ID: plan.RoleExplorer, Title: "Codebase explorer", SystemPrompt: PromptExplorer, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 1536},
-		{ID: "docs", Title: "Documentation explorer", SystemPrompt: PromptDocsExplorer, Tools: coding, MaxIter: 8, Temperature: 0.1, MaxTokens: 1536},
-		{ID: "architect", Title: "Minimal design / approach", SystemPrompt: PromptArchitect, Tools: nil, MaxIter: 2, Temperature: 0.25, MaxTokens: 1024},
-		{ID: plan.RolePlanner, Title: "High-level plan", SystemPrompt: PromptPlanner, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1024},
-		{ID: "splitter", Title: "Atomic task split", SystemPrompt: PromptTaskSplitter, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536},
-		{ID: plan.RoleWorker, Title: "Implement scoped change", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 14, Temperature: 0.15, MaxTokens: 3072},
-		{ID: "deep", Title: "Deep multi-step worker", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 18, Temperature: 0.15, MaxTokens: 3072},
-		{ID: plan.RoleReviewer, Title: "Self-critic / approve", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.1, MaxTokens: 512},
-		{ID: plan.RoleCorrector, Title: "Fix review issues", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 10, Temperature: 0.15, MaxTokens: 3072},
-		{ID: plan.RoleTester, Title: "Verify / run tests", SystemPrompt: PromptTester, Tools: coding, MaxIter: 8, Temperature: 0.1, MaxTokens: 1536},
-		{ID: "memory", Title: "Distill MEMORY.md", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
+		{ID: "coordinator", Title: "Coordinate board & specialists", Description: "Supervises the kanban board; does not implement code.", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 512},
+		{ID: "orchestrator", Title: "High-level orchestration", Description: "Coordinates specialists with short structured decisions.", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 512},
+		{ID: plan.RoleContext, Title: "Maintain CONTEXT.md", Description: "Keeps a short living context for the active query.", SystemPrompt: PromptContext, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1024},
+		{ID: plan.RoleExplorer, Title: "Codebase explorer", Description: "Maps the smallest relevant file set with tools.", SystemPrompt: PromptExplorer, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 1536},
+		{ID: "docs", Title: "Documentation explorer", Description: "Reads README/docs for conventions and APIs.", SystemPrompt: PromptDocsExplorer, Tools: coding, MaxIter: 8, Temperature: 0.1, MaxTokens: 1536},
+		{ID: "architect", Title: "Minimal design / approach", Description: "Proposes a minimal approach without full implementations.", SystemPrompt: PromptArchitect, Tools: nil, MaxIter: 2, Temperature: 0.25, MaxTokens: 1024},
+		{ID: plan.RolePlanner, Title: "High-level plan", Description: "Writes a concise structured plan for this query only.", SystemPrompt: PromptPlanner, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1024},
+		{ID: "splitter", Title: "Atomic task split", Description: "Splits the plan into tiny SLM-sized tasks.", SystemPrompt: PromptTaskSplitter, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536},
+		{ID: plan.RoleWorker, Title: "Implement scoped change", Description: "Implements one atomic task with coding tools.", SystemPrompt: PromptWorker, Tools: coding, MaxIter: 14, Temperature: 0.15, MaxTokens: 3072},
+		{ID: "deep", Title: "Deep multi-step worker", Description: "Handles deeper multi-step implementation within scope.", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 18, Temperature: 0.15, MaxTokens: 3072},
+		{ID: plan.RoleReviewer, Title: "Self-critic / approve", Description: "Approves or rejects one task from disk evidence.", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.1, MaxTokens: 512},
+		{ID: plan.RoleCorrector, Title: "Fix review issues", Description: "Patches reviewer issues inside HARD SCOPE.", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 10, Temperature: 0.15, MaxTokens: 3072},
+		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks (pytest/go test/smoke) before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 10, Temperature: 0.1, MaxTokens: 2048},
+		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
 	}
 }
 
@@ -72,6 +74,7 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 			"id":          s.ID,
 			"role":        s.Title,
 			"title":       s.Title,
+			"description": s.Description,
 			"tools":       len(s.Tools) > 0,
 			"max_iter":    s.MaxIter,
 			"temperature": s.Temperature,
@@ -87,7 +90,9 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 		if o, ok := byID[s.ID]; ok {
 			m["override"] = true
 			m["path"] = o.Path
-			m["description"] = o.Description
+			if o.Description != "" {
+				m["description"] = o.Description
+			}
 			if o.Title != "" {
 				m["title"] = o.Title
 				m["role"] = o.Title
@@ -144,6 +149,50 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 		})
 	}
 	return out
+}
+
+// AgentDetail returns the full Studio-editable view for one agent, including
+// the built-in system prompt (list endpoints intentionally omit prompts).
+func AgentDetail(id string, custom []CustomSpec) map[string]interface{} {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil
+	}
+	for _, a := range PublicSpecsWithCustom(custom) {
+		aid, _ := a["id"].(string)
+		if aid != id {
+			continue
+		}
+		// Clone so callers can mutate without touching shared maps.
+		out := make(map[string]interface{}, len(a)+2)
+		for k, v := range a {
+			out[k] = v
+		}
+		if sp, _ := out["system_prompt"].(string); strings.TrimSpace(sp) == "" {
+			if spec := FindSpec(id); spec != nil && strings.TrimSpace(spec.SystemPrompt) != "" {
+				out["system_prompt"] = spec.SystemPrompt
+			}
+		}
+		if desc, _ := out["description"].(string); strings.TrimSpace(desc) == "" {
+			if spec := FindSpec(id); spec != nil && strings.TrimSpace(spec.Description) != "" {
+				out["description"] = spec.Description
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// FindSpec returns a built-in RoleSpec by id, or nil.
+func FindSpec(id string) *RoleSpec {
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, s := range Specs() {
+		if s.ID == id {
+			cp := s
+			return &cp
+		}
+	}
+	return nil
 }
 
 // Factory builds GoLangGraph agents for the harness.

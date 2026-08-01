@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,15 @@ func TestSanitizeTasksKeepsGreenfieldAtomic(t *testing.T) {
 	out := SanitizeTasks(tasks, "", q)
 	if len(out) < 6 {
 		t.Fatalf("greenfield must not collapse to mega-task, got %d: %+v", len(out), out)
+	}
+	hasTester := false
+	for _, tsk := range out {
+		if tsk.Role == RoleTester {
+			hasTester = true
+		}
+	}
+	if !hasTester {
+		t.Fatal("greenfield should auto-append a tester task")
 	}
 }
 
@@ -99,5 +109,34 @@ func TestExecutableSoftSkipBlockedDep(t *testing.T) {
 	ready := b.ReadyTasks()
 	if len(ready) != 1 || ready[0].ID != "T2" {
 		t.Fatalf("%+v", ready)
+	}
+}
+
+func TestEnsureGreenfieldHarness(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Title: "Create main.py", Role: RoleWorker, Files: []string{"main.py"}},
+	}
+	q := "Create a Python CLI project with main.py"
+	out := EnsureGreenfieldHarness(tasks, q)
+	hasReq, hasTest := false, false
+	for _, tsk := range out {
+		blob := tsk.Title + " " + strings.Join(tsk.Files, " ")
+		if strings.Contains(blob, "requirements.txt") {
+			hasReq = true
+		}
+		if strings.Contains(blob, "test_smoke") || strings.Contains(blob, "pytest") {
+			hasTest = true
+		}
+	}
+	if !hasReq {
+		t.Fatalf("expected requirements.txt task, got %+v", out)
+	}
+	if !hasTest {
+		t.Fatalf("expected pytest smoke task, got %+v", out)
+	}
+	// Non-greenfield / non-python stays unchanged.
+	out2 := EnsureGreenfieldHarness(tasks, "Rename Hello to Greet in hello.go")
+	if len(out2) != 1 {
+		t.Fatalf("non-python should be unchanged: %+v", out2)
 	}
 }

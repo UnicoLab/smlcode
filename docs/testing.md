@@ -79,11 +79,15 @@ RUN_E2E=1 make e2e
 | Feature | Verify |
 |---------|--------|
 | Plan/split/parallel | `run -v` |
+| Spec clarifier | vague query → assumptions in CONTEXT/PLAN |
 | Coordinator | `@coordinator` |
 | Self-critic | approve / corrector |
+| Real tester | `commands[]` + ws_shell / pytest smoke |
+| QA gate | SCRATCH.md “QA gate” GREEN (default on) |
 | Explore reuse | 2nd run skips deep dive ♻️ |
 | Skills flywheel | `.slmcode/SKILLS.md` 🦋 |
 | Resume | `/stop` → `/resume` 🛟 |
+| Agent detail | Studio Agents → click row shows system prompt |
 | 14 agents | `/api/agents` |
 
 Stuck? → [❓ FAQ](faq.md)

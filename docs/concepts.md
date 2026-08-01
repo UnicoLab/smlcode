@@ -67,12 +67,15 @@ query
   → skills match
   → context agent
   → explore OR reuse memory
-  → planner (multipass) → splitter → sanitize
+  → clarify (interview: ask|auto recommended → Locked PRD)
+  → scope judge (every task gets concrete acceptance / PRD)
+  → planner (multipass) → splitter → sanitize (+ auto tester task)
   → coordinator advice
-  → parallel execute
+  → parallel execute (worker self-smoke via ws_shell)
   → review ↔ correct
-  → learn → test → evolve skills
-  → session snapshot
+  → finalize tester (real commands required)
+  → QA gate (install deps + pytest/go test/smoke until green)
+  → learn → evolve skills → session snapshot
 ```
 
 The **coordinator** doesn't write code. It steers the kanban: promote, reassign, add tasks, note risks.

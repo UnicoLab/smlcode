@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,23 @@ func TestParsePlanJSON(t *testing.T) {
 	}
 	if len(p.Steps) != 2 {
 		t.Fatalf("steps=%v", p.Steps)
+	}
+}
+
+func TestParsePlanJSONObjectSteps(t *testing.T) {
+	raw := `{"summary":"Build CLI","goals":["hello"],"steps":[{"step":1,"task":"Create main.py","description":"Write argparse CLI"},{"id":2,"action":"Verify --help"}]}`
+	p, err := ParsePlanJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Summary != "Build CLI" {
+		t.Fatalf("summary=%q", p.Summary)
+	}
+	if len(p.Steps) < 2 {
+		t.Fatalf("steps=%v", p.Steps)
+	}
+	if !strings.Contains(p.Steps[0], "argparse") && !strings.Contains(p.Steps[0], "main.py") {
+		t.Fatalf("step0=%q", p.Steps[0])
 	}
 }
 

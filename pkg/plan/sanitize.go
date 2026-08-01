@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -118,6 +119,140 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 
 	for i := range tasks {
 		tasks[i].Normalize()
+	}
+	tasks = EnsureGreenfieldHarness(tasks, query)
+	return EnsureTesterTask(tasks, query)
+}
+
+// EnsureTesterTask appends a final tester task for greenfield / multi-file code
+// work when the splitter forgot one. Tiny one-file edits stay worker-only
+// (finalize QA gate still runs).
+func EnsureTesterTask(tasks []Task, query string) []Task {
+	if len(tasks) == 0 {
+		return tasks
+	}
+	hasTester := false
+	hasCodeWorker := false
+	var lastWorkerID string
+	workers := 0
+	for _, t := range tasks {
+		switch t.Role {
+		case RoleTester:
+			hasTester = true
+		case RoleWorker, "deep":
+			hasCodeWorker = true
+			workers++
+			lastWorkerID = t.ID
+		}
+	}
+	if hasTester || !hasCodeWorker {
+		return tasks
+	}
+	q := strings.ToLower(query)
+	// Skip trivial edits — finalize tester + QA gate still cover them.
+	if strings.Contains(q, "tiny") || strings.Contains(q, "doc comment") ||
+		strings.Contains(q, "one-line") || strings.Contains(q, "one line") {
+		return tasks
+	}
+	greenfield := strings.Contains(q, "scaffold") || strings.Contains(q, "greenfield") ||
+		strings.Contains(q, "langgraph") || strings.Contains(q, "fastapi") ||
+		strings.Contains(q, "pyproject") || strings.Contains(q, "project") ||
+		(strings.Contains(q, "create") && (strings.Contains(q, "python") ||
+			strings.Contains(q, "package") || strings.Contains(q, "src/") ||
+			strings.Contains(q, "agent"))) ||
+		workers >= 3 || countDistinctCreatePaths(tasks) >= 3
+	if !greenfield {
+		return tasks
+	}
+	id := fmt.Sprintf("T%d", len(tasks)+1)
+	for _, t := range tasks {
+		if t.ID == id {
+			id = "T-test"
+			break
+		}
+	}
+	deps := []string{}
+	if lastWorkerID != "" {
+		deps = []string{lastWorkerID}
+	}
+	tasks = append(tasks, Task{
+		ID:    id,
+		Title: "Verify with real execution",
+		Description: "Install deps if needed, then run pytest/go test or a Python smoke command via ws_shell. " +
+			"passed=true only when commands exit 0.",
+		Role:       RoleTester,
+		Column:     ColReadyToDev,
+		DependsOn:  deps,
+		Acceptance: "Verification commands exit 0; no placeholders; acceptance criteria met",
+	})
+	return tasks
+}
+
+// EnsureGreenfieldHarness adds worker tasks for requirements.txt + a minimal
+// pytest smoke when the query is a Python greenfield scaffold without them.
+func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
+	if len(tasks) == 0 {
+		return tasks
+	}
+	q := strings.ToLower(query)
+	pythonish := strings.Contains(q, "python") || strings.Contains(q, ".py") ||
+		strings.Contains(q, "pytest") || strings.Contains(q, "fastapi") ||
+		strings.Contains(q, "langgraph") || strings.Contains(q, "flask") ||
+		strings.Contains(q, "django")
+	greenfield := strings.Contains(q, "create") || strings.Contains(q, "scaffold") ||
+		strings.Contains(q, "greenfield") || strings.Contains(q, "project") ||
+		strings.Contains(q, "build") || strings.Contains(q, "mvp")
+	if !pythonish || !greenfield {
+		return tasks
+	}
+
+	hasReq, hasTest, hasMain := false, false, false
+	var lastID string
+	for _, t := range tasks {
+		lastID = t.ID
+		blob := strings.ToLower(t.Title + " " + strings.Join(t.Files, " "))
+		if strings.Contains(blob, "requirements.txt") {
+			hasReq = true
+		}
+		if strings.Contains(blob, "test_") || strings.Contains(blob, "tests/") ||
+			strings.Contains(blob, "pytest") {
+			hasTest = true
+		}
+		if strings.Contains(blob, "main.py") {
+			hasMain = true
+		}
+	}
+	n := len(tasks)
+	nextID := func() string {
+		n++
+		return fmt.Sprintf("T%d", n)
+	}
+	deps := []string{}
+	if lastID != "" {
+		deps = []string{lastID}
+	}
+	if !hasReq {
+		id := nextID()
+		tasks = append(tasks, Task{
+			ID: id, Title: "Add requirements.txt",
+			Description: "Create requirements.txt listing runtime deps (or a comment if none). Keep minimal.",
+			Role: RoleWorker, Column: ColReadyToDev, DependsOn: deps,
+			Files: []string{"requirements.txt"},
+			Acceptance: "requirements.txt exists and is non-empty",
+		})
+		deps = []string{id}
+		lastID = id
+	}
+	if !hasTest && hasMain {
+		id := nextID()
+		tasks = append(tasks, Task{
+			ID: id, Title: "Add pytest smoke test",
+			Description: "Create tests/test_smoke.py that imports/runs a basic assertion against main.py " +
+				"(e.g. subprocess or importlib). Keep it tiny and deterministic.",
+			Role: RoleWorker, Column: ColReadyToDev, DependsOn: deps,
+			Files: []string{"tests/test_smoke.py"},
+			Acceptance: "python -m pytest -q passes for tests/test_smoke.py",
+		})
 	}
 	return tasks
 }

@@ -79,7 +79,7 @@ permission: auto          # auto | dry-run | review
 shell_permission: ask     # allow | ask | deny
 auto_approve: false
 verbose: false
-compact_mode: false
+compact_mode: true        # quieter TUI/Studio live stream (default)
 ```
 
 | Mode | Effect |
@@ -90,16 +90,56 @@ compact_mode: false
 
 ---
 
-## QA gate (optional) ✅
+## QA gate (on by default) ✅
 
 ```yaml
-qa_gate: false
-qa_gate_command: ""       # empty = auto-detect
+clarify_mode: auto        # auto | ask | off  (Claude Code AskUserQuestion style)
+clarify_timeout: 2m       # ask mode: wait then apply recommended
+scope_judge: true         # post-split PRD completeness gate
+plan_approve: auto        # off | auto | ask  (Plan Mode gate before execute)
+auto_approve: false       # skip plan/shell/clarify HITL waits
+shell_permission: allow   # allow | ask | deny (ask = interactive approve)
+context_compact: true     # mid-run CONTEXT.md summarization
+wave_snapshots: true      # per-wave rewind under .slmcode/waves/
+hooks_enabled: true       # load .slmcode/hooks.json Pre/PostToolUse
+mcp_servers: []           # thin read-only MCP (stdio or HTTP)
+qa_gate: true
+qa_gate_command: ""       # empty = auto-detect (go/pytest/uv/npm/compileall)
 qa_gate_max_rounds: 3
+post_worker_smoke: true   # py_compile / go test after each worker before review
 ```
 
-When enabled, runs a project check command between correction rounds.
-Like a bouncer for bad patches.
+### Planning / scope
+
+Vague queries get an **interviewer** pass (options + recommended defaults).
+- `auto` — lock recommended decisions into a PRD (no pause)
+- `ask` — emit SSE `kind=ask`, write `.slmcode/clarify/ask.json`, wait for
+  Studio modal or `POST /api/clarify/answer` (timeout → recommended)
+- `off` — skip interview
+
+`scope_judge` then checks every task has concrete acceptance/files before
+execute. `plan_approve: ask` pauses with a Studio modal / `POST /api/plan/approve`.
+
+### Hooks / MCP / rewind
+
+Copy `.slmcode-hooks.example.json` → `.slmcode/hooks.json`. PreToolUse non-zero
+exit blocks the tool. PostToolUse can run `compileall` after writes.
+
+`mcp_servers` registers a read-only `mcp_call` tool. Wave snapshots: TUI
+`/rewind list` / `/rewind <id>`, API `GET/POST /api/rewind`. Real context
+compact: `/compact context` or `POST /api/compact`.
+
+### QA / smoke
+
+After workers, `post_worker_smoke` runs a fast deterministic check (`python -m
+py_compile` / `go test -short`) and blocks approve-on-disk-only when it fails.
+
+After the finalize tester, `qa_gate` runs a real project command (and bootstraps
+deps when needed: `pip install -r requirements.txt`, `uv sync`, `go mod tidy`).
+Auto-detect covers `go test`, `python -m pytest` / `uv run pytest`,
+`python -m compileall`, and `npm test` / `cargo test` / `make test` — never
+`--help` as a quality proof. On failure, tester diagnoses → corrector patches →
+re-run.
 
 ---
 

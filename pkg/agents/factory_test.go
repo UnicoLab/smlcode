@@ -40,6 +40,27 @@ func TestPublicSpecs(t *testing.T) {
 		if _, ok := m["system"]; ok {
 			t.Fatal("public specs must not leak system prompts")
 		}
+		// List stays lean — full prompts are only on AgentDetail.
+		if _, ok := m["system_prompt"]; ok {
+			t.Fatal("public list must not include system_prompt")
+		}
+	}
+}
+
+func TestAgentDetailIncludesBuiltinPrompt(t *testing.T) {
+	d := AgentDetail("worker", nil)
+	if d == nil {
+		t.Fatal("nil detail")
+	}
+	sp, _ := d["system_prompt"].(string)
+	if !strings.Contains(sp, "HARD SCOPE") {
+		t.Fatalf("expected built-in prompt, got %q", sp)
+	}
+	if d["description"] == "" {
+		t.Fatal("expected description")
+	}
+	if AgentDetail("no-such-agent", nil) != nil {
+		t.Fatal("expected nil for missing agent")
 	}
 }
 
@@ -86,11 +107,17 @@ func TestWorkerPromptAntiWander(t *testing.T) {
 	if !strings.Contains(PromptWorker, "ANTI-WANDER") {
 		t.Fatal("worker prompt missing ANTI-WANDER")
 	}
-	if !strings.Contains(PromptReviewer, "out of focus") && !strings.Contains(PromptReviewer, "outside focus") {
+	if !strings.Contains(PromptReviewer, "unwanted main.go") && !strings.Contains(PromptReviewer, "outside focus") {
 		t.Fatal("reviewer should reject out-of-focus paths")
 	}
 	if !strings.Contains(PromptReviewer, "Disk evidence") {
 		t.Fatal("reviewer should trust Disk evidence")
+	}
+	if !strings.Contains(PromptClarifier, "recommended") {
+		t.Fatal("clarifier should use recommended options")
+	}
+	if !strings.Contains(PromptScopeJudge, "weak_task_ids") {
+		t.Fatal("scope judge prompt missing")
 	}
 }
 

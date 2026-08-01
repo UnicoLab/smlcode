@@ -44,12 +44,14 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 	cfg := config.Default(t.TempDir())
 	cfg.MaxParallel = 2
 	cfg.ThinkPasses = 2
+	// Architect waits a long time unless cancelled. Explorer finishes quickly so
+	// cancel must fire — avoids wall-clock flakiness under the race detector.
 	o := &Orchestrator{
 		cfg: cfg,
 		executor: &fakeSpecExec{
 			delay: map[string]time.Duration{
-				"explorer":  20 * time.Millisecond,
-				"architect": 400 * time.Millisecond,
+				"explorer":  5 * time.Millisecond,
+				"architect": 30 * time.Second,
 			},
 			out: map[string]string{
 				"explorer":  `{"summary":"found","relevant_files":["a.go"]}`,
@@ -65,7 +67,7 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 	start := time.Now()
 	res := o.speculate(context.Background(), slots)
 	elapsed := time.Since(start)
-	if elapsed > 350*time.Millisecond {
+	if elapsed > 2*time.Second {
 		t.Fatalf("expected early cancel of architect; elapsed=%s", elapsed)
 	}
 	var explorer, architect SpecResult
@@ -122,7 +124,7 @@ func TestSpeculateDiskAcceptCancelsTester(t *testing.T) {
 	cfg.MaxParallel = 2
 	fe := &fakeSpecExec{
 		delay: map[string]time.Duration{
-			"tester": 400 * time.Millisecond,
+			"tester": 30 * time.Second,
 		},
 		out: map[string]string{
 			"tester": `{"passed":false,"summary":"slow","failures":["nope"]}`,
@@ -139,7 +141,7 @@ func TestSpeculateDiskAcceptCancelsTester(t *testing.T) {
 		},
 		{Role: "tester", Prompt: "verify", Required: false, Phase: "test"},
 	})
-	if time.Since(start) > 350*time.Millisecond {
+	if time.Since(start) > 2*time.Second {
 		t.Fatalf("expected tester cancel; elapsed=%s", time.Since(start))
 	}
 	var disk, tester SpecResult
@@ -164,8 +166,8 @@ func TestSpeculateDuplicateTesterCancelsLoser(t *testing.T) {
 	cfg.MaxParallel = 2
 	fe := &fakeSpecExec{
 		delay: map[string]time.Duration{
-			"tester":        25 * time.Millisecond,
-			"tester-strict": 400 * time.Millisecond,
+			"tester":        5 * time.Millisecond,
+			"tester-strict": 30 * time.Second,
 		},
 		out: map[string]string{
 			"tester":        `{"passed":true,"summary":"lean","failures":[]}`,
@@ -178,7 +180,7 @@ func TestSpeculateDuplicateTesterCancelsLoser(t *testing.T) {
 		{Role: "tester", Prompt: "a", Required: false, Phase: "test"},
 		{Role: "tester-strict", Prompt: "b", Required: false, Phase: "test"},
 	})
-	if time.Since(start) > 350*time.Millisecond {
+	if time.Since(start) > 2*time.Second {
 		t.Fatalf("expected cancel; elapsed=%s", time.Since(start))
 	}
 	var lean, strict SpecResult

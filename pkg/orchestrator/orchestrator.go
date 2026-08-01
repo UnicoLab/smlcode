@@ -12,14 +12,18 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/compact"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/instructions"
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
+	"github.com/UnicoLab/slmcode/pkg/mcp"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
+	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/stream"
@@ -64,7 +68,14 @@ type Orchestrator struct {
 	shared     *ggagent.SharedState
 	think      *multipass.Runner
 	claude     *backends.ClaudeCodeRunner
-	onEvent    EventHandler
+	onEvent       EventHandler
+	onAsk         AskHandler
+	onPlanApprove PlanApproveHandler
+
+	hooksRunner *hooks.Runner
+	mcpMgr      *mcp.Manager
+	rewindMgr   *rewind.Manager
+	waveCounter int
 
 	mu      sync.Mutex
 	running bool
@@ -107,18 +118,57 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	var o *Orchestrator
 	focus := workspace.NewFocusGuard()
 	toolReg := tools.NewToolRegistry()
+
+	var hooksRunner *hooks.Runner
+	if cfg.HooksEnabled {
+		hc, _ := hooks.Load(hooks.DefaultPath(cfg.SlmDir()))
+		if len(hc.Hooks) > 0 {
+			hooksRunner = &hooks.Runner{Root: cfg.Root, Cfg: hc}
+		}
+	}
+
 	if err := workspace.RegisterCodingToolsOpts(toolReg, cfg.Root, workspace.ToolOpts{
 		ShellPermission: cfg.ShellPermission,
 		DryRun:          cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
-		Focus: focus,
+		Focus: focus, Hooks: hooksRunner,
+		ShellAskTimeout: cfg.ShellAskTimeout,
+		AutoApprove:     cfg.AutoApprove,
 		OnFileChange: func(path, kind, detail string) {
 			if o != nil {
 				o.emitFull("execute", stream.KindFileChange, "worker", "",
 					fmt.Sprintf("%s %s", kind, path), path, detail)
 			}
 		},
+		OnShellAsk: func(ask workspace.ShellAsk) {
+			if o != nil {
+				b, _ := json.Marshal(ask)
+				o.emitFull("execute", stream.KindAsk, "shell", "",
+					"shell approval required: "+truncate(ask.Command, 120), "", string(b))
+			}
+		},
 	}); err != nil {
 		return nil, err
+	}
+
+	var mcpMgr *mcp.Manager
+	if len(cfg.MCPServers) > 0 {
+		mcpMgr = &mcp.Manager{Log: func(f string, a ...interface{}) {
+			if o != nil {
+				o.emitFull("init", stream.KindDebug, "mcp", "", fmt.Sprintf(f, a...), "", "")
+			}
+		}}
+		for _, sc := range cfg.MCPServers {
+			ro := true
+			if sc.ReadOnly != nil {
+				ro = *sc.ReadOnly
+			}
+			mcpMgr.Servers = append(mcpMgr.Servers, mcp.ServerConfig{
+				Name: sc.Name, Command: sc.Command, Args: sc.Args, Env: sc.Env,
+				URL: sc.URL, ReadOnly: ro,
+			})
+		}
+		infos, _ := mcpMgr.Connect(context.Background())
+		_ = mcpMgr.RegisterTools(toolReg, infos)
 	}
 
 	// AgentConfig.Provider must match a name registered in the ProviderManager.
@@ -148,21 +198,29 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	exec.SetTimeout(cfg.TaskTimeout)
 
 	o = &Orchestrator{
-		cfg:        cfg,
-		store:      store,
-		boardStore: boardStore,
-		packer:     packer,
-		skills:     loader,
-		llm:        llmManager,
-		tools:      toolReg,
-		focus:      focus,
-		factory:    factory,
-		registry:   registry,
-		executor:   exec,
-		shared:     ggagent.NewSharedState(),
-		think:      multipass.New(thinkRefinePasses(cfg.ThinkPasses)),
-		claude:     backends.NewClaudeCodeRunner(cfg),
-		onEvent:    func(Event) {},
+		cfg:         cfg,
+		store:       store,
+		boardStore:  boardStore,
+		packer:      packer,
+		skills:      loader,
+		llm:         llmManager,
+		tools:       toolReg,
+		focus:       focus,
+		factory:     factory,
+		registry:    registry,
+		executor:    exec,
+		shared:      ggagent.NewSharedState(),
+		think:       multipass.New(thinkRefinePasses(cfg.ThinkPasses)),
+		claude:      backends.NewClaudeCodeRunner(cfg),
+		onEvent:     func(Event) {},
+		hooksRunner: hooksRunner,
+		mcpMgr:      mcpMgr,
+		rewindMgr:   &rewind.Manager{SlmDir: cfg.SlmDir(), Root: cfg.Root},
+	}
+	if hooksRunner != nil {
+		hooksRunner.Log = func(f string, a ...interface{}) {
+			o.emitFull("execute", stream.KindDebug, "hook", "", fmt.Sprintf(f, a...), "", "")
+		}
 	}
 	boardStore.OnChange(func(b *plan.Board) {
 		p, t := b.ToMarkdown()
@@ -490,6 +548,11 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		}
 	}
 
+	// 2c Scope interview (AskUserQuestion / pi-clarify style) → locked PRD.
+	interview := o.runScopeInterview(ctx, query, exploreOut)
+	clarify := interview.ToClarifyResult()
+	prd := interview.PRD
+
 	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
 	o.emitAgent("plan", plan.RolePlanner, "", "creating plan", "", "")
@@ -502,6 +565,11 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
 	if archOut != "" {
 		planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
+	}
+	if prd.Summary != "" || len(prd.Acceptance) > 0 || len(clarify.Assumptions) > 0 ||
+		clarify.Language != "" || clarify.Entrypoint != "" {
+		planPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+		planPrompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
 	}
 	planPrompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
 		"Do NOT continue prior plans. STRICT JSON plan only."
@@ -535,9 +603,14 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		}
 	}
 	pl, _ := plan.ParsePlanJSON(planOut)
-	if strings.TrimSpace(pl.Summary) == "" {
-		pl.Summary = firstSentence(planOut)
+	if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
+		pl.Summary = firstSentence(stripJSONNoise(planOut))
+		if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
+			pl.Summary = "Implement request with locked PRD"
+		}
 	}
+	pl = plan.MergeClarifyIntoPlan(pl, clarify)
+	pl = plan.MergePRDIntoPlan(pl, prd)
 	// Persist agent plan immediately so Studio PLAN.md / board update live mid-run.
 	o.persistBoard(&plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: nil})
 	o.emit("plan", "PLAN.md rewritten for this query", "")
@@ -547,8 +620,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
 	splitDocs := contextstore.LeanDocsForRole("splitter")
 	splitPack, _ := o.packer.Build("splitter", query, splitDocs, nil, o.skillPackFor("splitter", query))
-	splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500) +
-		"\n\nFresh task list for THIS query. STRICT JSON tasks."
+	splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
+	if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
+		splitPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+		splitPrompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
+	}
+	splitPrompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
 	if o.cfg.ThinkPasses >= 2 {
 		splitPrompt += "\nPrefer ≤5 tiny tasks with files + acceptance. Tester when code changes."
 	}
@@ -568,6 +645,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, discoveredEarly...), inventory)
 	}
 	tasks = plan.SanitizeTasksIn(tasks, exploreOut+"\n"+strings.Join(discovered, "\n"), query, o.cfg.Root)
+	tasks = plan.EnsureTaskPRDs(tasks, prd, query)
 	if len(discovered) > 0 {
 		_ = o.store.Append(contextstore.DocContext, "Discovered files", "- "+strings.Join(discovered, "\n- "))
 	}
@@ -590,11 +668,22 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		t.Normalize()
 		board.Tasks[i] = t
 	}
+	// 4a Scope / PRD judge gate — enrich or rewrite weak tasks before execute.
+	o.runScopeJudgeGate(ctx, query, board, prd)
 	o.persistBoard(board)
 	o.emit("split", fmt.Sprintf("TASKS.md + board: %d agent tasks", len(board.Tasks)), "")
 
 	// 4b Coordinator reviews the board before execute
 	o.coordinate(ctx, query, board, "pre-execute")
+
+	// 4c Plan approval gate (Claude Code Plan Mode)
+	ok, aerr := o.runPlanApprovalGate(ctx, query, board)
+	if aerr != nil || !ok {
+		if aerr == nil {
+			aerr = fmt.Errorf("plan not approved")
+		}
+		return nil, aerr
+	}
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
 	o.emit("execute", fmt.Sprintf("%d tasks · parallel=%d · think_passes=%d", len(board.Tasks), o.cfg.MaxParallel, o.cfg.ThinkPasses), "")
@@ -602,6 +691,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if o.focus != nil {
 		o.focus.Clear()
 	}
+	o.waveCounter = 0
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
 	runner.SlmDir = o.cfg.SlmDir()
@@ -611,9 +701,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.Timeout = o.cfg.TaskTimeout
+	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
+	runner.WaveSnapshots = o.cfg.WaveSnapshots
+	runner.RewindMgr = o.rewindMgr
 	runner.FailureHandler = loop.NewEnhancedFailureHandler(o.cfg.Root)
 	runner.Log = func(format string, args ...interface{}) {
-		o.emit("execute", fmt.Sprintf(format, args...), "")
+		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")
 	}
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
@@ -623,6 +716,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
+		o.maybeCompactContext(ctx)
 		o.coordinate(ctx, query, board, "after-wave")
 	}
 	// Ephemeral scoped packs — never persist fat context into TASKS.md / board descriptions.
@@ -766,12 +860,13 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs", plan.RoleTester:
 		return full
 	case plan.RolePlanner, "splitter":
-		d := full / 3
-		if d < 90*time.Second {
-			d = 90 * time.Second
+		// Local 30B SLMs often need several minutes for structured JSON plans.
+		d := full / 2
+		if d < 2*time.Minute {
+			d = 2 * time.Minute
 		}
-		if d > 4*time.Minute {
-			d = 4 * time.Minute
+		if d > 8*time.Minute {
+			d = 8 * time.Minute
 		}
 		return d
 	case plan.RoleReviewer, "coordinator", "architect", plan.RoleContext, "memory":
@@ -1047,6 +1142,50 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		t.Description = loop.StripScopedPack(t.Description)
 		board.Tasks[i] = t
 	}
+}
+
+// maybeCompactContext summarizes CONTEXT.md when it exceeds the pack budget.
+func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
+	_ = ctx
+	if o == nil || o.cfg == nil || !o.cfg.ContextCompact || o.store == nil {
+		return
+	}
+	body, err := o.store.Read(contextstore.DocContext)
+	if err != nil || body == "" {
+		return
+	}
+	soft := o.cfg.MaxContextKB
+	if soft <= 0 {
+		soft = 32
+	}
+	if !compact.NeedsCompact(body, soft, soft*2) {
+		return
+	}
+	res := compact.HeuristicSummarize(body, soft*1024)
+	if !res.Compacted {
+		return
+	}
+	_ = o.store.Write(contextstore.DocContext, res.Summary)
+	o.emitFull("learn", stream.KindOutput, "compact", "",
+		fmt.Sprintf("CONTEXT compacted %d→%d bytes", res.BeforeBytes, res.AfterBytes),
+		"", truncate(res.Summary, 400))
+}
+
+// CompactContextNow forces a CONTEXT.md compaction (TUI /compact context).
+func (o *Orchestrator) CompactContextNow() (compact.Result, error) {
+	body, err := o.store.Read(contextstore.DocContext)
+	if err != nil {
+		return compact.Result{}, err
+	}
+	max := o.cfg.MaxContextKB * 1024
+	if max <= 0 {
+		max = 24 * 1024
+	}
+	res := compact.HeuristicSummarize(body, max)
+	if res.Compacted {
+		_ = o.store.Write(contextstore.DocContext, res.Summary)
+	}
+	return res, nil
 }
 
 func (o *Orchestrator) persistBoard(board *plan.Board) {
@@ -1339,6 +1478,17 @@ func formatWorkerPromptFor(t plan.Task) string {
 		b.WriteString(t.Notes)
 		b.WriteString("\n")
 	}
+	if t.Role == plan.RoleTester {
+		b.WriteString(`
+## Required finish (tester)
+1. Use ws_shell to install deps if needed, then run real tests or smoke commands.
+2. Reading files alone is NOT verification — commands must exit 0.
+3. End with STRICT JSON only:
+{"passed":true|false,"commands":["exact shell…"],"summary":"...","failures":["T1: path — reason"]}
+Never end on a tool call. Never soft-pass broken code.
+`)
+		return b.String()
+	}
 	b.WriteString(`
 ## Required finish
 1. Use ws_read / ws_edit / ws_patch / ws_write on focus files only.
@@ -1405,6 +1555,30 @@ func firstSentence(s string) string {
 		return s[:80]
 	}
 	return s
+}
+
+func looksLikeJSONBlob(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") || strings.HasPrefix(s, "```")
+}
+
+func stripJSONNoise(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || looksLikeJSONBlob(line) || strings.HasPrefix(line, "```") {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(line)
+		if b.Len() > 200 {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func truncate(s string, n int) string {

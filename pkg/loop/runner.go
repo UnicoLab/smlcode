@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
+	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
@@ -52,6 +54,14 @@ type Runner struct {
 	IdleWait       time.Duration // wait for human to promote to_scope → ready
 	Log            Logger
 	FailureHandler *EnhancedFailureHandler
+	// PostWorkerSmoke runs deterministic Go py_compile/go test after workers
+	// before review can auto-approve (default true).
+	PostWorkerSmoke bool
+	// WaveSnapshots enables pre-wave file rewind points.
+	WaveSnapshots bool
+	// RewindMgr stores wave file snapshots when WaveSnapshots is on.
+	RewindMgr *rewind.Manager
+	waveN     int
 	// ResumedReact is set true when any task continued from message history
 	// (used by tests / observability to assert no cold replan).
 	ResumedReact bool
@@ -59,13 +69,14 @@ type Runner struct {
 
 func NewRunner(exec SubAgentRunner, shared *ggagent.SharedState) *Runner {
 	return &Runner{
-		Executor:    exec,
-		Shared:      shared,
-		MaxRetries:  4,
-		MaxParallel: 2,
-		Timeout:     12 * time.Minute,
-		IdleWait:    2 * time.Second,
-		Log:         func(string, ...interface{}) {},
+		Executor:        exec,
+		Shared:          shared,
+		MaxRetries:      4,
+		MaxParallel:     2,
+		Timeout:         12 * time.Minute,
+		IdleWait:        2 * time.Second,
+		PostWorkerSmoke: true,
+		Log:             func(string, ...interface{}) {},
 	}
 }
 
@@ -170,6 +181,18 @@ func (r *Runner) taskInput(t plan.Task) string {
 }
 
 func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Task) error {
+	r.waveN++
+	if r.WaveSnapshots && r.RewindMgr != nil {
+		var paths, ids []string
+		for _, t := range wave {
+			ids = append(ids, t.ID)
+			paths = append(paths, t.Files...)
+		}
+		if snap, err := r.RewindMgr.SnapshotPaths(r.TurnID, r.waveN, ids, paths); err == nil && snap != nil {
+			r.Log("wave %d snapshot %s (%d files)", r.waveN, snap.ID, len(snap.Files))
+			r.fire("debug", "rewind", "", fmt.Sprintf("snapshot %s", snap.ID), "", "")
+		}
+	}
 	for _, t := range wave {
 		t.MoveTo(plan.ColInProgress)
 		board.UpdateTask(t)
@@ -305,6 +328,21 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		if hint := r.diskEvidenceHint(t, snapshots[i]); hint != "" {
 			t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
 		}
+		// Deterministic smoke BEFORE review — blocks approve-on-disk-only for broken code.
+		if r.PostWorkerSmoke && quality.ShouldSmokeTask(t) {
+			sr := quality.RunPostWorkerSmoke(ctx, r.Root, t, r.Timeout)
+			if sec := quality.FormatSmokeSection(sr); sec != "" {
+				t.Output = strings.TrimSpace(t.Output) + sec
+			}
+			if sr.Ran && !sr.OK {
+				t.Output += "\nObservation: exit error: deterministic smoke failed\n" + truncate(sr.Output, 1500)
+				r.Log("%s deterministic smoke FAILED: %s", t.ID, sr.Command)
+				r.fire("agent_end", "qa", t.ID, "deterministic smoke failed",
+					strings.Join(t.Files, ", "), truncate(sr.Output, 800))
+			} else if sr.Ran {
+				r.Log("%s deterministic smoke PASSED: %s", t.ID, sr.Command)
+			}
+		}
 		r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
 		t.MoveTo(plan.ColInReview)
 		board.UpdateTask(t)
@@ -399,8 +437,14 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		done := plan.WorkerLooksComplete(current.Output) || workerReportedDone(current.Output)
 		hasEvidence := diskWrite || toolWrite || diskSection || renameDisk
 		scopeWhy := r.scopeOK(current)
+		shellFail := hasShellFailureEvidence(current.Output)
+		smokeFail := quality.SmokeFailedInOutput(current.Output)
 		// Rename on disk wins even when scope claims are noisy (weak tool log).
-		fastPath := renameDisk || ((satisfied || diskWrite || diskSection) && scopeWhy == "")
+		// Never disk-auto-approve tester roles (they need passed JSON) or workers
+		// whose own ws_shell / deterministic smoke failed — except rename.
+		fastPath := renameDisk ||
+			(current.Role != plan.RoleTester && !shellFail && !smokeFail &&
+				(satisfied || diskWrite || diskSection) && scopeWhy == "")
 		if fastPath {
 			review.Approved = true
 			review.Score = 85
@@ -475,7 +519,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					return revErr
 				}
 				review = plan.ParseReviewJSON(reviewRaw)
-				if !review.Approved {
+				if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail {
 					if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 						review.Approved = true
 						review.Score = 80
@@ -519,7 +563,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			}
 			review = plan.ParseReviewJSON(reviewRaw)
 			// SLM fallback: trust clear worker completion + tool/disk evidence.
-			if !review.Approved {
+			if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail {
 				if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 					review.Approved = true
 					review.Score = 80
@@ -534,6 +578,19 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					review.Issues = nil
 				}
 			}
+		}
+		// Deterministic smoke / shell failure beats any earlier auto-approve.
+		if review.Approved && (shellFail || smokeFail) && current.Role != plan.RoleTester && !renameDisk {
+			review.Approved = false
+			review.Score = 20
+			if smokeFail {
+				review.Summary = "rejected: deterministic smoke failed"
+				review.Issues = []string{"Go ran py_compile/go test on focus files and it failed — corrector must fix"}
+			} else {
+				review.Summary = "rejected: ws_shell failure evidence in worker output"
+				review.Issues = []string{"worker ran a command that failed — fix before approve"}
+			}
+			r.Log("%s overriding approve: smoke/shell failure", current.ID)
 		}
 		// Tester gate: never accept "does not work" / passed:false / empty finalize as done.
 		// Exception: rename already satisfied on disk — do not reopen/escalate.
@@ -699,7 +756,9 @@ func formatWorkerPrompt(t plan.Task) string {
 ## Required finish
 1. Use ws_read / ws_edit / ws_patch / ws_write on focus files only.
 2. Prefer small patches; never invent unrelated new files.
-3. End with STRICT JSON only:
+3. After edits: ws_shell smoke (python -m py_compile PATH / go test ./pkg -short). Fix failures before done.
+4. Never add argparse --help (stdlib already provides -h/--help).
+5. End with STRICT JSON only:
 {"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}
 Never claim done without tool edits. Never end on a tool call.
 `)
@@ -736,8 +795,9 @@ Rules:
 - Approve if worker JSON status is done AND there is real write evidence (ws_write/ws_edit/ws_patch tool result OR Disk evidence section showing changed files).
 - Reject if output is only claims/JSON with no tool or disk evidence for edit tasks.
 - Reject if files_changed includes paths outside focus scope (especially unwanted main.go).
+- Reject if "## Deterministic smoke" shows FAILED or Observation has exit error / SyntaxError / traceback.
 - @explorer: approve if a real file path was found.
-- @tester: approve ONLY when output JSON has "passed":true (or clear command success). Reject if passed:false, failures listed, or "does not work".
+- @tester: approve ONLY when output JSON has "passed":true AND real shell Observation (not fabricated commands[]). Reject if passed:false, failures listed, or "does not work".
 - Reject only if work is clearly missing or out of scope.
 `, t.ID, t.Title, t.Role, t.Acceptance, truncate(t.Output, 3500))
 }
@@ -1121,6 +1181,22 @@ func (r *Runner) hasRealWriteEvidence(t plan.Task, baseline map[string]string) b
 		}
 	}
 	return focusGitDirty(changed, focus)
+}
+
+func hasShellFailureEvidence(output string) bool {
+	lower := strings.ToLower(output)
+	needles := []string{
+		"exit error:", "exit status", "traceback (most recent call last)",
+		"syntaxerror", "modulenotfounderror", "importerror",
+		"argumenterror", "nameerror:", "typeerror:", "indentationerror",
+		"compilation failed", "build failed",
+	}
+	for _, n := range needles {
+		if strings.Contains(lower, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDiskEvidenceSection(output string) bool {

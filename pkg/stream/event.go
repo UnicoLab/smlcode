@@ -4,16 +4,16 @@ import "time"
 
 // Kind constants for live CLI/GUI streaming.
 const (
-	KindPhase      = "phase"
-	KindAgentStart = "agent_start"
-	KindAgentEnd   = "agent_end"
-	KindCoord      = "coord"
-	KindLearn      = "learn"
-	KindOutput     = "output"
-	KindTool       = "tool"
-	KindFileChange = "file_change" // partial apply / ws_edit / ws_write / ws_patch
-	KindLatency    = "latency"     // phase/role wall-time telemetry for SLM tuning
-	KindUsage      = "usage"       // token/cost accounting (estimated on early_exit when needed)
+	KindPhase        = "phase"
+	KindAgentStart   = "agent_start"
+	KindAgentEnd     = "agent_end"
+	KindCoord        = "coord"
+	KindLearn        = "learn"
+	KindOutput       = "output"
+	KindTool         = "tool"
+	KindFileChange   = "file_change"  // partial apply / ws_edit / ws_write / ws_patch
+	KindLatency      = "latency"      // phase/role wall-time telemetry for SLM tuning
+	KindUsage        = "usage"        // token/cost accounting (estimated on early_exit when needed)
 	KindDebug        = "debug"        // runner internals; filtered from default TUI/Studio views
 	KindAsk          = "ask"          // clarify interview pending (questions in output JSON)
 	KindIntervention = "intervention" // harness steered the model (quality/loop/whitelist/thinking)

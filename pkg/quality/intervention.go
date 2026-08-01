@@ -4,13 +4,13 @@ import "strings"
 
 // Intervention reasons surfaced in TUI/Studio banners (not debug-hidden).
 const (
-	InterventionLoop       = "loop"
-	InterventionWhitelist  = "shell_whitelist"
-	InterventionThinking   = "thinking_budget"
-	InterventionTextTools  = "text_tools"
-	InterventionFinalize   = "finalize"
-	InterventionMalformed  = "malformed_args"
-	InterventionQuality    = "quality"
+	InterventionLoop      = "loop"
+	InterventionWhitelist = "shell_whitelist"
+	InterventionThinking  = "thinking_budget"
+	InterventionTextTools = "text_tools"
+	InterventionFinalize  = "finalize"
+	InterventionMalformed = "malformed_args"
+	InterventionQuality   = "quality"
 )
 
 // Intervention is a harness action the user should see.

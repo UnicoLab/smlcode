@@ -626,6 +626,24 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		claimsFail := quality.ClaimsFailedInOutput(current.Output)
 		smokeFiles := append([]string{}, current.Files...)
 		smokeFiles = append(smokeFiles, parseFilesChanged(current.Output)...)
+		// Review-time smoke insurance: if PostWorkerSmoke somehow didn't attach a
+		// section (corrector overwrite, truncated finalize), run it now so
+		// RequireSmoke cannot false-reject a green compile/test.
+		if r.RequireSmoke && r.PostWorkerSmoke && quality.ShouldSmokeTask(current) &&
+			!quality.SmokePassedInOutput(current.Output) && !smokeFail && !renameDisk &&
+			quality.HasSmokeCommand(r.Root, smokeFiles) {
+			sr := quality.RunPostWorkerSmoke(ctx, r.Root, current, r.Timeout)
+			if sec := quality.FormatSmokeSection(sr); sec != "" {
+				current.Output = strings.TrimSpace(current.Output) + sec
+				board.UpdateTask(current)
+				if sr.Ran && !sr.OK {
+					smokeFail = true
+					r.Log("%s review-time smoke FAILED: %s", current.ID, sr.Command)
+				} else if sr.Ran {
+					r.Log("%s review-time smoke PASSED: %s", current.ID, sr.Command)
+				}
+			}
+		}
 		smokeMissing := r.RequireSmoke && quality.HasSmokeCommand(r.Root, smokeFiles) &&
 			!quality.SmokePassedInOutput(current.Output) && !smokeFail && !renameDisk
 		// Rename on disk wins even when scope claims are noisy (weak tool log).

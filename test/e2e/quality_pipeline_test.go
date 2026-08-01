@@ -124,4 +124,3 @@ func TestLiveQualityGreenfieldPython(t *testing.T) {
 		t.Logf("warning: SCRATCH.md missing QA/Verification section:\n%s", scratch)
 	}
 }
-

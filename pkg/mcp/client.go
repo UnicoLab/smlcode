@@ -20,12 +20,12 @@ import (
 
 // ServerConfig describes one MCP server (stdio or HTTP).
 type ServerConfig struct {
-	Name    string            `yaml:"name" json:"name"`
-	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Args    []string          `yaml:"args,omitempty" json:"args,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	URL     string            `yaml:"url,omitempty" json:"url,omitempty"` // HTTP JSON-RPC
-	ReadOnly bool             `yaml:"read_only" json:"read_only"`       // default true
+	Name     string            `yaml:"name" json:"name"`
+	Command  string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args     []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env      map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	URL      string            `yaml:"url,omitempty" json:"url,omitempty"` // HTTP JSON-RPC
+	ReadOnly bool              `yaml:"read_only" json:"read_only"`         // default true
 }
 
 // ToolInfo is a discovered MCP tool.

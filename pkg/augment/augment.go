@@ -117,7 +117,7 @@ Commit to one approach. Prefer tiny ws_edit/ws_patch. One atomic change → smok
 		},
 		{
 			Topic: "Edit Recovery Loop", TokenCost: 100,
-			Keywords: []string{"edit", "patch", "fix", "replace", "old_str", "failed", "error"},
+			Keywords:      []string{"edit", "patch", "fix", "replace", "old_str", "failed", "error"},
 			RequiresTools: []string{"ws_read", "ws_edit"},
 			Body: `When ws_edit/ws_patch fails: (1) ws_read the file, (2) copy exact numbered text into
 old_str/SEARCH, (3) retry. Never escalate to ws_write on an existing file.

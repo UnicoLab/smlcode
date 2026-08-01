@@ -57,6 +57,15 @@ func (t *CallTracker) Wrap(name string, fn tools.ToolExecutor) tools.ToolExecuto
 				t.consecutive++
 				msg := quality.CorrectionMessage(assess.Reason)
 				out := "QUALITY MONITOR: " + msg
+				max := t.MaxCorrect
+				if max <= 0 {
+					max = MaxLoopCorrections
+				}
+				if t.consecutive > max {
+					out = "QUALITY MONITOR HARD STOP: repeated the same tool call " +
+						"too many times. Stop calling tools. Finish NOW with STRICT JSON: " +
+						`{"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
+				}
 				cb := t.OnIntervention
 				t.mu.Unlock()
 				if cb != nil {

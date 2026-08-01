@@ -65,3 +65,24 @@ func TestCallTrackerAllowsDifferentArgs(t *testing.T) {
 		t.Fatalf("different args should execute, n=%d", n)
 	}
 }
+
+func TestCallTrackerHardStopsAfterMaxCorrections(t *testing.T) {
+	tr := NewCallTracker()
+	tr.MaxCorrect = 2
+	fn := tr.Wrap("ws_read", func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		return "body", nil
+	})
+	args := map[string]interface{}{"path": "a.go"}
+	_, _ = fn(context.Background(), args) // first real read
+	var last string
+	for i := 0; i < 4; i++ {
+		out, err := fn(context.Background(), args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last, _ = out.(string)
+	}
+	if !strings.Contains(last, "HARD STOP") {
+		t.Fatalf("expected hard stop after max corrections, got %q", last)
+	}
+}

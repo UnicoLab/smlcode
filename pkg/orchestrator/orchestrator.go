@@ -56,20 +56,20 @@ type Result struct {
 }
 
 type Orchestrator struct {
-	cfg        *config.Config
-	store      *contextstore.Store
-	boardStore *plan.LiveStore
-	packer     *contextstore.Packer
-	skills     *skills.Loader
-	llm        *llm.ProviderManager
-	tools      *tools.ToolRegistry
-	focus      *workspace.FocusGuard
-	factory    *agents.Factory
-	registry   *ggagent.AgentRegistry
-	executor   loop.SubAgentRunner
-	shared     *ggagent.SharedState
-	think      *multipass.Runner
-	claude     *backends.ClaudeCodeRunner
+	cfg           *config.Config
+	store         *contextstore.Store
+	boardStore    *plan.LiveStore
+	packer        *contextstore.Packer
+	skills        *skills.Loader
+	llm           *llm.ProviderManager
+	tools         *tools.ToolRegistry
+	focus         *workspace.FocusGuard
+	factory       *agents.Factory
+	registry      *ggagent.AgentRegistry
+	executor      loop.SubAgentRunner
+	shared        *ggagent.SharedState
+	think         *multipass.Runner
+	claude        *backends.ClaudeCodeRunner
 	onEvent       EventHandler
 	onAsk         AskHandler
 	onPlanApprove PlanApproveHandler
@@ -133,8 +133,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		ShellPermission: cfg.ShellPermission,
 		DryRun:          cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
 		Focus: focus, Hooks: hooksRunner,
-		ShellAskTimeout: cfg.ShellAskTimeout,
-		AutoApprove:     cfg.AutoApprove,
+		ShellAskTimeout:        cfg.ShellAskTimeout,
+		AutoApprove:            cfg.AutoApprove,
 		DisableWriteGuard:      !cfg.WriteGuard,
 		DisableReadBeforeEdit:  !cfg.ReadBeforeEdit,
 		DisableShellWriteGuard: !cfg.ShellWriteGuard,

@@ -236,8 +236,8 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 		tasks = append(tasks, Task{
 			ID: id, Title: "Add requirements.txt",
 			Description: "Create requirements.txt listing runtime deps (or a comment if none). Keep minimal.",
-			Role: RoleWorker, Column: ColReadyToDev, DependsOn: deps,
-			Files: []string{"requirements.txt"},
+			Role:        RoleWorker, Column: ColReadyToDev, DependsOn: deps,
+			Files:      []string{"requirements.txt"},
 			Acceptance: "requirements.txt exists and is non-empty",
 		})
 		deps = []string{id}
@@ -250,7 +250,7 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 			Description: "Create tests/test_smoke.py that imports/runs a basic assertion against main.py " +
 				"(e.g. subprocess or importlib). Keep it tiny and deterministic.",
 			Role: RoleWorker, Column: ColReadyToDev, DependsOn: deps,
-			Files: []string{"tests/test_smoke.py"},
+			Files:      []string{"tests/test_smoke.py"},
 			Acceptance: "python -m pytest -q passes for tests/test_smoke.py",
 		})
 	}

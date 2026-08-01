@@ -68,10 +68,10 @@ type ScopeAnswer struct {
 
 // ScopeAnswers is the full decision handshake payload.
 type ScopeAnswers struct {
-	Answers   []ScopeAnswer `json:"answers"`
-	UseAllRec bool          `json:"use_all_recommended,omitempty"`
-	Notes     string        `json:"notes,omitempty"`
-	AnsweredAt string       `json:"answered_at,omitempty"`
+	Answers    []ScopeAnswer `json:"answers"`
+	UseAllRec  bool          `json:"use_all_recommended,omitempty"`
+	Notes      string        `json:"notes,omitempty"`
+	AnsweredAt string        `json:"answered_at,omitempty"`
 }
 
 // ScopeAsk is emitted to Studio/TUI/file when clarify_mode=ask.
@@ -85,11 +85,11 @@ type ScopeAsk struct {
 
 // ScopeJudgeResult is the post-split PRD completeness check.
 type ScopeJudgeResult struct {
-	OK       bool     `json:"ok"`
-	Issues   []string `json:"issues"`
-	Hints    []string `json:"hints"`
-	WeakIDs  []string `json:"weak_task_ids"`
-	Raw      string   `json:"-"`
+	OK      bool     `json:"ok"`
+	Issues  []string `json:"issues"`
+	Hints   []string `json:"hints"`
+	WeakIDs []string `json:"weak_task_ids"`
+	Raw     string   `json:"-"`
 }
 
 // NormalizeClarifyMode maps config aliases.
@@ -164,7 +164,7 @@ func interviewFromClarify(c ClarifyResult) ScopeInterview {
 				{Label: "Use recommended default", Description: "Continue with clarifier assumptions", Recommended: true},
 				{Label: "I will specify later", Description: "Leave open (risky)"},
 			},
-			Recommended: "Use recommended default",
+			Recommended:   "Use recommended default",
 			AllowFreeform: true,
 		})
 	}

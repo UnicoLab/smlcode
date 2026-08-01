@@ -160,8 +160,8 @@ type Config struct {
 	// PlanApproveTimeout for ask mode.
 	PlanApproveTimeout time.Duration `yaml:"plan_approve_timeout" json:"plan_approve_timeout"`
 
-	DryRun      bool `yaml:"dry_run" json:"dry_run"`
-	Verbose     bool `yaml:"verbose" json:"verbose"`
+	DryRun  bool `yaml:"dry_run" json:"dry_run"`
+	Verbose bool `yaml:"verbose" json:"verbose"`
 	// AutoApprove skips plan/shell/clarify HITL waits (forces recommended/allow).
 	AutoApprove bool `yaml:"auto_approve" json:"auto_approve"`
 
@@ -201,7 +201,7 @@ type Config struct {
 	StaticQuality   bool `yaml:"static_quality" json:"static_quality"`       // reject stub/placeholder code
 	ThinkingBudget  bool `yaml:"thinking_budget" json:"thinking_budget"`     // commit-to-implementation nudge
 	// ThinkingBudgetTokens hard-abort threshold for over-long deliberation (0=4096).
-	ThinkingBudgetTokens int `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
+	ThinkingBudgetTokens int  `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
 	FinalizeWarn         bool `yaml:"finalize_warn" json:"finalize_warn"`     // warn before MaxIter exhaustion
 	RequireSmoke         bool `yaml:"require_smoke" json:"require_smoke"`     // coding tasks need smoke for approve
 	ClaimsGate           bool `yaml:"claims_gate" json:"claims_gate"`         // reject hallucinated files_changed
@@ -247,30 +247,30 @@ func Default(root string) *Config {
 		root, _ = os.Getwd()
 	}
 	return &Config{
-		Root:            root,
-		Provider:        DefaultProvider,
-		Endpoint:        DefaultEndpoint,
-		Model:           DefaultModel,
-		Backend:         BackendSLMCode,
-		Mode:            ModeFull,
-		Temperature:     0.2,
-		MaxTokens:       4096,
-		MaxRetries:      DefaultMaxRetries,
-		MaxParallel:     DefaultMaxParallel,
-		MaxContextKB:    DefaultMaxContextKB,
-		ThinkPasses:     DefaultThinkPasses,
-		TaskTimeout:     DefaultTaskTimeout,
-		QAGate:          true,
-		QAGateMaxRounds: DefaultQAGateRounds,
-		PostWorkerSmoke: true,
-		ClarifyMode:         "auto",
-		ClarifyTimeout:      2 * time.Minute,
-		ScopeJudge:          true,
-		PlanApprove:         "auto",
-		PlanApproveTimeout:  2 * time.Minute,
-		Listen:              "127.0.0.1:7420",
-		ClaudeCodeBin:       "claude",
-		Permission:          "auto",
+		Root:                  root,
+		Provider:              DefaultProvider,
+		Endpoint:              DefaultEndpoint,
+		Model:                 DefaultModel,
+		Backend:               BackendSLMCode,
+		Mode:                  ModeFull,
+		Temperature:           0.2,
+		MaxTokens:             4096,
+		MaxRetries:            DefaultMaxRetries,
+		MaxParallel:           DefaultMaxParallel,
+		MaxContextKB:          DefaultMaxContextKB,
+		ThinkPasses:           DefaultThinkPasses,
+		TaskTimeout:           DefaultTaskTimeout,
+		QAGate:                true,
+		QAGateMaxRounds:       DefaultQAGateRounds,
+		PostWorkerSmoke:       true,
+		ClarifyMode:           "auto",
+		ClarifyTimeout:        2 * time.Minute,
+		ScopeJudge:            true,
+		PlanApprove:           "auto",
+		PlanApproveTimeout:    2 * time.Minute,
+		Listen:                "127.0.0.1:7420",
+		ClaudeCodeBin:         "claude",
+		Permission:            "auto",
 		ShellPermission:       "allow",
 		ShellWhitelist:        true,
 		ShellAskTimeout:       2 * time.Minute,

@@ -16,8 +16,8 @@ import (
 
 // incompleteFirstExec returns incomplete worker JSON, then a complete corrector fix.
 type incompleteFirstExec struct {
-	mu            sync.Mutex
-	workerCalls   int
+	mu             sync.Mutex
+	workerCalls    int
 	correctorCalls int
 }
 
@@ -67,7 +67,7 @@ func TestThinkPassesForcesWorkerCritique(t *testing.T) {
 	board := &plan.Board{Tasks: []plan.Task{{
 		ID: "T1", Title: "Touch hello", Role: plan.RoleWorker,
 		Acceptance: "file exists", Files: []string{"hello.py"},
-		Column: plan.ColReadyToDev,
+		Column:      plan.ColReadyToDev,
 		Description: "noop touch",
 	}}}
 	if err := r.RunBoard(context.Background(), board); err != nil {

@@ -191,6 +191,8 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 
 	// Deterministic project smoke BEFORE LLM tester — hard fail if code won't compile/run.
 	var preSmokeFail string
+	var preSmokeOKCmd string
+	var preSmokeOKOut string
 	if o.cfg.QAGate || o.cfg.PostWorkerSmoke {
 		cmd := strings.TrimSpace(o.cfg.QAGateCommand)
 		if cmd == "" {
@@ -210,6 +212,9 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 				preSmokeFail = fmt.Sprintf(
 					`{"passed":false,"commands":[%q],"summary":"deterministic pre-test failed","failures":[%q]}`,
 					cmd, truncate(strings.ReplaceAll(sr.Output, `"`, "'"), 400))
+			} else {
+				preSmokeOKCmd = cmd
+				preSmokeOKOut = sr.Output
 			}
 		}
 	}
@@ -238,13 +243,24 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 			testOut = preSmokeFail
 		}
 	}
+	// Pre-test green is hard evidence — attach smoke so honest passed:true from SLMs
+	// (commands[] listed, but no ws_shell Observation) is not false-rejected.
+	if preSmokeOKCmd != "" && !fromDisk && !plan.TesterHasShellEvidence(testOut) {
+		sec := quality.FormatSmokeSection(quality.SmokeResult{
+			OK: true, Ran: true, Command: preSmokeOKCmd, Output: truncate(preSmokeOKOut, 1200),
+		})
+		if sec != "" {
+			testOut = strings.TrimSpace(sec) + "\n\n" + strings.TrimSpace(testOut)
+			o.emit("test", "attached pre-test smoke evidence for tester finalize", "")
+		}
+	}
 	testerRejected := false
 	if fromDisk {
 		promoteRenameTasksDone(board)
 		o.persistBoard(board)
 		o.emit("test", "rename/disk acceptance won — cancelled tester LLM losers", "")
 		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
-		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, start)
+		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, false, start)
 	}
 	if strings.TrimSpace(testOut) == "" {
 		testOut = `{"passed":false,"summary":"empty tester finalize","failures":["empty or missing tester JSON — treat as failed"]}`
@@ -315,12 +331,20 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		_ = o.applyTesterFeedback(ctx, query, board, fake)
 		snap := o.boardStore.Snapshot()
 		board = &snap
+	} else if o.cfg.QAGate {
+		// Hard gate green wins over soft tester evidence gaps / rewrite noise.
+		if testerRejected {
+			o.emit("test", "qa_gate green — clearing soft tester rejection", "")
+			testerRejected = false
+		}
+		promoteBoardOnQAGreen(board)
+		o.persistBoard(board)
 	}
 
-	return o.completeRun(ctx, runID, query, skillPack, board, testOut, testerRejected, start)
+	return o.completeRun(ctx, runID, query, skillPack, board, testOut, testerRejected, qaFailed, start)
 }
 
-func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected bool, start time.Time) (*Result, error) {
+func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, start time.Time) (*Result, error) {
 	_ = skillPack
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseMemory)
 	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
@@ -357,7 +381,8 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	_ = o.store.Append(contextstore.DocContext, "Run complete", summarize(board, board.Plan))
 
 	failed := board.FailedCount()
-	success := failed == 0 && board.AllDone() && !testerRejected
+	qaGreen := o.cfg != nil && o.cfg.QAGate && !qaFailed
+	success := !testerRejected && ((failed == 0 && board.AllDone()) || (qaGreen && failed == 0))
 	res := &Result{
 		ID: runID, Query: query, Board: *board,
 		Success: success, FailedTasks: failed,
@@ -368,6 +393,8 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	if testerRejected {
 		res.Success = false
 		res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
+	} else if qaGreen && success && !board.AllDone() {
+		res.Summary = res.Summary + " (qa_gate green)"
 	}
 	extraNotes := lessonsMD
 	if strings.TrimSpace(testOut) != "" {
@@ -452,6 +479,50 @@ func renameDiskOK(root, query string, board *plan.Board) bool {
 		focus = append(focus, spec.NewPath)
 	}
 	return plan.RenameSatisfied(root, spec, focus)
+}
+
+// promoteBoardOnQAGreen closes open implement/verify tasks after the hard QA gate
+// passes, recovering from soft tester evidence false-negatives that rewrote the board.
+func promoteBoardOnQAGreen(board *plan.Board) {
+	if board == nil {
+		return
+	}
+	for i := range board.Tasks {
+		t := &board.Tasks[i]
+		t.Normalize()
+		if t.Column == plan.ColDone {
+			continue
+		}
+		switch t.Role {
+		case plan.RoleWorker, plan.RoleCorrector, plan.RoleTester, "deep", "":
+			// close
+		default:
+			// Still close common rewrite leftovers that have no distinct specialist role.
+			if t.Column != plan.ColBlocked && t.Column != plan.ColToScope &&
+				t.Column != plan.ColInProgress && t.Column != plan.ColInReview &&
+				t.Column != plan.ColReadyToDev {
+				continue
+			}
+		}
+		errLower := strings.ToLower(t.Error + " " + t.Review + " " + t.Notes)
+		soft := t.Error == "" ||
+			strings.Contains(errLower, "review rejected") ||
+			strings.Contains(errLower, "needs human") ||
+			strings.Contains(errLower, "smoke") ||
+			strings.Contains(errLower, "tester") ||
+			strings.Contains(errLower, "qa_gate") ||
+			t.Column == plan.ColToScope || t.Column == plan.ColReadyToDev
+		if !soft {
+			continue
+		}
+		t.Error = ""
+		t.Review = "qa_gate green"
+		if strings.TrimSpace(t.Output) == "" {
+			t.Output = `{"status":"done","summary":"verified by qa_gate"}`
+		}
+		t.MoveTo(plan.ColDone)
+		board.Tasks[i] = *t
+	}
 }
 
 // promoteRenameTasksDone marks implement/test tasks done when disk already matches

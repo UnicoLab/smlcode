@@ -38,10 +38,10 @@ type ToolOpts struct {
 
 	// SLM invariants (little-coder ports). Zero value = enabled (default ON).
 	// Set the *Disable flags to opt out.
-	DisableWriteGuard      bool // allow ws_write to overwrite existing files
-	DisableReadBeforeEdit  bool // allow edit/patch without prior ws_read
-	DisableShellWriteGuard bool // allow cat>/tee redirects that clobber files
-	DisableOverEditGuard   bool // allow whole-file-style edits
+	DisableWriteGuard      bool         // allow ws_write to overwrite existing files
+	DisableReadBeforeEdit  bool         // allow edit/patch without prior ws_read
+	DisableShellWriteGuard bool         // allow cat>/tee redirects that clobber files
+	DisableOverEditGuard   bool         // allow whole-file-style edits
 	Reads                  *ReadTracker // optional shared tracker; created if nil
 	ReadHeadLines          int          // auto-trim head lines (default 80)
 	MaxContextKB           int          // for read-guard budget (default 32)

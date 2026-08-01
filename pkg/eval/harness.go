@@ -17,26 +17,26 @@ import (
 
 // Case is one coding eval scenario.
 type Case struct {
-	ID          string
-	Query       string
-	SeedFiles   map[string]string // rel path → content
-	ExpectFiles []string          // must exist after run
+	ID           string
+	Query        string
+	SeedFiles    map[string]string // rel path → content
+	ExpectFiles  []string          // must exist after run
 	ExpectSubstr map[string]string // path → substring that must appear
-	Timeout     time.Duration
+	Timeout      time.Duration
 }
 
 // Result is the outcome of one case.
 type Result struct {
-	ID           string        `json:"id"`
-	OK           bool          `json:"ok"`
-	Duration     time.Duration `json:"duration"`
-	TasksDone    int           `json:"tasks_done"`
-	TasksTotal   int           `json:"tasks_total"`
-	SmokeOK      bool          `json:"smoke_ok"`
-	FilesOK      bool          `json:"files_ok"`
-	Error        string        `json:"error,omitempty"`
-	Summary      string        `json:"summary,omitempty"`
-	Interventions int          `json:"interventions"`
+	ID            string        `json:"id"`
+	OK            bool          `json:"ok"`
+	Duration      time.Duration `json:"duration"`
+	TasksDone     int           `json:"tasks_done"`
+	TasksTotal    int           `json:"tasks_total"`
+	SmokeOK       bool          `json:"smoke_ok"`
+	FilesOK       bool          `json:"files_ok"`
+	Error         string        `json:"error,omitempty"`
+	Summary       string        `json:"summary,omitempty"`
+	Interventions int           `json:"interventions"`
 }
 
 // Report aggregates many results.
@@ -53,8 +53,8 @@ type Report struct {
 func DefaultCases() []Case {
 	return []Case{
 		{
-			ID:    "py-hello",
-			Query: "Create hello.py that defines greet(name) returning 'Hello, {name}!'. Add a tiny pytest in test_hello.py.",
+			ID:          "py-hello",
+			Query:       "Create hello.py that defines greet(name) returning 'Hello, {name}!'. Add a tiny pytest in test_hello.py.",
 			ExpectFiles: []string{"hello.py", "test_hello.py"},
 			ExpectSubstr: map[string]string{
 				"hello.py": "def greet",

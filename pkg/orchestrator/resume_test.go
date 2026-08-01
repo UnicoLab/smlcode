@@ -49,6 +49,26 @@ func TestPromoteRenameTasksDone(t *testing.T) {
 	}
 }
 
+func TestPromoteBoardOnQAGreen(t *testing.T) {
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: plan.RoleWorker, Column: plan.ColToScope,
+			Error: "review rejected after max retries — needs human input"},
+		{ID: "T2", Role: plan.RoleTester, Column: plan.ColReadyToDev,
+			Error: "coding task missing deterministic smoke pass"},
+		{ID: "T3", Role: plan.RoleWorker, Column: plan.ColDone, Output: `{"status":"done"}`},
+	}}
+	promoteBoardOnQAGreen(board)
+	if board.Tasks[0].Column != plan.ColDone || board.Tasks[1].Column != plan.ColDone {
+		t.Fatalf("expected soft failures promoted: %+v", board.Tasks)
+	}
+	if board.Tasks[0].Review != "qa_gate green" {
+		t.Fatalf("review=%q", board.Tasks[0].Review)
+	}
+	if board.FailedCount() != 0 || !board.AllDone() {
+		t.Fatalf("failed=%d allDone=%v", board.FailedCount(), board.AllDone())
+	}
+}
+
 func TestCheckpointInterruptPersists(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Default(root)

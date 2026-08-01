@@ -29,9 +29,9 @@ type Hook struct {
 
 // Runner executes Pre/Post tool hooks.
 type Runner struct {
-	Root   string
-	Cfg    Config
-	Log    func(string, ...interface{})
+	Root string
+	Cfg  Config
+	Log  func(string, ...interface{})
 }
 
 // Load reads .slmcode/hooks.json (or path). Missing file → empty config.

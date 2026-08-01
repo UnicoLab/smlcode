@@ -29,14 +29,14 @@ func NormalizePlanApprove(m string) string {
 
 // PlanApproveAsk is the SSE/file payload before execute.
 type PlanApproveAsk struct {
-	ID        string   `json:"id"`
-	Query     string   `json:"query"`
-	Summary   string   `json:"summary"`
-	Goals     []string `json:"goals,omitempty"`
+	ID          string   `json:"id"`
+	Query       string   `json:"query"`
+	Summary     string   `json:"summary"`
+	Goals       []string `json:"goals,omitempty"`
 	Assumptions []string `json:"assumptions,omitempty"`
-	TaskCount int      `json:"task_count"`
-	Tasks     []string `json:"tasks,omitempty"` // "T1: title"
-	CreatedAt string   `json:"created_at"`
+	TaskCount   int      `json:"task_count"`
+	Tasks       []string `json:"tasks,omitempty"` // "T1: title"
+	CreatedAt   string   `json:"created_at"`
 }
 
 // PlanApproveAnswer is the user decision.

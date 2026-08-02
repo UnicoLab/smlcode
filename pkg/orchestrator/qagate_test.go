@@ -38,7 +38,7 @@ func TestDetectQACommandPythonPytest(t *testing.T) {
 	}
 }
 
-func TestDetectQACommandPythonCompileall(t *testing.T) {
+func TestDetectQACommandPythonGreenfieldPytest(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('hi')\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -47,12 +47,26 @@ func TestDetectQACommandPythonCompileall(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := detectQACommand(dir)
-	if got != "python -m compileall -q ." {
-		t.Fatalf("got %q want compileall (no --help trap)", got)
+	if got != "python -m pytest -q" {
+		t.Fatalf("got %q want pytest for main+requirements (fail closed)", got)
 	}
 	prep := bootstrapQADeps(dir, got)
 	if !strings.Contains(prep, "requirements.txt") {
 		t.Fatalf("bootstrap=%q", prep)
+	}
+}
+
+func TestDetectQACommandPythonCompileallNoEntrypoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lib.py"), []byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("requests\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := detectQACommand(dir)
+	if got != "python -m compileall -q ." {
+		t.Fatalf("got %q want compileall (no --help trap)", got)
 	}
 }
 

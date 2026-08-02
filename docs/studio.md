@@ -55,6 +55,32 @@ The loop reloads `board.json` each wave. Chaos, but *structured* chaos.
 
 ---
 
+## Human-in-the-loop modals ✋
+
+Studio blocks the relevant step with a modal (pipeline header shows **Awaiting you**):
+
+| Modal | When | Options | Timeout default |
+|-------|------|---------|-----------------|
+| Clarify | vague PRD interview | pick options | 2m → recommended |
+| Plan approve | before execute | approve / replan | 2m → approve |
+| **Escalate** | task hits max review retries | **re-scope / retry / mark done / abort** | **30s → re-scope** |
+| Continue | QA/retries exhausted | continue / stop / flag | 2m → stop |
+| Shell | `shell_permission=ask` | approve / deny | 2m |
+
+Config (Settings → Planning / scope, or YAML):
+
+```yaml
+escalate_ask: ask              # ask | auto | off
+escalate_ask_timeout: 30s
+continue_ask: ask
+```
+
+TUI: `/escalate re_scope|retry|mark_done|abort` while the banner shows escalate pending.
+
+API: `GET /api/escalate/pending` · `POST /api/escalate/answer` `{"action":"retry"}`.
+
+---
+
 ## Live events (SSE) 📡
 
 Same stream as `slmcode run -v`:
@@ -86,6 +112,8 @@ curl -N http://127.0.0.1:7420/api/events
 | `GET` | `/api/skills` `/api/models` |
 | `POST` | `/api/runs` `/api/runs/stop` |
 | `GET` | `/api/runs/latest` `/api/events` |
+| `GET`/`POST` | `/api/escalate/pending` · `/api/escalate/answer` |
+| `GET`/`POST` | `/api/continue/pending` · `/api/continue/answer` |
 | `GET` | `/` SPA |
 
 → Full pipeline schema: [Pipeline](pipeline.md)

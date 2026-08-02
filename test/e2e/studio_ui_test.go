@@ -68,6 +68,7 @@ func TestStudioUIInteraction(t *testing.T) {
 				"LiveLogs", "LiveStatusCard", "LiveEnrichBox", "live-overview", "live-logs-panel",
 				"PipelineHeader", "PIPE_GROUPS", "pipeline-header", "pipeline-groups",
 				"continueAsk", "/api/continue/answer", "polish", "Keep precise flags",
+				"escalateAsk", "/api/escalate/answer", "Human review needed", "Retry now",
 			} {
 				if !strings.Contains(src, marker) {
 					t.Fatalf("app.jsx missing %q", marker)

@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/hitl"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
@@ -123,6 +125,20 @@ func runPremiumTUI() error {
 			}
 			_ = h.Config.Save()
 			cli.KeyVal("plan_approve", h.Config.PlanApprove)
+			return false, nil
+		case "/escalate":
+			action := plan.NormalizeEscalateAction(strings.TrimSpace(arg))
+			if strings.TrimSpace(arg) == "" {
+				return false, fmt.Errorf("usage: /escalate re_scope|retry|mark_done|abort")
+			}
+			ans := plan.EscalateAnswer{
+				Action:     action,
+				AnsweredAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			if err := hitl.WriteAnswers(h.Config.SlmDir(), "escalate", ans); err != nil {
+				return false, err
+			}
+			fmt.Println(cli.Success("escalate → " + action))
 			return false, nil
 		case "/history":
 			hist := sess.History()

@@ -39,13 +39,46 @@ func TestRunPostWorkerSmokePythonCompile(t *testing.T) {
 	}
 }
 
-func TestDetectProjectCommandPythonCompileall(t *testing.T) {
+func TestDetectProjectCommandGreenfieldPrefersPytest(t *testing.T) {
 	root := t.TempDir()
 	_ = os.WriteFile(filepath.Join(root, "main.py"), []byte("print('hi')\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(root, "requirements.txt"), []byte("# none\n"), 0o644)
 	cmd := DetectProjectCommand(root)
+	if cmd != "python -m pytest -q" {
+		t.Fatalf("greenfield main+requirements should fail-closed on pytest, got %q", cmd)
+	}
+}
+
+func TestDetectProjectCommandPythonCompileallNoEntrypoint(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "lib.py"), []byte("x = 1\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "requirements.txt"), []byte("# none\n"), 0o644)
+	cmd := DetectProjectCommand(root)
 	if cmd != "python -m compileall -q ." {
 		t.Fatalf("got %q", cmd)
+	}
+}
+
+func TestExtractAcceptanceCommands(t *testing.T) {
+	cmds := ExtractAcceptanceCommands("python -m pytest tests/ -q exits 0; agent imports; python main.py prints hello")
+	if len(cmds) < 2 {
+		t.Fatalf("got %#v", cmds)
+	}
+	if cmds[0] != "python -m pytest tests/ -q" {
+		t.Fatalf("pytest cmd: %q", cmds[0])
+	}
+	foundMain := false
+	for _, c := range cmds {
+		if c == "python main.py" {
+			foundMain = true
+		}
+	}
+	if !foundMain {
+		t.Fatalf("missing main.py: %#v", cmds)
+	}
+	// Must not extract free-form prose as shell.
+	if got := ExtractAcceptanceCommands("files exist and contain real code"); len(got) != 0 {
+		t.Fatalf("prose should yield no cmds: %#v", got)
 	}
 }
 

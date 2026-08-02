@@ -121,6 +121,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/plan/approve", s.handlePlanApprove)
 	s.mux.HandleFunc("GET /api/continue/pending", s.handleContinuePending)
 	s.mux.HandleFunc("POST /api/continue/answer", s.handleContinueAnswer)
+	s.mux.HandleFunc("GET /api/escalate/pending", s.handleEscalatePending)
+	s.mux.HandleFunc("POST /api/escalate/answer", s.handleEscalateAnswer)
 	s.mux.HandleFunc("GET /api/shell/pending", s.handleShellPending)
 	s.mux.HandleFunc("POST /api/shell/approve", s.handleShellApprove)
 	s.mux.HandleFunc("GET /api/rewind", s.handleRewindList)
@@ -633,6 +635,40 @@ func (s *Server) handleContinueAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.emit(orchestrator.Event{
 		Phase: "test", Kind: "ask_answered", Message: "continue decision: " + ans.Action, Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true, "action": ans.Action})
+}
+
+func (s *Server) handleEscalatePending(w http.ResponseWriter, r *http.Request) {
+	var ask plan.EscalateAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "escalate", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]any{"pending": false})
+		return
+	}
+	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+}
+
+func (s *Server) handleEscalateAnswer(w http.ResponseWriter, r *http.Request) {
+	var ans plan.EscalateAnswer
+	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if ans.AnsweredAt == "" {
+		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	ans.Action = plan.NormalizeEscalateAction(ans.Action)
+	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "escalate", ans); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "execute", Kind: "ask_answered", Message: "escalate decision: " + ans.Action, Time: time.Now(),
 	})
 	writeJSON(w, map[string]any{"ok": true, "action": ans.Action})
 }

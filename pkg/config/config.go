@@ -165,6 +165,10 @@ type Config struct {
 	ContinueAsk string `yaml:"continue_ask" json:"continue_ask"`
 	// ContinueAskTimeout for ask mode (timeout → stop, keep precise flags).
 	ContinueAskTimeout time.Duration `yaml:"continue_ask_timeout" json:"continue_ask_timeout"`
+	// EscalateAsk: ask | auto | off — pause on max-retry escalate for HITL.
+	EscalateAsk string `yaml:"escalate_ask" json:"escalate_ask"`
+	// EscalateAskTimeout for ask mode (timeout → re_scope; default 30s).
+	EscalateAskTimeout time.Duration `yaml:"escalate_ask_timeout" json:"escalate_ask_timeout"`
 
 	DryRun  bool `yaml:"dry_run" json:"dry_run"`
 	Verbose bool `yaml:"verbose" json:"verbose"`
@@ -277,6 +281,8 @@ func Default(root string) *Config {
 		PlaceholderPass:       true,
 		ContinueAsk:           "ask",
 		ContinueAskTimeout:    2 * time.Minute,
+		EscalateAsk:           "ask",
+		EscalateAskTimeout:    30 * time.Second,
 		Listen:                "127.0.0.1:7420",
 		ClaudeCodeBin:         "claude",
 		Permission:            "auto",
@@ -522,6 +528,10 @@ func normalize(c *Config) {
 	if c.ContinueAskTimeout <= 0 {
 		c.ContinueAskTimeout = 2 * time.Minute
 	}
+	c.EscalateAsk = NormalizeEscalateAsk(c.EscalateAsk)
+	if c.EscalateAskTimeout <= 0 {
+		c.EscalateAskTimeout = 30 * time.Second
+	}
 	if c.ShellAskTimeout <= 0 {
 		c.ShellAskTimeout = 2 * time.Minute
 	}
@@ -597,6 +607,8 @@ type Patch struct {
 	PlaceholderPass        *bool     `json:"placeholder_pass,omitempty"`
 	ContinueAsk            *string   `json:"continue_ask,omitempty"`
 	ContinueAskTimeoutSec  *int      `json:"continue_ask_timeout_sec,omitempty"`
+	EscalateAsk            *string   `json:"escalate_ask,omitempty"`
+	EscalateAskTimeoutSec  *int      `json:"escalate_ask_timeout_sec,omitempty"`
 	AutoApprove            *bool     `json:"auto_approve,omitempty"`
 	ShellPermission        *string   `json:"shell_permission,omitempty"`
 	ShellAskTimeoutSec     *int      `json:"shell_ask_timeout_sec,omitempty"`
@@ -711,6 +723,12 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.ContinueAskTimeoutSec != nil && *p.ContinueAskTimeoutSec > 0 {
 		c.ContinueAskTimeout = time.Duration(*p.ContinueAskTimeoutSec) * time.Second
+	}
+	if p.EscalateAsk != nil {
+		c.EscalateAsk = strings.TrimSpace(*p.EscalateAsk)
+	}
+	if p.EscalateAskTimeoutSec != nil && *p.EscalateAskTimeoutSec > 0 {
+		c.EscalateAskTimeout = time.Duration(*p.EscalateAskTimeoutSec) * time.Second
 	}
 	if p.AutoApprove != nil {
 		c.AutoApprove = *p.AutoApprove
@@ -873,6 +891,20 @@ func NormalizePlanApprove(m string) string {
 func NormalizeContinueAsk(m string) string {
 	switch strings.ToLower(strings.TrimSpace(m)) {
 	case "", "ask", "hitl", "prompt":
+		return "ask"
+	case "auto", "once", "retry":
+		return "auto"
+	case "off", "skip", "none", "false":
+		return "off"
+	default:
+		return "ask"
+	}
+}
+
+// NormalizeEscalateAsk maps escalate_ask aliases (ask|auto|off).
+func NormalizeEscalateAsk(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "", "ask", "hitl", "prompt", "pause":
 		return "ask"
 	case "auto", "once", "retry":
 		return "auto"

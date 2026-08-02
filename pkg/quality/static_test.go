@@ -75,6 +75,9 @@ func TestIsWeakQACommand(t *testing.T) {
 	if IsWeakQACommand("go test ./... -short") {
 		t.Fatal("go test is strong")
 	}
+	if IsWeakQACommand("python main.py") {
+		t.Fatal("python main.py is strong")
+	}
 }
 
 func TestStaticQualityAllowsRealCode(t *testing.T) {

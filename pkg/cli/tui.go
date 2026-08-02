@@ -429,6 +429,15 @@ func (s *LiveSession) Observe(e stream.Event) {
 		if e.Message != "" {
 			s.state.UsageHead = e.Message
 		}
+	case stream.KindAsk:
+		banner := e.Message
+		if strings.Contains(strings.ToLower(e.Output), `"kind":"escalate"`) || e.Agent == "escalate" {
+			banner = "ESCALATE — /escalate re_scope|retry|mark_done|abort · " + e.Message
+		} else if strings.Contains(strings.ToLower(e.Output), `"kind":"continue"`) || e.Agent == "continue" {
+			banner = "CONTINUE? answer in Studio · " + e.Message
+		}
+		s.state.Intervention = banner
+		s.state.Message = banner
 	case stream.KindIntervention:
 		banner := e.Message
 		if e.Scope != "" {
@@ -644,6 +653,7 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("<query>")+"          run full SLM pipeline")
 	fmt.Fprintln(s.out, "  "+Cyan("/clear")+"            reset live stream / banners (fresh view)")
 	fmt.Fprintln(s.out, "  "+Cyan("/plan [auto|ask]")+"  plan-approve gate (ask = review before execute)")
+	fmt.Fprintln(s.out, "  "+Cyan("/escalate …")+"       answer escalate HITL: re_scope|retry|mark_done|abort")
 	fmt.Fprintln(s.out, "  "+Cyan("/history")+"          show recent prompts")
 	fmt.Fprintln(s.out, "  "+Cyan("/board")+"            refresh + show board")
 	fmt.Fprintln(s.out, "  "+Cyan("/status")+"           connection / settings glance")
@@ -667,9 +677,10 @@ func (s *LiveSession) printHelp() {
 	fmt.Fprintln(s.out, "  "+Cyan("/q")+"                quit")
 	fmt.Fprintln(s.out)
 	fmt.Fprintln(s.out, Bold("Harness UX"))
-	fmt.Fprintln(s.out, "  "+Yellow("⚠ banner")+"       quality / loop / whitelist / thinking interventions")
+	fmt.Fprintln(s.out, "  "+Yellow("⚠ banner")+"       quality / loop / whitelist / thinking / escalate")
 	fmt.Fprintln(s.out, "  "+Yellow("⟳ turn N/M")+"     MaxIter budget (finalize soon when low)")
 	fmt.Fprintln(s.out, "  "+Dim("progress")+"         phase · active agents · turn")
+	fmt.Fprintln(s.out, Dim("  Escalate pauses the task — answer in Studio modal or /escalate <action>."))
 	fmt.Fprintln(s.out, Dim("  Studio Live shows the same intervention + turn chips via SSE."))
 }
 

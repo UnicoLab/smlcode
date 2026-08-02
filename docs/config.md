@@ -126,6 +126,10 @@ qa_gate: true
 qa_gate_command: ""       # empty = auto-detect (go/pytest/uv/npm/compileall)
 qa_gate_max_rounds: 3
 post_worker_smoke: true   # py_compile / go test after each worker before review
+escalate_ask: ask         # ask | auto | off — pause on max-retry escalate
+escalate_ask_timeout: 30s # timeout → re_scope (Studio modal / TUI /escalate)
+continue_ask: ask         # ask | auto | off — after QA exhausted
+continue_ask_timeout: 2m
 ```
 
 ### Planning / scope
@@ -148,17 +152,24 @@ exit blocks the tool. PostToolUse can run `compileall` after writes.
 `/rewind list` / `/rewind <id>`, API `GET/POST /api/rewind`. Real context
 compact: `/compact context` or `POST /api/compact`.
 
-### QA / smoke
+### QA / smoke / acceptance
 
 After workers, `post_worker_smoke` runs a fast deterministic check (`python -m
 py_compile` / `go test -short`) and blocks approve-on-disk-only when it fails.
 
+When a task's acceptance text includes a **whitelisted** command (`python -m
+pytest`, `go test`, `python main.py`, …), the harness also runs **Acceptance
+smoke** and rejects the task until those commands exit 0. Free-form prose in
+acceptance is never executed as shell.
+
+`worker_critique` keeps refining (up to `max_retries`) while smoke / static /
+acceptance sections stay red — not just a single self-fix pass.
+
 After the finalize tester, `qa_gate` runs a real project command (and bootstraps
 deps when needed: `pip install -r requirements.txt`, `uv sync`, `go mod tidy`).
-Auto-detect covers `go test`, `python -m pytest` / `uv run pytest`,
-`python -m compileall`, and `npm test` / `cargo test` / `make test` — never
-`--help` as a quality proof. On failure, tester diagnoses → corrector patches →
-re-run.
+Auto-detect prefers `pytest` for greenfield Python (`main.py` +
+`requirements.txt`), not `compileall`. Syntax-only gates cannot alone mark the
+run successful. On failure, tester diagnoses → corrector patches → re-run.
 
 ---
 

@@ -24,9 +24,10 @@ type SmokeResult struct {
 
 // Section markers embedded into task output for review gates.
 const (
-	SmokeSectionHeader = "## Deterministic smoke"
-	SmokeFailedMarker  = "FAILED"
-	SmokePassedMarker  = "PASSED"
+	SmokeSectionHeader      = "## Deterministic smoke"
+	AcceptanceSectionHeader = "## Acceptance smoke"
+	SmokeFailedMarker       = "FAILED"
+	SmokePassedMarker       = "PASSED"
 )
 
 // ShouldSmokeTask reports whether a task should get post-worker Go smoke.
@@ -136,7 +137,8 @@ func IsWeakQACommand(cmd string) bool {
 	}
 	if strings.Contains(lower, "pytest") || strings.Contains(lower, "go test") ||
 		strings.Contains(lower, "npm test") || strings.Contains(lower, "cargo test") ||
-		strings.Contains(lower, "make test") {
+		strings.Contains(lower, "make test") ||
+		strings.Contains(lower, "python main.py") || strings.Contains(lower, "python app.py") {
 		return false
 	}
 	return strings.Contains(lower, "compileall") ||
@@ -182,21 +184,25 @@ func detectPythonProjectCommand(root string) string {
 	hasReq := fileExists(filepath.Join(root, "requirements.txt"))
 	hasSetup := fileExists(filepath.Join(root, "setup.py")) || fileExists(filepath.Join(root, "setup.cfg"))
 	hasUV := fileExists(filepath.Join(root, "uv.lock"))
+	hasMain := fileExists(filepath.Join(root, "main.py")) || fileExists(filepath.Join(root, "app.py"))
+
+	pytestCmd := "python -m pytest -q"
+	if hasUV {
+		pytestCmd = "uv run pytest -q"
+	}
 
 	if hasPytestIni || hasTestsDir || hasTestFiles {
-		if hasUV {
-			return "uv run pytest -q"
-		}
-		return "python -m pytest -q"
+		return pytestCmd
+	}
+	// Greenfield shape (entrypoint + deps): fail closed on pytest — compileall
+	// alone was the TestSLMs false-success path (empty packages "pass").
+	if hasMain && (hasReq || hasPyProject || hasSetup) {
+		return pytestCmd
 	}
 	if hasPyProject {
-		// Prefer pytest when declared; otherwise compileall (safe, no --help traps).
-		if hasUV {
-			return "uv run pytest -q"
-		}
 		data, _ := os.ReadFile(filepath.Join(root, "pyproject.toml"))
 		if bytes.Contains(bytes.ToLower(data), []byte("pytest")) {
-			return "python -m pytest -q"
+			return pytestCmd
 		}
 		return "python -m compileall -q ."
 	}
@@ -204,6 +210,135 @@ func detectPythonProjectCommand(root string) string {
 		return "python -m compileall -q ."
 	}
 	return ""
+}
+
+// safeAcceptancePrefixes are the only shell fragments we auto-run from task
+// acceptance text (never free-form LLM shell).
+var safeAcceptancePrefixes = []string{
+	"python -m pytest",
+	"python -m py_compile",
+	"python -m compileall",
+	"python main.py",
+	"python app.py",
+	"uv run pytest",
+	"pytest ",
+	"pytest\t",
+	"go test",
+	"npm test",
+	"cargo test",
+	"make test",
+}
+
+// ExtractAcceptanceCommands pulls whitelisted verify commands from acceptance text.
+func ExtractAcceptanceCommands(acceptance string) []string {
+	raw := strings.TrimSpace(acceptance)
+	if raw == "" {
+		return nil
+	}
+	// Normalize separators so we can scan chunks.
+	normalized := strings.NewReplacer(
+		";", "\n",
+		" and ", "\n",
+		" AND ", "\n",
+		" then ", "\n",
+		" → ", "\n",
+		"->", "\n",
+	).Replace(raw)
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(normalized, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, prefix := range safeAcceptancePrefixes {
+			p := strings.ToLower(strings.TrimSpace(prefix))
+			idx := strings.Index(lower, p)
+			if idx < 0 {
+				continue
+			}
+			cmd := strings.TrimSpace(line[idx:])
+			// Cut trailing prose after the command (period+space, " exits", " prints").
+			for _, stop := range []string{" exits", " prints", " returns", " —", " - ", ". ", " ("} {
+				if i := strings.Index(strings.ToLower(cmd), stop); i >= len(p) {
+					cmd = strings.TrimSpace(cmd[:i])
+				}
+			}
+			cmd = strings.TrimRight(cmd, ".,;:")
+			if cmd == "" || seen[cmd] {
+				continue
+			}
+			seen[cmd] = true
+			out = append(out, cmd)
+			break
+		}
+	}
+	return out
+}
+
+// RunAcceptanceSmoke runs whitelisted acceptance commands; first failure wins.
+func RunAcceptanceSmoke(ctx context.Context, root, acceptance string, timeout time.Duration) SmokeResult {
+	cmds := ExtractAcceptanceCommands(acceptance)
+	if len(cmds) == 0 {
+		return SmokeResult{OK: true, Ran: false, Summary: "no acceptance commands"}
+	}
+	var combined strings.Builder
+	for i, cmd := range cmds {
+		if boot := BootstrapDeps(root, cmd); boot != "" && i == 0 {
+			_ = RunSmoke(ctx, root, boot, timeout) // best-effort install
+		}
+		sr := RunSmoke(ctx, root, cmd, timeout)
+		if combined.Len() > 0 {
+			combined.WriteString("\n---\n")
+		}
+		combined.WriteString(sr.Output)
+		if !sr.OK {
+			sr.Output = combined.String()
+			sr.Summary = fmt.Sprintf("%s: acceptance %s", SmokeFailedMarker, cmd)
+			return sr
+		}
+	}
+	return SmokeResult{
+		OK: true, Ran: true,
+		Command: strings.Join(cmds, " && "),
+		Output:  combined.String(),
+		Summary: SmokePassedMarker + ": acceptance",
+	}
+}
+
+// FormatAcceptanceSection renders acceptance smoke for task output / review gates.
+func FormatAcceptanceSection(sr SmokeResult) string {
+	if !sr.Ran {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n")
+	b.WriteString(AcceptanceSectionHeader)
+	b.WriteString("\n")
+	if sr.OK {
+		b.WriteString(SmokePassedMarker)
+	} else {
+		b.WriteString(SmokeFailedMarker)
+	}
+	b.WriteString("\ncmd: ")
+	b.WriteString(sr.Command)
+	b.WriteString("\n")
+	if strings.TrimSpace(sr.Output) != "" {
+		b.WriteString(truncate(sr.Output, 2000))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// AcceptanceFailedInOutput reports a failed acceptance smoke section.
+func AcceptanceFailedInOutput(output string) bool {
+	idx := strings.Index(output, AcceptanceSectionHeader)
+	if idx < 0 {
+		return false
+	}
+	rest := output[idx:]
+	return strings.Contains(rest, SmokeFailedMarker)
 }
 
 // BootstrapDeps returns a dependency-install command to run before QA, or "".

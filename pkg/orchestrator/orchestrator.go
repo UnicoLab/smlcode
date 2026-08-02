@@ -75,6 +75,7 @@ type Orchestrator struct {
 	onAsk         AskHandler
 	onPlanApprove PlanApproveHandler
 	onContinue    ContinueHandler
+	onEscalate    EscalateHandler
 
 	hooksRunner *hooks.Runner
 	mcpMgr      *mcp.Manager
@@ -829,6 +830,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
+	}
+	runner.OnEscalate = func(ctx context.Context, board *plan.Board, t plan.Task, detail string) {
+		o.runEscalateAsk(ctx, board, t, detail)
 	}
 	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
 		o.recordUsage(u, estimated)

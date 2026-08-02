@@ -129,6 +129,9 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
 		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
 	}
+	runner.OnEscalate = func(ctx context.Context, board *plan.Board, t plan.Task, detail string) {
+		o.runEscalateAsk(ctx, board, t, detail)
+	}
 	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
 		o.recordUsage(u, estimated)
 	}
@@ -278,7 +281,7 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		o.persistBoard(board)
 		o.emit("test", "rename/disk acceptance won — cancelled tester LLM losers", "")
 		_ = o.store.Append(contextstore.DocScratch, "Verification", testOut)
-		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, false, start)
+		return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, false, "", start)
 	}
 	if strings.TrimSpace(testOut) == "" {
 		testOut = `{"passed":false,"summary":"empty tester finalize","failures":["empty or missing tester JSON — treat as failed"]}`
@@ -471,10 +474,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		board = b2
 	}
 
-	return o.completeRun(ctx, runID, query, skillPack, board, testOut, testerRejected, qaFailed, start)
+	return o.completeRun(ctx, runID, query, skillPack, board, testOut, testerRejected, qaFailed, qaCmd, start)
 }
 
-func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, start time.Time) (*Result, error) {
+func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, qaCmd string, start time.Time) (*Result, error) {
 	_ = skillPack
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseMemory)
 	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
@@ -512,11 +515,14 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 
 	failed := board.FailedCount()
 	qaGreen := o.cfg != nil && o.cfg.QAGate && !qaFailed
+	weakQA := quality.IsWeakQACommand(qaCmd)
 	escalatedLeft := boardHasEscalated(board)
 	// Never mark success when escalated/blocked tasks remain, even if a weak
 	// compileall QA gate was green (TestSLMs false-success regression).
 	success := !testerRejected && failed == 0 && board.AllDone() && !escalatedLeft
-	if !success && qaGreen && !testerRejected && failed == 0 && !escalatedLeft &&
+	// Soft success from QA alone requires a *strong* gate (pytest / go test / …).
+	// Syntax-only compileall must not rubber-stamp an incomplete board.
+	if !success && qaGreen && !weakQA && !testerRejected && failed == 0 && !escalatedLeft &&
 		!board.AgentWorkRemaining() {
 		success = true
 	}
@@ -534,6 +540,8 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		} else if escalatedLeft {
 			res.Summary = res.Summary + " (escalated tasks need human review in Studio)"
 		}
+	} else if qaGreen && weakQA && !success {
+		res.Summary = res.Summary + " (qa_gate is syntax-only — need pytest/tests for success)"
 	} else if qaGreen && success && !board.AllDone() {
 		res.Summary = res.Summary + " (qa_gate green)"
 	}

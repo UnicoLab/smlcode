@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.1 — Runnable quality bar + escalate HITL
+
+### Highlights
+- Greenfield Python QA defaults to **pytest** (fail closed), not `compileall`
+- **Acceptance smoke** — whitelisted commands from task acceptance run after each worker
+- Worker critique loops until smoke/static/acceptance green (bounded by `max_retries`)
+- Run success requires a **strong** QA gate — syntax-only cannot rubber-stamp incomplete boards
+- **Escalate HITL** — max-retry escalate pauses the task with a Studio modal (or TUI
+  `/escalate`); options: re-scope / retry / mark done / abort; default timeout **30s**
+  → re-scope (`escalate_ask`, `escalate_ask_timeout`)
+
+### API
+- `GET` / `POST` `/api/escalate/pending|answer`
+
+---
+
 ## v0.7.0 — Pipeline control + reference quality
 
 ### Highlights

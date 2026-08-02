@@ -88,6 +88,7 @@ func TestLiveRealQueryLangGraph(t *testing.T) {
 	cfg.MaxRetries = 2
 	cfg.PlaceholderPass = true
 	cfg.ContinueAsk = "auto"
+	cfg.EscalateAsk = "auto"
 	cfg.TaskTimeout = 18 * time.Minute
 	cfg.CompactMode = true
 	cfg.ResolveAPIKey()

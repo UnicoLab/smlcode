@@ -37,6 +37,10 @@ type UsageEvent func(usage llm.Usage, estimated bool, input, output string)
 // When set, packs stay ephemeral and are not persisted into task.Description.
 type BuildInput func(t plan.Task) string
 
+// EscalateHandler pauses on max-retry escalate for HITL (Studio/TUI).
+// Mutates board for the chosen action (retry / re_scope / mark_done / abort).
+type EscalateHandler func(ctx context.Context, board *plan.Board, t plan.Task, detail string)
+
 // Runner executes parallel workers → review → correct against a live board.
 type Runner struct {
 	Executor       SubAgentRunner
@@ -93,7 +97,9 @@ type Runner struct {
 	// ReviewerRole / CorrectorRole come from pipeline.execute (defaults reviewer/corrector).
 	ReviewerRole  string
 	CorrectorRole string
-	waveN         int
+	// OnEscalate pauses the task for human decision (nil = leave in to_scope).
+	OnEscalate EscalateHandler
+	waveN      int
 	// ResumedReact is set true when any task continued from message history
 	// (used by tests / observability to assert no cold replan).
 	ResumedReact bool
@@ -414,6 +420,23 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 				r.Log("%s deterministic smoke PASSED: %s", t.ID, sr.Command)
 			}
 		}
+		// Whitelisted acceptance commands (pytest / go test / python main.py …).
+		if (role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector) &&
+			strings.TrimSpace(t.Acceptance) != "" {
+			if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
+				if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+					t.Output = strings.TrimSpace(t.Output) + sec
+				}
+				if !ar.OK {
+					t.Output += "\nObservation: exit error: acceptance smoke failed\n" + truncate(ar.Output, 1500)
+					r.Log("%s acceptance smoke FAILED: %s", t.ID, ar.Command)
+					r.fire("agent_end", "qa", t.ID, "acceptance smoke failed",
+						strings.Join(t.Files, ", "), truncate(ar.Output, 800))
+				} else {
+					r.Log("%s acceptance smoke PASSED: %s", t.ID, ar.Command)
+				}
+			}
+		}
 		// Static stub/placeholder gate — beats "looks done" claims from giant LLMs too.
 		if r.StaticQuality {
 			if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
@@ -440,12 +463,27 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 			weak := quality.SmokeFailedInOutput(t.Output) ||
 				quality.StaticFailedInOutput(t.Output) ||
 				quality.ClaimsFailedInOutput(t.Output) ||
+				quality.AcceptanceFailedInOutput(t.Output) ||
 				(!hasToolWriteEvidence(t.Output) && looksLikeEditTask(t) && !alreadySatisfied(r.Root, t)) ||
 				(r.ThinkPasses >= 2 && incomplete)
 			if weak {
 				passes := 1
 				if r.ThinkPasses >= 3 && incomplete {
 					passes = 2
+				}
+				// Keep refining while smoke/static still fail — bounded by MaxRetries.
+				if quality.SmokeFailedInOutput(t.Output) || quality.StaticFailedInOutput(t.Output) ||
+					quality.AcceptanceFailedInOutput(t.Output) {
+					max := r.MaxRetries
+					if max <= 0 {
+						max = 3
+					}
+					if max > 4 {
+						max = 4
+					}
+					if passes < max {
+						passes = max
+					}
 				}
 				for pass := 1; pass <= passes; pass++ {
 					r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
@@ -465,6 +503,9 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 					}
 					if quality.SmokeFailedInOutput(t.Output) {
 						issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
+					}
+					if quality.AcceptanceFailedInOutput(t.Output) {
+						issues = append(issues, "Fix failures shown in Acceptance smoke — make acceptance commands exit 0")
 					}
 					corrIn := formatCorrectPrompt(t, plan.ReviewResult{
 						Approved: false, Issues: issues, Summary: "worker self-critique",
@@ -487,6 +528,13 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 									t.Output = strings.TrimSpace(t.Output) + sec
 								}
 							}
+							if role == plan.RoleWorker || role == "deep" {
+								if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
+									if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+										t.Output = strings.TrimSpace(t.Output) + sec
+									}
+								}
+							}
 							if r.StaticQuality {
 								if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
 									t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
@@ -503,7 +551,8 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 					coreOut = stripPostSections(t.Output)
 					incomplete = !multipass.LooksCompleteJSON(coreOut)
 					if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
-						!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) {
+						!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) &&
+						!quality.AcceptanceFailedInOutput(t.Output) {
 						break
 					}
 				}
@@ -639,6 +688,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		scopeWhy := r.scopeOK(current)
 		shellFail := hasShellFailureEvidence(current.Output)
 		smokeFail := quality.SmokeFailedInOutput(current.Output)
+		acceptFail := quality.AcceptanceFailedInOutput(current.Output)
 		staticFail := quality.StaticFailedInOutput(current.Output)
 		claimsFail := quality.ClaimsFailedInOutput(current.Output)
 		// Review-time static insurance: skipped-worker / already-satisfied paths
@@ -680,7 +730,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		// Never disk-auto-approve tester roles (they need passed JSON) or workers
 		// whose own ws_shell / deterministic smoke / static / claims gate failed — except rename.
 		fastPath := renameDisk ||
-			(current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing &&
+			(current.Role != plan.RoleTester && !shellFail && !smokeFail && !acceptFail && !staticFail && !claimsFail && !smokeMissing &&
 				(satisfied || diskWrite || diskSection) && scopeWhy == "")
 		if fastPath {
 			review.Approved = true
@@ -759,7 +809,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					return revErr
 				}
 				review = plan.ParseReviewJSON(reviewRaw)
-				if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing {
+				if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !acceptFail && !staticFail && !claimsFail && !smokeMissing {
 					if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 						review.Approved = true
 						review.Score = 80
@@ -803,7 +853,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			}
 			review = plan.ParseReviewJSON(reviewRaw)
 			// SLM fallback: trust clear worker completion + tool/disk evidence.
-			if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !staticFail && !claimsFail && !smokeMissing {
+			if !review.Approved && current.Role != plan.RoleTester && !shellFail && !smokeFail && !acceptFail && !staticFail && !claimsFail && !smokeMissing {
 				if satisfied || diskWrite || diskSection || (done && (looksLikeBrokenReview(reviewRaw) || hasEvidence)) {
 					review.Approved = true
 					review.Score = 80
@@ -819,8 +869,8 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				}
 			}
 		}
-		// Deterministic smoke / shell / static / claims failure beats any earlier auto-approve.
-		if review.Approved && (shellFail || smokeFail || staticFail || claimsFail || smokeMissing) && current.Role != plan.RoleTester && !renameDisk {
+		// Deterministic smoke / acceptance / shell / static / claims failure beats any earlier auto-approve.
+		if review.Approved && (shellFail || smokeFail || acceptFail || staticFail || claimsFail || smokeMissing) && current.Role != plan.RoleTester && !renameDisk {
 			review.Approved = false
 			review.Score = 20
 			switch {
@@ -830,6 +880,9 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			case staticFail:
 				review.Summary = "rejected: static quality gate (stubs/placeholders)"
 				review.Issues = []string{"stub/placeholder code detected — replace with real implementation"}
+			case acceptFail:
+				review.Summary = "rejected: acceptance smoke failed"
+				review.Issues = []string{"whitelisted acceptance command failed — make pytest/go test/main.py exit 0"}
 			case smokeFail:
 				review.Summary = "rejected: deterministic smoke failed"
 				review.Issues = []string{"Go ran py_compile/go test on focus files and it failed — corrector must fix"}
@@ -922,9 +975,19 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				detail = current.Error
 			}
 			r.fireIntervention(current.ID, "escalate",
-				fmt.Sprintf("%s needs human review — open Studio → task %s (precise fix / re-scope)",
-					current.ID, current.ID),
+				fmt.Sprintf("%s needs human review — decide in Studio (or wait for timeout)",
+					current.ID),
 				detail)
+
+			if r.OnEscalate != nil {
+				r.OnEscalate(ctx, board, current, detail)
+				// Reload task after HITL mutation (retry / re_scope / mark_done / abort).
+				if updated, ok := board.Get(current.ID); ok {
+					current = updated
+					board.UpdateTask(current)
+					r.persist(board)
+				}
+			}
 
 			if r.FailureHandler != nil {
 				failErr := fmt.Errorf("max retries exceeded: review rejected")
@@ -1055,6 +1118,7 @@ Rules:
 - Reject if output is only claims/JSON with no tool or disk evidence for edit tasks.
 - Reject if files_changed includes paths outside focus scope (especially unwanted main.go).
 - Reject if "## Deterministic smoke" shows FAILED or Observation has exit error / SyntaxError / traceback.
+- Reject if "## Acceptance smoke" shows FAILED (pytest / go test / python main.py from acceptance).
 - Reject if "## Static quality gate" shows FAILED (stubs/placeholders).
 - Reject if "## Claimed files gate" shows FAILED (hallucinated paths).
 - @explorer: approve if a real file path was found.
@@ -1113,6 +1177,7 @@ func stripPostSections(s string) string {
 	for _, marker := range []string{
 		"\n## Disk evidence\n",
 		"\n## Deterministic smoke\n",
+		"\n## Acceptance smoke\n",
 		"\n## Static quality\n",
 		"\n## Claims gate\n",
 	} {

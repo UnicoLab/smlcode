@@ -98,3 +98,12 @@ prompt/params control. Studio Pipeline tab + dynamic progress header follow the 
 Also: project completeness reference bar (LangGraph/FastAPI/CLI), real-query eval suite,
 loop SSE (`kind=loop`) with continue/abort UX, preserve harness tasks when capping to 8,
 docs for pipeline + updated agents/studio/config/architecture.
+
+## Runnable quality bar + escalate HITL (v0.7.1)
+**Done.** Push SLM output past "compiles": greenfield Python QA → pytest; whitelisted
+acceptance commands run after workers; critique until smoke/static/acceptance green;
+syntax-only QA cannot alone mark run success.
+
+Mid-execute escalate no longer banner-only: pipeline pauses that task with Studio modal
++ `GET/POST /api/escalate/*`; TUI `/escalate re_scope|retry|mark_done|abort`;
+config `escalate_ask` / `escalate_ask_timeout` (default ask / 30s → re_scope).

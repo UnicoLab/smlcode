@@ -126,7 +126,7 @@ function parseLoopEvent(e) {
 
 function PipelineHeader({
   phase, running, liveAgent, counts, intervention, turnMeter,
-  loopState, continueAsk, onContinue,
+  loopState, continueAsk, escalateAsk, onContinue,
   pipeOrder, pipeMeta, pipeGroups, slots,
 }) {
   const order = pipeOrder && pipeOrder.length ? pipeOrder : DEFAULT_PIPE;
@@ -135,7 +135,7 @@ function PipelineHeader({
   const idx = pipeIndex(phase, order);
   const total = order.length;
   const looping = !!(loopState && !LOOP_DONE_ACTIONS.has(loopState.action));
-  const awaiting = !!(continueAsk || (loopState && loopState.awaiting));
+  const awaiting = !!(continueAsk || escalateAsk || (loopState && loopState.awaiting));
   const rewindIdx = looping ? pipeIndex(loopState.to || phase, order) : -1;
   const effectiveIdx = looping && rewindIdx >= 0 ? Math.min(idx, rewindIdx) : idx;
   const doneCount = phase === "done" && !looping ? total : Math.max(0, effectiveIdx);
@@ -791,6 +791,7 @@ function App() {
   const [clarifyAnswers, setClarifyAnswers] = useState({});
   const [planAsk, setPlanAsk] = useState(null);
   const [continueAsk, setContinueAsk] = useState(null);
+  const [escalateAsk, setEscalateAsk] = useState(null);
   const [loopState, setLoopState] = useState(null);
   const [pipelineView, setPipelineView] = useState(null);
   const [pipeDraft, setPipeDraft] = useState(null);
@@ -1027,6 +1028,9 @@ function App() {
                 });
                 setClarifyAnswers(seed);
                 showToast("Scope interview — choose options or use recommended");
+              } else if (ask && ask.kind === "escalate") {
+                setEscalateAsk(ask);
+                showToast("⚠ " + (ask.task_id || "Task") + " needs your decision");
               } else if (ask && ask.kind === "continue") {
                 setContinueAsk(ask);
                 showToast("Retries exhausted — continue another wave?");
@@ -1043,6 +1047,7 @@ function App() {
             setClarifyAsk(null);
             setPlanAsk(null);
             setContinueAsk(null);
+            setEscalateAsk(null);
             setShellAsk(null);
           }
           if (e.kind === "intervention") {
@@ -1050,9 +1055,16 @@ function App() {
               code: e.scope || "quality",
               message: e.message || "harness intervention",
               detail: e.output || "",
+              taskId: e.task_id || "",
             };
             setIntervention(banner);
             showToast("⚠ " + banner.message);
+            if (banner.code === "escalate") {
+              // Recover modal if KindAsk raced / was missed.
+              api("/api/escalate/pending").then((p) => {
+                if (p && p.pending && p.ask) setEscalateAsk(p.ask);
+              }).catch(() => {});
+            }
           }
           if (e.kind === "loop") {
             const loop = parseLoopEvent(e);
@@ -1128,6 +1140,7 @@ function App() {
     setPhase("init");
     setLoopState(null);
     setContinueAsk(null);
+    setEscalateAsk(null);
     setIntervention(null);
     setNav("run"); // jump to Live so progress is obvious
     try {
@@ -1359,6 +1372,30 @@ function App() {
     showToast(labels[action] || action);
   }
 
+  async function submitEscalate(action) {
+    if (!escalateAsk) return;
+    await api("/api/escalate/answer", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    const taskId = escalateAsk.task_id || "";
+    setEscalateAsk(null);
+    setIntervention(null);
+    setLoopState((prev) => prev ? {
+      ...prev,
+      awaiting: false,
+      action: "escalate_resolved",
+      reason: (taskId || "task") + " → " + action,
+    } : prev);
+    const labels = {
+      re_scope: "Left in backlog for re-scope",
+      retry: "Retrying task",
+      mark_done: "Marked done",
+      abort: "Task aborted",
+    };
+    showToast((taskId ? taskId + ": " : "") + (labels[action] || action));
+  }
+
   async function saveConfig(patch) {
     // Send only patch keys — never round-trip Public() config (api_key "***", etc.).
     const body = { ...patch };
@@ -1583,6 +1620,7 @@ function App() {
         turnMeter={turnMeter}
         loopState={loopState}
         continueAsk={continueAsk}
+        escalateAsk={escalateAsk}
         onContinue={submitContinue}
         pipeOrder={livePipe.order}
         pipeMeta={livePipe.meta}
@@ -2503,6 +2541,39 @@ function App() {
                     <option value="off">off</option>
                   </select>
                 </label>
+                <label>Escalate ask
+                  <select
+                    value={config.escalate_ask || "ask"}
+                    onChange={(e) => saveConfig({ escalate_ask: e.target.value })}
+                  >
+                    <option value="ask">ask (pause for decision)</option>
+                    <option value="auto">auto (retry once)</option>
+                    <option value="off">off (leave in backlog)</option>
+                  </select>
+                </label>
+                <label>Escalate timeout (sec)
+                  <input
+                    type="number"
+                    min={5}
+                    max={600}
+                    defaultValue={
+                      typeof config.escalate_ask_timeout === "number"
+                        ? Math.max(5, Math.round(config.escalate_ask_timeout / 1e9))
+                        : 30
+                    }
+                    onBlur={(e) => saveConfig({ escalate_ask_timeout_sec: Number(e.target.value) })}
+                  />
+                </label>
+                <label>Continue ask
+                  <select
+                    value={config.continue_ask || "ask"}
+                    onChange={(e) => saveConfig({ continue_ask: e.target.value })}
+                  >
+                    <option value="ask">ask (after QA exhausted)</option>
+                    <option value="auto">auto (one more wave)</option>
+                    <option value="off">off</option>
+                  </select>
+                </label>
                 <label>Shell permission
                   <select
                     value={config.shell_permission || "allow"}
@@ -2655,6 +2726,45 @@ function App() {
         </div>
       ) : null}
 
+      {escalateAsk ? (
+        <div className="modal-backdrop escalate-modal" style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 85,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{
+            maxWidth: 640, width: "100%", maxHeight: "85vh", overflow: "auto",
+            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 16,
+          }}>
+            <h2 style={{ marginTop: 0 }}>⚠ Human review needed</h2>
+            <p className="lead">{escalateAsk.summary || "Task escalated after max retries."}</p>
+            <p style={{ color: "var(--muted)", fontSize: "0.84rem" }}>
+              Pipeline is paused on this task
+              {escalateAsk.timeout_sec ? ` · timeout ${escalateAsk.timeout_sec}s → re-scope` : ""}
+            </p>
+            <p style={{ fontSize: "0.85rem" }}>
+              <strong>{escalateAsk.task_id}</strong>
+              {escalateAsk.title ? ` — ${escalateAsk.title}` : ""}
+              {escalateAsk.role ? ` · @${escalateAsk.role}` : ""}
+            </p>
+            {(escalateAsk.files || []).length > 0 ? (
+              <p style={{ fontSize: "0.8rem" }}><strong>Files:</strong> {escalateAsk.files.join(", ")}</p>
+            ) : null}
+            {escalateAsk.detail ? (
+              <pre style={{
+                whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 180, overflow: "auto",
+                background: "var(--bg)", padding: 10, borderRadius: 8,
+              }}>{escalateAsk.detail}</pre>
+            ) : null}
+            <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 12, flexWrap: "wrap" }}>
+              <button className="ghost danger" onClick={() => submitEscalate("abort")}>Abort task</button>
+              <button className="ghost" onClick={() => submitEscalate("re_scope")}>Re-scope / fix later</button>
+              <button className="ghost" onClick={() => submitEscalate("mark_done")}>Mark done</button>
+              <button onClick={() => submitEscalate("retry")}>Retry now</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {continueAsk ? (
         <div className="modal-backdrop" style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 83,
@@ -2713,7 +2823,9 @@ function App() {
           {health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : "…"}
         </span>
         <span className="footer-live">
-          {continueAsk || (loopState && loopState.awaiting)
+          {escalateAsk
+            ? `⏳ escalate ${escalateAsk.task_id || ""}?`
+            : continueAsk || (loopState && loopState.awaiting)
             ? "⏳ continue/abort?"
             : loopState && !LOOP_DONE_ACTIONS.has(loopState.action)
               ? `↺ ${LOOP_LABELS[loopState.action] || "loop"}${loopState.wave ? " W" + loopState.wave : ""}`

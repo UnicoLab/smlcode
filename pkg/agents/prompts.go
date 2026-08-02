@@ -104,6 +104,19 @@ If smoke/compile failed, fix syntax first, then re-check with ws_shell (py_compi
 If static quality failed, replace stubs (pass/…/NotImplemented/TODO) with real code, then re-smoke.
 STRICT JSON: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
 
+const PromptEscalate = `You are the escalate arbitrator. A coding task hit max review retries and the human did not answer in time.
+Decide ONE action. No tools. No code. Be decisive.
+
+Actions (pick exactly one):
+- retry — reopen for another implement/correct wave (fixable smoke/static/acceptance failures, stubs that can be filled)
+- re_scope — leave in backlog for a human to shrink/clarify (acceptance vague, missing product decisions, secrets)
+- abort — block permanently (impossible, out of scope, destructive risk)
+- mark_done — ONLY if disk evidence already meets acceptance (rare; prefer retry if unsure)
+
+STRICT JSON only:
+{"action":"retry|re_scope|abort|mark_done","reason":"one short sentence","confidence":0.0-1.0}
+Prefer retry over abort. Prefer re_scope over mark_done when unsure.`
+
 const PromptPlaceholder = `You are the placeholder/stub fill specialist. Tools allowed.
 Input lists precise gaps (path:line — reason). For EACH gap:
 1) ws_read the file

@@ -167,8 +167,11 @@ type Config struct {
 	ContinueAskTimeout time.Duration `yaml:"continue_ask_timeout" json:"continue_ask_timeout"`
 	// EscalateAsk: ask | auto | off — pause on max-retry escalate for HITL.
 	EscalateAsk string `yaml:"escalate_ask" json:"escalate_ask"`
-	// EscalateAskTimeout for ask mode (timeout → re_scope; default 30s).
+	// EscalateAskTimeout for ask mode (timeout → @escalate SLM decides; default 30s).
 	EscalateAskTimeout time.Duration `yaml:"escalate_ask_timeout" json:"escalate_ask_timeout"`
+	// EscalateTimeoutAgent is the specialist that decides on HITL timeout
+	// (empty = auto: escalate → reviewer → coordinator).
+	EscalateTimeoutAgent string `yaml:"escalate_timeout_agent" json:"escalate_timeout_agent"`
 
 	DryRun  bool `yaml:"dry_run" json:"dry_run"`
 	Verbose bool `yaml:"verbose" json:"verbose"`
@@ -283,6 +286,7 @@ func Default(root string) *Config {
 		ContinueAskTimeout:    2 * time.Minute,
 		EscalateAsk:           "ask",
 		EscalateAskTimeout:    30 * time.Second,
+		EscalateTimeoutAgent:  "", // auto-pick @escalate
 		Listen:                "127.0.0.1:7420",
 		ClaudeCodeBin:         "claude",
 		Permission:            "auto",
@@ -609,6 +613,7 @@ type Patch struct {
 	ContinueAskTimeoutSec  *int      `json:"continue_ask_timeout_sec,omitempty"`
 	EscalateAsk            *string   `json:"escalate_ask,omitempty"`
 	EscalateAskTimeoutSec  *int      `json:"escalate_ask_timeout_sec,omitempty"`
+	EscalateTimeoutAgent   *string   `json:"escalate_timeout_agent,omitempty"`
 	AutoApprove            *bool     `json:"auto_approve,omitempty"`
 	ShellPermission        *string   `json:"shell_permission,omitempty"`
 	ShellAskTimeoutSec     *int      `json:"shell_ask_timeout_sec,omitempty"`
@@ -729,6 +734,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.EscalateAskTimeoutSec != nil && *p.EscalateAskTimeoutSec > 0 {
 		c.EscalateAskTimeout = time.Duration(*p.EscalateAskTimeoutSec) * time.Second
+	}
+	if p.EscalateTimeoutAgent != nil {
+		c.EscalateTimeoutAgent = strings.TrimSpace(*p.EscalateTimeoutAgent)
 	}
 	if p.AutoApprove != nil {
 		c.AutoApprove = *p.AutoApprove

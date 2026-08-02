@@ -23,6 +23,7 @@ func (o *Orchestrator) OnEscalate(h EscalateHandler) {
 }
 
 // runEscalateAsk pauses the calling task until the user acts (or timeout/auto).
+// On timeout, @escalate (or configured expert) decides the action.
 // Mutates board in place and persists.
 func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t plan.Task, detail string) plan.EscalateAnswer {
 	ans := plan.EscalateAnswer{Action: plan.EscalateActionReScope}
@@ -76,8 +77,8 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		Wave:     o.waveCounter,
 	})
 	o.emitFull("execute", stream.KindAsk, "escalate", t.ID,
-		fmt.Sprintf("%s escalated — choose re-scope / retry / mark done / abort (timeout %s)",
-			t.ID, timeout),
+		fmt.Sprintf("%s escalated — choose re-scope / retry / mark done / abort (timeout %s → @%s decides)",
+			t.ID, timeout, o.escalateDecideRole()),
 		"", payload)
 	o.emitFull("execute", stream.KindIntervention, "harness", t.ID,
 		ask.Summary+" — waiting for your decision",
@@ -97,6 +98,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		ok, err := hitl.WaitAnswers(ctx, o.cfg.SlmDir(), "escalate", timeout, &ans)
 		if err != nil {
 			hitl.Clear(o.cfg.SlmDir(), "escalate")
+			// Context canceled (user stop) — leave in backlog, do not spend an LLM turn.
 			ans.Action = plan.EscalateActionReScope
 			plan.ApplyEscalateAction(board, t.ID, ans.Action, "escalate wait canceled")
 			o.persistBoard(board)
@@ -106,15 +108,16 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	}
 	hitl.Clear(o.cfg.SlmDir(), "escalate")
 	if !got {
-		o.emit("execute", fmt.Sprintf("escalate timeout on %s — re_scope", t.ID), "")
+		role := o.escalateDecideRole()
+		o.emit("execute", fmt.Sprintf("escalate timeout on %s — @%s deciding", t.ID, role), "")
 		o.emitLoop("execute", LoopEvent{
 			Action: "escalate_timeout",
-			Reason: t.ID + " escalate timed out → re_scope",
+			Reason: t.ID + " escalate timed out → @" + role + " decides",
 			From:   "execute",
 			To:     "execute",
 			Wave:   o.waveCounter,
 		})
-		ans.Action = plan.EscalateActionReScope
+		ans = o.escalateTimeoutDecide(ctx, board, t, detail)
 	} else {
 		ans.Action = plan.NormalizeEscalateAction(ans.Action)
 		o.emitFull("execute", stream.KindOutput, "escalate", t.ID,
@@ -130,4 +133,80 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		Wave:   o.waveCounter,
 	})
 	return ans
+}
+
+// escalateDecideRole picks the specialist that arbitrates escalate timeouts.
+func (o *Orchestrator) escalateDecideRole() string {
+	if o != nil && o.cfg != nil {
+		if id := strings.TrimSpace(o.cfg.EscalateTimeoutAgent); id != "" {
+			return id
+		}
+	}
+	// Prefer dedicated @escalate, then quality expert @reviewer, then coordinators.
+	for _, id := range []string{plan.RoleEscalate, plan.RoleReviewer, "coordinator", "orchestrator"} {
+		if o != nil && o.factory != nil {
+			if _, err := o.factory.Create(id); err == nil {
+				return id
+			}
+		}
+	}
+	return plan.RoleEscalate
+}
+
+// escalateTimeoutDecide asks the SLM arbitrator; falls back to a safe heuristic.
+func (o *Orchestrator) escalateTimeoutDecide(ctx context.Context, board *plan.Board, t plan.Task, detail string) plan.EscalateAnswer {
+	role := o.escalateDecideRole()
+	prompt := formatEscalateDecidePrompt(t, detail)
+	o.emitAgent("execute", role, t.ID, "escalate timeout — SLM deciding", strings.Join(t.Files, ", "), "")
+	out, err := o.runRoleTracked(ctx, role, t.ID, prompt)
+	if err != nil || strings.TrimSpace(out) == "" {
+		ans := plan.HeuristicEscalateDecide(t, detail)
+		o.emitFull("execute", stream.KindOutput, role, t.ID,
+			"escalate SLM unavailable — heuristic: "+ans.Action, "", ans.Notes)
+		return ans
+	}
+	o.emitFull("execute", stream.KindOutput, role, t.ID, "escalate decide", "", truncate(out, 800))
+	if d, ok := plan.ParseEscalateDecide(out); ok {
+		notes := strings.TrimSpace(d.Reason)
+		if notes == "" {
+			notes = "timeout SLM (@" + role + ") → " + d.Action
+		} else {
+			notes = "timeout SLM (@" + role + "): " + notes
+		}
+		return plan.EscalateAnswer{Action: d.Action, Notes: notes}
+	}
+	ans := plan.HeuristicEscalateDecide(t, detail)
+	ans.Notes = strings.TrimSpace(ans.Notes + " (unparseable SLM output)")
+	return ans
+}
+
+func formatEscalateDecidePrompt(t plan.Task, detail string) string {
+	var b strings.Builder
+	b.WriteString("Human escalate HITL timed out. Decide the next action for this task.\n\n")
+	b.WriteString("## Task\n")
+	b.WriteString(fmt.Sprintf("- id: %s\n- title: %s\n- role: %s\n", t.ID, t.Title, t.Role))
+	if len(t.Files) > 0 {
+		b.WriteString("- files: " + strings.Join(t.Files, ", ") + "\n")
+	}
+	if strings.TrimSpace(t.Acceptance) != "" {
+		b.WriteString("- acceptance: " + truncate(t.Acceptance, 400) + "\n")
+	}
+	if strings.TrimSpace(t.Error) != "" {
+		b.WriteString("- error: " + truncate(t.Error, 300) + "\n")
+	}
+	if strings.TrimSpace(t.Review) != "" {
+		b.WriteString("- review: " + truncate(t.Review, 500) + "\n")
+	}
+	if strings.TrimSpace(detail) != "" {
+		b.WriteString("\n## Escalate detail\n")
+		b.WriteString(truncate(detail, 1200))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(t.Output) != "" {
+		b.WriteString("\n## Last output (truncated)\n")
+		b.WriteString(truncate(t.Output, 1500))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nReturn STRICT JSON: {\"action\":\"retry|re_scope|abort|mark_done\",\"reason\":\"…\",\"confidence\":0.0-1.0}\n")
+	return b.String()
 }

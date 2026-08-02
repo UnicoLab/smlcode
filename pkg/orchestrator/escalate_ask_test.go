@@ -59,11 +59,12 @@ func TestRunEscalateAskAutoRetry(t *testing.T) {
 	}
 }
 
-func TestRunEscalateAskTimeoutReScope(t *testing.T) {
+func TestRunEscalateAskTimeoutSLMOrHeuristic(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Default(root)
 	cfg.EscalateAsk = "ask"
 	cfg.EscalateAskTimeout = 80 * time.Millisecond
+	cfg.DryRun = true // no live LLM — heuristic / dry agent path
 	if err := InitWorkspace(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -73,16 +74,21 @@ func TestRunEscalateAskTimeoutReScope(t *testing.T) {
 	}
 	board := &plan.Board{Tasks: []plan.Task{{
 		ID: "T4", Role: plan.RoleWorker, Column: plan.ColToScope,
-		Error: "needs human",
+		Error: "static quality failed — Placeholder stub",
 	}}}
 	o.persistBoard(board)
 	start := time.Now()
-	ans := o.runEscalateAsk(context.Background(), board, board.Tasks[0], "detail")
-	if time.Since(start) > 3*time.Second {
-		t.Fatal("timeout took too long")
+	ans := o.runEscalateAsk(context.Background(), board, board.Tasks[0], "Placeholder implementation")
+	if time.Since(start) > 8*time.Second {
+		t.Fatal("timeout+decide took too long")
 	}
-	if ans.Action != plan.EscalateActionReScope {
-		t.Fatalf("action=%s", ans.Action)
+	// Timeout must not hardcode re_scope — SLM or heuristic picks (retry for stubs).
+	if ans.Action != plan.EscalateActionRetry && ans.Action != plan.EscalateActionReScope &&
+		ans.Action != plan.EscalateActionAbort && ans.Action != plan.EscalateActionMarkDone {
+		t.Fatalf("unexpected action=%s", ans.Action)
+	}
+	if board.Tasks[0].Column == plan.ColToScope && ans.Action == plan.EscalateActionRetry {
+		t.Fatal("retry should reopen ready_to_dev")
 	}
 }
 

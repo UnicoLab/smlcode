@@ -63,7 +63,7 @@ Studio blocks the relevant step with a modal (pipeline header shows **Awaiting y
 |-------|------|---------|-----------------|
 | Clarify | vague PRD interview | pick options | 2m → recommended |
 | Plan approve | before execute | approve / replan | 2m → approve |
-| **Escalate** | task hits max review retries | **re-scope / retry / mark done / abort** | **30s → re-scope** |
+| **Escalate** | task hits max review retries | **re-scope / retry / mark done / abort** | **30s → @escalate SLM decides** |
 | Continue | QA/retries exhausted | continue / stop / flag | 2m → stop |
 | Shell | `shell_permission=ask` | approve / deny | 2m |
 
@@ -71,11 +71,13 @@ Config (Settings → Planning / scope, or YAML):
 
 ```yaml
 escalate_ask: ask              # ask | auto | off
-escalate_ask_timeout: 30s
+escalate_ask_timeout: 30s      # then @escalate (or escalate_timeout_agent) decides
+escalate_timeout_agent: ""     # empty = @escalate → @reviewer → @coordinator
 continue_ask: ask
 ```
 
 TUI: `/escalate re_scope|retry|mark_done|abort` while the banner shows escalate pending.
+On timeout the dedicated **@escalate** arbitrator picks retry / re-scope / abort / mark_done.
 
 API: `GET /api/escalate/pending` · `POST /api/escalate/answer` `{"action":"retry"}`.
 

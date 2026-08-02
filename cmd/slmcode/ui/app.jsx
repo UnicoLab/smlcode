@@ -2564,6 +2564,14 @@ function App() {
                     onBlur={(e) => saveConfig({ escalate_ask_timeout_sec: Number(e.target.value) })}
                   />
                 </label>
+                <label>Escalate timeout agent
+                  <input
+                    type="text"
+                    placeholder="escalate (auto)"
+                    defaultValue={config.escalate_timeout_agent || ""}
+                    onBlur={(e) => saveConfig({ escalate_timeout_agent: e.target.value.trim() })}
+                  />
+                </label>
                 <label>Continue ask
                   <select
                     value={config.continue_ask || "ask"}
@@ -2739,7 +2747,9 @@ function App() {
             <p className="lead">{escalateAsk.summary || "Task escalated after max retries."}</p>
             <p style={{ color: "var(--muted)", fontSize: "0.84rem" }}>
               Pipeline is paused on this task
-              {escalateAsk.timeout_sec ? ` · timeout ${escalateAsk.timeout_sec}s → re-scope` : ""}
+              {escalateAsk.timeout_sec
+                ? ` · timeout ${escalateAsk.timeout_sec}s → @escalate (SLM) decides`
+                : " · timeout → @escalate (SLM) decides"}
             </p>
             <p style={{ fontSize: "0.85rem" }}>
               <strong>{escalateAsk.task_id}</strong>

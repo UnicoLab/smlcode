@@ -32,6 +32,7 @@ const (
 	RoleContext     = "context"
 	RoleTester      = "tester"
 	RolePlaceholder = "placeholder" // detect/fill stubs; flag precise gaps
+	RoleEscalate    = "escalate"    // HITL timeout arbitrator (re_scope/retry/mark_done/abort)
 )
 
 // Task is an atomic, SLM-sized unit of work.

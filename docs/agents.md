@@ -29,6 +29,8 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `reviewer` | — | approve JSON | Critic 🔍 |
 | `corrector` | ✅ | status | On reject 🔧 |
 | `tester` | ✅ | passed + commands | Real shell verify (pytest/go/smoke) ✅ |
+| `placeholder` | ✅ | status + gaps | Fill stubs / flag precise gaps 🩹 |
+| `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
 
 ```bash

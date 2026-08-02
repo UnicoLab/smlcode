@@ -127,7 +127,8 @@ qa_gate_command: ""       # empty = auto-detect (go/pytest/uv/npm/compileall)
 qa_gate_max_rounds: 3
 post_worker_smoke: true   # py_compile / go test after each worker before review
 escalate_ask: ask         # ask | auto | off — pause on max-retry escalate
-escalate_ask_timeout: 30s # timeout → re_scope (Studio modal / TUI /escalate)
+escalate_ask_timeout: 30s # timeout → @escalate SLM decides (not blind re_scope)
+escalate_timeout_agent: "" # empty = auto (@escalate → @reviewer → @coordinator)
 continue_ask: ask         # ask | auto | off — after QA exhausted
 continue_ask_timeout: 2m
 ```

@@ -33,6 +33,7 @@ type EscalateAsk struct {
 	Summary   string   `json:"summary"`
 	Options   []string `json:"options"` // re_scope | retry | mark_done | abort
 	TimeoutS  int      `json:"timeout_sec,omitempty"`
+	OnTimeout string   `json:"on_timeout,omitempty"` // "slm" — @escalate decides
 	CreatedAt string   `json:"created_at"`
 }
 
@@ -77,6 +78,7 @@ func BuildEscalateAsk(t Task, detail string, timeoutSec int) EscalateAsk {
 		Summary:   sum,
 		Options:   []string{EscalateActionReScope, EscalateActionRetry, EscalateActionMarkDone, EscalateActionAbort},
 		TimeoutS:  timeoutSec,
+		OnTimeout: "slm",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 }

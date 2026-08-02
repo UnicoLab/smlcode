@@ -65,14 +65,22 @@ func TestStudioUIInteraction(t *testing.T) {
 				`id: "queries"`, "/api/queries", "openQuery", "queryDocTab",
 				"openAgent", "showDebugEvents", "/api/agents/",
 				"intervention", "turnMeter", "intervention-banner",
+				"LiveLogs", "LiveStatusCard", "LiveEnrichBox", "live-overview", "live-logs-panel",
+				"PipelineHeader", "PIPE_GROUPS", "pipeline-header", "pipeline-groups",
+				"continueAsk", "/api/continue/answer", "polish", "Keep precise flags",
 			} {
 				if !strings.Contains(src, marker) {
 					t.Fatalf("app.jsx missing %q", marker)
 				}
 			}
 		}
-		if path == "/styles.css" && !strings.Contains(string(body), "--accent") {
-			t.Fatal("styles.css missing design tokens")
+		if path == "/styles.css" {
+			css := string(body)
+			for _, marker := range []string{"--accent", "pipeline-header", "pipeline-groups", "live-logs-panel"} {
+				if !strings.Contains(css, marker) {
+					t.Fatalf("styles.css missing %q", marker)
+				}
+			}
 		}
 	}
 

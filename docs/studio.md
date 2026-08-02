@@ -30,18 +30,19 @@ slmcode studio --listen 127.0.0.1:7421
 ├──────────────────────────────────────────────────────────┤
 │  Pipeline: init → skills → … → execute → learn           │
 ├──────────┬────────────────────────────┬──────────────────┤
-│  Nav     │  Kanban / Live             │  Docs / Settings │
+│  Nav     │  Kanban / Live / Pipeline  │  Docs / Settings │
 │  Agents  │  Task inspector            │  CONTEXT/MEMORY  │
-│  Skills  │                            │                  │
+│  Skills  │  Phase · slots editor      │                  │
 └──────────┴────────────────────────────┴──────────────────┘
 ```
 
 | Zone | Job |
 |------|-----|
 | 🎯 Query bar | Start / stop |
-| 🏭 Pipeline strip | Phase visibility |
-| 📡 Live | `@agent`, scope, patches, output |
-| 📋 Kanban | Drag, promote, edit mid-run |
+| 🏭 Pipeline strip | Dynamic phases from `.slmcode/pipeline.yaml` |
+| 🧩 Pipeline tab | Bind agents per phase, insert slots, loop roles |
+| 📡 Live | `@agent`, scope, patches, slots, output |
+| 📋 Kanban | Drag, promote, edit mid-run (any agent role) |
 | 💾 Docs | Live markdown memory |
 | ⚙️ Settings | Provider, knobs, safety |
 
@@ -78,12 +79,16 @@ curl -N http://127.0.0.1:7420/api/events
 |--------|------|
 | `GET` | `/api/health` |
 | `GET`/`PUT` | `/api/config` |
+| `GET`/`PUT` | `/api/pipeline` · `POST /api/pipeline/reset` |
 | `GET`/`PUT` | `/api/docs`, `/api/docs/{name}` |
 | `GET`/`POST`/`PATCH`/`DELETE` | board / tasks |
-| `GET` | `/api/skills` `/api/agents` `/api/models` |
+| `GET`/`POST`/`PUT`/`DELETE` | `/api/agents` (custom + overrides) |
+| `GET` | `/api/skills` `/api/models` |
 | `POST` | `/api/runs` `/api/runs/stop` |
 | `GET` | `/api/runs/latest` `/api/events` |
 | `GET` | `/` SPA |
+
+→ Full pipeline schema: [Pipeline](pipeline.md)
 
 ```bash
 curl -s http://127.0.0.1:7420/api/health | jq .

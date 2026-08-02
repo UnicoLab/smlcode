@@ -157,11 +157,28 @@ or CLI flags. If unsure, grep first.`,
 			Topic: "Greenfield Scaffold", TokenCost: 110,
 			Keywords: []string{
 				"create", "scaffold", "new project", "greenfield", "from scratch", "mvp", "cli",
+				"setup", "template", "folder structure", "boilerplate",
 			},
 			RequiresTools: []string{"ws_write", "ws_shell"},
 			Body: `Create only files listed in the task. Prefer a single entrypoint + minimal deps.
 Add a tiny smoke path (pytest or py_compile / go test). No leftover placeholders.
 After writes: install deps if needed, run smoke, then status=done.`,
+		},
+		{
+			Topic: "LangGraph Class Agent", TokenCost: 140,
+			Keywords: []string{
+				"langgraph", "langchain", "stategraph", "class approach", "class-based",
+				"agent template", "graph agent",
+			},
+			RequiresTools: []string{"ws_write", "ws_shell"},
+			Body: `Expert bar for LangGraph class-agent templates (match or beat this):
+- from langgraph.graph import StateGraph, END (NOT "from langgraph import Graph")
+- state.py TypedDict; agents/base.py class with build_graph()→compile()→invoke()
+- Real packages with substance (not empty __init__.py only): agents/, chains/, prompts/, memory/, tools/, config/
+- LangChain: ChatPromptTemplate / Runnable chain + @tool registry
+- Ship main.py demo invoke + tests/test_smoke.py + requirements.txt (langgraph, langchain-core, pytest)
+- ZERO stub markers or fake {"output":"run_result"} returns
+After writes: pip install -r requirements.txt && python -m pytest -q && python main.py`,
 		},
 	}
 	return append(base, AlgorithmKnowledge()...)

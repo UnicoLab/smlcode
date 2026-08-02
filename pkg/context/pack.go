@@ -218,7 +218,7 @@ func DefaultDocsForRole(role string) []string {
 		return []string{DocQuery, DocContext, DocProject}
 	case "splitter":
 		return []string{DocPlan, DocQuery}
-	case "worker", "corrector", "deep":
+	case "worker", "corrector", "deep", "placeholder":
 		return []string{DocQuery, DocContext}
 	case "reviewer":
 		return []string{DocQuery}
@@ -234,7 +234,7 @@ func DefaultDocsForRole(role string) []string {
 // LeanDocsForRole returns a minimal doc set for execute-time / multi-turn packs.
 func LeanDocsForRole(role string) []string {
 	switch role {
-	case "worker", "corrector", "deep":
+	case "worker", "corrector", "deep", "placeholder":
 		return []string{DocQuery, DocContext}
 	case "planner", "splitter", "architect":
 		return []string{DocQuery, DocContext}

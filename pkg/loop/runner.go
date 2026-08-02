@@ -90,7 +90,10 @@ type Runner struct {
 	WaveSnapshots bool
 	// RewindMgr stores wave file snapshots when WaveSnapshots is on.
 	RewindMgr *rewind.Manager
-	waveN     int
+	// ReviewerRole / CorrectorRole come from pipeline.execute (defaults reviewer/corrector).
+	ReviewerRole  string
+	CorrectorRole string
+	waveN         int
 	// ResumedReact is set true when any task continued from message history
 	// (used by tests / observability to assert no cold replan).
 	ResumedReact bool
@@ -372,14 +375,14 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		}
 		if needNudge {
 			r.Log("%s produced incomplete finalize; running corrector once", t.ID)
-			r.fire("agent_start", plan.RoleCorrector, t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
+			r.fire("agent_start", r.correctorID(), t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
 			corrIn := formatCorrectPrompt(t, plan.ReviewResult{
 				Approved: false,
 				Issues:   []string{nudgeIssue},
 				Summary:  "incomplete finalize",
 			})
 			corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-				AgentID: plan.RoleCorrector,
+				AgentID: r.correctorID(),
 				Input:   corrIn,
 				Timeout: r.Timeout, ShareState: true,
 			}}, r.Shared)
@@ -389,7 +392,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 					t.Output = out
 				}
 			}
-			r.fire("agent_end", plan.RoleCorrector, t.ID, "corrector finished", "", truncate(t.Output, 800))
+			r.fire("agent_end", r.correctorID(), t.ID, "corrector finished", "", truncate(t.Output, 800))
 		}
 		mergeFilesChanged(&t)
 		// Attach disk evidence hint for reviewer.
@@ -446,7 +449,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 				}
 				for pass := 1; pass <= passes; pass++ {
 					r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
-					r.fire("agent_start", plan.RoleCorrector, t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
+					r.fire("agent_start", r.correctorID(), t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
 					issues := []string{
 						"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
 					}
@@ -467,7 +470,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 						Approved: false, Issues: issues, Summary: "worker self-critique",
 					})
 					corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-						AgentID: plan.RoleCorrector, Input: corrIn,
+						AgentID: r.correctorID(), Input: corrIn,
 						Timeout: r.Timeout, ShareState: true,
 					}}, r.Shared)
 					if len(corr) > 0 {
@@ -496,7 +499,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 							}
 						}
 					}
-					r.fire("agent_end", plan.RoleCorrector, t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
+					r.fire("agent_end", r.correctorID(), t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
 					coreOut = stripPostSections(t.Output)
 					incomplete = !multipass.LooksCompleteJSON(coreOut)
 					if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
@@ -526,6 +529,20 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		return context.Canceled
 	}
 	return nil
+}
+
+func (r *Runner) reviewerID() string {
+	if r != nil && strings.TrimSpace(r.ReviewerRole) != "" {
+		return strings.TrimSpace(r.ReviewerRole)
+	}
+	return plan.RoleReviewer
+}
+
+func (r *Runner) correctorID() string {
+	if r != nil && strings.TrimSpace(r.CorrectorRole) != "" {
+		return strings.TrimSpace(r.CorrectorRole)
+	}
+	return plan.RoleCorrector
 }
 
 func normalizeExecRole(role string) string {
@@ -624,6 +641,19 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		smokeFail := quality.SmokeFailedInOutput(current.Output)
 		staticFail := quality.StaticFailedInOutput(current.Output)
 		claimsFail := quality.ClaimsFailedInOutput(current.Output)
+		// Review-time static insurance: skipped-worker / already-satisfied paths
+		// never ran CheckStaticQuality — catch Placeholder stubs before fast-path.
+		if r.StaticQuality && !staticFail && !renameDisk {
+			if issues := quality.CheckStaticQuality(r.Root, current); len(issues) > 0 {
+				current.Output = strings.TrimSpace(current.Output) + quality.FormatStaticSection(issues)
+				board.UpdateTask(current)
+				staticFail = true
+				r.Log("%s review-time static FAILED (%d issue(s))", current.ID, len(issues))
+				r.fireIntervention(current.ID, "review",
+					"stub/placeholder code blocked auto-approve — needs real implementation",
+					quality.FormatStaticSection(issues))
+			}
+		}
 		smokeFiles := append([]string{}, current.Files...)
 		smokeFiles = append(smokeFiles, parseFilesChanged(current.Output)...)
 		// Review-time smoke insurance: if PostWorkerSmoke somehow didn't attach a
@@ -679,7 +709,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					}, `{"approved":true,"score":85,"summary":"auto-approved: acceptance race won"}`)
 				},
 			}, {
-				Role: plan.RoleReviewer, Prompt: reviewIn, Required: false,
+				Role: r.reviewerID(), Prompt: reviewIn, Required: false,
 			}}
 			if r.MaxParallel >= 3 {
 				slots = append(slots, SpecSlot{
@@ -687,7 +717,8 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					Prompt: reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
 				})
 			}
-			r.fire("agent_start", plan.RoleReviewer, current.ID, "speculative review race", strings.Join(current.Files, ", "), "")
+			revRole := r.reviewerID()
+			r.fire("agent_start", revRole, current.ID, "speculative review race", strings.Join(current.Files, ", "), "")
 			r.Log("%s speculative review (%d paths, max_parallel=%d)", current.ID, len(slots), r.MaxParallel)
 			res := r.speculate(ctx, slots)
 			var acceptOut, revOut, strictOut string
@@ -698,11 +729,13 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 					if !sr.Skipped && sr.Err == nil {
 						acceptOut = sr.Output
 					}
-				case plan.RoleReviewer:
-					revOut, revErr = sr.Output, sr.Err
 				case "reviewer-strict":
 					if !sr.Skipped && strings.TrimSpace(sr.Output) != "" {
 						strictOut = sr.Output
+					}
+				default:
+					if sr.Role == revRole {
+						revOut, revErr = sr.Output, sr.Err
 					}
 				}
 			}
@@ -743,10 +776,10 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				}
 			}
 		} else {
-			r.fire("agent_start", plan.RoleReviewer, current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
+			r.fire("agent_start", r.reviewerID(), current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
 			reviewIn := formatReviewPrompt(current)
 			results, err := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-				AgentID: plan.RoleReviewer, Input: reviewIn,
+				AgentID: r.reviewerID(), Input: reviewIn,
 				Timeout: r.Timeout, ShareState: true,
 			}}, r.Shared)
 			if len(results) > 0 {
@@ -858,7 +891,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		if endOut == "" {
 			endOut = review.Summary
 		}
-		r.fire("agent_end", plan.RoleReviewer, current.ID,
+		r.fire("agent_end", r.reviewerID(), current.ID,
 			fmt.Sprintf("review approved=%v score=%d", review.Approved, review.Score),
 			"", endOut)
 
@@ -883,6 +916,15 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			board.UpdateTask(current)
 			r.persist(board)
 			r.Log("%s escalated to to_scope after %d retries", current.ID, r.MaxRetries)
+			// Surface in Studio/TUI so humans see review / precise-fix prompts.
+			detail := strings.TrimSpace(current.Review)
+			if detail == "" {
+				detail = current.Error
+			}
+			r.fireIntervention(current.ID, "escalate",
+				fmt.Sprintf("%s needs human review — open Studio → task %s (precise fix / re-scope)",
+					current.ID, current.ID),
+				detail)
 
 			if r.FailureHandler != nil {
 				failErr := fmt.Errorf("max retries exceeded: review rejected")
@@ -897,11 +939,11 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		board.UpdateTask(current)
 		r.persist(board)
 		r.Log("%s correcting (attempt %d)", current.ID, attempt+1)
-		r.fire("agent_start", plan.RoleCorrector, current.ID, "correction pass", strings.Join(current.Files, ", "), "")
+		r.fire("agent_start", r.correctorID(), current.ID, "correction pass", strings.Join(current.Files, ", "), "")
 
 		corrIn := formatCorrectPrompt(current, review)
 		corrResults, corrErr := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-			AgentID: plan.RoleCorrector, Input: corrIn,
+			AgentID: r.correctorID(), Input: corrIn,
 			Timeout: r.Timeout, ShareState: true,
 		}}, r.Shared)
 		if len(corrResults) > 0 {
@@ -927,7 +969,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		if hint := r.diskEvidenceHint(current, baseline); hint != "" {
 			current.Output = strings.TrimSpace(current.Output) + "\n\n## Disk evidence\n" + hint
 		}
-		r.fire("agent_end", plan.RoleCorrector, current.ID, "corrector finished", "", truncate(current.Output, 800))
+		r.fire("agent_end", r.correctorID(), current.ID, "corrector finished", "", truncate(current.Output, 800))
 		current.MoveTo(plan.ColInReview)
 		board.UpdateTask(current)
 		r.persist(board)
@@ -1634,11 +1676,17 @@ func alreadySatisfied(root string, t plan.Task) bool {
 		return true
 	}
 	blob := strings.ToLower(t.Title + " " + StripScopedPack(t.Description) + " " + t.Acceptance)
-	// Create/scaffold tasks: acceptance met when the task's declared files exist.
+	// Create/scaffold tasks: acceptance met when the task's declared files exist
+	// AND pass static quality (no Placeholder stubs — TestSLMs regression).
 	// Use t.Files only (not expandTaskFocus) so scaffold prefixes don't inflate "needed".
 	// Keep this narrow — "implement"/"write"/"edit" still need real write evidence.
 	if strings.Contains(blob, "create") || strings.Contains(blob, "scaffold") ||
 		strings.Contains(blob, "initialize") || strings.Contains(blob, "greenfield") {
+		// Implement/class-agent work is never "already satisfied" by mere existence.
+		if strings.Contains(blob, "implement") || strings.Contains(blob, "class") ||
+			strings.Contains(blob, "langgraph") || strings.Contains(blob, "langchain") {
+			return false
+		}
 		targets := t.Files
 		if len(targets) == 0 {
 			targets = plan.InferCreateFiles(blob)
@@ -1658,6 +1706,9 @@ func alreadySatisfied(root string, t plan.Task) bool {
 			}
 		}
 		if needed > 0 && present >= needed {
+			if len(quality.CheckStaticQuality(root, t)) > 0 {
+				return false
+			}
 			return true
 		}
 	}

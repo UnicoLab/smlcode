@@ -86,6 +86,24 @@ func TestEnsureTaskPRDs(t *testing.T) {
 	}
 }
 
+func TestIsVagueAcceptanceRejectsExistenceOnly(t *testing.T) {
+	vague := []string{
+		"done",
+		"Step completed with tool evidence",
+		"All three files exist and contain valid LangChain abstractions with proper imports and usage.",
+		"pytest --collect-only runs successfully and lists all modules",
+		"verified by qa_gate",
+	}
+	for _, s := range vague {
+		if !isVagueAcceptance(s) {
+			t.Fatalf("expected vague: %q", s)
+		}
+	}
+	if isVagueAcceptance("python -m pytest tests/ -q exits 0; agent imports and runs a sample invoke") {
+		t.Fatal("runnable acceptance should be concrete")
+	}
+}
+
 func TestJudgeTaskScopeHeuristics(t *testing.T) {
 	prd := ScopePRD{Acceptance: []string{"x works"}}
 	tasks := []Task{

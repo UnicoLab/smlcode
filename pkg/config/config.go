@@ -159,6 +159,12 @@ type Config struct {
 	PlanApprove string `yaml:"plan_approve" json:"plan_approve"`
 	// PlanApproveTimeout for ask mode.
 	PlanApproveTimeout time.Duration `yaml:"plan_approve_timeout" json:"plan_approve_timeout"`
+	// PlaceholderPass runs a post-execute stub scan + fill/flag specialist.
+	PlaceholderPass bool `yaml:"placeholder_pass" json:"placeholder_pass"`
+	// ContinueAsk: ask | auto | off — prompt user when retries/QA exhausted.
+	ContinueAsk string `yaml:"continue_ask" json:"continue_ask"`
+	// ContinueAskTimeout for ask mode (timeout → stop, keep precise flags).
+	ContinueAskTimeout time.Duration `yaml:"continue_ask_timeout" json:"continue_ask_timeout"`
 
 	DryRun  bool `yaml:"dry_run" json:"dry_run"`
 	Verbose bool `yaml:"verbose" json:"verbose"`
@@ -268,6 +274,9 @@ func Default(root string) *Config {
 		ScopeJudge:            true,
 		PlanApprove:           "auto",
 		PlanApproveTimeout:    2 * time.Minute,
+		PlaceholderPass:       true,
+		ContinueAsk:           "ask",
+		ContinueAskTimeout:    2 * time.Minute,
 		Listen:                "127.0.0.1:7420",
 		ClaudeCodeBin:         "claude",
 		Permission:            "auto",
@@ -509,6 +518,10 @@ func normalize(c *Config) {
 	if c.PlanApproveTimeout <= 0 {
 		c.PlanApproveTimeout = 2 * time.Minute
 	}
+	c.ContinueAsk = NormalizeContinueAsk(c.ContinueAsk)
+	if c.ContinueAskTimeout <= 0 {
+		c.ContinueAskTimeout = 2 * time.Minute
+	}
 	if c.ShellAskTimeout <= 0 {
 		c.ShellAskTimeout = 2 * time.Minute
 	}
@@ -581,6 +594,9 @@ type Patch struct {
 	ScopeJudge             *bool     `json:"scope_judge,omitempty"`
 	PlanApprove            *string   `json:"plan_approve,omitempty"`
 	PlanApproveTimeoutSec  *int      `json:"plan_approve_timeout_sec,omitempty"`
+	PlaceholderPass        *bool     `json:"placeholder_pass,omitempty"`
+	ContinueAsk            *string   `json:"continue_ask,omitempty"`
+	ContinueAskTimeoutSec  *int      `json:"continue_ask_timeout_sec,omitempty"`
 	AutoApprove            *bool     `json:"auto_approve,omitempty"`
 	ShellPermission        *string   `json:"shell_permission,omitempty"`
 	ShellAskTimeoutSec     *int      `json:"shell_ask_timeout_sec,omitempty"`
@@ -686,6 +702,15 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.PlanApproveTimeoutSec != nil && *p.PlanApproveTimeoutSec > 0 {
 		c.PlanApproveTimeout = time.Duration(*p.PlanApproveTimeoutSec) * time.Second
+	}
+	if p.PlaceholderPass != nil {
+		c.PlaceholderPass = *p.PlaceholderPass
+	}
+	if p.ContinueAsk != nil {
+		c.ContinueAsk = strings.TrimSpace(*p.ContinueAsk)
+	}
+	if p.ContinueAskTimeoutSec != nil && *p.ContinueAskTimeoutSec > 0 {
+		c.ContinueAskTimeout = time.Duration(*p.ContinueAskTimeoutSec) * time.Second
 	}
 	if p.AutoApprove != nil {
 		c.AutoApprove = *p.AutoApprove
@@ -841,5 +866,19 @@ func NormalizePlanApprove(m string) string {
 		return "off"
 	default:
 		return "auto"
+	}
+}
+
+// NormalizeContinueAsk maps continue_ask aliases (ask|auto|off).
+func NormalizeContinueAsk(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "", "ask", "hitl", "prompt":
+		return "ask"
+	case "auto", "once", "retry":
+		return "auto"
+	case "off", "skip", "none", "false":
+		return "off"
+	default:
+		return "ask"
 	}
 }

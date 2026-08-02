@@ -35,17 +35,40 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 			failList = []string{"malformed tester finalize — missing passed/failures"}
 		}
 	}
+	reason := firstFailureLine(failList, tr.Summary)
 	o.emitFull("test", stream.KindOutput, plan.RoleTester, "",
 		"tester failed — rewriting plan/tasks for this query", "", truncate(strings.Join(failList, "; "), 800))
+	o.emitLoop("test", LoopEvent{
+		Action:   "tester_reject",
+		Reason:   reason,
+		Failures: trimFailures(failList, 5),
+		From:     "test",
+		To:       "plan",
+	})
 
 	// 1) Deterministic rewrite: reopen / add corrective tasks from failures.
 	rewritten := rewriteBoardFromTester(board, query, failList, tr.Summary)
 	*board = rewritten
 	o.persistBoard(board)
+	o.emitLoop("plan", LoopEvent{
+		Action:   "rewrite",
+		Reason:   "reopened/added corrective tasks from tester failures",
+		Failures: trimFailures(failList, 5),
+		From:     "test",
+		To:       "execute",
+		Wave:     o.waveCounter,
+	})
 
 	// 2) Optional SLM-assisted plan revision (cheap, think_passes-aware).
 	if o.cfg.ThinkPasses >= 1 {
 		o.emitAgent("plan", plan.RolePlanner, "", "revising plan after tester failure", "", "")
+		o.emitLoop("plan", LoopEvent{
+			Action: "replan",
+			Reason: "planner revising narrow corrective scope",
+			From:   "test",
+			To:     "plan",
+			Wave:   o.waveCounter,
+		})
 		prompt := "The tester rejected the current work for THIS query. Rewrite a fresh plan (not a patch of old global work).\n" +
 			"Query:\n" + query + "\n\nTester summary:\n" + truncate(tr.Summary, 800) +
 			"\n\nFailures:\n- " + strings.Join(failList, "\n- ") +

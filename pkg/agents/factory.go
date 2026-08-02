@@ -47,6 +47,7 @@ func Specs() []RoleSpec {
 		{ID: plan.RoleReviewer, Title: "Self-critic / approve", Description: "Approves or rejects one task from disk evidence.", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.05, MaxTokens: 768},
 		{ID: plan.RoleCorrector, Title: "Fix review issues", Description: "Patches reviewer issues inside HARD SCOPE.", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 12, Temperature: 0.12, MaxTokens: 3072},
 		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks (pytest/go test/smoke) before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 12, Temperature: 0.08, MaxTokens: 2048},
+		{ID: plan.RolePlaceholder, Title: "Fill placeholders / flag gaps", Description: "Detects stub code, fills real implementations, or flags precise gaps for HITL.", SystemPrompt: PromptPlaceholder, Tools: coding, MaxIter: 14, Temperature: 0.1, MaxTokens: 3072},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
 	}
 }
@@ -328,7 +329,7 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 func isCodingRole(id string) bool {
 	switch id {
 	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleTester,
-		plan.RoleExplorer, "docs":
+		plan.RolePlaceholder, plan.RoleExplorer, "docs":
 		return true
 	default:
 		return false

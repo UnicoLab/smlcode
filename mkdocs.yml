@@ -146,13 +146,16 @@ nav:
       - 🦋 Skills: skills.md
       - 🎨 Studio: studio.md
       - 🧩 Agents: agents.md
+      - 🏭 Pipeline: pipeline.md
       - 🧪 Recipes: recipes.md
   - 📚 Reference:
       - ⌨️ CLI: cli.md
       - ⚙️ Config: config.md
+      - 🏭 Pipeline: pipeline.md
       - ✅ Testing: testing.md
       - ❓ FAQ: faq.md
   - 🔧 Internals:
       - 🏗️ Architecture: architecture.md
   - 💚 Project:
+      - 📝 Changelog: changelog.md
       - 🤝 Contributing: contributing.md

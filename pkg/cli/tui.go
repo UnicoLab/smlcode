@@ -436,6 +436,16 @@ func (s *LiveSession) Observe(e stream.Event) {
 		}
 		s.state.Intervention = banner
 		s.state.Message = banner
+	case stream.KindLoop:
+		banner := "↺ " + e.Message
+		if e.Scope != "" {
+			banner = "↺ [" + e.Scope + "] " + e.Message
+		}
+		s.state.Intervention = banner
+		s.state.Message = banner
+		if e.Phase != "" {
+			s.state.Phase = e.Phase
+		}
 	case stream.KindTurn:
 		if e.Message != "" {
 			s.state.TurnHead = e.Message
@@ -477,7 +487,7 @@ func (s *LiveSession) Observe(e stream.Event) {
 	}
 	s.scheduleRedraw(e.Kind == stream.KindAgentStart || e.Kind == stream.KindAgentEnd ||
 		e.Kind == stream.KindFileChange || e.Kind == stream.KindIntervention ||
-		e.Kind == stream.KindTurn || e.Phase == "done")
+		e.Kind == stream.KindLoop || e.Kind == stream.KindTurn || e.Phase == "done")
 }
 
 // scheduleRedraw paints the dashboard live during runs (throttled).

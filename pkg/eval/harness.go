@@ -13,6 +13,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 )
 
 // Case is one coding eval scenario.
@@ -184,6 +185,17 @@ func RunCase(ctx context.Context, c Case, baseCfg *config.Config) Result {
 		}
 	}
 	res.FilesOK = filesOK
+	// Score against expert reference bar (completeness), not just file existence.
+	if filesOK {
+		if gaps := quality.CheckProjectCompleteness(root, c.Query); len(gaps) > 0 {
+			filesOK = false
+			res.FilesOK = false
+			res.Error = fmt.Sprintf("below reference bar: %s", gaps[0].Reason)
+			if len(gaps) > 1 {
+				res.Error += fmt.Sprintf(" (+%d more)", len(gaps)-1)
+			}
+		}
+	}
 	res.OK = filesOK && res.Error == "" && res.TasksDone > 0
 	if res.OK && res.Error != "" {
 		res.Error = ""

@@ -29,9 +29,10 @@ If you stuff the whole repo into context, don’t be surprised when the model na
 
 ```text
 cmd/slmcode          CLI + embedded Studio (go:embed ui/)
-pkg/orchestrator     Pipeline + coordinator + sessions
+pkg/orchestrator     Pipeline runner + coordinator + sessions
+pkg/pipeline         Config-driven phases / slots / loop agents
 pkg/loop             Parallel execute → review → correct
-pkg/agents           14 specialist prompts + factory
+pkg/agents           Specialist prompts + custom YAML factory
 pkg/plan             Kanban, sanitize, discover
 pkg/context          Markdown store + TaskPack budgeter
 pkg/knowledge        SKILLS.md + learned evolution
@@ -51,6 +52,8 @@ pkg/config           Presets + project config
 pkg/repair           SLM JSON repair
 pkg/retrieval        Embeddings / lexical ranking
 ```
+
+Pipeline graph is loaded from `.slmcode/pipeline.yaml` — see [Pipeline](pipeline.md).
 
 ---
 

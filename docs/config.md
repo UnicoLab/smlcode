@@ -43,10 +43,22 @@ Env: `SLMCODE_PROVIDER`, `SLMCODE_MODEL`, `SLMCODE_ENDPOINT`, `SLMCODE_API_KEY`,
 ```yaml
 backend: slmcode        # harness engine
 mode: full              # full | specialist
-specialist: worker      # when mode=specialist
+specialist: worker      # when mode=specialist (any registered / custom id)
 pinned_skills:
   - atomic-coding
 ```
+
+### Pipeline graph (separate file)
+
+Phases, loop reviewer/corrector, and insertable agent slots live in
+**`.slmcode/pipeline.yaml`** — not in `config.yaml`.
+
+```bash
+# Studio → Pipeline tab, or:
+curl -s localhost:7420/api/pipeline | jq .
+```
+
+See [Pipeline](pipeline.md) for the full schema (order, phases, slots, `when`, placeholders).
 
 ---
 

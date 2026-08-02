@@ -21,6 +21,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/hitl"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
@@ -118,6 +119,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/clarify/answer", s.handleClarifyAnswer)
 	s.mux.HandleFunc("GET /api/plan/pending", s.handlePlanPending)
 	s.mux.HandleFunc("POST /api/plan/approve", s.handlePlanApprove)
+	s.mux.HandleFunc("GET /api/continue/pending", s.handleContinuePending)
+	s.mux.HandleFunc("POST /api/continue/answer", s.handleContinueAnswer)
 	s.mux.HandleFunc("GET /api/shell/pending", s.handleShellPending)
 	s.mux.HandleFunc("POST /api/shell/approve", s.handleShellApprove)
 	s.mux.HandleFunc("GET /api/rewind", s.handleRewindList)
@@ -131,6 +134,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
 	s.mux.HandleFunc("PUT /api/agents/{id}", s.handlePutAgent)
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
+	s.mux.HandleFunc("GET /api/pipeline", s.handleGetPipeline)
+	s.mux.HandleFunc("PUT /api/pipeline", s.handlePutPipeline)
+	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)
 	s.mux.HandleFunc("GET /api/archives", s.handleListArchives)
 	s.mux.HandleFunc("GET /api/archives/{name}", s.handleGetArchive)
 	s.mux.HandleFunc("GET /api/queries", s.handleListQueries)
@@ -597,6 +603,40 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+func (s *Server) handleContinuePending(w http.ResponseWriter, r *http.Request) {
+	var ask plan.ContinueAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "continue", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]any{"pending": false})
+		return
+	}
+	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+}
+
+func (s *Server) handleContinueAnswer(w http.ResponseWriter, r *http.Request) {
+	var ans plan.ContinueAnswer
+	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if ans.AnsweredAt == "" {
+		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	ans.Action = plan.NormalizeContinueAction(ans.Action)
+	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "continue", ans); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "test", Kind: "ask_answered", Message: "continue decision: " + ans.Action, Time: time.Now(),
+	})
+	writeJSON(w, map[string]any{"ok": true, "action": ans.Action})
+}
+
 func (s *Server) handleShellPending(w http.ResponseWriter, r *http.Request) {
 	var ask workspace.ShellAsk
 	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "shell", &ask)
@@ -914,6 +954,73 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"ok": "true", "deleted": id})
+}
+
+func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
+	if s.h.Orchestrator != nil {
+		_ = s.h.Orchestrator.ReloadPipeline()
+		writeJSON(w, pipeline.View(s.h.Orchestrator.Pipeline()))
+		return
+	}
+	cfg, err := pipeline.Load(s.h.Config.SlmDir())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, pipeline.View(cfg))
+}
+
+func (s *Server) handlePutPipeline(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	var cfg pipeline.Config
+	var wrapped struct {
+		Config pipeline.Config `json:"config"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && (len(wrapped.Config.Order) > 0 || len(wrapped.Config.Phases) > 0 || len(wrapped.Config.Slots) > 0) {
+		cfg = wrapped.Config
+	} else if err := json.Unmarshal(raw, &cfg); err != nil {
+		http.Error(w, "expected pipeline config JSON: "+err.Error(), 400)
+		return
+	}
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if s.h.Orchestrator != nil {
+		if err := s.h.Orchestrator.SetPipeline(&cfg); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		writeJSON(w, pipeline.View(s.h.Orchestrator.Pipeline()))
+		return
+	}
+	if err := pipeline.Save(s.h.Config.SlmDir(), &cfg); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, pipeline.View(&cfg))
+}
+
+func (s *Server) handleResetPipeline(w http.ResponseWriter, r *http.Request) {
+	cfg := pipeline.Default()
+	if s.h.Orchestrator != nil {
+		if err := s.h.Orchestrator.SetPipeline(&cfg); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, pipeline.View(s.h.Orchestrator.Pipeline()))
+		return
+	}
+	if err := pipeline.Save(s.h.Config.SlmDir(), &cfg); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, pipeline.View(&cfg))
 }
 
 func (s *Server) archivesDir() string {

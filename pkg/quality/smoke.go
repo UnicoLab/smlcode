@@ -126,6 +126,24 @@ func DetectPostWorkerCommand(root string, files []string) string {
 	return ""
 }
 
+// IsWeakQACommand reports whether a QA/smoke command is syntax-only and must
+// not alone clear tester rejection or promote escalated tasks (TestSLMs:
+// compileall passed on empty packages + placeholders → false success).
+func IsWeakQACommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	if lower == "" {
+		return true
+	}
+	if strings.Contains(lower, "pytest") || strings.Contains(lower, "go test") ||
+		strings.Contains(lower, "npm test") || strings.Contains(lower, "cargo test") ||
+		strings.Contains(lower, "make test") {
+		return false
+	}
+	return strings.Contains(lower, "compileall") ||
+		strings.Contains(lower, "py_compile") ||
+		strings.Contains(lower, "node --check")
+}
+
 // DetectProjectCommand picks a project-level verify command (finalize / QA gate).
 func DetectProjectCommand(root string) string {
 	if root == "" {

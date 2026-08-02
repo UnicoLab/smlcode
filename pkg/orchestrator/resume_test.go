@@ -50,22 +50,58 @@ func TestPromoteRenameTasksDone(t *testing.T) {
 }
 
 func TestPromoteBoardOnQAGreen(t *testing.T) {
+	root := t.TempDir()
+	// Soft smoke-gap tester may promote; escalated / blocked / stub must NOT.
 	board := &plan.Board{Tasks: []plan.Task{
 		{ID: "T1", Role: plan.RoleWorker, Column: plan.ColToScope,
-			Error: "review rejected after max retries — needs human input"},
+			Error:  "review rejected after max retries — needs human input",
+			Notes:  "ESCALATED: review rejected after max retries.",
+			Files:  []string{"agent.py"},
+			Output: `{"status":"blocked","summary":"model ended on a tool call"}`},
 		{ID: "T2", Role: plan.RoleTester, Column: plan.ColReadyToDev,
 			Error: "coding task missing deterministic smoke pass"},
 		{ID: "T3", Role: plan.RoleWorker, Column: plan.ColDone, Output: `{"status":"done"}`},
 	}}
-	promoteBoardOnQAGreen(board)
-	if board.Tasks[0].Column != plan.ColDone || board.Tasks[1].Column != plan.ColDone {
-		t.Fatalf("expected soft failures promoted: %+v", board.Tasks)
+	promoteBoardOnQAGreen(root, board)
+	if board.Tasks[0].Column == plan.ColDone {
+		t.Fatalf("escalated/blocked T1 must NOT be promoted: %+v", board.Tasks[0])
 	}
-	if board.Tasks[0].Review != "qa_gate green" {
-		t.Fatalf("review=%q", board.Tasks[0].Review)
+	if board.Tasks[1].Column != plan.ColDone {
+		t.Fatalf("soft smoke-gap T2 should promote: %+v", board.Tasks[1])
 	}
-	if board.FailedCount() != 0 || !board.AllDone() {
-		t.Fatalf("failed=%d allDone=%v", board.FailedCount(), board.AllDone())
+	if board.Tasks[1].Review != "qa_gate green" {
+		t.Fatalf("review=%q", board.Tasks[1].Review)
+	}
+}
+
+func TestPromoteBoardOnQAGreenRejectsPlaceholders(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "agent.py")
+	body := "class A:\n    def run(self):\n        # Placeholder implementation\n        return {\"output\": \"run_result\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board := &plan.Board{Tasks: []plan.Task{{
+		ID: "T1", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+		Error: "qa_gate soft miss", Files: []string{"agent.py"},
+		Output: `{"status":"done","summary":"wrote agent"}`,
+	}}}
+	promoteBoardOnQAGreen(root, board)
+	if board.Tasks[0].Column == plan.ColDone {
+		t.Fatal("placeholder agent.py must not promote")
+	}
+}
+
+func TestBoardHasEscalated(t *testing.T) {
+	if !boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
+		Notes: "ESCALATED: review rejected after max retries",
+	}}}) {
+		t.Fatal("expected escalated")
+	}
+	if boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
+		Column: plan.ColDone, Output: `{"status":"done"}`,
+	}}}) {
+		t.Fatal("done board should not look escalated")
 	}
 }
 

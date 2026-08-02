@@ -22,6 +22,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/mcp"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
+	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
@@ -73,11 +74,13 @@ type Orchestrator struct {
 	onEvent       EventHandler
 	onAsk         AskHandler
 	onPlanApprove PlanApproveHandler
+	onContinue    ContinueHandler
 
 	hooksRunner *hooks.Runner
 	mcpMgr      *mcp.Manager
 	rewindMgr   *rewind.Manager
 	waveCounter int
+	pipe        *pipeline.Config // config-driven phases / slots / loop agents
 
 	mu      sync.Mutex
 	running bool
@@ -241,6 +244,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		mcpMgr:      mcpMgr,
 		rewindMgr:   &rewind.Manager{SlmDir: cfg.SlmDir(), Root: cfg.Root},
 	}
+	_ = pipeline.EnsureFile(cfg.SlmDir())
+	o.loadPipelineLocked()
 	if hooksRunner != nil {
 		hooksRunner.Log = func(f string, a ...interface{}) {
 			o.emitFull("execute", stream.KindDebug, "hook", "", fmt.Sprintf(f, a...), "", "")
@@ -380,16 +385,9 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	if role == "" {
 		role = plan.RoleWorker
 	}
-	// Validate role exists
-	valid := false
-	for _, s := range agents.Specs() {
-		if s.ID == role {
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		return nil, fmt.Errorf("unknown specialist %q — use: slmcode agents", role)
+	// Accept built-in and custom agents from the factory registry.
+	if !o.knownAgent(role) {
+		return nil, fmt.Errorf("unknown specialist %q — use: slmcode agents / Studio → Agents", role)
 	}
 
 	o.emit("init", fmt.Sprintf("specialist mode · %s", role), "")
@@ -458,6 +456,7 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 }
 
 func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack string, start time.Time) (*Result, error) {
+	var err error
 	// 0 Auto-load AGENTS.md / CLAUDE.md / PROJECT instructions (Claude Code style)
 	if instr := instructions.LoadProjectInstructions(o.cfg.Root); instr != "" {
 		o.emit("init", "loaded project instructions (AGENTS.md/CLAUDE.md/PROJECT)", "")
@@ -491,21 +490,33 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.emit("init", fmt.Sprintf("indexed %d workspace file(s)", len(inventory)), "")
 	}
 
-	// 1 Context — shared memory for all specialists
-	o.emitAgent("context", plan.RoleContext, "", "updating working context", "", "")
-	pack, _ := o.packer.Build("context", query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor("context", query))
-	ctxOut, err := o.runRoleTracked(ctx, plan.RoleContext, "", pack.Render()+
-		"\nRewrite CONTEXT.md for this query (markdown). ONLY reference files from the authoritative workspace list. Include: Active focus, Recent findings, Open questions.")
-	if err != nil {
-		o.emit("context", "warning: "+err.Error(), "")
+	// 1 Context — shared memory for all specialists (pipeline-configurable agent)
+	if err := o.runPipelineSlots(ctx, "context", "before", query, "", ""); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(ctxOut) != "" {
-		_ = o.store.Write(contextstore.DocContext, ensureHeading(ctxOut, "# Working Context"))
-	} else if len(inventory) > 0 {
-		// Real inventory-backed stub only when the agent produced nothing — not a welcome seed.
-		_ = o.store.Write(contextstore.DocContext, "# Working Context\n\n## Active focus\n\n"+query+
-			"\n\n## Recent findings\n\n(awaiting explorer)\n\n## Workspace inventory\n\n- "+
-			strings.Join(inventory, "\n- ")+"\n")
+	ctxAgent := o.phaseAgent("context", plan.RoleContext)
+	if o.phaseEnabled("context") && !o.Pipeline().HasReplace("context") {
+		o.emitAgent("context", ctxAgent, "", "updating working context", "", "")
+		pack, _ := o.packer.Build(ctxAgent, query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor(ctxAgent, query))
+		ctxOut, ctxErr := o.runRoleTracked(ctx, ctxAgent, "", pack.Render()+
+			"\nRewrite CONTEXT.md for this query (markdown). ONLY reference files from the authoritative workspace list. Include: Active focus, Recent findings, Open questions.")
+		if ctxErr != nil {
+			o.emit("context", "warning: "+ctxErr.Error(), "")
+		}
+		if strings.TrimSpace(ctxOut) != "" {
+			_ = o.store.Write(contextstore.DocContext, ensureHeading(ctxOut, "# Working Context"))
+		} else if len(inventory) > 0 {
+			_ = o.store.Write(contextstore.DocContext, "# Working Context\n\n## Active focus\n\n"+query+
+				"\n\n## Recent findings\n\n(awaiting explorer)\n\n## Workspace inventory\n\n- "+
+				strings.Join(inventory, "\n- ")+"\n")
+		}
+	} else if o.Pipeline().HasReplace("context") {
+		if err := o.runPipelineSlots(ctx, "context", "replace", query, "", ""); err != nil {
+			return nil, err
+		}
+	}
+	if err := o.runPipelineSlots(ctx, "context", "after", query, "", ""); err != nil {
+		return nil, err
 	}
 	// Re-assert authoritative paths after the context rewrite (SLMs often invent main.go).
 	if len(inventory) > 0 {
@@ -524,8 +535,26 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// Higher think_passes forces deeper / parallel antigravity-style digs for SLMs.
 	var exploreOut string
 	var archOut string
+	if err := o.runPipelineSlots(ctx, "explore", "before", query, "", ""); err != nil {
+		return nil, err
+	}
+	exploreWhen := o.Pipeline().PhaseWhen("explore")
 	deep, reason := o.shouldDeepExplore(query)
-	if !deep {
+	if exploreWhen == pipeline.WhenNever || !o.phaseEnabled("explore") {
+		deep = false
+		reason = "pipeline: explore disabled"
+	} else if exploreWhen == pipeline.WhenAlways {
+		deep = true
+		reason = "pipeline: explore=always"
+	}
+	if o.Pipeline().HasReplace("explore") {
+		if err := o.runPipelineSlots(ctx, "explore", "replace", query, "", ""); err != nil {
+			return nil, err
+		}
+		exploreOut = `{"summary":"pipeline slot replaced explore","relevant_files":[],"notes":"custom explore slot"}`
+		o.shared.SetGlobal("exploration", exploreOut)
+		o.shared.SetGlobal("explore_mode", "slot")
+	} else if !deep {
 		o.emit("explore", reason, "")
 		discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, "")
 		ctxDoc, _ := o.store.Read(contextstore.DocContext)
@@ -537,11 +566,20 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.shared.SetGlobal("exploration", exploreOut)
 		o.shared.SetGlobal("explore_mode", "cached")
 	} else {
-		o.emitAgent("explore", plan.RoleExplorer, "", "codebase deep-dive", "", "")
-		expPack, _ := o.packer.Build("explorer", query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor("explorer", query))
+		expAgent := o.phaseAgent("explore", plan.RoleExplorer)
+		o.emitAgent("explore", expAgent, "", "codebase deep-dive", "", "")
+		expPack, _ := o.packer.Build(expAgent, query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor(expAgent, query))
 		explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
-		needDocs := wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3
-		needArch := wantsArchitect(query) && o.cfg.ThinkPasses >= 2
+		needDocs := (wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3) && o.phaseEnabled("docs") &&
+			o.Pipeline().PhaseWhen("docs") != pipeline.WhenNever
+		needArch := wantsArchitect(query) && o.cfg.ThinkPasses >= 2 && o.phaseEnabled("architect") &&
+			o.Pipeline().PhaseWhen("architect") != pipeline.WhenNever
+		if o.Pipeline().PhaseWhen("docs") == pipeline.WhenAlways {
+			needDocs = true
+		}
+		if o.Pipeline().PhaseWhen("architect") == pipeline.WhenAlways {
+			needArch = true
+		}
 		var docsOut string
 		exploreOut, archOut, docsOut, err = o.speculateDigs(ctx, query, explorePrompt, inventory, needDocs, needArch)
 		if err != nil {
@@ -560,15 +598,34 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.shared.SetGlobal("exploration", exploreOut)
 		o.shared.SetGlobal("explore_mode", "deep")
 	}
+	if err := o.runPipelineSlots(ctx, "explore", "after", query, exploreOut, ""); err != nil {
+		return nil, err
+	}
 
 	// 2b Architect pass for larger / design-ish queries (skip if already ran in parallel)
-	if wantsArchitect(query) && strings.TrimSpace(archOut) == "" {
-		o.emitAgent("architect", "architect", "", "minimal design pass", "", "")
-		archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
-		archOut, _ = o.runRoleTracked(ctx, "architect", "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
-		if strings.TrimSpace(archOut) != "" {
-			_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
-			o.shared.SetGlobal("architecture", archOut)
+	archWhen := o.Pipeline().PhaseWhen("architect")
+	wantArch := o.phaseEnabled("architect") && archWhen != pipeline.WhenNever &&
+		(archWhen == pipeline.WhenAlways || wantsArchitect(query))
+	if wantArch && strings.TrimSpace(archOut) == "" {
+		if err := o.runPipelineSlots(ctx, "architect", "before", query, exploreOut, ""); err != nil {
+			return nil, err
+		}
+		if o.Pipeline().HasReplace("architect") {
+			if err := o.runPipelineSlots(ctx, "architect", "replace", query, exploreOut, ""); err != nil {
+				return nil, err
+			}
+		} else {
+			archAgent := o.phaseAgent("architect", "architect")
+			o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
+			archPack, _ := o.packer.Build(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
+			archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
+			if strings.TrimSpace(archOut) != "" {
+				_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+				o.shared.SetGlobal("architecture", archOut)
+			}
+		}
+		if err := o.runPipelineSlots(ctx, "architect", "after", query, exploreOut, ""); err != nil {
+			return nil, err
 		}
 	}
 
@@ -579,52 +636,70 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
-	o.emitAgent("plan", plan.RolePlanner, "", "creating plan", "", "")
-	planDocs := contextstore.LeanDocsForRole("planner")
-	planPack, _ := o.packer.Build("planner", query, planDocs, nil, o.skillPackFor("planner", query))
-	exploreCap := 2500
-	if o.cfg.ThinkPasses >= 3 {
-		exploreCap = 4000
+	if err := o.runPipelineSlots(ctx, "plan", "before", query, exploreOut, ""); err != nil {
+		return nil, err
 	}
-	planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
-	if archOut != "" {
-		planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
-	}
-	if prd.Summary != "" || len(prd.Acceptance) > 0 || len(clarify.Assumptions) > 0 ||
-		clarify.Language != "" || clarify.Entrypoint != "" {
-		planPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
-		planPrompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
-	}
-	planPrompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
-		"Do NOT continue prior plans. STRICT JSON plan only."
-	planOut, err := o.runRoleMultipassTracked(ctx, plan.RolePlanner, "", planPrompt)
-	if err != nil {
-		if isCancelErr(err) {
-			return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+	planAgent := o.phaseAgent("plan", plan.RolePlanner)
+	var planOut string
+	if o.Pipeline().HasReplace("plan") {
+		if err := o.runPipelineSlots(ctx, "plan", "replace", query, exploreOut, ""); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("planner: %w", err)
-	}
-	// Extra plan critique only when think_passes≥3 (think_passes=2 already uses
-	// multipass critique — avoid a redundant reviewer+refine round-trip).
-	if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
-		o.emitAgent("plan", plan.RoleReviewer, "", "plan critique pass", "", "")
-		critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
-			"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
-			"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
-		critique, _ := o.runRoleTracked(ctx, plan.RoleReviewer, "", critiquePrompt)
-		if strings.TrimSpace(critique) != "" {
-			_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
-			o.emitFull("plan", stream.KindOutput, plan.RoleReviewer, "", "plan critique", "", truncate(critique, 800))
-			if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
-				!strings.Contains(strings.ToLower(critique), `"ok":true`) {
-				o.emitAgent("plan", plan.RolePlanner, "", "refining plan from critique", "", "")
-				refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
-					"\n\nRevise. Atomic for SLM. STRICT JSON plan."
-				if refined, rerr := o.runRoleTracked(ctx, plan.RolePlanner, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
-					planOut = refined
+		planOut = `{"summary":"pipeline slot replaced plan","goals":[],"steps":["Execute board tasks"]}`
+	} else if o.phaseEnabled("plan") {
+		o.emitAgent("plan", planAgent, "", "creating plan", "", "")
+		planDocs := contextstore.LeanDocsForRole("planner")
+		planPack, _ := o.packer.Build(planAgent, query, planDocs, nil, o.skillPackFor(planAgent, query))
+		exploreCap := 2500
+		if o.cfg.ThinkPasses >= 3 {
+			exploreCap = 4000
+		}
+		planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
+		if archOut != "" {
+			planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
+		}
+		if prd.Summary != "" || len(prd.Acceptance) > 0 || len(clarify.Assumptions) > 0 ||
+			clarify.Language != "" || clarify.Entrypoint != "" {
+			planPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+			planPrompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
+		}
+		planPrompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
+			"Do NOT continue prior plans. STRICT JSON plan only."
+		planOut, err = o.runRoleMultipassTracked(ctx, planAgent, "", planPrompt)
+		if err != nil {
+			if isCancelErr(err) {
+				return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+			}
+			return nil, fmt.Errorf("planner: %w", err)
+		}
+		// Extra plan critique only when think_passes≥3.
+		if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
+			revAgent := o.Pipeline().Execute.Reviewer
+			if revAgent == "" {
+				revAgent = plan.RoleReviewer
+			}
+			o.emitAgent("plan", revAgent, "", "plan critique pass", "", "")
+			critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
+				"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
+				"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
+			critique, _ := o.runRoleTracked(ctx, revAgent, "", critiquePrompt)
+			if strings.TrimSpace(critique) != "" {
+				_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
+				o.emitFull("plan", stream.KindOutput, revAgent, "", "plan critique", "", truncate(critique, 800))
+				if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
+					!strings.Contains(strings.ToLower(critique), `"ok":true`) {
+					o.emitAgent("plan", planAgent, "", "refining plan from critique", "", "")
+					refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
+						"\n\nRevise. Atomic for SLM. STRICT JSON plan."
+					if refined, rerr := o.runRoleTracked(ctx, planAgent, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
+						planOut = refined
+					}
 				}
 			}
 		}
+	}
+	if err := o.runPipelineSlots(ctx, "plan", "after", query, exploreOut, planOut); err != nil {
+		return nil, err
 	}
 	pl, _ := plan.ParsePlanJSON(planOut)
 	if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
@@ -641,24 +716,39 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 	// 4 Split
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
-	o.emitAgent("split", "splitter", "", "atomic task split", "", "")
-	splitDocs := contextstore.LeanDocsForRole("splitter")
-	splitPack, _ := o.packer.Build("splitter", query, splitDocs, nil, o.skillPackFor("splitter", query))
-	splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
-	if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
-		splitPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
-		splitPrompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
+	if err := o.runPipelineSlots(ctx, "split", "before", query, exploreOut, planOut); err != nil {
+		return nil, err
 	}
-	splitPrompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
-	if o.cfg.ThinkPasses >= 2 {
-		splitPrompt += "\nPrefer ≤5 tiny tasks with files + acceptance. Tester when code changes."
-	}
-	tasksOut, err := o.runRoleMultipassTracked(ctx, "splitter", "", splitPrompt)
-	if err != nil {
-		if isCancelErr(err) {
-			return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
+	splitAgent := o.phaseAgent("split", "splitter")
+	var tasksOut string
+	if o.Pipeline().HasReplace("split") {
+		if err := o.runPipelineSlots(ctx, "split", "replace", query, exploreOut, planOut); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("splitter: %w", err)
+		tasksOut = `{"tasks":[]}`
+	} else if o.phaseEnabled("split") {
+		o.emitAgent("split", splitAgent, "", "atomic task split", "", "")
+		splitDocs := contextstore.LeanDocsForRole("splitter")
+		splitPack, _ := o.packer.Build(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
+		splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
+		if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
+			splitPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+			splitPrompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
+		}
+		splitPrompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
+		if o.cfg.ThinkPasses >= 2 {
+			splitPrompt += "\nPrefer ≤5 tiny tasks with files + acceptance. Tester when code changes."
+		}
+		tasksOut, err = o.runRoleMultipassTracked(ctx, splitAgent, "", splitPrompt)
+		if err != nil {
+			if isCancelErr(err) {
+				return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
+			}
+			return nil, fmt.Errorf("splitter: %w", err)
+		}
+	}
+	if err := o.runPipelineSlots(ctx, "split", "after", query, exploreOut, planOut); err != nil {
+		return nil, err
 	}
 	tasks, err := plan.ParseTasksJSON(tasksOut)
 	if err != nil || len(tasks) == 0 {
@@ -679,8 +769,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		tasks[i].Description = loop.StripScopedPack(tasks[i].Description)
 	}
 	if len(tasks) > 8 {
-		o.emit("split", fmt.Sprintf("capping tasks %d → 8 for SLM efficiency", len(tasks)), "")
-		tasks = tasks[:8]
+		o.emit("split", fmt.Sprintf("capping tasks %d → 8 for SLM efficiency (preserving harness/tester)", len(tasks)), "")
+		tasks = plan.CapTasksPreserveHarness(tasks, 8)
 	}
 
 	board := &plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: tasks}
@@ -710,6 +800,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
+	if err := o.runPipelineSlots(ctx, "execute", "before", query, exploreOut, planOut); err != nil {
+		return nil, err
+	}
 	o.emit("execute", fmt.Sprintf("%d tasks · parallel=%d · think_passes=%d", len(board.Tasks), o.cfg.MaxParallel, o.cfg.ThinkPasses), "")
 	// Clear focus during planning; runner re-enables per execute wave.
 	if o.focus != nil {
@@ -725,6 +818,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.Timeout = o.cfg.TaskTimeout
+	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
+	runner.CorrectorRole = o.Pipeline().Execute.Corrector
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -788,6 +883,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	snap = o.boardStore.Snapshot()
 	board = &snap
 	o.persistBoard(board)
+	if err := o.runPipelineSlots(ctx, "execute", "after", query, exploreOut, planOut); err != nil {
+		return nil, err
+	}
 
 	return o.finalizeAfterExecute(ctx, runID, query, skillPack, board, runner, start)
 }
@@ -897,7 +995,8 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 		full = config.DefaultTaskTimeout
 	}
 	switch role {
-	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs", plan.RoleTester:
+	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs",
+		plan.RoleTester, plan.RolePlaceholder:
 		return full
 	case plan.RolePlanner, "splitter":
 		// Local 30B SLMs often need several minutes for structured JSON plans.
@@ -1355,6 +1454,7 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "summaries"), 0o755)
 	// Materialize bundled skills only — CONTEXT/PLAN/TASKS stay empty until agents write them.
 	_ = skills.MaterializeBundled(filepath.Join(cfg.SlmDir(), "skills", "_bundled"))
+	_ = pipeline.EnsureFile(cfg.SlmDir())
 	// Seed PROJECT.md from README / go.mod / layout so agents always have context.
 	seeded := contextstore.SeedProjectMarkdown(root, filepath.Base(root))
 	if cur, err := store.Read(contextstore.DocProject); err != nil || contextstore.ProjectNeedsSeed(cur) {

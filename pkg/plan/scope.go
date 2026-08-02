@@ -467,6 +467,17 @@ func defaultAcceptanceFromQuery(query string, prd ScopePRD) []string {
 	if prd.Entrypoint != "" {
 		out = append(out, prd.Entrypoint+" runs successfully")
 	}
+	lower := strings.ToLower(q)
+	if strings.Contains(lower, "langgraph") || strings.Contains(lower, "langchain") {
+		ep := firstNonEmpty(prd.Entrypoint, "main.py")
+		out = append(out,
+			"Class-based LangGraph agent uses langgraph.graph.StateGraph (not invented Graph API)",
+			ep+" invokes the compiled graph once and exits 0",
+			"python -m pytest -q passes; no Placeholder stubs in agent modules",
+			"requirements.txt lists langgraph + langchain-core + pytest",
+		)
+		return out
+	}
 	if q != "" {
 		out = append(out, "Implements: "+firstLine(q))
 	}
@@ -581,11 +592,26 @@ func isVagueAcceptance(s string) bool {
 	vague := []string{
 		"done", "ok", "works", "looks good", "complete", "finished",
 		"query goals met", "step completed", "as expected",
+		"step completed with tool evidence", "with tool evidence",
+		"verified by qa_gate", "qa_gate green",
 	}
 	for _, v := range vague {
-		if lower == v {
+		if lower == v || strings.Contains(lower, v) && len(v) >= 20 {
 			return true
 		}
+	}
+	// Existence-only criteria are too weak for implement tasks.
+	if strings.Contains(lower, "exist and contain") ||
+		strings.Contains(lower, "exists and contain") ||
+		strings.Contains(lower, "exist and are valid") ||
+		strings.Contains(lower, "exists and are valid") ||
+		(strings.Contains(lower, "exist") && strings.Contains(lower, "valid") &&
+			!strings.Contains(lower, "pytest") && !strings.Contains(lower, "import") &&
+			!strings.Contains(lower, "run") && !strings.Contains(lower, "exit")) {
+		return true
+	}
+	if strings.Contains(lower, "pytest --collect-only") {
+		return true
 	}
 	return len(lower) < 8
 }

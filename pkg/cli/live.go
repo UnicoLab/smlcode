@@ -128,6 +128,8 @@ func FormatEvent(e stream.Event) string {
 		icon = Dim("·")
 	case stream.KindIntervention:
 		icon = Yellow("⚠")
+	case stream.KindLoop:
+		icon = Yellow("↺")
 	case stream.KindTurn:
 		icon = Yellow("⟳")
 	}
@@ -156,7 +158,7 @@ func FormatEvent(e stream.Event) string {
 
 	// Show short output snippets only for completions / file patches — not every token dump.
 	if kind == stream.KindAgentEnd || kind == stream.KindOutput || kind == stream.KindFileChange ||
-		kind == stream.KindIntervention {
+		kind == stream.KindIntervention || kind == stream.KindLoop {
 		out := summarizeOutput(e.Output)
 		if out != "" {
 			head += "\n  " + Dim("│ ") + White(out)

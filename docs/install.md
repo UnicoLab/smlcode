@@ -75,7 +75,7 @@ One-liners fetch a shiny GitHub Release. Keep the compiler for contributing (or 
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
-      | bash -s -- --version v0.6.0
+      | bash -s -- --version v0.7.0
     ```
 
 === "🪟 PowerShell"

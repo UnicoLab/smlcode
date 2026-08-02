@@ -119,6 +119,10 @@ func PhraseForUser(reason string) string {
 			strings.TrimPrefix(reason, "malformed_args:") + ")"
 	case reason == "thinking_budget_exceeded":
 		return "the model exceeded the thinking budget"
+	case reason == "escalate" || strings.Contains(reason, "ESCALATED"):
+		return "task escalated — needs human review or precise fix in Studio"
+	case reason == "review":
+		return "auto-approve blocked — stub/placeholder or weak evidence needs a real fix"
 	default:
 		return "quality issue (" + reason + ")"
 	}

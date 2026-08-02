@@ -64,9 +64,16 @@ func TestAlreadySatisfiedCreateNotImplement(t *testing.T) {
 		Files: []string{"src/lg_agent/graph.py"}, Acceptance: "file created",
 	}
 	_ = os.MkdirAll(filepath.Join(dir, "src", "lg_agent"), 0o755)
-	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"), []byte("def create_graph():\n    pass\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"),
+		[]byte("def create_graph():\n    return {\"nodes\": []}\n"), 0o644)
 	if !alreadySatisfied(dir, create) {
 		t.Fatal("expected alreadySatisfied for scaffold create when file exists")
+	}
+	// Placeholder stubs must never count as already satisfied.
+	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"),
+		[]byte("def create_graph():\n    # Placeholder implementation\n    return {\"output\": \"run_result\"}\n"), 0o644)
+	if alreadySatisfied(dir, create) {
+		t.Fatal("placeholder scaffold must not be alreadySatisfied")
 	}
 }
 

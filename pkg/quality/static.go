@@ -24,7 +24,16 @@ var (
 	reTODOFunc       = regexp.MustCompile(`(?i)def\s+\w+\([^)]*\):\s*\n\s*(pass|\.\.\.|raise\s+NotImplemented)`)
 	reJSTodo         = regexp.MustCompile(`(?i)throw new Error\(['\"]TODO`)
 	reGoPanicTodo    = regexp.MustCompile(`(?i)panic\(["\']TODO`)
-	rePlaceholder    = regexp.MustCompile(`(?i)\b(your[_-]?code[_-]?here|implement me|fill[_-]?in|lorem ipsum)\b`)
+	// Catch explicit stub markers SLMs leave while claiming done (TestSLMs regression).
+	rePlaceholder = regexp.MustCompile(`(?i)\b(your[_-]?code[_-]?here|implement me|fill[_-]?in|` +
+		`lorem ipsum|placeholder\s+implementation|placeholder\s+code|` +
+		`stub\s+implementation|not\s+yet\s+implemented|coming\s+soon)\b`)
+	// Constant fake returns like return {"output": "run_result"} / "processed_result".
+	reStubReturn = regexp.MustCompile(`(?i)return\s+\{[^}]{0,80}` +
+		`["'](?:output|result|response|status)["']\s*:\s*["'][^"']{0,40}` +
+		`(?:run_result|processed_result|placeholder|todo|stub|dummy|fake)`)
+	// Hallucinated LangGraph import seen in TestSLMs garbage output.
+	reBadLangGraphImport = regexp.MustCompile(`(?m)^\s*from\s+langgraph\s+import\s+Graph\b`)
 )
 
 // CheckStaticQuality scans focus / changed files for stub/placeholder code that
@@ -121,7 +130,13 @@ func staticReason(text, ext string) string {
 		return "file is nearly empty"
 	}
 	if rePlaceholder.MatchString(text) {
-		return "contains placeholder markers (implement me / your_code_here)"
+		return "contains placeholder markers (Placeholder implementation / implement me)"
+	}
+	if reStubReturn.MatchString(text) {
+		return "contains stub constant return (run_result / processed_result / placeholder)"
+	}
+	if reBadLangGraphImport.MatchString(text) {
+		return "invalid LangGraph import (use langgraph.graph.StateGraph, not langgraph.Graph)"
 	}
 	switch ext {
 	case ".py":
@@ -134,6 +149,10 @@ func staticReason(text, ext string) string {
 		// Whole-file stub: mostly pass / ellipsis / todos
 		if stubHeavy(text, rePassStub, reEllipsisBody, reTodoOnly) {
 			return "file is mostly stubs (pass / … / TODO)"
+		}
+		// Comment-only "implementation" bodies (common SLM dodge).
+		if placeholderCommentHeavy(text) {
+			return "methods are comment-only placeholders"
 		}
 	case ".js", ".ts", ".tsx", ".jsx":
 		if reJSTodo.MatchString(text) {
@@ -151,6 +170,14 @@ func staticReason(text, ext string) string {
 		}
 	}
 	return ""
+}
+
+// placeholderCommentHeavy detects files where ≥2 methods/funcs have only a
+// "# Placeholder…" / "// Placeholder…" comment before a trivial return.
+func placeholderCommentHeavy(text string) bool {
+	re := regexp.MustCompile(`(?im)^\s*(?:#|//)\s*placeholder\b`)
+	hits := re.FindAllStringIndex(text, -1)
+	return len(hits) >= 2
 }
 
 func stubHeavy(text string, patterns ...*regexp.Regexp) bool {

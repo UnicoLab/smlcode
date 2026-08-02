@@ -11,6 +11,8 @@ const (
 	InterventionFinalize  = "finalize"
 	InterventionMalformed = "malformed_args"
 	InterventionQuality   = "quality"
+	InterventionEscalate  = "escalate" // review rejected after max retries — needs human
+	InterventionReview    = "review"   // soft-pass refused / precise fix needed
 )
 
 // Intervention is a harness action the user should see.
@@ -35,6 +37,12 @@ func ClassifyIntervention(reason string) string {
 		return InterventionWhitelist
 	case strings.Contains(reason, "TURN BUDGET") || strings.Contains(reason, "finalize"):
 		return InterventionFinalize
+	case reason == "escalate" || strings.Contains(reason, "ESCALATED") ||
+		strings.Contains(reason, "max retries") || strings.Contains(reason, "needs human"):
+		return InterventionEscalate
+	case reason == "review" || strings.Contains(reason, "review rejected") ||
+		strings.Contains(reason, "precise"):
+		return InterventionReview
 	default:
 		return InterventionQuality
 	}

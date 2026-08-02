@@ -140,3 +140,38 @@ func TestEnsureGreenfieldHarness(t *testing.T) {
 		t.Fatalf("non-python should be unchanged: %+v", out2)
 	}
 }
+
+func TestEnsureGreenfieldHarnessLangGraphTemplateSetup(t *testing.T) {
+	// User phrasing that previously skipped harness ("setup a template folder…").
+	q := "I want you to setup a template folder structure for langgraph agent using class approach " +
+		"and all the langchain abstractions to have scalable and maintainable code."
+	tasks := []Task{
+		{ID: "T1", Title: "Create base directory structure", Role: RoleWorker,
+			Files: []string{"src/lg_agent/__init__.py"}},
+		{ID: "T2", Title: "Implement LangGraph agent class", Role: RoleWorker,
+			Files: []string{"src/lg_agent/agents/agent.py"}},
+	}
+	if !isPythonGreenfieldQuery(q) {
+		t.Fatal("langgraph template setup must count as python greenfield")
+	}
+	out := EnsureGreenfieldHarness(tasks, q)
+	hasReq, hasMain, hasTest := false, false, false
+	for _, tsk := range out {
+		blob := strings.ToLower(tsk.Title + " " + strings.Join(tsk.Files, " ") + " " + tsk.Acceptance)
+		if strings.Contains(blob, "requirements.txt") {
+			hasReq = true
+			if !strings.Contains(strings.ToLower(tsk.Description), "langgraph") {
+				t.Fatalf("langgraph reqs description expected: %q", tsk.Description)
+			}
+		}
+		if strings.Contains(blob, "main.py") {
+			hasMain = true
+		}
+		if strings.Contains(blob, "test_smoke") || strings.Contains(blob, "pytest") {
+			hasTest = true
+		}
+	}
+	if !hasReq || !hasMain || !hasTest {
+		t.Fatalf("expected req+main+test harness, got %+v", out)
+	}
+}

@@ -3,6 +3,7 @@ package quality
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -17,6 +18,62 @@ func TestStaticQualityCatchesNotImplemented(t *testing.T) {
 	issues := CheckStaticQuality(root, plan.Task{Files: []string{"mod.py"}})
 	if len(issues) == 0 {
 		t.Fatal("expected static issue")
+	}
+}
+
+func TestStaticQualityCatchesPlaceholderImplementation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "agent.py")
+	body := "from langgraph import Graph\nfrom typing import Any, Dict\n\n" +
+		"class BaseAgent:\n" +
+		"    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:\n" +
+		"        # Placeholder implementation\n" +
+		"        return {\"output\": \"run_result\"}\n" +
+		"    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:\n" +
+		"        # Placeholder implementation\n" +
+		"        return {\"output\": \"processed_result\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues := CheckStaticQuality(root, plan.Task{Files: []string{"agent.py"}})
+	if len(issues) == 0 {
+		t.Fatal("expected Placeholder implementation to fail static quality")
+	}
+	joined := ""
+	for _, is := range issues {
+		joined += is.Reason + " "
+	}
+	if !strings.Contains(joined, "Placeholder") && !strings.Contains(joined, "placeholder") &&
+		!strings.Contains(joined, "StateGraph") && !strings.Contains(joined, "stub") {
+		t.Fatalf("expected stub/bad-import reasons, got %#v", issues)
+	}
+}
+
+func TestStaticQualityCatchesBadLangGraphImport(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "agent.py")
+	body := "from langgraph import Graph\n\nclass A:\n    def build(self):\n        return Graph()\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues := CheckStaticQuality(root, plan.Task{Files: []string{"agent.py"}})
+	if len(issues) == 0 {
+		t.Fatal("expected bad LangGraph import to fail")
+	}
+}
+
+func TestIsWeakQACommand(t *testing.T) {
+	if !IsWeakQACommand("python -m compileall -q .") {
+		t.Fatal("compileall is weak")
+	}
+	if !IsWeakQACommand("python -m py_compile agent.py") {
+		t.Fatal("py_compile is weak")
+	}
+	if IsWeakQACommand("python -m pytest -q") {
+		t.Fatal("pytest is strong")
+	}
+	if IsWeakQACommand("go test ./... -short") {
+		t.Fatal("go test is strong")
 	}
 }
 

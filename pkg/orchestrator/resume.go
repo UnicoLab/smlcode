@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -116,6 +117,8 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.Timeout = o.cfg.TaskTimeout
+	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
+	runner.CorrectorRole = o.Pipeline().Execute.Corrector
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -219,9 +222,13 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		}
 	}
 
-	o.emitAgent("test", plan.RoleTester, "", "verification pass", "", "")
+	if err := o.runPipelineSlots(ctx, "test", "before", query, "", ""); err != nil {
+		return nil, err
+	}
+	testAgent := o.phaseAgent("test", plan.RoleTester)
+	o.emitAgent("test", testAgent, "", "verification pass", "", "")
 	_, tasksMD := board.ToMarkdown()
-	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor("tester", query))
+	testPack, _ := o.packer.Build(testAgent, query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor(testAgent, query))
 	testPrompt := testPack.Render() + "\nTasks:\n" + truncate(tasksMD, 4000) +
 		"\n\nVerify THIS query's work with REAL execution.\n" +
 		"You MUST call ws_shell at least once (install deps if needed, then pytest/go test/python smoke).\n" +
@@ -235,7 +242,18 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 
 	// Speculative tester race: disk/rename acceptance can cancel tester LLM;
 	// duplicate tester strategies cancel on first decisive JSON.
-	testOut, fromDisk, _ := o.speculateTester(ctx, query, board, testPrompt)
+	var testOut string
+	var fromDisk bool
+	if o.Pipeline().HasReplace("test") {
+		if err := o.runPipelineSlots(ctx, "test", "replace", query, "", ""); err != nil {
+			return nil, err
+		}
+		testOut = `{"passed":false,"summary":"pipeline replace test — slot must verify","failures":["replaced tester"]}`
+	} else if o.phaseEnabled("test") {
+		testOut, fromDisk, _ = o.speculateTester(ctx, query, board, testPrompt)
+	} else {
+		testOut = `{"passed":true,"summary":"pipeline test phase disabled","commands":[],"failures":[]}`
+	}
 	if preSmokeFail != "" && !fromDisk {
 		// Never let a vague LLM pass override a failed deterministic pre-test.
 		// Only accept LLM pass when it includes real shell evidence (re-run after fix).
@@ -288,6 +306,13 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 			board = &snap
 			if board.AgentWorkRemaining() {
 				o.emit("execute", "corrective wave after tester rewrite", "")
+				o.emitLoop("execute", LoopEvent{
+					Action: "corrective_wave",
+					Reason: "tester not satisfied — running corrective execute wave",
+					From:   "test",
+					To:     "execute",
+					Wave:   o.waveCounter,
+				})
 				if err := runner.RunBoard(ctx, board); err != nil {
 					if isCancelErr(err) {
 						return o.checkpointInterrupt(board, session.PhaseExecute, err)
@@ -298,6 +323,13 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 				board = &snap
 				o.persistBoard(board)
 				o.emitAgent("test", plan.RoleTester, "", "re-verify after rewrite", "", "")
+				o.emitLoop("test", LoopEvent{
+					Action: "reverify",
+					Reason: "re-verifying after corrective wave",
+					From:   "execute",
+					To:     "test",
+					Wave:   o.waveCounter,
+				})
 				_, tasksMD2 := board.ToMarkdown()
 				testOut2, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
 					"\nTasks:\n"+truncate(tasksMD2, 4000)+
@@ -310,11 +342,25 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 				if renameDiskOK(o.cfg.Root, query, board) {
 					testerRejected = false
 					testOut = `{"passed":true,"summary":"rename verified on disk after corrective wave","commands":[],"failures":[]}`
+					o.emitLoop("test", LoopEvent{
+						Action: "resolved",
+						Reason: "disk evidence cleared tester rejection after corrective wave",
+						From:   "test",
+						To:     "done",
+						Wave:   o.waveCounter,
+					})
 				} else if o.applyTesterFeedback(ctx, query, board, testOut2) {
 					snap = o.boardStore.Snapshot()
 					board = &snap
 				} else {
 					testerRejected = false
+					o.emitLoop("test", LoopEvent{
+						Action: "resolved",
+						Reason: "tester passed after corrective wave",
+						From:   "test",
+						To:     "done",
+						Wave:   o.waveCounter,
+					})
 				}
 			}
 		}
@@ -324,6 +370,46 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		return o.checkpointInterrupt(board, session.PhaseTest, err)
 	}
 
+	// Polish: detect/fill placeholders before QA promotion (additional quality step).
+	gaps := o.runPlaceholderPass(ctx, query, board, runner)
+	if len(gaps) > 0 {
+		testerRejected = true
+	}
+
+	// Reference-bar completeness: catch TestSLMs-style "success" with empty
+	// packages / missing main+tests / bad LangGraph APIs before QA promote.
+	completenessFailed := false
+	if completeness := quality.CheckProjectCompleteness(o.cfg.Root, query); len(completeness) > 0 {
+		completenessFailed = true
+		testerRejected = true
+		rep := quality.FormatCompletenessReport(completeness)
+		_ = o.store.Append(contextstore.DocScratch, "Project completeness", rep)
+		o.emitFull("test", stream.KindIntervention, "completeness", "",
+			fmt.Sprintf("reference bar: %d completeness gap(s)", len(completeness)),
+			quality.InterventionReview, truncate(rep, 1200))
+		fails := make([]string, 0, len(completeness))
+		for _, c := range completeness {
+			fails = append(fails, c.Reason)
+		}
+		o.emitLoop("test", LoopEvent{
+			Action:   "rewrite",
+			Reason:   "workspace below expert reference bar — reopening corrective work",
+			Failures: trimFailures(fails, 6),
+			From:     "test",
+			To:       "execute",
+		})
+		failJSON, _ := json.Marshal(fails)
+		fake := `{"passed":false,"summary":"project completeness below reference bar","failures":` +
+			string(failJSON) + `}`
+		_ = o.applyTesterFeedback(ctx, query, board, fake)
+		snap := o.boardStore.Snapshot()
+		board = &snap
+	}
+
+	qaCmd := strings.TrimSpace(o.cfg.QAGateCommand)
+	if qaCmd == "" {
+		qaCmd = quality.DetectProjectCommand(o.cfg.Root)
+	}
 	qaFailed := o.runQAGate(ctx, query, board)
 	if qaFailed {
 		testerRejected = true
@@ -332,13 +418,57 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		snap := o.boardStore.Snapshot()
 		board = &snap
 	} else if o.cfg.QAGate {
-		// Hard gate green wins over soft tester evidence gaps / rewrite noise.
-		if testerRejected {
-			o.emit("test", "qa_gate green — clearing soft tester rejection", "")
-			testerRejected = false
+		weakQA := quality.IsWeakQACommand(qaCmd)
+		escalated := boardHasEscalated(board)
+		// Syntax-only gates (compileall / py_compile) must NOT clear tester
+		// rejection or rubber-stamp escalated tasks — TestSLMs false success.
+		if weakQA && (testerRejected || escalated || len(gaps) > 0 || completenessFailed) {
+			o.emitFull("test", stream.KindIntervention, "qa", "",
+				"qa_gate is syntax-only — keeping tester/escalation failures",
+				quality.InterventionReview,
+				"weak_qa:"+qaCmd)
+			o.emit("test", "qa_gate weak ("+qaCmd+") — not promoting escalated/rejected tasks", "")
+		} else if len(gaps) == 0 && !completenessFailed {
+			// Hard gate green wins over soft tester evidence gaps / rewrite noise.
+			// Never clear a failed reference-bar completeness check.
+			if testerRejected {
+				o.emit("test", "qa_gate green — clearing soft tester rejection", "")
+				testerRejected = false
+			}
+			promoteBoardOnQAGreen(o.cfg.Root, board)
+			o.persistBoard(board)
+		} else if completenessFailed {
+			o.emit("test", "qa_gate green but completeness gaps remain — not promoting", "")
 		}
-		promoteBoardOnQAGreen(board)
-		o.persistBoard(board)
+	}
+
+	// HITL: when retries/QA exhausted and work remains, ask to continue.
+	reason := "retries or QA exhausted with unfinished work"
+	if len(gaps) > 0 {
+		reason = fmt.Sprintf("%d placeholder gap(s) remain after fill pass", len(gaps))
+	} else if qaFailed {
+		reason = "QA gate still red after max rounds"
+	} else if testerRejected {
+		reason = "tester rejected after corrective wave"
+	} else if boardHasEscalated(board) {
+		reason = "tasks escalated after max review retries"
+	}
+	if another, b2 := o.runContinueAsk(ctx, query, board, runner, reason, gaps, testerRejected, qaFailed); another {
+		board = b2
+		// Re-scan + light re-test after continue wave (single extra pass).
+		gaps = quality.ScanProjectPlaceholders(o.cfg.Root, board)
+		if len(gaps) == 0 && !boardHasEscalated(board) {
+			testerRejected = false
+			qaFailed = false
+		} else {
+			testerRejected = true
+			if len(gaps) > 0 {
+				flagPreciseGaps(board, gaps)
+				o.persistBoard(board)
+			}
+		}
+	} else if b2 != nil {
+		board = b2
 	}
 
 	return o.completeRun(ctx, runID, query, skillPack, board, testOut, testerRejected, qaFailed, start)
@@ -382,7 +512,14 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 
 	failed := board.FailedCount()
 	qaGreen := o.cfg != nil && o.cfg.QAGate && !qaFailed
-	success := !testerRejected && ((failed == 0 && board.AllDone()) || (qaGreen && failed == 0))
+	escalatedLeft := boardHasEscalated(board)
+	// Never mark success when escalated/blocked tasks remain, even if a weak
+	// compileall QA gate was green (TestSLMs false-success regression).
+	success := !testerRejected && failed == 0 && board.AllDone() && !escalatedLeft
+	if !success && qaGreen && !testerRejected && failed == 0 && !escalatedLeft &&
+		!board.AgentWorkRemaining() {
+		success = true
+	}
 	res := &Result{
 		ID: runID, Query: query, Board: *board,
 		Success: success, FailedTasks: failed,
@@ -390,9 +527,13 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
 		Usage: o.snapshotUsage(),
 	}
-	if testerRejected {
+	if testerRejected || escalatedLeft {
 		res.Success = false
-		res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
+		if testerRejected {
+			res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
+		} else if escalatedLeft {
+			res.Summary = res.Summary + " (escalated tasks need human review in Studio)"
+		}
 	} else if qaGreen && success && !board.AllDone() {
 		res.Summary = res.Summary + " (qa_gate green)"
 	}
@@ -481,9 +622,31 @@ func renameDiskOK(root, query string, board *plan.Board) bool {
 	return plan.RenameSatisfied(root, spec, focus)
 }
 
-// promoteBoardOnQAGreen closes open implement/verify tasks after the hard QA gate
-// passes, recovering from soft tester evidence false-negatives that rewrote the board.
-func promoteBoardOnQAGreen(board *plan.Board) {
+// boardHasEscalated reports whether any task was escalated / needs human review.
+func boardHasEscalated(board *plan.Board) bool {
+	if board == nil {
+		return false
+	}
+	for _, t := range board.Tasks {
+		blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review + " " + t.Output)
+		if strings.Contains(blob, "escalated") ||
+			strings.Contains(blob, "needs human") ||
+			strings.Contains(blob, "max retries") ||
+			strings.Contains(blob, `"status":"blocked"`) ||
+			strings.Contains(blob, `"status": "blocked"`) {
+			return true
+		}
+		if t.Column == plan.ColToScope && strings.TrimSpace(t.Error) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// promoteBoardOnQAGreen closes open implement/verify tasks after a *strong* QA
+// gate passes, recovering from soft tester evidence false-negatives.
+// Never promotes escalated / blocked / stub / missing-file tasks (TestSLMs).
+func promoteBoardOnQAGreen(root string, board *plan.Board) {
 	if board == nil {
 		return
 	}
@@ -504,15 +667,7 @@ func promoteBoardOnQAGreen(board *plan.Board) {
 				continue
 			}
 		}
-		errLower := strings.ToLower(t.Error + " " + t.Review + " " + t.Notes)
-		soft := t.Error == "" ||
-			strings.Contains(errLower, "review rejected") ||
-			strings.Contains(errLower, "needs human") ||
-			strings.Contains(errLower, "smoke") ||
-			strings.Contains(errLower, "tester") ||
-			strings.Contains(errLower, "qa_gate") ||
-			t.Column == plan.ColToScope || t.Column == plan.ColReadyToDev
-		if !soft {
+		if !promoteEligible(root, *t) {
 			continue
 		}
 		t.Error = ""
@@ -523,6 +678,44 @@ func promoteBoardOnQAGreen(board *plan.Board) {
 		t.MoveTo(plan.ColDone)
 		board.Tasks[i] = *t
 	}
+}
+
+// promoteEligible is true only for soft evidence-gap failures that QA can clear.
+// Hard escalations, blocked worker JSON, missing focus files, and static stubs
+// must stay open for human / corrective waves.
+func promoteEligible(root string, t plan.Task) bool {
+	blob := strings.ToLower(t.Error + " " + t.Review + " " + t.Notes + " " + t.Output)
+	if strings.Contains(blob, "escalated") ||
+		strings.Contains(blob, "needs human") ||
+		strings.Contains(blob, "max retries") ||
+		strings.Contains(blob, `"status":"blocked"`) ||
+		strings.Contains(blob, `"status": "blocked"`) {
+		return false
+	}
+	if quality.StaticFailedInOutput(t.Output) || quality.ClaimsFailedInOutput(t.Output) {
+		return false
+	}
+	if root != "" {
+		if issues := quality.CheckStaticQuality(root, t); len(issues) > 0 {
+			return false
+		}
+		for _, f := range t.Files {
+			f = strings.TrimSpace(f)
+			if f == "" || strings.HasSuffix(f, "/") {
+				continue
+			}
+			if !plan.FileExists(root, f) {
+				return false
+			}
+		}
+	}
+	errLower := strings.ToLower(t.Error + " " + t.Review + " " + t.Notes)
+	soft := t.Error == "" ||
+		strings.Contains(errLower, "smoke") ||
+		strings.Contains(errLower, "tester") ||
+		strings.Contains(errLower, "qa_gate") ||
+		(t.Column == plan.ColReadyToDev && !strings.Contains(errLower, "review rejected"))
+	return soft
 }
 
 // promoteRenameTasksDone marks implement/test tasks done when disk already matches

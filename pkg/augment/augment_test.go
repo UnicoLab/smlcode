@@ -67,3 +67,20 @@ func TestAlgorithmKnowledgeBinarySearch(t *testing.T) {
 		t.Fatalf("expected Binary Search card, got %#v", ks)
 	}
 }
+
+func TestSelectKnowledgeLangGraphClassAgent(t *testing.T) {
+	q := "setup a template folder structure for langgraph agent using class approach and langchain abstractions"
+	ks := SelectKnowledge(q, DefaultKnowledge(), 400)
+	found := false
+	for _, k := range ks {
+		if k.Topic == "LangGraph Class Agent" {
+			found = true
+			if !strings.Contains(k.Body, "StateGraph") {
+				t.Fatalf("expected StateGraph guidance, got %q", k.Body)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected LangGraph Class Agent card, got %#v", ks)
+	}
+}

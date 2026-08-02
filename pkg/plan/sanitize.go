@@ -150,8 +150,12 @@ func EnsureTesterTask(tasks []Task, query string) []Task {
 	}
 	q := strings.ToLower(query)
 	// Skip trivial edits — finalize tester + QA gate still cover them.
-	if strings.Contains(q, "tiny") || strings.Contains(q, "doc comment") ||
-		strings.Contains(q, "one-line") || strings.Contains(q, "one line") {
+	// Still inject a tester when the user explicitly asked for pytest/tests.
+	wantsTests := strings.Contains(q, "pytest") || strings.Contains(q, "unit test") ||
+		strings.Contains(q, "test smoke") || strings.Contains(q, "with a test") ||
+		strings.Contains(q, "with tests")
+	if !wantsTests && (strings.Contains(q, "tiny") || strings.Contains(q, "doc comment") ||
+		strings.Contains(q, "one-line") || strings.Contains(q, "one line")) {
 		return tasks
 	}
 	greenfield := strings.Contains(q, "scaffold") || strings.Contains(q, "greenfield") ||
@@ -188,29 +192,40 @@ func EnsureTesterTask(tasks []Task, query string) []Task {
 	return tasks
 }
 
-// EnsureGreenfieldHarness adds worker tasks for requirements.txt + a minimal
-// pytest smoke when the query is a Python greenfield scaffold without them.
-func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
-	if len(tasks) == 0 {
-		return tasks
-	}
+// isPythonGreenfieldQuery detects Python scaffold / template work that needs a
+// runnable harness (requirements + entrypoint + pytest). Includes "setup a
+// template folder…" phrasing (TestSLMs / LangGraph class-agent requests).
+func isPythonGreenfieldQuery(query string) bool {
 	q := strings.ToLower(query)
 	pythonish := strings.Contains(q, "python") || strings.Contains(q, ".py") ||
 		strings.Contains(q, "pytest") || strings.Contains(q, "fastapi") ||
-		strings.Contains(q, "langgraph") || strings.Contains(q, "flask") ||
-		strings.Contains(q, "django")
-	greenfield := strings.Contains(q, "create") || strings.Contains(q, "scaffold") ||
+		strings.Contains(q, "langgraph") || strings.Contains(q, "langchain") ||
+		strings.Contains(q, "flask") || strings.Contains(q, "django")
+	if !pythonish {
+		return false
+	}
+	return strings.Contains(q, "create") || strings.Contains(q, "scaffold") ||
 		strings.Contains(q, "greenfield") || strings.Contains(q, "project") ||
-		strings.Contains(q, "build") || strings.Contains(q, "mvp")
-	if !pythonish || !greenfield {
+		strings.Contains(q, "build") || strings.Contains(q, "mvp") ||
+		strings.Contains(q, "setup") || strings.Contains(q, "template") ||
+		strings.Contains(q, "folder structure") || strings.Contains(q, "boilerplate") ||
+		strings.Contains(q, "langgraph") || strings.Contains(q, "langchain")
+}
+
+// EnsureGreenfieldHarness adds worker tasks for requirements.txt, main.py, and
+// a minimal pytest smoke when the query is a Python greenfield scaffold without them.
+func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
+	if len(tasks) == 0 || !isPythonGreenfieldQuery(query) {
 		return tasks
 	}
+	q := strings.ToLower(query)
+	langgraphish := strings.Contains(q, "langgraph") || strings.Contains(q, "langchain")
 
 	hasReq, hasTest, hasMain := false, false, false
 	var lastID string
 	for _, t := range tasks {
 		lastID = t.ID
-		blob := strings.ToLower(t.Title + " " + strings.Join(t.Files, " "))
+		blob := strings.ToLower(t.Title + " " + t.Description + " " + strings.Join(t.Files, " "))
 		if strings.Contains(blob, "requirements.txt") {
 			hasReq = true
 		}
@@ -233,25 +248,86 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 	}
 	if !hasReq {
 		id := nextID()
+		reqDesc := "Create requirements.txt listing runtime deps (or a comment if none). Keep minimal."
+		if langgraphish {
+			reqDesc = "Create requirements.txt with langgraph, langchain-core, and pytest " +
+				"(pin loosely, e.g. langgraph>=0.2). No invented packages."
+		}
 		tasks = append(tasks, Task{
 			ID: id, Title: "Add requirements.txt",
-			Description: "Create requirements.txt listing runtime deps (or a comment if none). Keep minimal.",
+			Description: reqDesc,
 			Role:        RoleWorker, Column: ColReadyToDev, DependsOn: deps,
 			Files:      []string{"requirements.txt"},
-			Acceptance: "requirements.txt exists and is non-empty",
+			Acceptance: "requirements.txt exists, non-empty, and lists real installable packages",
 		})
 		deps = []string{id}
 		lastID = id
 	}
-	if !hasTest && hasMain {
+	// LangGraph: ensure a real agent module task exists (not only empty __init__.py).
+	hasAgentModule := false
+	for _, t := range tasks {
+		blob := strings.ToLower(t.Title + " " + t.Description + " " + strings.Join(t.Files, " "))
+		if strings.Contains(blob, "agent.py") || strings.Contains(blob, "base.py") ||
+			strings.Contains(blob, "stategraph") || strings.Contains(blob, "build_graph") {
+			hasAgentModule = true
+			break
+		}
+	}
+	if langgraphish && !hasAgentModule {
 		id := nextID()
 		tasks = append(tasks, Task{
-			ID: id, Title: "Add pytest smoke test",
-			Description: "Create tests/test_smoke.py that imports/runs a basic assertion against main.py " +
-				"(e.g. subprocess or importlib). Keep it tiny and deterministic.",
+			ID: id, Title: "Implement class-based LangGraph agent",
+			Description: "Create src/lg_agent/state.py (TypedDict) and src/lg_agent/agents/base.py with a " +
+				"BaseAgent/EchoAgent using langgraph.graph.StateGraph + compile() + invoke(). " +
+				"Wire at least one node and END. No Placeholder stubs; no `from langgraph import Graph`.",
 			Role: RoleWorker, Column: ColReadyToDev, DependsOn: deps,
+			Files: []string{"src/lg_agent/state.py", "src/lg_agent/agents/base.py"},
+			Acceptance: "Agent class builds StateGraph, compile+invoke works; " +
+				"python -c import succeeds; no placeholders",
+		})
+		deps = []string{id}
+		lastID = id
+	}
+
+	if !hasMain {
+		id := nextID()
+		mainDesc := "Create main.py that imports the package and runs a tiny demo / argparse entrypoint."
+		mainFiles := []string{"main.py"}
+		mainAC := "python main.py exits 0 (or prints a clear usage) without placeholders"
+		if langgraphish {
+			mainDesc = "Create main.py that constructs the class-based LangGraph agent " +
+				"(StateGraph / compiled graph), invokes it once with a sample input, and prints " +
+				"the result. Use real langgraph.graph.StateGraph APIs — no Placeholder stubs."
+			mainAC = "python main.py runs a sample invoke and exits 0; no Placeholder code"
+		}
+		tasks = append(tasks, Task{
+			ID: id, Title: "Add runnable main.py entrypoint",
+			Description: mainDesc,
+			Role:        RoleWorker, Column: ColReadyToDev, DependsOn: deps,
+			Files:      mainFiles,
+			Acceptance: mainAC,
+		})
+		deps = []string{id}
+		lastID = id
+		hasMain = true
+	}
+	if !hasTest && hasMain {
+		id := nextID()
+		testDesc := "Create tests/test_smoke.py that imports/runs a basic assertion against main.py " +
+			"(e.g. subprocess or importlib). Keep it tiny and deterministic."
+		testAC := "python -m pytest -q passes for tests/test_smoke.py"
+		if langgraphish {
+			testDesc = "Create tests/test_smoke.py that imports the agent class, builds/compiles " +
+				"the graph (or mocks the LLM), and asserts a non-empty structured result. " +
+				"Also assert Placeholder markers are absent from agent source."
+			testAC = "python -m pytest -q exits 0; agent module imports; no Placeholder stubs"
+		}
+		tasks = append(tasks, Task{
+			ID: id, Title: "Add pytest smoke test",
+			Description: testDesc,
+			Role:        RoleWorker, Column: ColReadyToDev, DependsOn: deps,
 			Files:      []string{"tests/test_smoke.py"},
-			Acceptance: "python -m pytest -q passes for tests/test_smoke.py",
+			Acceptance: testAC,
 		})
 	}
 	return tasks

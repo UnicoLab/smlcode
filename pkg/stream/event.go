@@ -18,6 +18,7 @@ const (
 	KindAsk          = "ask"          // clarify interview pending (questions in output JSON)
 	KindIntervention = "intervention" // harness steered the model (quality/loop/whitelist/thinking)
 	KindTurn         = "turn"         // turn-budget / progress meter update
+	KindLoop         = "loop"         // tester reject / rewrite / corrective wave / continue-ask
 )
 
 // Event is a live progress unit streamed to CLI + Studio SSE.

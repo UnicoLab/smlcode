@@ -29,8 +29,326 @@ const COLUMNS = [
   { id: "blocked", label: "Blocked" },
 ];
 
-const ROLES = ["worker", "deep", "explorer", "docs", "architect", "reviewer", "corrector", "tester", "context", "coordinator"];
-const PIPE = ["init", "skills", "context", "explore", "docs", "architect", "clarify", "plan", "split", "coord", "execute", "learn", "test", "memory", "done"];
+const ROLES = ["worker", "deep", "explorer", "docs", "architect", "reviewer", "corrector", "tester", "placeholder", "context", "coordinator"];
+const DEFAULT_PIPE = ["init", "skills", "context", "explore", "docs", "architect", "clarify", "plan", "split", "coord", "execute", "learn", "polish", "test", "memory", "done"];
+
+/** Fallback metadata when /api/pipeline is unavailable. */
+const DEFAULT_PIPE_META = {
+  init: { label: "Init", tip: "Boot workspace + session", group: "prepare" },
+  skills: { label: "Skills", tip: "Load skills & knowledge packs", group: "prepare" },
+  context: { label: "Context", tip: "Refresh CONTEXT / project memory", group: "prepare" },
+  explore: { label: "Explore", tip: "Discover relevant files", group: "prepare" },
+  docs: { label: "Docs", tip: "Read docs & conventions", group: "prepare" },
+  architect: { label: "Architect", tip: "Shape approach & components", group: "design" },
+  clarify: { label: "Clarify", tip: "Lock PRD / ask decisions", group: "design" },
+  plan: { label: "Plan", tip: "Write the execution plan", group: "design" },
+  split: { label: "Split", tip: "Break into atomic tasks", group: "design" },
+  coord: { label: "Coord", tip: "Coordinate board & focus", group: "build" },
+  execute: { label: "Execute", tip: "Workers implement + review", group: "build" },
+  learn: { label: "Learn", tip: "Capture lessons mid-run", group: "build" },
+  polish: { label: "Polish", tip: "Fill placeholders / flag precise gaps", group: "verify" },
+  test: { label: "Test", tip: "Tester + QA gate verification", group: "verify" },
+  memory: { label: "Memory", tip: "Distill long-term memory", group: "finish" },
+  done: { label: "Done", tip: "Run complete", group: "finish" },
+  idle: { label: "Idle", tip: "Waiting for a run", group: "prepare" },
+  error: { label: "Error", tip: "Run failed", group: "finish" },
+};
+
+const DEFAULT_PIPE_GROUPS = [
+  { id: "prepare", label: "Prepare", steps: ["init", "skills", "context", "explore", "docs"] },
+  { id: "design", label: "Design", steps: ["architect", "clarify", "plan", "split"] },
+  { id: "build", label: "Build", steps: ["coord", "execute", "learn"] },
+  { id: "verify", label: "Verify", steps: ["polish", "test"] },
+  { id: "finish", label: "Finish", steps: ["memory", "done"] },
+];
+
+function pipeFromConfig(cfg) {
+  const order = (cfg?.order && cfg.order.length) ? cfg.order : DEFAULT_PIPE;
+  const phases = cfg?.phases || {};
+  const meta = { ...DEFAULT_PIPE_META };
+  Object.keys(phases).forEach((id) => {
+    const p = phases[id] || {};
+    meta[id] = {
+      label: p.label || meta[id]?.label || id,
+      tip: p.tip || meta[id]?.tip || id,
+      group: p.group || meta[id]?.group || "prepare",
+      agent: p.agent || "",
+      when: p.when || "always",
+    };
+  });
+  meta.idle = DEFAULT_PIPE_META.idle;
+  meta.error = DEFAULT_PIPE_META.error;
+  const groups = (cfg?.groups && cfg.groups.length)
+    ? cfg.groups.map((g) => ({ id: g.id, label: g.label, steps: g.steps || [] }))
+    : DEFAULT_PIPE_GROUPS;
+  return { order, meta, groups, execute: cfg?.execute || {}, slots: cfg?.slots || [] };
+}
+
+function pipeIndex(phase, order) {
+  const pipe = order && order.length ? order : DEFAULT_PIPE;
+  const i = pipe.indexOf(phase);
+  return i < 0 ? -1 : i;
+}
+
+const LOOP_DONE_ACTIONS = new Set(["resolved", "aborted", "flag_only"]);
+const LOOP_LABELS = {
+  tester_reject: "Tester rejected",
+  rewrite: "Rewriting plan",
+  replan: "Re-scoping",
+  corrective_wave: "Corrective wave",
+  reverify: "Re-verifying",
+  continue_pending: "Awaiting decision",
+  continue_wave: "Continue wave",
+  placeholder_gaps: "Placeholder gaps",
+  resolved: "Loop cleared",
+  aborted: "Stopped",
+  flag_only: "Gaps flagged",
+};
+
+function parseLoopEvent(e) {
+  if (!e) return null;
+  let data = {};
+  if (e.output) {
+    try { data = JSON.parse(e.output) || {}; } catch (_) { data = {}; }
+  }
+  return {
+    action: data.action || e.scope || "loop",
+    reason: data.reason || e.message || "",
+    wave: data.wave || 0,
+    failures: Array.isArray(data.failures) ? data.failures : [],
+    from: data.from || "",
+    to: data.to || e.phase || "",
+    awaiting: !!data.awaiting || String(e.scope || "").includes("awaiting"),
+    message: e.message || data.reason || "",
+    time: e.time,
+  };
+}
+
+function PipelineHeader({
+  phase, running, liveAgent, counts, intervention, turnMeter,
+  loopState, continueAsk, onContinue,
+  pipeOrder, pipeMeta, pipeGroups, slots,
+}) {
+  const order = pipeOrder && pipeOrder.length ? pipeOrder : DEFAULT_PIPE;
+  const metaMap = pipeMeta || DEFAULT_PIPE_META;
+  const groups = pipeGroups && pipeGroups.length ? pipeGroups : DEFAULT_PIPE_GROUPS;
+  const idx = pipeIndex(phase, order);
+  const total = order.length;
+  const looping = !!(loopState && !LOOP_DONE_ACTIONS.has(loopState.action));
+  const awaiting = !!(continueAsk || (loopState && loopState.awaiting));
+  const rewindIdx = looping ? pipeIndex(loopState.to || phase, order) : -1;
+  const effectiveIdx = looping && rewindIdx >= 0 ? Math.min(idx, rewindIdx) : idx;
+  const doneCount = phase === "done" && !looping ? total : Math.max(0, effectiveIdx);
+  const pct = !running && phase === "idle"
+    ? 0
+    : phase === "done" && !looping
+      ? 100
+      : Math.max(4, Math.round(((doneCount + (running || looping ? 0.45 : 0)) / total) * 100));
+  const meta = metaMap[phase] || metaMap.idle || DEFAULT_PIPE_META.idle;
+  const activeGroup = looping
+    ? (metaMap[loopState.to || phase]?.group || meta.group || "verify")
+    : (meta.group || "prepare");
+  const boardPct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
+  const slotCount = (slots || []).filter((s) => s && s.enabled !== false && s.when !== "never").length;
+  const statusLabel = phase === "error"
+    ? "Failed"
+    : awaiting
+      ? "Awaiting you"
+      : looping
+        ? (LOOP_LABELS[loopState.action] || "Looping")
+        : phase === "done"
+          ? "Complete"
+          : running
+            ? "In progress"
+            : phase && phase !== "idle"
+              ? "Paused / last"
+              : "Ready";
+  const headerClass =
+    "pipeline-header" +
+    (running ? " is-running" : "") +
+    (phase === "done" && !looping ? " is-done" : "") +
+    (phase === "error" ? " is-error" : "") +
+    (looping ? " is-looping" : "") +
+    (awaiting ? " is-awaiting" : "");
+
+  return (
+    <div className={headerClass}>
+      <div className="pipeline-header-top">
+        <div className="pipeline-status-block">
+          <div className="pipeline-status-row">
+            <span className={
+              "pipeline-status-dot" +
+              (awaiting ? " await" : looping ? " loop" : running ? " live" : phase === "done" ? " ok" : phase === "error" ? " bad" : "")
+            } />
+            <strong className="pipeline-status-label">{statusLabel}</strong>
+            <span className="pipeline-phase-chip" title={meta.tip}>
+              {meta.label}
+              <span className="pipeline-phase-id">{phase && phase !== "idle" ? phase : "idle"}</span>
+            </span>
+            {looping || loopState?.wave ? (
+              <span className="pipeline-loop-chip" title={loopState?.reason || "pipeline loop"}>
+                wave {loopState.wave || "?"}
+                {loopState.from && loopState.to ? (
+                  <span className="pipeline-phase-id">{loopState.from}→{loopState.to}</span>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+          <div className="pipeline-status-sub">
+            {looping && loopState?.reason ? (
+              <span className="pipeline-loop-reason">{String(loopState.reason).slice(0, 120)}</span>
+            ) : running && liveAgent?.agent ? (
+              <span>
+                <AgentAvatar agent={liveAgent.agent} size={16} />
+                @{liveAgent.agent}
+                {liveAgent.task ? <span className="pipeline-task-id"> · {liveAgent.task}</span> : null}
+                {liveAgent.message ? <span className="pipeline-msg"> — {String(liveAgent.message).slice(0, 72)}</span> : null}
+              </span>
+            ) : (
+              <span>{meta.tip}</span>
+            )}
+          </div>
+        </div>
+        <div className="pipeline-metrics">
+          <div className="pipeline-metric" title="Pipeline step progress">
+            <b>{phase === "done" && !looping ? total : Math.max(0, effectiveIdx + (effectiveIdx >= 0 ? 1 : 0))}/{total}</b>
+            <span>steps</span>
+          </div>
+          <div className="pipeline-metric" title="Board task completion">
+            <b>{counts.done}/{counts.total || 0}</b>
+            <span>tasks</span>
+          </div>
+          {loopState?.wave ? (
+            <div className={"pipeline-metric" + (looping ? " loop" : "")} title="Corrective loop wave">
+              <b>W{loopState.wave}</b>
+              <span>wave</span>
+            </div>
+          ) : null}
+          {slotCount > 0 ? (
+            <div className="pipeline-metric" title="Custom pipeline slots">
+              <b>{slotCount}</b>
+              <span>slots</span>
+            </div>
+          ) : null}
+          {turnMeter ? (
+            <div className="pipeline-metric" title="Turn budget">
+              <b>{turnMeter}</b>
+              <span>turns</span>
+            </div>
+          ) : null}
+          {intervention ? (
+            <div className="pipeline-metric warn" title={intervention.message}>
+              <b>!</b>
+              <span>{intervention.code || "harness"}</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {looping || awaiting ? (
+        <div className={"pipeline-loop-banner" + (awaiting ? " awaiting" : "")} role="status">
+          <div className="pipeline-loop-banner-main">
+            <strong>{LOOP_LABELS[loopState?.action] || (awaiting ? "Decision needed" : "Loop")}</strong>
+            <span>{loopState?.reason || continueAsk?.reason || "Tester not satisfied — restarting scoped work"}</span>
+            {(loopState?.failures || []).length > 0 ? (
+              <ul className="pipeline-loop-fails">
+                {loopState.failures.slice(0, 4).map((f) => <li key={f}>{f}</li>)}
+              </ul>
+            ) : (continueAsk?.gaps || []).length > 0 ? (
+              <ul className="pipeline-loop-fails">
+                {continueAsk.gaps.slice(0, 4).map((f) => <li key={f}>{f}</li>)}
+              </ul>
+            ) : null}
+          </div>
+          {awaiting && onContinue ? (
+            <div className="pipeline-loop-actions">
+              <button type="button" className="ghost danger" onClick={() => onContinue("stop")}>Abort</button>
+              <button type="button" className="ghost" onClick={() => onContinue("flag_only")}>Flag gaps</button>
+              <button type="button" onClick={() => onContinue("continue")}>Continue loop</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="pipeline-track" aria-hidden="true">
+        <div className="pipeline-track-fill" style={{ width: pct + "%" }} />
+      </div>
+
+      <div className="pipeline-groups" role="list" aria-label="Pipeline stages">
+        {groups.map((g) => {
+          const gIdxs = g.steps.map((s) => pipeIndex(s, order)).filter((i) => i >= 0);
+          if (!gIdxs.length) return null;
+          const gStart = Math.min(...gIdxs);
+          const gEnd = Math.max(...gIdxs);
+          const gDone = !looping && (idx > gEnd || phase === "done");
+          const gActive = (running || looping) && activeGroup === g.id;
+          const gPartial = !gDone && effectiveIdx >= gStart;
+          const gLoop = looping && gStart <= (rewindIdx >= 0 ? rewindIdx : idx) && gEnd >= (rewindIdx >= 0 ? rewindIdx : idx);
+          const groupSlots = (slots || []).filter((s) =>
+            g.steps.includes(s.before) || g.steps.includes(s.after) || g.steps.includes(s.replace)
+          );
+          return (
+            <div
+              key={g.id}
+              className={
+                "pipeline-group" +
+                (gActive ? " active" : "") +
+                (gDone ? " done" : "") +
+                (gPartial && !gActive ? " partial" : "") +
+                (gLoop ? " looping" : "")
+              }
+              role="listitem"
+            >
+              <div className="pipeline-group-label">
+                {g.label}
+                {groupSlots.length ? <span className="pipeline-slot-badge">+{groupSlots.length}</span> : null}
+              </div>
+              <div className="pipeline-steps">
+                {g.steps.map((p) => {
+                  const i = pipeIndex(p, order);
+                  const m = metaMap[p] || { label: p, tip: p };
+                  const target = looping ? (loopState.to || phase) : phase;
+                  const isActive = phase === p || (looping && p === target);
+                  const isDone = (!looping && (phase === "done" || idx > i)) ||
+                    (looping && rewindIdx >= 0 && i < rewindIdx);
+                  const isRejected = looping && (p === "test" || p === "polish") &&
+                    ["tester_reject", "rewrite", "corrective_wave", "continue_pending", "placeholder_gaps"].includes(loopState.action);
+                  const tip = m.agent ? `${m.tip || p} · @${m.agent}` : (m.tip || p);
+                  return (
+                    <span
+                      key={p}
+                      className={
+                        "pipe-step" +
+                        (isActive ? " active" : "") +
+                        (isDone && !isActive ? " done" : "") +
+                        (isRejected ? " rejected" : "") +
+                        (looping && isActive ? " rewind" : "")
+                      }
+                      title={isRejected ? (loopState.reason || tip) : tip}
+                    >
+                      <span className="pipe-step-mark">
+                        {isRejected ? "!" : isDone && !isActive ? "✓" : isActive ? "●" : (i + 1)}
+                      </span>
+                      <span className="pipe-step-label">{m.label}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {counts.total > 0 ? (
+        <div className="pipeline-board-line" title="Board completion">
+          <span>Board</span>
+          <div className="progress-bar"><span style={{ width: boardPct + "%" }} /></div>
+          <span className="pct">{boardPct}%</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function agentRoleClass(name) {
   const n = String(name || "").toLowerCase().replace(/^@/, "");
@@ -38,6 +356,7 @@ function agentRoleClass(name) {
   if (n.includes("correct")) return "role-corrector";
   if (n.includes("explor") || n.includes("docs")) return "role-explorer";
   if (n.includes("test") || n.includes("qa")) return "role-tester";
+  if (n.includes("placeholder") || n.includes("polish")) return "role-reviewer";
   if (n.includes("plan") || n.includes("arch") || n.includes("split")) return "role-planner";
   if (n.includes("coord")) return "role-coordinator";
   return "role-worker";
@@ -148,6 +467,187 @@ function renderMarkdown(src) {
   flushList();
   if (inCode) out.push("<pre><code>" + esc(codeBuf.join("\n")) + "</code></pre>");
   return out.join("\n");
+}
+
+function LiveStatusCard({ liveAgent, running, phase, counts }) {
+  const pct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
+  return (
+    <div className="live-panel live-status-panel">
+      <div className="live-panel-head">
+        <h3>Status</h3>
+        <span className={"live-run-pill" + (running ? " on" : "")}>
+          <span className={"pulse" + (running ? " live" : "")} />
+          {running ? "running" : phase && phase !== "idle" ? phase : "idle"}
+        </span>
+      </div>
+      <div className="live-status-metrics">
+        <div className="live-metric"><b>{counts.total}</b><span>tasks</span></div>
+        <div className="live-metric"><b>{counts.doing}</b><span>active</span></div>
+        <div className="live-metric"><b>{counts.done}</b><span>done</span></div>
+        <div className="live-metric"><b>{counts.ready}</b><span>ready</span></div>
+      </div>
+      <div className="board-progress" style={{ marginBottom: 0 }}>
+        <div className="progress-bar"><span style={{ width: pct + "%" }} /></div>
+        <span className="pct">{pct}%</span>
+      </div>
+      {liveAgent ? (
+        <div className="agent-card live-status-agent">
+          <div className="agent-card-header">
+            <div className="agent-card-title">
+              <AgentAvatar agent={liveAgent.agent} />
+              <div>
+                <strong>@{liveAgent.agent || "unknown"}</strong>
+                <div className="agent-card-role">{liveAgent.kind || "phase"}</div>
+              </div>
+            </div>
+            <div className="agent-card-role">
+              {liveAgent.kind === "agent_start" ? (
+                <span className="status-indicator running" />
+              ) : liveAgent.kind === "agent_end" ? (
+                <span className="status-indicator succeeded" />
+              ) : (
+                <span className="status-indicator idle" />
+              )}
+            </div>
+          </div>
+          <div className="agent-card-body">
+            <div><strong>Status</strong> — {liveAgent.message}</div>
+            <div className="meta-row">
+              {liveAgent.task ? <span><strong>Task</strong> {liveAgent.task}</span> : null}
+              {liveAgent.scope ? <span><strong>Scope</strong> {liveAgent.scope}</span> : null}
+            </div>
+            {liveAgent.output ? (
+              <pre className="output-box" style={{ maxHeight: 88 }}>{liveAgent.output}</pre>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <p className="live-panel-empty">No active agent yet — start a run to see live status.</p>
+      )}
+    </div>
+  );
+}
+
+function LiveEnrichBox({ injectNote, setInjectNote, onInject }) {
+  return (
+    <div className="live-panel live-enrich-panel">
+      <div className="live-panel-head">
+        <h3>Enrich context</h3>
+      </div>
+      <p className="live-panel-hint">
+        Append notes to SCRATCH.md — workers pick them up on the next step.
+      </p>
+      <textarea
+        value={injectNote}
+        onChange={(e) => setInjectNote(e.target.value)}
+        placeholder="Add constraints, paths, or corrections…"
+      />
+      <button className="sm secondary" disabled={!injectNote.trim()} onClick={onInject}>
+        Inject context
+      </button>
+    </div>
+  );
+}
+
+function LiveActivityStrip({ taskHistory }) {
+  if (!taskHistory.length) {
+    return (
+      <div className="live-panel live-activity-panel">
+        <div className="live-panel-head"><h3>Recent activity</h3></div>
+        <p className="live-panel-empty">Agent starts/ends will appear here during a run.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="live-panel live-activity-panel">
+      <div className="live-panel-head"><h3>Recent activity</h3></div>
+      <div className="observability-strip">
+        {taskHistory.slice(-10).map((h, i) => (
+          <div key={i} className={"obs-chip " + (h.kind || "")} title={h.message}>
+            <AgentAvatar agent={h.agent} size={18} />
+            <span className="obs-agent">@{h.agent || "?"}</span>
+            <span className="obs-task">{h.id || "—"}</span>
+            <span className="obs-kind">{h.kind || "phase"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LiveLogs({
+  events, intervention, setIntervention,
+  autoScroll, setAutoScroll, streamPaused, setStreamPaused,
+  showDebugEvents, setShowDebugEvents, turnMeter, onClear, liveEndRef,
+}) {
+  return (
+    <div className="live-panel live-logs-panel">
+      <div className="live-panel-head live-logs-head">
+        <div>
+          <h3>Live logs</h3>
+          <span className="live-logs-count">{events.length} event{events.length === 1 ? "" : "s"}</span>
+        </div>
+        <div className="row">
+          {turnMeter ? <span className="turn-meter" title="Tool/thinking turn budget">⟳ {turnMeter}</span> : null}
+          <button className={"sm" + (autoScroll ? "" : " ghost")} onClick={() => setAutoScroll((v) => !v)} title="Auto-scroll to latest">
+            {autoScroll ? "↓ Live scroll" : "Scroll paused"}
+          </button>
+          <button className={"sm" + (streamPaused ? "" : " ghost")} onClick={() => setStreamPaused((v) => !v)} title="Pause appending events">
+            {streamPaused ? "Resume" : "Pause"}
+          </button>
+          <button className={"sm" + (showDebugEvents ? "" : " ghost")} onClick={() => setShowDebugEvents((v) => !v)} title="Show runner debug logs">
+            {showDebugEvents ? "Debug on" : "Debug"}
+          </button>
+          <button className="sm ghost" onClick={onClear}>Clear</button>
+        </div>
+      </div>
+      {intervention ? (
+        <div className="intervention-banner" role="status">
+          <strong>⚠ Harness</strong>
+          <span className="intervention-code">{intervention.code}</span>
+          <span>{intervention.message}</span>
+          {intervention.detail ? <pre className="mini-out">{String(intervention.detail).slice(0, 280)}</pre> : null}
+          <button className="sm ghost" onClick={() => setIntervention(null)}>Dismiss</button>
+        </div>
+      ) : null}
+      <ul className="event-list live-stream">
+        {events.map((e, i) => (
+          <li key={i} className={"event-item kind-" + (e.kind || e.phase || "phase")}>
+            <div className="event-avatar">
+              <AgentAvatar agent={e.agent || e.phase} size={28} />
+            </div>
+            <div className="event-body">
+              <div className="event-header">
+                <span className="phase">{e.kind || e.phase}</span>
+                {e.agent ? <strong className="agent-name">@{e.agent}</strong> : null}
+                {e.task_id ? <span className="id">{e.task_id}</span> : null}
+              </div>
+              <div className="event-content">
+                <div className="event-message">{e.message}</div>
+                {e.scope ? (
+                  <div className="event-scope">
+                    {e.kind === "file_change" ? "file: " : "scope: "}{e.scope}
+                  </div>
+                ) : null}
+                {e.kind === "file_change" && e.output ? (
+                  <pre className="file-patch-card">{String(e.output).slice(0, 600)}{String(e.output).length > 600 ? "…" : ""}</pre>
+                ) : e.output ? (
+                  <pre className="mini-out" style={{ marginTop: "0.3rem" }}>{String(e.output).slice(0, 400)}{String(e.output).length > 400 ? "…" : ""}</pre>
+                ) : null}
+              </div>
+            </div>
+          </li>
+        ))}
+        <li ref={liveEndRef} style={{ listStyle: "none", height: 1, margin: 0, padding: 0 }} />
+        {!events.length && (
+          <li className="empty-state" style={{ listStyle: "none" }}>
+            <strong>Waiting for a run</strong>
+            <p>Type a task up top and press <em>Run</em>. Live scroll follows the latest agent action.</p>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
 }
 
 function DepGraph({ tasks }) {
@@ -290,6 +790,14 @@ function App() {
   const [clarifyAsk, setClarifyAsk] = useState(null);
   const [clarifyAnswers, setClarifyAnswers] = useState({});
   const [planAsk, setPlanAsk] = useState(null);
+  const [continueAsk, setContinueAsk] = useState(null);
+  const [loopState, setLoopState] = useState(null);
+  const [pipelineView, setPipelineView] = useState(null);
+  const [pipeDraft, setPipeDraft] = useState(null);
+  const [slotDraft, setSlotDraft] = useState({
+    id: "", agent: "worker", after: "plan", before: "", replace: "",
+    title: "", input: "", when: "always", fail_mode: "continue", persist_to: "scratch", multipass: false,
+  });
   const [shellAsk, setShellAsk] = useState(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [streamPaused, setStreamPaused] = useState(false);
@@ -360,13 +868,14 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [h, c, sk, latest, mods, ag] = await Promise.all([
+      const [h, c, sk, latest, mods, ag, pipe] = await Promise.all([
         api("/api/health"),
         api("/api/config"),
         api("/api/skills"),
         api("/api/runs/latest"),
         api("/api/models").catch(() => ({ models: [] })),
         api("/api/agents").catch(() => []),
+        api("/api/pipeline").catch(() => null),
       ]);
       setHealth(h);
       setApiConnected(!!h?.ok);
@@ -374,6 +883,10 @@ function App() {
       setSkills(Array.isArray(sk) ? sk : []);
       setModels(Array.isArray(mods.models) ? mods.models : []);
       setAgents(Array.isArray(ag) ? ag : []);
+      if (pipe?.config) {
+        setPipelineView(pipe);
+        setPipeDraft((prev) => prev || JSON.parse(JSON.stringify(pipe.config)));
+      }
       if (c?.mode) setRunMode(c.mode);
       if (c?.specialist) setRunSpecialist(c.specialist);
       if (Array.isArray(c?.pinned_skills)) setPinSkills(c.pinned_skills);
@@ -514,6 +1027,9 @@ function App() {
                 });
                 setClarifyAnswers(seed);
                 showToast("Scope interview — choose options or use recommended");
+              } else if (ask && ask.kind === "continue") {
+                setContinueAsk(ask);
+                showToast("Retries exhausted — continue another wave?");
               } else if (ask && (ask.task_count != null || ask.tasks)) {
                 setPlanAsk(ask);
                 showToast("Plan ready — approve to execute");
@@ -526,6 +1042,7 @@ function App() {
           if (e.kind === "ask_answered") {
             setClarifyAsk(null);
             setPlanAsk(null);
+            setContinueAsk(null);
             setShellAsk(null);
           }
           if (e.kind === "intervention") {
@@ -537,6 +1054,20 @@ function App() {
             setIntervention(banner);
             showToast("⚠ " + banner.message);
           }
+          if (e.kind === "loop") {
+            const loop = parseLoopEvent(e);
+            setLoopState(loop);
+            if (loop.awaiting) {
+              showToast("Decision needed — continue or abort?");
+            } else if (loop.action === "tester_reject" || loop.action === "corrective_wave") {
+              showToast("↺ " + (LOOP_LABELS[loop.action] || "Loop") + (loop.wave ? " · wave " + loop.wave : ""));
+            } else if (loop.action === "resolved") {
+              showToast("Loop cleared — " + (loop.reason || "ok"));
+            } else if (loop.action === "aborted" || loop.action === "flag_only") {
+              showToast(LOOP_LABELS[loop.action] || loop.action);
+            }
+            setRunning(true);
+          }
           if (e.kind === "turn") {
             setTurnMeter(e.message || e.scope || "");
           }
@@ -544,11 +1075,15 @@ function App() {
             setRunning(false);
             setClarifyAsk(null);
             setPlanAsk(null);
+            setContinueAsk(null);
             setShellAsk(null);
             setTurnMeter("");
+            setLoopState((prev) => (prev && !LOOP_DONE_ACTIONS.has(prev.action)
+              ? { ...prev, action: e.phase === "error" ? "aborted" : "resolved", awaiting: false }
+              : prev));
             showToast(e.phase === "error" ? (e.message || "Run error") : (e.message || "Run finished"));
             refresh();
-          } else if (e.kind === "run_start" || e.kind === "agent_start" || e.phase === "init" || e.phase === "execute" || e.phase === "clarify") {
+          } else if (e.kind === "run_start" || e.kind === "agent_start" || e.kind === "loop" || e.phase === "init" || e.phase === "execute" || e.phase === "clarify" || e.phase === "polish" || e.phase === "plan" || e.phase === "test") {
             setRunning(true);
           }
           refreshBoard();
@@ -591,6 +1126,9 @@ function App() {
     setEvents([]);
     setRunning(true);
     setPhase("init");
+    setLoopState(null);
+    setContinueAsk(null);
+    setIntervention(null);
     setNav("run"); // jump to Live so progress is obvious
     try {
       await api("/api/runs", {
@@ -800,6 +1338,27 @@ function App() {
     showToast(decision === "approve" ? "Shell approved" : "Shell denied");
   }
 
+  async function submitContinue(action) {
+    if (!continueAsk && !(loopState && loopState.awaiting)) return;
+    await api("/api/continue/answer", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    });
+    setContinueAsk(null);
+    setLoopState((prev) => prev ? {
+      ...prev,
+      awaiting: false,
+      action: action === "continue" ? "continue_wave" : (action === "flag_only" ? "flag_only" : "aborted"),
+      reason: action === "continue"
+        ? "continuing — another corrective wave"
+        : action === "flag_only"
+          ? "keeping precise gaps for human fill"
+          : "aborted — finishing with work flagged",
+    } : prev);
+    const labels = { continue: "Continuing another wave", stop: "Stopped — gaps flagged", flag_only: "Keeping precise flags" };
+    showToast(labels[action] || action);
+  }
+
   async function saveConfig(patch) {
     // Send only patch keys — never round-trip Public() config (api_key "***", etc.).
     const body = { ...patch };
@@ -841,17 +1400,111 @@ function App() {
     return c;
   }, [board]);
 
-  const phaseIdx = PIPE.indexOf(phase);
-
   const NAV = [
     { id: "board", label: "Board", tip: "Tasks" },
     { id: "run", label: "Live", tip: "Agent stream" },
+    { id: "pipeline", label: "Pipeline", tip: "Phases & slots" },
     { id: "queries", label: "Queries", tip: "Per-turn plan/tasks" },
     { id: "archives", label: "Archives", tip: "Past runs" },
     { id: "agents", label: "Agents", tip: "Specialists" },
     { id: "skills", label: "Skills", tip: "Knowledge" },
   ];
   const boardPct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
+  const livePipe = useMemo(() => pipeFromConfig(pipelineView?.config || pipeDraft), [pipelineView, pipeDraft]);
+  const roleOptions = useMemo(() => {
+    const ids = (agents || []).map((a) => a.id).filter(Boolean);
+    return ids.length ? ids : ROLES;
+  }, [agents]);
+
+  async function savePipeline() {
+    if (!pipeDraft) return;
+    try {
+      const view = await api("/api/pipeline", {
+        method: "PUT",
+        body: JSON.stringify({ config: pipeDraft }),
+      });
+      setPipelineView(view);
+      setPipeDraft(JSON.parse(JSON.stringify(view.config)));
+      showToast("Pipeline saved · .slmcode/pipeline.yaml");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  async function resetPipeline() {
+    try {
+      const view = await api("/api/pipeline/reset", { method: "POST", body: "{}" });
+      setPipelineView(view);
+      setPipeDraft(JSON.parse(JSON.stringify(view.config)));
+      showToast("Pipeline reset to defaults");
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  function addPipelineSlot() {
+    const id = (slotDraft.id || ("slot-" + Date.now())).toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    if (!id || !slotDraft.agent) return;
+    const slot = {
+      id,
+      agent: slotDraft.agent,
+      title: slotDraft.title || id,
+      before: slotDraft.before || "",
+      after: slotDraft.after || "",
+      replace: slotDraft.replace || "",
+      when: slotDraft.when || "always",
+      input: slotDraft.input || "Run pipeline slot for {{phase}}.\n\nQuery:\n{{query}}\n",
+      fail_mode: slotDraft.fail_mode || "continue",
+      persist_to: slotDraft.persist_to || "scratch",
+      multipass: !!slotDraft.multipass,
+    };
+    if (!slot.before && !slot.after && !slot.replace) {
+      slot.after = "plan";
+    }
+    setPipeDraft((prev) => {
+      const base = prev || pipelineView?.config || { version: 1, phases: {}, order: DEFAULT_PIPE, slots: [], execute: {} };
+      const cfg = JSON.parse(JSON.stringify(base));
+      cfg.slots = [...(cfg.slots || []).filter((s) => s.id !== id), slot];
+      return cfg;
+    });
+    showToast("Slot @" + slot.agent + " added — Save pipeline");
+  }
+
+  function removePipelineSlot(id) {
+    setPipeDraft((prev) => {
+      if (!prev) return prev;
+      return { ...prev, slots: (prev.slots || []).filter((s) => s.id !== id) };
+    });
+  }
+
+  function setPhaseAgent(phaseId, agent) {
+    setPipeDraft((prev) => {
+      const base = prev || pipelineView?.config || {};
+      const cfg = JSON.parse(JSON.stringify(base));
+      cfg.phases = cfg.phases || {};
+      cfg.phases[phaseId] = { ...(cfg.phases[phaseId] || {}), agent };
+      return cfg;
+    });
+  }
+
+  function setPhaseWhen(phaseId, when) {
+    setPipeDraft((prev) => {
+      const base = prev || pipelineView?.config || {};
+      const cfg = JSON.parse(JSON.stringify(base));
+      cfg.phases = cfg.phases || {};
+      cfg.phases[phaseId] = { ...(cfg.phases[phaseId] || {}), when };
+      return cfg;
+    });
+  }
+
+  function setExecuteLoop(field, value) {
+    setPipeDraft((prev) => {
+      const base = prev || pipelineView?.config || {};
+      const cfg = JSON.parse(JSON.stringify(base));
+      cfg.execute = { ...(cfg.execute || {}), [field]: value };
+      return cfg;
+    });
+  }
 
   return (
     <div className="app">
@@ -921,14 +1574,21 @@ function App() {
         </button>
       </header>
 
-      <div className="pipeline" title="Pipeline progress">
-        {PIPE.map((p, i) => (
-          <React.Fragment key={p}>
-            {i > 0 && <span className="pipe-sep">›</span>}
-            <span className={"pipe-step" + (phase === p ? " active" : "") + (phaseIdx > i ? " done" : "")}>{p}</span>
-          </React.Fragment>
-        ))}
-      </div>
+      <PipelineHeader
+        phase={phase}
+        running={running}
+        liveAgent={liveAgent}
+        counts={counts}
+        intervention={intervention}
+        turnMeter={turnMeter}
+        loopState={loopState}
+        continueAsk={continueAsk}
+        onContinue={submitContinue}
+        pipeOrder={livePipe.order}
+        pipeMeta={livePipe.meta}
+        pipeGroups={livePipe.groups}
+        slots={livePipe.slots}
+      />
 
       <div className={"conn-strip" + (apiConnected && sseConnected ? " ok" : apiConnected ? " warn" : " bad")}>
         <span className={"pulse" + (apiConnected ? " live" : "")} />
@@ -982,141 +1642,62 @@ function App() {
           {err && <p className="err-banner">{err}</p>}
 
           {nav === "run" && (
-            <>
-              <h2>Live</h2>
-              <p className="lead">
-                {running
-                  ? "Agents are working — this updates in real time."
-                  : "Press Run above. Progress, agent names, and file scope appear here."}
-              </p>
-
-              <div className="agent-status-dashboard">
-                {liveAgent && (
-                  <div className="agent-card">
-                    <div className="agent-card-header">
-                      <div className="agent-card-title">
-                        <AgentAvatar agent={liveAgent.agent} />
-                        <div>
-                          <strong>@{liveAgent.agent || "unknown"}</strong>
-                          <div className="agent-card-role">{liveAgent.kind || "phase"}</div>
-                        </div>
-                      </div>
-                      <div className="agent-card-role">
-                        {liveAgent.kind === "agent_start" ? (
-                          <span className="status-indicator running" />
-                        ) : liveAgent.kind === "agent_end" ? (
-                          <span className="status-indicator succeeded" />
-                        ) : (
-                          <span className="status-indicator idle" />
-                        )}
-                      </div>
-                    </div>
-                    <div className="agent-card-body">
-                      <div><strong>Status</strong> — {liveAgent.message}</div>
-                      <div className="meta-row">
-                        {liveAgent.task ? <span><strong>Task</strong> {liveAgent.task}</span> : null}
-                        {liveAgent.scope ? <span><strong>Scope</strong> {liveAgent.scope}</span> : null}
-                      </div>
-                      {liveAgent.output ? (
-                        <pre className="output-box" style={{ maxHeight: 120 }}>{liveAgent.output}</pre>
-                      ) : null}
-                    </div>
-                  </div>
-                )}
+            <div className="live-page">
+              <div className="live-page-header">
+                <div>
+                  <h2>Live</h2>
+                  <p className="lead">
+                    {running
+                      ? "Agents are working — overview above, logs below."
+                      : "Press Run above. Status, context, deps, and a dedicated log stream stay separated so you can scan everything clearly."}
+                  </p>
+                </div>
               </div>
 
-              <div className="inject-box">
-                <strong>Enrich context</strong>
-                <div className="lead" style={{ margin: "0.2rem 0 0" }}>
-                  Append notes to SCRATCH.md — workers pick them up on the next step.
+              <div className="live-overview">
+                <div className="live-overview-main">
+                  <LiveStatusCard
+                    liveAgent={liveAgent}
+                    running={running}
+                    phase={phase}
+                    counts={counts}
+                  />
+                  <LiveActivityStrip taskHistory={taskHistory} />
                 </div>
-                <textarea
-                  value={injectNote}
-                  onChange={(e) => setInjectNote(e.target.value)}
-                  placeholder="Add constraints, paths, or corrections…"
-                />
-                <button className="sm secondary" disabled={!injectNote.trim()} onClick={injectContext}>
-                  Inject context
-                </button>
-              </div>
-
-              <div className="event-history">
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                  <h3 style={{ margin: 0 }}>Live stream</h3>
-                  <div className="row">
-                    {turnMeter ? <span className="turn-meter" title="Tool/thinking turn budget">⟳ {turnMeter}</span> : null}
-                    <button className={"sm" + (autoScroll ? "" : " ghost")} onClick={() => setAutoScroll((v) => !v)} title="Auto-scroll to latest">
-                      {autoScroll ? "↓ Live scroll" : "Scroll paused"}
-                    </button>
-                    <button className={"sm" + (streamPaused ? "" : " ghost")} onClick={() => setStreamPaused((v) => !v)} title="Pause appending events">
-                      {streamPaused ? "Resume" : "Pause"}
-                    </button>
-                    <button className={"sm" + (showDebugEvents ? "" : " ghost")} onClick={() => setShowDebugEvents((v) => !v)} title="Show runner debug logs">
-                      {showDebugEvents ? "Debug on" : "Debug"}
-                    </button>
-                    <button className="sm ghost" onClick={() => { setEvents([]); setTaskHistory([]); setIntervention(null); setTurnMeter(""); }}>Clear</button>
-                  </div>
-                </div>
-                {intervention ? (
-                  <div className="intervention-banner" role="status">
-                    <strong>⚠ Harness</strong>
-                    <span className="intervention-code">{intervention.code}</span>
-                    <span>{intervention.message}</span>
-                    {intervention.detail ? <pre className="mini-out">{String(intervention.detail).slice(0, 280)}</pre> : null}
-                    <button className="sm ghost" onClick={() => setIntervention(null)}>Dismiss</button>
-                  </div>
-                ) : null}
-                {taskHistory.length > 0 && (
-                  <div className="observability-strip">
-                    {taskHistory.slice(-8).map((h, i) => (
-                      <div key={i} className={"obs-chip " + (h.kind || "")} title={h.message}>
-                        <AgentAvatar agent={h.agent} size={18} />
-                        <span className="obs-agent">@{h.agent || "?"}</span>
-                        <span className="obs-task">{h.id || "—"}</span>
-                        <span className="obs-kind">{h.kind || "phase"}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {(board.tasks || []).length > 0 && <DepGraph tasks={board.tasks} />}
-                <ul className="event-list live-stream">
-                  {events.map((e, i) => (
-                    <li key={i} className={"event-item kind-" + (e.kind || e.phase || "phase")}>
-                      <div className="event-avatar">
-                        <AgentAvatar agent={e.agent || e.phase} size={28} />
-                      </div>
-                      <div className="event-body">
-                        <div className="event-header">
-                          <span className="phase">{e.kind || e.phase}</span>
-                          {e.agent ? <strong className="agent-name">@{e.agent}</strong> : null}
-                          {e.task_id ? <span className="id">{e.task_id}</span> : null}
-                        </div>
-                        <div className="event-content">
-                          <div className="event-message">{e.message}</div>
-                          {e.scope ? (
-                            <div style={{ color: "var(--muted)", fontSize: "0.75rem", marginTop: "0.2rem" }}>
-                              {e.kind === "file_change" ? "file: " : "scope: "}{e.scope}
-                            </div>
-                          ) : null}
-                          {e.kind === "file_change" && e.output ? (
-                            <pre className="file-patch-card">{String(e.output).slice(0, 600)}{String(e.output).length > 600 ? "…" : ""}</pre>
-                          ) : e.output ? (
-                            <pre className="mini-out" style={{ marginTop: "0.3rem" }}>{String(e.output).slice(0, 400)}{String(e.output).length > 400 ? "…" : ""}</pre>
-                          ) : null}
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                  <li ref={liveEndRef} style={{ listStyle: "none", height: 1, margin: 0, padding: 0 }} />
-                  {!events.length && (
-                    <li className="empty-state" style={{ listStyle: "none" }}>
-                      <strong>Waiting for a run</strong>
-                      <p>Type a task up top and press <em>Run</em>. Live scroll follows the latest agent action.</p>
-                    </li>
+                <div className="live-overview-side">
+                  <LiveEnrichBox
+                    injectNote={injectNote}
+                    setInjectNote={setInjectNote}
+                    onInject={injectContext}
+                  />
+                  {(board.tasks || []).length > 0 ? (
+                    <div className="live-panel live-deps-panel">
+                      <DepGraph tasks={board.tasks} />
+                    </div>
+                  ) : (
+                    <div className="live-panel live-deps-panel">
+                      <div className="live-panel-head"><h3>Dependencies</h3></div>
+                      <p className="live-panel-empty">Task graph appears once the board has tasks.</p>
+                    </div>
                   )}
-                </ul>
+                </div>
               </div>
-            </>
+
+              <LiveLogs
+                events={events}
+                intervention={intervention}
+                setIntervention={setIntervention}
+                autoScroll={autoScroll}
+                setAutoScroll={setAutoScroll}
+                streamPaused={streamPaused}
+                setStreamPaused={setStreamPaused}
+                showDebugEvents={showDebugEvents}
+                setShowDebugEvents={setShowDebugEvents}
+                turnMeter={turnMeter}
+                onClear={() => { setEvents([]); setTaskHistory([]); setIntervention(null); setTurnMeter(""); }}
+                liveEndRef={liveEndRef}
+              />
+            </div>
           )}
 
           {nav === "queries" && (
@@ -1266,6 +1847,135 @@ function App() {
                     </div>
                   )}
                 </div>
+              </div>
+            </>
+          )}
+
+          {nav === "pipeline" && (
+            <>
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <h2 style={{ margin: 0 }}>Pipeline</h2>
+                  <p className="lead" style={{ margin: "0.25rem 0 0" }}>
+                    Config-driven phases, loop agents, and insertable slots — persisted as{" "}
+                    <code>.slmcode/pipeline.yaml</code>. Header + engine follow this live.
+                  </p>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  <button className="ghost" onClick={resetPipeline}>Reset defaults</button>
+                  <button onClick={savePipeline}>Save pipeline</button>
+                </div>
+              </div>
+
+              <div className="pipeline-editor">
+                <section className="panel-box">
+                  <h3>Execute loop</h3>
+                  <div className="pipeline-exec-grid">
+                    <label>Default worker
+                      <select value={pipeDraft?.execute?.default_role || "worker"} onChange={(e) => setExecuteLoop("default_role", e.target.value)}>
+                        {roleOptions.map((id) => <option key={id} value={id}>@{id}</option>)}
+                      </select>
+                    </label>
+                    <label>Reviewer
+                      <select value={pipeDraft?.execute?.reviewer || "reviewer"} onChange={(e) => setExecuteLoop("reviewer", e.target.value)}>
+                        {roleOptions.map((id) => <option key={id} value={id}>@{id}</option>)}
+                      </select>
+                    </label>
+                    <label>Corrector
+                      <select value={pipeDraft?.execute?.corrector || "corrector"} onChange={(e) => setExecuteLoop("corrector", e.target.value)}>
+                        {roleOptions.map((id) => <option key={id} value={id}>@{id}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <section className="panel-box">
+                  <h3>Phase agents</h3>
+                  <div className="pipeline-phase-table">
+                    {(pipeDraft?.order || livePipe.order).map((id) => {
+                      const p = (pipeDraft?.phases || {})[id] || {};
+                      return (
+                        <div key={id} className="pipeline-phase-row">
+                          <div>
+                            <strong>{p.label || livePipe.meta[id]?.label || id}</strong>
+                            <span className="pipeline-phase-id">{id}</span>
+                          </div>
+                          <select value={p.agent || ""} onChange={(e) => setPhaseAgent(id, e.target.value)}>
+                            <option value="">(none / harness)</option>
+                            {roleOptions.map((aid) => <option key={aid} value={aid}>@{aid}</option>)}
+                          </select>
+                          <select value={p.when || "always"} onChange={(e) => setPhaseWhen(id, e.target.value)}>
+                            <option value="always">always</option>
+                            <option value="auto">auto</option>
+                            <option value="never">never</option>
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="panel-box">
+                  <h3>Insert agent slot</h3>
+                  <div className="pipeline-slot-form">
+                    <label>ID<input value={slotDraft.id} onChange={(e) => setSlotDraft({ ...slotDraft, id: e.target.value })} placeholder="pre-plan-audit" /></label>
+                    <label>Agent
+                      <select value={slotDraft.agent} onChange={(e) => setSlotDraft({ ...slotDraft, agent: e.target.value })}>
+                        {roleOptions.map((id) => <option key={id} value={id}>@{id}</option>)}
+                      </select>
+                    </label>
+                    <label>After
+                      <select value={slotDraft.after} onChange={(e) => setSlotDraft({ ...slotDraft, after: e.target.value, before: "", replace: "" })}>
+                        <option value="">—</option>
+                        {(pipeDraft?.order || livePipe.order).map((id) => <option key={id} value={id}>{id}</option>)}
+                      </select>
+                    </label>
+                    <label>Before
+                      <select value={slotDraft.before} onChange={(e) => setSlotDraft({ ...slotDraft, before: e.target.value, after: "", replace: "" })}>
+                        <option value="">—</option>
+                        {(pipeDraft?.order || livePipe.order).map((id) => <option key={id} value={id}>{id}</option>)}
+                      </select>
+                    </label>
+                    <label>Replace
+                      <select value={slotDraft.replace} onChange={(e) => setSlotDraft({ ...slotDraft, replace: e.target.value, after: "", before: "" })}>
+                        <option value="">—</option>
+                        {(pipeDraft?.order || livePipe.order).map((id) => <option key={id} value={id}>{id}</option>)}
+                      </select>
+                    </label>
+                    <label>When
+                      <select value={slotDraft.when} onChange={(e) => setSlotDraft({ ...slotDraft, when: e.target.value })}>
+                        <option value="always">always</option>
+                        <option value="never">never</option>
+                        <option value="query_matches:langgraph">query_matches:langgraph</option>
+                      </select>
+                    </label>
+                    <label className="full">Prompt template
+                      <textarea rows={4} value={slotDraft.input} onChange={(e) => setSlotDraft({ ...slotDraft, input: e.target.value })}
+                        placeholder={"Audit before plan.\nQuery:\n{{query}}\nExploration:\n{{exploration}}"} />
+                    </label>
+                    <div className="row full" style={{ gap: 8 }}>
+                      <button type="button" onClick={addPipelineSlot}>Add slot</button>
+                      <span className="lead" style={{ margin: 0 }}>Placeholders: {"{{query}} {{exploration}} {{plan}} {{phase}}"}</span>
+                    </div>
+                  </div>
+                  <h4 style={{ marginTop: "1rem" }}>Active slots ({(pipeDraft?.slots || []).length})</h4>
+                  {(pipeDraft?.slots || []).length === 0 ? (
+                    <p className="lead">No custom slots — add one above to inject any agent anywhere.</p>
+                  ) : (
+                    <ul className="pipeline-slot-list">
+                      {(pipeDraft?.slots || []).map((s) => (
+                        <li key={s.id}>
+                          <strong>{s.id}</strong>
+                          <span>@{s.agent}</span>
+                          <span className="pipeline-phase-id">
+                            {s.replace ? "replace " + s.replace : s.before ? "before " + s.before : "after " + (s.after || "?")}
+                          </span>
+                          <button className="sm ghost danger" type="button" onClick={() => removePipelineSlot(s.id)}>Remove</button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
               </div>
             </>
           )}
@@ -1575,7 +2285,7 @@ function App() {
                       {COLUMNS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
                     </select>
                     <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
-                      {ROLES.map((r) => <option key={r} value={r}>@{r}</option>)}
+                      {roleOptions.map((r) => <option key={r} value={r}>@{r}</option>)}
                     </select>
                     <button className="primary" onClick={addTask} disabled={!draft.title.trim()}>Add</button>
                   </div>
@@ -1602,7 +2312,7 @@ function App() {
                           {COLUMNS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
                         </select>
                         <select value={selected.role || "worker"} onChange={(e) => patchTask(selected.id, { role: e.target.value })}>
-                          {ROLES.map((r) => <option key={r} value={r}>@{r}</option>)}
+                          {roleOptions.map((r) => <option key={r} value={r}>@{r}</option>)}
                         </select>
                       </div>
                       <h3 style={{ marginTop: 10 }}>Checklist</h3>
@@ -1945,6 +2655,38 @@ function App() {
         </div>
       ) : null}
 
+      {continueAsk ? (
+        <div className="modal-backdrop" style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 83,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{
+            maxWidth: 620, width: "100%", maxHeight: "85vh", overflow: "auto",
+            background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 16,
+          }}>
+            <h2 style={{ marginTop: 0 }}>Continue?</h2>
+            <p className="lead">{continueAsk.summary || "Retries/QA exhausted but work remains."}</p>
+            <p style={{ color: "var(--muted)", fontSize: "0.84rem" }}>{continueAsk.reason}</p>
+            {(continueAsk.escalated || []).length > 0 ? (
+              <p style={{ fontSize: "0.8rem" }}><strong>Escalated:</strong> {continueAsk.escalated.join(", ")}</p>
+            ) : null}
+            {(continueAsk.gaps || []).length > 0 ? (
+              <>
+                <h3 style={{ fontSize: "0.9rem" }}>Precise gaps</h3>
+                <ul style={{ paddingLeft: 18, fontSize: "0.82rem" }}>
+                  {continueAsk.gaps.slice(0, 12).map((g) => <li key={g}><code>{g}</code></li>)}
+                </ul>
+              </>
+            ) : null}
+            <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+              <button className="ghost" onClick={() => submitContinue("stop")}>Stop</button>
+              <button className="ghost" onClick={() => submitContinue("flag_only")}>Keep precise flags</button>
+              <button onClick={() => submitContinue("continue")}>Continue another wave</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {shellAsk ? (
         <div className="modal-backdrop" style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 82,
@@ -1971,7 +2713,11 @@ function App() {
           {health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : "…"}
         </span>
         <span className="footer-live">
-          {running ? `● ${phase}` : "ready"}
+          {continueAsk || (loopState && loopState.awaiting)
+            ? "⏳ continue/abort?"
+            : loopState && !LOOP_DONE_ACTIONS.has(loopState.action)
+              ? `↺ ${LOOP_LABELS[loopState.action] || "loop"}${loopState.wave ? " W" + loopState.wave : ""}`
+              : running ? `● ${phase}` : "ready"}
           {liveAgent?.agent ? ` · @${liveAgent.agent}` : ""}
           {activeTask ? ` · ${activeTask}` : ""}
           {counts.doing ? ` · ${counts.doing} active` : ""}

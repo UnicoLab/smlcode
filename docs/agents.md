@@ -52,6 +52,27 @@ Fields: `skills`, `model`, `provider`, `endpoint`, `tools`, `temperature`, `max_
 
 Different endpoints → unique backend keys (no accidental shared gateway).
 
+### Use anywhere in the pipeline
+
+Custom agents are first-class:
+
+- **Specialist mode** — select them in Studio / `mode: specialist`
+- **Board tasks** — set `role: night-auditor` (dropdown lists all `/api/agents`)
+- **Pipeline slots** — insert before/after/replace any phase in `.slmcode/pipeline.yaml`
+
+```yaml
+# .slmcode/pipeline.yaml
+slots:
+  - id: audit-explore
+    agent: night-auditor
+    after: explore
+    input: |
+      Review exploration for risks.
+      {{exploration}}
+```
+
+→ [Pipeline](pipeline.md)
+
 ---
 
 ## Coordinator actions 🧭

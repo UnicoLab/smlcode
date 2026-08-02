@@ -24,13 +24,14 @@ const (
 
 // Role identifies which specialist should execute a task.
 const (
-	RoleExplorer  = "explorer"
-	RolePlanner   = "planner"
-	RoleWorker    = "worker"
-	RoleReviewer  = "reviewer"
-	RoleCorrector = "corrector"
-	RoleContext   = "context"
-	RoleTester    = "tester"
+	RoleExplorer    = "explorer"
+	RolePlanner     = "planner"
+	RoleWorker      = "worker"
+	RoleReviewer    = "reviewer"
+	RoleCorrector   = "corrector"
+	RoleContext     = "context"
+	RoleTester      = "tester"
+	RolePlaceholder = "placeholder" // detect/fill stubs; flag precise gaps
 )
 
 // Task is an atomic, SLM-sized unit of work.

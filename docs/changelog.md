@@ -6,6 +6,8 @@
 - On escalate HITL timeout, dedicated **@escalate** agent decides
   `retry` / `re_scope` / `abort` / `mark_done` (override via `escalate_timeout_agent`)
 - Heuristic fallback when the LLM is unavailable (stubs → retry, vague → re_scope)
+- Docs: Studio / TUI / Agents / Architecture / Config cover escalate + runnable QA bar
+- CI: trailing-whitespace fix in `docs/pipeline.md`
 
 ---
 

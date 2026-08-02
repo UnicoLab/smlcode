@@ -33,6 +33,11 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
 
+!!! note "⚖ @escalate"
+    Fired only when a task hits **max review retries** and the human does not answer
+    the escalate modal / `/escalate` within `escalate_ask_timeout` (default 30s).
+    Override the specialist with `escalate_timeout_agent` (auto: escalate → reviewer → coordinator).
+
 ```bash
 curl -s localhost:7420/api/agents | jq '.[].id'
 # TUI: /agents

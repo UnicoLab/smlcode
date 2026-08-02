@@ -94,9 +94,9 @@ slots:
 
 Exactly one of:
 
-- `after: <phase>` — run after the phase finishes  
-- `before: <phase>` — run before the phase  
-- `replace: <phase>` — run instead of the built-in phase agent  
+- `after: <phase>` — run after the phase finishes
+- `before: <phase>` — run before the phase
+- `replace: <phase>` — run instead of the built-in phase agent
 
 ### Prompt placeholders
 
@@ -121,9 +121,9 @@ The pipeline only **references** agent IDs and placement.
 
 **Pipeline** tab:
 
-1. **Execute loop** — pick reviewer / corrector / default worker  
-2. **Phase agents** — bind any registered agent per stage + when  
-3. **Slots** — insert agents around phases with a prompt template  
+1. **Execute loop** — pick reviewer / corrector / default worker
+2. **Phase agents** — bind any registered agent per stage + when
+3. **Slots** — insert agents around phases with a prompt template
 
 The top progress header is driven by the same `order` / `groups` / slots — no hard-coded stage list in the UI.
 
@@ -133,9 +133,9 @@ Board task role dropdowns also list **all** agents from `/api/agents` (customs i
 
 ## Custom agents + pipeline
 
-1. Create `@night-auditor` in **Agents** (or `.slmcode/agents/night-auditor.yaml`)  
-2. Open **Pipeline** → add slot `after: explore` → agent `night-auditor`  
-3. Save → next full run executes the slot and streams it live  
+1. Create `@night-auditor` in **Agents** (or `.slmcode/agents/night-auditor.yaml`)
+2. Open **Pipeline** → add slot `after: explore` → agent `night-auditor`
+3. Save → next full run executes the slot and streams it live
 
 Specialist mode also accepts custom agent IDs.
 
@@ -143,9 +143,9 @@ Specialist mode also accepts custom agent IDs.
 
 ## Related
 
-- [Agents](agents.md) — roster + custom YAML  
-- [Config](config.md) — provider / quality knobs  
-- [Studio](studio.md) — cockpit layout  
-- [Architecture](architecture.md) — engine flow  
+- [Agents](agents.md) — roster + custom YAML
+- [Config](config.md) — provider / quality knobs
+- [Studio](studio.md) — cockpit layout
+- [Architecture](architecture.md) — engine flow
 
 ☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)

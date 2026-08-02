@@ -41,10 +41,17 @@ slmcode tui
 | `/sessions` | Browse saved runs 📼 |
 | `/stats` | Phase latency + token estimates 📊 |
 | `/permission` | Write / shell policy 🛡️ |
+| `/plan [auto\|ask]` | Plan-approve gate before execute 📋 |
+| `/escalate …` | Answer escalate HITL: `re_scope` \| `retry` \| `mark_done` \| `abort` ⚖️ |
 | `/agents` | List / create / edit / delete agents 🧩 |
 | `/stop` | Checkpoint mid-run 🛑 |
 | `/resume` | Continue from checkpoint ▶️ |
 | `/help` | Remind your future self 🛟 |
+
+!!! tip "⚖ Escalate banner"
+    When a task hits max review retries, the TUI shows an **ESCALATE** banner and the
+    pipeline pauses that task. Answer with `/escalate retry` (etc.), or wait for the
+    timeout — then **@escalate** (SLM) decides. Same modal exists in Studio.
 
 !!! tip "💪 Keyboard muscle memory"
     **Ctrl+C** mid-run checkpoints board + ReAct history under

@@ -72,6 +72,25 @@ Consumers: CLI, Studio SSE (`/api/events`), `/api/runs/latest`.
 
 ---
 
+## Quality + HITL gates 🛡️
+
+```text
+worker → smoke + acceptance smoke + static/claims
+      → reviewer / corrector (≤ max_retries)
+      → escalate? → Studio/TUI pause (timeout → @escalate decides)
+finalize → placeholder polish → completeness bar → QA gate (pytest preferred)
+      → continue-ask if work remains
+```
+
+- Greenfield Python QA prefers **pytest**, not `compileall`
+- Whitelisted acceptance commands (`pytest`, `go test`, `python main.py`, …) run after workers
+- Syntax-only QA cannot alone mark the run successful
+- Escalate timeout → dedicated **@escalate** arbitrator (or `escalate_timeout_agent`)
+
+→ [Config](config.md) · [Studio HITL](studio.md) · [Agents](agents.md)
+
+---
+
 ## Parallelism ⚡
 
 `SubAgentExecutor` runs ready tasks up to `max_parallel`. Soft-skip blocked deps so one stuck locate can't freeze the board.

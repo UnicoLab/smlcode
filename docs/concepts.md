@@ -71,10 +71,13 @@ query
   → scope judge (every task gets concrete acceptance / PRD)
   → planner (multipass) → splitter → sanitize (+ auto tester task)
   → coordinator advice
-  → parallel execute (worker self-smoke via ws_shell)
-  → review ↔ correct
+  → parallel execute (worker smoke + acceptance smoke + static/claims)
+  → review ↔ correct (≤ max_retries)
+  → escalate HITL if stuck (timeout → @escalate SLM decides)
+  → placeholder polish → completeness bar
   → finalize tester (real commands required)
-  → QA gate (install deps + pytest/go test/smoke until green)
+  → QA gate (install deps + pytest preferred — not compileall alone)
+  → continue-ask if work remains
   → learn → evolve skills → session snapshot
 ```
 

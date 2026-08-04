@@ -84,3 +84,18 @@ func TestSelectKnowledgeLangGraphClassAgent(t *testing.T) {
 		t.Fatalf("expected LangGraph Class Agent card, got %#v", ks)
 	}
 }
+
+func TestSelectKnowledgePythonAndGoBars(t *testing.T) {
+	py := SelectKnowledge("add pytest coverage for the fastapi python service", DefaultKnowledge(), 400)
+	goK := SelectKnowledge("fix go test failures in pkg/loop", DefaultKnowledge(), 400)
+	assertTopic := func(ks []KnowledgeEntry, topic string) {
+		for _, k := range ks {
+			if k.Topic == topic {
+				return
+			}
+		}
+		t.Fatalf("expected %s card, got %#v", topic, ks)
+	}
+	assertTopic(py, "Python Project Bar")
+	assertTopic(goK, "Go Project Bar")
+}

@@ -9,7 +9,7 @@
 class Slmcode < Formula
   desc "Coding harness for SLMs and any OpenAI-compatible LLM"
   homepage "https://unicolab.ai"
-  version "0.7.2"
+  version "0.7.3"
   license "MIT"
 
   on_macos do

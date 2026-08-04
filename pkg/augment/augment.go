@@ -180,6 +180,34 @@ After writes: install deps if needed, run smoke, then status=done.`,
 - ZERO stub markers or fake {"output":"run_result"} returns
 After writes: pip install -r requirements.txt && python -m pytest -q && python main.py`,
 		},
+		{
+			Topic: "Python Project Bar", TokenCost: 120,
+			Keywords: []string{
+				"python", "pytest", "pip", "requirements.txt", "pyproject", "venv",
+				"fastapi", "django", "flask", ".py",
+			},
+			RequiresTools: []string{"ws_write", "ws_shell"},
+			Body: `Python expectations (unless the repo already disagrees):
+- Real modules, not Placeholder/TODO stubs; prefer typed public functions
+- tests/ with pytest (or test_*.py next to modules); no fake green asserts
+- requirements.txt or pyproject.toml with pinned direct deps
+- Entry: main.py or package __main__; runnable smoke after install
+Verify: python -m pip install -r requirements.txt && python -m pytest -q`,
+		},
+		{
+			Topic: "Go Project Bar", TokenCost: 120,
+			Keywords: []string{
+				"golang", "go mod", "go test", "go.mod", "goroutine", "pkg/",
+				"cmd/", ".go",
+			},
+			RequiresTools: []string{"ws_write", "ws_shell"},
+			Body: `Go expectations (unless the repo already disagrees):
+- Valid module path in go.mod; packages compile with go test ./... -short
+- Exported APIs documented lightly; no panic("TODO") / unimplemented stubs
+- Prefer table-driven tests; keep edits inside listed packages
+- cmd/ for entrypoints, pkg/ or internal/ for libraries when scaffolding
+Verify: go test ./... -short (or targeted package) before status=done`,
+		},
 	}
 	return append(base, AlgorithmKnowledge()...)
 }

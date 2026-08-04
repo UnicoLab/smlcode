@@ -344,62 +344,9 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		if res.Iteration > 0 {
 			r.fireTurn(t.ID, res.Iteration, roleMaxIter(role))
 		}
-		// SLMs sometimes emit a bare tool call / empty finalize — nudge one corrective pass.
-		needNudge := looksLikeToolJunk(t.Output)
-		nudgeIssue := "Finish the task and return status JSON. Do not end on a tool call. Prefer ws_edit/ws_patch (ws_read first); ws_write only for NEW files."
-		if r.QualityMonitor && !needNudge {
-			assess := quality.AssessResponse(t.Output, nil, nil, nil)
-			if !assess.OK {
-				needNudge = true
-				nudgeIssue = quality.CorrectionMessage(assess.Reason)
-				if strings.HasPrefix(assess.Reason, "text_tool_calls:") {
-					if calls := quality.ParseTextToolCalls(t.Output); len(calls) > 0 {
-						nudgeIssue = quality.TextToolNudge(calls)
-					}
-				}
-				r.Log("%s quality-monitor: %s", t.ID, quality.PhraseForUser(assess.Reason))
-				r.fireIntervention(t.ID, assess.Reason, quality.PhraseForUser(assess.Reason), assess.Reason)
-			}
-		}
-		if !needNudge {
-			if calls := quality.ParseTextToolCalls(t.Output); len(calls) > 0 {
-				needNudge = true
-				nudgeIssue = quality.TextToolNudge(calls)
-				if r.AutoTextTools {
-					nudgeIssue = "AUTO_TEXT_TOOLS: re-issue these as NATIVE tool calls immediately, then status JSON.\n" + nudgeIssue
-				}
-				r.Log("%s text-tool-parser: recovered %d call(s)", t.ID, len(calls))
-				r.fireIntervention(t.ID, "text_tool_calls", "text tool calls recovered", nudgeIssue)
-			}
-		}
-		if !needNudge && r.ThinkingBudget &&
-			quality.ThinkingBudgetExceeded(t.Output, r.ThinkingBudgetTokens) {
-			needNudge = true
-			nudgeIssue = quality.ThinkingBudgetBreachMessage()
-			r.Log("%s thinking-budget: exceeded — forcing commit pass", t.ID)
-			r.fireIntervention(t.ID, "thinking_budget_exceeded", "thinking budget exceeded", nudgeIssue)
-		}
-		if needNudge {
-			r.Log("%s produced incomplete finalize; running corrector once", t.ID)
-			r.fire("agent_start", r.correctorID(), t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
-			corrIn := formatCorrectPrompt(t, plan.ReviewResult{
-				Approved: false,
-				Issues:   []string{nudgeIssue},
-				Summary:  "incomplete finalize",
-			})
-			corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-				AgentID: r.correctorID(),
-				Input:   corrIn,
-				Timeout: r.Timeout, ShareState: true,
-			}}, r.Shared)
-			if len(corr) > 0 {
-				r.noteUsage(corr[0], corrIn, outputString(corr[0]))
-				if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
-					t.Output = out
-				}
-			}
-			r.fire("agent_end", r.correctorID(), t.ID, "corrector finished", "", truncate(t.Output, 800))
-		}
+		// SLMs often empty-finalize or end on tool-junk / synthetic blocked JSON.
+		// Recover up to 2 finish-steer passes; then provisional-done if disk proves writes.
+		r.recoverIncompleteFinalize(ctx, &t, snapshots[i])
 		mergeFilesChanged(&t)
 		// Attach disk evidence hint for reviewer.
 		if hint := r.diskEvidenceHint(t, snapshots[i]); hint != "" {
@@ -1166,9 +1113,114 @@ func outputString(res ggagent.SubAgentResult) string {
 }
 
 func looksLikeToolJunk(raw string) bool {
-	lower := strings.ToLower(raw)
-	return strings.Contains(lower, "<function") || strings.Contains(lower, "<tool_call>") ||
-		strings.Contains(lower, "</tool_call>")
+	return quality.LooksLikeToolJunk(raw)
+}
+
+// recoverIncompleteFinalize nudges the corrector (up to 2 passes) when the
+// worker ended empty / on tool-junk / with GoLangGraph's synthetic blocked JSON.
+// If recovery still fails but disk/tool evidence shows writes, synthesize a
+// provisional done JSON so review/smoke can decide on real evidence.
+func (r *Runner) recoverIncompleteFinalize(ctx context.Context, t *plan.Task, baseline map[string]string) {
+	if r == nil || t == nil {
+		return
+	}
+	const maxPasses = 2
+	for pass := 0; pass < maxPasses; pass++ {
+		reason, nudgeIssue, ok := r.incompleteFinalizeNudge(*t)
+		if !ok {
+			return
+		}
+		r.Log("%s incomplete finalize (%s); finish-steer pass %d/%d", t.ID, reason, pass+1, maxPasses)
+		r.fireIntervention(t.ID, reason, quality.PhraseForUser(reason), nudgeIssue)
+		r.fire("agent_start", r.correctorID(), t.ID, "fix incomplete finalize", strings.Join(t.Files, ", "), "")
+		corrIn := formatCorrectPrompt(*t, plan.ReviewResult{
+			Approved: false,
+			Issues:   []string{nudgeIssue},
+			Summary:  "incomplete finalize",
+		})
+		corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+			AgentID: r.correctorID(),
+			Input:   corrIn,
+			Timeout: r.Timeout, ShareState: true,
+		}}, r.Shared)
+		if len(corr) > 0 {
+			r.noteUsage(corr[0], corrIn, outputString(corr[0]))
+			if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
+				t.Output = out
+			}
+		}
+		r.fire("agent_end", r.correctorID(), t.ID, "corrector finished", "", truncate(t.Output, 800))
+	}
+	reason, _, stillBad := r.incompleteFinalizeNudge(*t)
+	if !stillBad {
+		return
+	}
+	hasWrite := r.hasRealWriteEvidence(*t, baseline) || hasToolWriteEvidence(t.Output) || hasDiskEvidenceSection(t.Output)
+	if !hasWrite {
+		r.Log("%s incomplete finalize persists after recovery (%s)", t.ID, reason)
+		return
+	}
+	files := append([]string{}, t.Files...)
+	files = append(files, parseFilesChanged(t.Output)...)
+	provisional := quality.ProvisionalDoneFromEvidence(uniqStrings(files), reason)
+	// Keep prior observations for smoke/static appendices that may already be present.
+	if rest := strings.TrimSpace(t.Output); rest != "" && !strings.HasPrefix(rest, "{") {
+		t.Output = provisional + "\n\n" + rest
+	} else {
+		t.Output = provisional
+	}
+	r.Log("%s provisional done from write evidence after incomplete finalize (%s)", t.ID, reason)
+	r.fireIntervention(t.ID, "provisional_finalize", "recovered finalize from disk/tool evidence", reason)
+}
+
+// incompleteFinalizeNudge returns whether the task output needs a finish-steer
+// pass, plus the reason and corrective issue text.
+func (r *Runner) incompleteFinalizeNudge(t plan.Task) (reason, nudgeIssue string, need bool) {
+	core := stripPostSections(t.Output)
+	if reason = quality.IncompleteFinalizeReason(core); reason != "" {
+		hasWrite := hasToolWriteEvidence(t.Output) || hasDiskEvidenceSection(t.Output)
+		return reason, quality.FinishSteerMessage(reason, hasWrite), true
+	}
+	if looksLikeToolJunk(core) {
+		return "ended_on_tool_call", quality.FinishSteerMessage("ended_on_tool_call", false), true
+	}
+	if r.QualityMonitor {
+		assess := quality.AssessResponse(core, nil, nil, nil)
+		if !assess.OK {
+			nudgeIssue = quality.CorrectionMessage(assess.Reason)
+			if strings.HasPrefix(assess.Reason, "text_tool_calls:") {
+				if calls := quality.ParseTextToolCalls(core); len(calls) > 0 {
+					nudgeIssue = quality.TextToolNudge(calls)
+				}
+			}
+			return assess.Reason, nudgeIssue, true
+		}
+	}
+	if calls := quality.ParseTextToolCalls(core); len(calls) > 0 {
+		nudgeIssue = quality.TextToolNudge(calls)
+		if r.AutoTextTools {
+			nudgeIssue = "AUTO_TEXT_TOOLS: re-issue these as NATIVE tool calls immediately, then status JSON.\n" + nudgeIssue
+		}
+		return "text_tool_calls", nudgeIssue, true
+	}
+	if r.ThinkingBudget && quality.ThinkingBudgetExceeded(core, r.ThinkingBudgetTokens) {
+		return "thinking_budget_exceeded", quality.ThinkingBudgetBreachMessage(), true
+	}
+	return "", "", false
+}
+
+func uniqStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // stripPostSections removes harness-appended evidence/gate sections so JSON

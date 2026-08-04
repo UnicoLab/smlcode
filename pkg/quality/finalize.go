@@ -1,12 +1,100 @@
 package quality
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 // FinalizeWarnRemaining is how many tool turns before MaxIter we warn.
 const FinalizeWarnRemaining = 4
+
+// IncompleteFinalizeReason returns a quality reason when the model failed to
+// produce a usable finish (empty, tool-junk XML, or GoLangGraph's synthetic
+// "model ended on a tool call" blocked JSON). Empty string means OK to review.
+func IncompleteFinalizeReason(output string) string {
+	core := stripHarnessSections(output)
+	if strings.TrimSpace(core) == "" {
+		return "empty_response"
+	}
+	lower := strings.ToLower(core)
+	if LooksLikeToolJunk(core) {
+		return "ended_on_tool_call"
+	}
+	if strings.Contains(lower, "model ended on a tool call") {
+		return "ended_on_tool_call"
+	}
+	// GoLangGraph / harness synthetic blocks that ask for a clearer finish.
+	if (strings.Contains(lower, `"status":"blocked"`) || strings.Contains(lower, `"status": "blocked"`)) &&
+		(strings.Contains(lower, "clearer finish") ||
+			strings.Contains(lower, "empty finalize") ||
+			strings.Contains(lower, "retry with clearer")) {
+		return "ended_on_tool_call"
+	}
+	return ""
+}
+
+// LooksLikeToolJunk detects raw tool-call XML / Action: lines mistaken for a final answer.
+func LooksLikeToolJunk(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "<function") ||
+		strings.Contains(lower, "<tool_call>") ||
+		strings.Contains(lower, "</tool_call>") ||
+		(strings.HasPrefix(lower, "action:") && !strings.Contains(lower, "{"))
+}
+
+// FinishSteerMessage is the corrective prompt for incomplete finalize recovery.
+// When hasWriteEvidence is true, forbid new tool chains and demand status JSON.
+func FinishSteerMessage(reason string, hasWriteEvidence bool) string {
+	base := CorrectionMessage(reason)
+	if hasWriteEvidence {
+		return base + " Disk/tool write evidence already exists — do NOT start new tool chains. " +
+			`Emit STRICT JSON only: {"status":"done","summary":"what changed","files_changed":["real/paths"],"notes":""}.`
+	}
+	return base + " If you still need one edit, use ws_edit/ws_patch (ws_read first), then IMMEDIATELY " +
+		`emit STRICT JSON: {"status":"done|blocked","summary":"...","files_changed":[],"notes":""}. Never end on a tool call.`
+}
+
+// ProvisionalDoneFromEvidence builds a reviewable done JSON when the model
+// failed to finalize but disk/tool evidence already proves work landed.
+func ProvisionalDoneFromEvidence(files []string, priorReason string) string {
+	summary := "recovered incomplete finalize from disk/tool evidence"
+	if priorReason != "" {
+		summary += " (" + priorReason + ")"
+	}
+	if files == nil {
+		files = []string{}
+	}
+	payload := map[string]interface{}{
+		"status":        "done",
+		"summary":       summary,
+		"files_changed": files,
+		"notes":         "provisional finalize — verify via disk evidence / smoke",
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return `{"status":"done","summary":"recovered incomplete finalize","files_changed":[],"notes":"provisional finalize"}`
+	}
+	return string(raw)
+}
+
+func stripHarnessSections(s string) string {
+	for _, marker := range []string{
+		"\n## Disk evidence\n",
+		"\n## Deterministic smoke\n",
+		"\n## Acceptance smoke\n",
+		"\n## Static quality\n",
+		"\n## Claims gate\n",
+	} {
+		if i := strings.Index(s, marker); i >= 0 {
+			s = s[:i]
+		}
+	}
+	return strings.TrimSpace(s)
+}
 
 // FinalizeWarnMessage reminds the model to emit status JSON before turn-cap abort.
 // Port of little-coder finalize-warn — prevents "ran out of turns, no final JSON".

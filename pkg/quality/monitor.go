@@ -28,6 +28,10 @@ func AssessResponse(text string, current, previous []ToolCall, knownTools map[st
 	if strings.TrimSpace(text) == "" && len(current) == 0 {
 		return Assessment{OK: false, Reason: "empty_response"}
 	}
+	// Synthetic / incomplete finalize (incl. GoLangGraph "ended on a tool call").
+	if reason := IncompleteFinalizeReason(text); reason != "" && len(current) == 0 {
+		return Assessment{OK: false, Reason: reason}
+	}
 	// Native tool channel empty but prose contains fenced/XML tool calls.
 	if len(current) == 0 {
 		if names := DetectTextToolCalls(text); len(names) > 0 {
@@ -73,8 +77,13 @@ func AssessResponse(text string, current, previous []ToolCall, knownTools map[st
 func CorrectionMessage(reason string) string {
 	switch {
 	case reason == "empty_response":
-		return "Your previous response was empty. Respond with text or a tool call " +
-			"(ws_read/ws_edit/ws_write/ws_shell) to make progress."
+		return "Your previous response was empty. STOP exploring. Emit STRICT status JSON now: " +
+			`{"status":"done|blocked","summary":"...","files_changed":["real/paths"],"notes":""}. ` +
+			"Do not reply with only a tool call."
+	case reason == "ended_on_tool_call":
+		return "You ended on a tool call (or the harness blocked a tool-junk finalize). " +
+			"STOP calling tools. Emit STRICT status JSON summarizing completed work " +
+			`(or status=blocked with a precise gap): {"status":"done|blocked","summary":"...","files_changed":[],"notes":""}.`
 	case reason == "empty_tool_name":
 		return "Your tool call had an empty name. Use a real tool: ws_read, ws_write, " +
 			"ws_edit, ws_patch, ws_shell, ws_glob, ws_grep."
@@ -110,6 +119,8 @@ func PhraseForUser(reason string) string {
 		return "the model wrote tool calls as text instead of native calls"
 	case reason == "empty_response":
 		return "the model returned an empty response"
+	case reason == "ended_on_tool_call":
+		return "the model ended on a tool call without status JSON"
 	case reason == "empty_tool_name":
 		return "the model emitted a tool call with no name"
 	case reason == "repeated_tool_call":

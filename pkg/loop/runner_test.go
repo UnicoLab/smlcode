@@ -204,6 +204,25 @@ func TestReviewFastPathSkipsExecutor(t *testing.T) {
 	}
 }
 
+func TestIncompleteFinalizeNudgeDetectsToolEndBlock(t *testing.T) {
+	r := &Runner{QualityMonitor: true}
+	reason, issue, need := r.incompleteFinalizeNudge(plan.Task{
+		Output: `{"status":"blocked","summary":"model ended on a tool call","notes":"retry with clearer finish instruction"}`,
+	})
+	if !need || reason != "ended_on_tool_call" {
+		t.Fatalf("need=%v reason=%q", need, reason)
+	}
+	if !strings.Contains(issue, "STRICT") && !strings.Contains(issue, "status JSON") {
+		t.Fatalf("issue=%q", issue)
+	}
+	_, _, needOK := r.incompleteFinalizeNudge(plan.Task{
+		Output: `{"status":"done","summary":"ok","files_changed":["a.go"]}`,
+	})
+	if needOK {
+		t.Fatal("done JSON must not need finish-steer")
+	}
+}
+
 func TestErrorHandlerWritesErrorsMD(t *testing.T) {
 	dir := t.TempDir()
 	fh := NewEnhancedFailureHandler(dir)

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.3 — Incomplete finalize recovery
+
+### Highlights
+- Detect empty finalize and synthetic `model ended on a tool call` blocked JSON
+- Up to two finish-steer corrector passes (demand status JSON, stop tool chains)
+- Provisional done from disk/tool evidence when finalize still fails
+- Knowledge cards: Python / Go project bars for language expectations
+
+---
+
 ## v0.7.2 — Escalate timeout → SLM arbitrator
 
 ### Highlights

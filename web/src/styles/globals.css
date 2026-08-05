@@ -131,7 +131,7 @@
   }
 
   .tooltip {
-    @apply absolute z-50 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-100 
+    @apply absolute z-50 px-3 py-1.5 rounded-lg bg-gray-900 dark:bg-gray-100
            text-white dark:text-gray-900 text-xs shadow-lg pointer-events-none
            opacity-0 group-hover:opacity-100 transition-opacity duration-150;
   }

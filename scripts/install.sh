@@ -270,4 +270,4 @@ else
   echo "Tip: point provider at any OpenAI-compatible LLM (see docs/PROVIDERS.md)."
 fi
 echo "Built ${BUILD_TIME}"
-Made with ♥ by UnicoLab — https://unicolab.ai · AI & Innovation
+echo "Made with ♥ by UnicoLab — https://unicolab.ai · AI & Innovation"

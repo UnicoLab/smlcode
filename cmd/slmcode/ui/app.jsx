@@ -833,10 +833,16 @@ function App() {
   const autoScrollRef = useRef(true);
   const selectedRef = useRef(null);
   const esRef = useRef(null);
+  const mountedRef = useRef(true);
   selectedRef.current = selected;
   streamPausedRef.current = streamPaused;
   showDebugEventsRef.current = showDebugEvents;
   autoScrollRef.current = autoScroll;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -845,9 +851,12 @@ function App() {
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
+  // Safe async state update — only fires if component is still mounted.
+  const safeSet = (fn) => { if (mountedRef.current) fn(); };
+
   const showToast = (msg) => {
     setToast(msg);
-    setTimeout(() => setToast(""), 2800);
+    setTimeout(() => { safeSet(() => setToast("")); }, 2800);
   };
 
   const refreshBoard = useCallback(async () => {
@@ -960,11 +969,11 @@ function App() {
   useEffect(() => {
     refresh();
     const id = setInterval(() => {
-      refreshBoard();
+      refreshBoard().catch(() => {});
       // Keep live docs fresh while pipeline evolves CONTEXT/MEMORY
       if (tab !== "settings") {
         api("/api/docs/" + tab)
-          .then((d) => setDoc(d.content || ""))
+          .then((d) => { safeSet(() => setDoc(d.content || "")); })
           .catch(() => {});
       }
     }, 2000);
@@ -984,6 +993,7 @@ function App() {
       const es = new EventSource("/api/events");
       esRef.current = es;
       es.addEventListener("connected", (msg) => {
+        if (closed) return;
         setSseConnected(true);
         setApiConnected(true);
         retry = 0;
@@ -993,6 +1003,7 @@ function App() {
         } catch (_) {}
       });
       es.onmessage = (msg) => {
+        if (closed || !mountedRef.current) return;
         setSseConnected(true);
         setApiConnected(true);
         retry = 0;
@@ -1109,10 +1120,11 @@ function App() {
           } else if (e.kind === "run_start" || e.kind === "agent_start" || e.kind === "loop" || e.phase === "init" || e.phase === "execute" || e.phase === "clarify" || e.phase === "polish" || e.phase === "plan" || e.phase === "test") {
             setRunning(true);
           }
-          refreshBoard();
+          if (!closed && mountedRef.current) refreshBoard().catch(() => {});
         } catch (_) {}
       };
       es.onerror = () => {
+        if (closed) return;
         setSseConnected(false);
         try { es.close(); } catch (_) {}
         if (closed) return;

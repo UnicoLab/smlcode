@@ -1,4 +1,5 @@
 // ── SLMCode Studio TypeScript Types ──
+// Aligned with Go backend pkg/server/server.go response shapes
 
 // ── Board / Plan ──
 export interface Plan {
@@ -22,13 +23,19 @@ export interface Task {
   depends_on: string[];
   files: string[];
   acceptance: string;
-  checklist: string[];
+  checklist: ChecklistItem[];
   output: string;
   review: string;
   retries: number;
   error: string;
   updated_at: string;
   notes: string;
+}
+
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  done: boolean;
 }
 
 export interface Board {
@@ -113,6 +120,7 @@ export interface Health {
 export interface ModelsResponse {
   models: string[];
   current: string;
+  error?: string;
 }
 
 // ── SSE Events ──
@@ -120,22 +128,30 @@ export interface RunEvent {
   phase: string;
   kind: string;
   message: string;
-  task_id: string;
-  agent: string;
-  scope: string;
-  output: string;
+  task_id?: string;
+  agent?: string;
+  scope?: string;
+  output?: string;
   time: string;
 }
 
-export interface RunResult {
-  id: string;
+// ── Run Responses ──
+export interface StartRunResponse {
+  status: string;
   query: string;
-  board: Board;
+}
+
+export interface OrchestratorResult {
   success: boolean;
-  failed_tasks: number;
   summary: string;
-  backend: string;
-  latency_ms: Record<string, number>;
+  duration: number;       // nanoseconds
+  failed_tasks: number;
+}
+
+export interface LatestRunResponse {
+  running: boolean;
+  result: OrchestratorResult | null;
+  events: RunEvent[];
 }
 
 // ── Run Request ──
@@ -153,7 +169,7 @@ export interface PhaseSpec {
   label: string;
   tip: string;
   group: string;
-  enabled: boolean;
+  enabled?: boolean;
 }
 
 export interface GroupMeta {
@@ -165,16 +181,23 @@ export interface GroupMeta {
 export interface Slot {
   id: string;
   agent: string;
-  when: string;
+  title?: string;
+  before: string;
+  after: string;
   replace: string;
-  enabled: boolean;
+  when: string;
+  input?: string;
+  fail_mode?: string;
+  persist_to?: string;
+  multipass?: boolean;
+  enabled?: boolean;
 }
 
 export interface ExecuteLoop {
   default_role: string;
   reviewer: string;
   corrector: string;
-  max_waves: number;
+  max_waves?: number;
 }
 
 export interface PipelineConfig {
@@ -188,15 +211,16 @@ export interface PipelineConfig {
 
 export interface PipelineView {
   config: PipelineConfig;
-  anchors: string[];
-  defaults: Record<string, string>;
+  anchors?: string[];
+  defaults?: Record<string, string>;
 }
 
 // ── Agents ──
 export interface AgentSpec {
   id: string;
-  title: string;
-  description: string;
+  title?: string;
+  role?: string;
+  description?: string;
   system_prompt?: string;
   skills: string[];
   model: string;
@@ -207,6 +231,8 @@ export interface AgentSpec {
   temperature: number;
   max_tokens: number;
   custom?: boolean;
+  builtin?: boolean;
+  override?: boolean;
 }
 
 // ── Skills ──
@@ -233,12 +259,28 @@ export interface ArchiveItem {
   modified: string;
 }
 
+export interface ArchiveView {
+  name: string;
+  content: string;
+}
+
+// ── Queries ──
 export interface QuerySession {
   id: string;
   query: string;
   success: boolean;
   summary: string;
   updated_at: string;
+}
+
+export interface QueryView {
+  id: string;
+  query: string;
+  summary_md: string;
+  plan_md: string;
+  tasks_md: string;
+  board: Board;
+  summary: string;
 }
 
 // ── Stack Presets ──
@@ -265,4 +307,52 @@ export interface StackPreset {
 // ── Status ──
 export interface AppStatus {
   text: string;
+}
+
+// ── HITL (human-in-the-loop) types ──
+export interface ClarifyQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: ClarifyOption[];
+  recommended: string;
+}
+
+export interface ClarifyOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface ClarifyAsk {
+  questions: ClarifyQuestion[];
+}
+
+export interface PlanAsk {
+  summary: string;
+  task_count: number;
+  tasks: string[];
+}
+
+export interface ContinueAsk {
+  summary: string;
+  reason: string;
+  escalated: string[];
+  gaps: string[];
+}
+
+export interface EscalateAsk {
+  task_id: string;
+  title: string;
+  role: string;
+  files: string[];
+  detail: string;
+  summary: string;
+  timeout_sec: number;
+  kind: string;
+}
+
+export interface ShellAsk {
+  command: string;
+  task_id: string;
 }

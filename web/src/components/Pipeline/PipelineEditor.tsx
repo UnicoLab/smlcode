@@ -182,7 +182,7 @@ export default function PipelineEditor() {
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
                 {phases.map((phase) => {
                   const isEnabled = phase.enabled !== false;
-                  const defaultAgent = pipeline.defaults[phase.id] || '';
+                  const defaultAgent = pipeline.defaults?.[phase.id] || '';
                   return (
                     <div
                       key={phase.id}

@@ -173,9 +173,9 @@ export default function TaskCard({ task, onUpdate, isDragOverlay }: TaskCardProp
               <div className="text-[10px] font-semibold text-gray-400 uppercase mb-1">Checklist</div>
               <ul className="space-y-1">
                 {task.checklist.map((item, i) => (
-                  <li key={i} className="text-xs text-gray-600 dark:text-gray-400 flex items-start gap-1">
-                    <span className="text-gray-300">-</span>
-                    <span className="truncate">{item}</span>
+                  <li key={item.id || i} className="text-xs text-gray-600 dark:text-gray-400 flex items-start gap-1">
+                    <span className={item.done ? 'text-green-500' : 'text-gray-300'}>-</span>
+                    <span className="truncate">{typeof item === 'string' ? item : item.text}</span>
                   </li>
                 ))}
               </ul>

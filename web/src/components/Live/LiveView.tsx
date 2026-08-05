@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import { Play, Square, RefreshCw } from 'lucide-react';
 import { AppContext } from '@/App';
-import { startRun, stopRun, getLatestRun, getAgents } from '@/api/client';
-import type { RunEvent, RunResult, AgentSpec } from '@/types';
+import { startRun, stopRun, getLatestRun, getAgents, createEventSource } from '@/api/client';
+import type { RunEvent, LatestRunResponse, AgentSpec } from '@/types';
 import EventLog from './EventLog';
 import clsx from 'clsx';
 
@@ -10,7 +10,7 @@ export default function LiveView() {
   const ctx = useContext(AppContext);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<RunResult | null>(null);
+  const [result, setResult] = useState<LatestRunResponse | null>(null);
   const [query, setQuery] = useState('');
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
@@ -160,63 +160,50 @@ export default function LiveView() {
         </div>
 
         {/* Result sidebar */}
-        {result && (
+        {result && result.result && (
           <div className="w-80 border-l border-gray-200 dark:border-gray-800 p-4 overflow-auto shrink-0 animate-slide-left">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold">Result</h3>
               <span
                 className={clsx(
                   'badge text-[10px]',
-                  result.success ? 'badge-success' : 'badge-error',
+                  result.result.success ? 'badge-success' : 'badge-error',
                 )}
               >
-                {result.success ? 'Success' : 'Failed'}
+                {result.result.success ? 'Success' : 'Failed'}
               </span>
             </div>
 
             <div className="space-y-3">
-              {result.summary && (
+              {result.result.summary && (
                 <div>
                   <div className="label">Summary</div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{result.summary}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">{result.result.summary}</p>
                 </div>
               )}
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="card p-2">
-                  <div className="text-[10px] text-gray-400">Tasks</div>
-                  <div className="text-lg font-bold">{result.board?.tasks?.length || 0}</div>
-                </div>
-                <div className="card p-2">
-                  <div className="text-[10px] text-gray-400">Failed</div>
-                  <div className={clsx('text-lg font-bold', result.failed_tasks > 0 && 'text-red-500')}>
-                    {result.failed_tasks}
+                  <div className="text-[10px] text-gray-400">Failed tasks</div>
+                  <div className={clsx('text-lg font-bold', result.result.failed_tasks > 0 && 'text-red-500')}>
+                    {result.result.failed_tasks}
                   </div>
                 </div>
                 <div className="card p-2">
-                  <div className="text-[10px] text-gray-400">Backend</div>
-                  <div className="text-sm font-mono font-medium">{result.backend}</div>
-                </div>
-                <div className="card p-2">
-                  <div className="text-[10px] text-gray-400">ID</div>
-                  <div className="text-xs font-mono truncate">{result.id?.slice(0, 8)}</div>
+                  <div className="text-[10px] text-gray-400">Duration</div>
+                  <div className="text-sm font-mono font-medium">
+                    {result.result.duration > 1e9
+                      ? (result.result.duration / 1e9).toFixed(1) + 's'
+                      : (result.result.duration / 1e6).toFixed(0) + 'ms'}
+                  </div>
                 </div>
               </div>
 
-              {/* Latency breakdown */}
-              {result.latency_ms && Object.keys(result.latency_ms).length > 0 && (
-                <div>
-                  <div className="label">Latency (ms)</div>
-                  <div className="space-y-1">
-                    {Object.entries(result.latency_ms).map(([phase, ms]) => (
-                      <div key={phase} className="flex items-center justify-between text-xs">
-                        <span className="text-gray-500">{phase}</span>
-                        <span className="font-mono text-gray-600 dark:text-gray-400">{ms}ms</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Events count */}
+              <div className="card p-2">
+                <div className="text-[10px] text-gray-400">Events</div>
+                <div className="text-lg font-bold">{result.events?.length || 0}</div>
+              </div>
             </div>
           </div>
         )}

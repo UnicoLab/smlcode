@@ -71,7 +71,7 @@ export default function AgentManager() {
   };
 
   const handleSave = async () => {
-    if (!form.title.trim() || !form.id.trim()) return;
+    if (!form.id.trim() || !(form.title || '').trim()) return;
     try {
       if (creating) {
         await createAgent(form);

@@ -1,5 +1,6 @@
 // ── SLMCode API Client ──
-// Typed fetch wrapper for the Go backend at :7420
+// Typed fetch wrapper aligned with Go backend pkg/server/server.go
+// All request/response shapes match backend handlers exactly.
 
 import type {
   Config,
@@ -10,15 +11,24 @@ import type {
   Column,
   Task,
   RunRequest,
-  RunResult,
+  StartRunResponse,
+  LatestRunResponse,
+  RunEvent,
   Skill,
   AgentSpec,
   PipelineView,
   PipelineConfig,
   DocItem,
   ArchiveItem,
+  ArchiveView,
   QuerySession,
+  QueryView,
   AppStatus,
+  ClarifyAsk,
+  PlanAsk,
+  ContinueAsk,
+  EscalateAsk,
+  ShellAsk,
 } from '@/types';
 
 const BASE = '/api';
@@ -39,7 +49,7 @@ async function request<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    throw new Error(`${res.status}: ${text || res.statusText}`);
   }
 
   const contentType = res.headers.get('content-type');
@@ -55,10 +65,12 @@ export async function getHealth(): Promise<Health> {
 }
 
 // ── Config ──
+// Backend returns Config.Public() which is the full config with api_key redacted.
 export async function getConfig(): Promise<Config> {
   return request<Config>('/config');
 }
 
+// Backend accepts config.Patch and returns Config.Public().
 export async function updateConfig(patch: ConfigPatch): Promise<Config> {
   return request<Config>('/config', {
     method: 'PUT',
@@ -72,18 +84,22 @@ export async function getModels(): Promise<ModelsResponse> {
 }
 
 // ── Board ──
+// GET /api/board → {plan, tasks, columns, by_column}
 export async function getBoard(): Promise<Board> {
   return request<Board>('/board');
 }
 
+// GET /api/columns → [{id, label}, …]
 export async function getColumns(): Promise<Column[]> {
   return request<Column[]>('/columns');
 }
 
+// GET /api/tasks → same shape as board (list of tasks)
 export async function getTasks(): Promise<Board> {
   return request<Board>('/tasks');
 }
 
+// PUT /api/tasks — body is the full board
 export async function updateTasks(board: Board): Promise<Board> {
   return request<Board>('/tasks', {
     method: 'PUT',
@@ -91,6 +107,7 @@ export async function updateTasks(board: Board): Promise<Board> {
   });
 }
 
+// POST /api/tasks → creates a task, returns it
 export async function addTask(task: Partial<Task>): Promise<Task> {
   return request<Task>('/tasks', {
     method: 'POST',
@@ -98,6 +115,7 @@ export async function addTask(task: Partial<Task>): Promise<Task> {
   });
 }
 
+// PATCH /api/tasks/{id} → partial update, returns updated task
 export async function patchTask(id: string, patch: Partial<Task>): Promise<Task> {
   return request<Task>(`/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -105,6 +123,7 @@ export async function patchTask(id: string, patch: Partial<Task>): Promise<Task>
   });
 }
 
+// DELETE /api/tasks/{id} → {ok: "true"}
 export async function deleteTask(id: string): Promise<{ ok: string }> {
   return request(`/tasks/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -112,14 +131,17 @@ export async function deleteTask(id: string): Promise<{ ok: string }> {
 }
 
 // ── Docs ──
+// GET /api/docs → ["CONTEXT.md", "PLAN.md", …]
 export async function listDocs(): Promise<string[]> {
   return request<string[]>('/docs');
 }
 
+// GET /api/docs/{name} → {name, content}
 export async function getDoc(name: string): Promise<DocItem> {
   return request<DocItem>(`/docs/${encodeURIComponent(name)}`);
 }
 
+// PUT /api/docs/{name} → body {content} → {ok: "true"}
 export async function updateDoc(name: string, content: string): Promise<{ ok: string }> {
   return request(`/docs/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -132,17 +154,26 @@ export async function getSkills(): Promise<Skill[]> {
   return request<Skill[]>('/skills');
 }
 
+// GET /api/skills/{name} → full skill with body
 export async function getSkill(name: string): Promise<Skill> {
   return request<Skill>(`/skills/${encodeURIComponent(name)}`);
 }
 
-export async function createSkill(skill: Partial<Skill>): Promise<Skill> {
+// POST /api/skills → create a skill
+export async function createSkill(skill: {
+  name: string;
+  description?: string;
+  agents?: string[];
+  body?: string;
+  user_invocable?: boolean;
+}): Promise<Skill> {
   return request<Skill>('/skills', {
     method: 'POST',
     body: JSON.stringify(skill),
   });
 }
 
+// PUT /api/skills/{name} → update a skill
 export async function updateSkill(name: string, skill: Partial<Skill>): Promise<Skill> {
   return request<Skill>(`/skills/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -150,62 +181,78 @@ export async function updateSkill(name: string, skill: Partial<Skill>): Promise<
   });
 }
 
-export async function deleteSkill(name: string): Promise<{ ok: string; deleted: string }> {
+// DELETE /api/skills/{name}
+export async function deleteSkill(name: string): Promise<{ ok: string }> {
   return request(`/skills/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   });
 }
 
 // ── Agents ──
+// GET /api/agents → list of agents (builtin + custom)
 export async function getAgents(): Promise<AgentSpec[]> {
   return request<AgentSpec[]>('/agents');
 }
 
+// GET /api/agents/{id} → full agent spec
 export async function getAgent(id: string): Promise<AgentSpec> {
   return request<AgentSpec>(`/agents/${encodeURIComponent(id)}`);
 }
 
-export async function createAgent(agent: AgentSpec): Promise<AgentSpec> {
+// POST /api/agents → create custom agent
+export async function createAgent(agent: Partial<AgentSpec> & { id: string }): Promise<AgentSpec> {
   return request<AgentSpec>('/agents', {
     method: 'POST',
     body: JSON.stringify(agent),
   });
 }
 
-export async function updateAgent(id: string, agent: AgentSpec): Promise<AgentSpec> {
+// PUT /api/agents/{id} → update agent (or create override)
+export async function updateAgent(id: string, agent: Partial<AgentSpec>): Promise<AgentSpec> {
   return request<AgentSpec>(`/agents/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(agent),
   });
 }
 
-export async function deleteAgent(id: string): Promise<{ ok: string; deleted: string }> {
+// DELETE /api/agents/{id} → delete custom agent or reset override
+export async function deleteAgent(id: string): Promise<{ ok: string }> {
   return request(`/agents/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 }
 
 // ── Runs ──
-export async function startRun(req: RunRequest): Promise<RunResult> {
-  return request<RunResult>('/runs', {
+// POST /api/runs → body {query, mode?, specialist?, skills?} → {status, query}
+export async function startRun(req: RunRequest): Promise<StartRunResponse> {
+  return request<StartRunResponse>('/runs', {
     method: 'POST',
     body: JSON.stringify(req),
   });
 }
 
+// POST /api/runs/stop → {ok: "true"}
 export async function stopRun(): Promise<{ ok: string }> {
-  return request('/runs/stop', { method: 'POST' });
+  return request<{ ok: string }>('/runs/stop', { method: 'POST' });
 }
 
-export async function getLatestRun(): Promise<RunResult> {
-  return request<RunResult>('/runs/latest');
+// GET /api/runs/latest → {running, result, events}
+export async function getLatestRun(): Promise<LatestRunResponse> {
+  return request<LatestRunResponse>('/runs/latest');
+}
+
+// SSE stream — use EventSource directly, not fetch
+export function createEventSource(): EventSource {
+  return new EventSource(`${BASE}/events`);
 }
 
 // ── Pipeline ──
+// GET /api/pipeline → {config, anchors?, defaults?}
 export async function getPipeline(): Promise<PipelineView> {
   return request<PipelineView>('/pipeline');
 }
 
+// PUT /api/pipeline → body {config} → updated PipelineView
 export async function updatePipeline(config: PipelineConfig): Promise<PipelineView> {
   return request<PipelineView>('/pipeline', {
     method: 'PUT',
@@ -213,29 +260,35 @@ export async function updatePipeline(config: PipelineConfig): Promise<PipelineVi
   });
 }
 
+// POST /api/pipeline/reset → reset to defaults
 export async function resetPipeline(): Promise<PipelineView> {
   return request<PipelineView>('/pipeline/reset', { method: 'POST' });
 }
 
 // ── Archives ──
+// GET /api/archives → [{name, size, modified}, …]
 export async function getArchives(): Promise<ArchiveItem[]> {
   return request<ArchiveItem[]>('/archives');
 }
 
-export async function getArchive(name: string): Promise<Board> {
-  return request<Board>(`/archives/${encodeURIComponent(name)}`);
+// GET /api/archives/{name} → {name, content}
+export async function getArchive(name: string): Promise<ArchiveView> {
+  return request<ArchiveView>(`/archives/${encodeURIComponent(name)}`);
 }
 
 // ── Queries (sessions) ──
+// GET /api/queries → [{id, query, success, summary, updated_at}, …]
 export async function getQueries(): Promise<QuerySession[]> {
   return request<QuerySession[]>('/queries');
 }
 
-export async function getQuery(id: string): Promise<RunResult> {
-  return request<RunResult>(`/queries/${encodeURIComponent(id)}`);
+// GET /api/queries/{id} → full query view with summary_md, plan_md, tasks_md, board
+export async function getQuery(id: string): Promise<QueryView> {
+  return request<QueryView>(`/queries/${encodeURIComponent(id)}`);
 }
 
 // ── Status ──
+// GET /api/status → {text}
 export async function getStatus(): Promise<AppStatus> {
   return request<AppStatus>('/status');
 }
@@ -245,73 +298,91 @@ export async function getRewindList(): Promise<{ names: string[] }> {
   return request('/rewind');
 }
 
+// POST /api/rewind/{id} → restore a rewind snapshot
 export async function restoreRewind(id: string): Promise<{ ok: string }> {
   return request(`/rewind/${encodeURIComponent(id)}`, { method: 'POST' });
 }
 
 // ── Compact ──
-export async function compact(): Promise<Record<string, unknown>> {
+// POST /api/compact → trigger context compaction
+export async function compact(): Promise<{ ok: string }> {
   return request('/compact', { method: 'POST' });
 }
 
-// ── HITL (human-in-the-loop) ──
-export async function getClarifyPending(): Promise<{ id: string; message: string }> {
+// ── HITL (human-in-the-loop) — aligned with backend handlers ──
+
+// Clarify: GET /api/clarify/pending → {pending, ask: ClarifyAsk} | {pending: false}
+//          POST /api/clarify/answer → body {answers: [{question_id, selected}, …]} | {use_all_recommended: true}
+export async function getClarifyPending(): Promise<{ pending: boolean; ask?: ClarifyAsk }> {
   return request('/clarify/pending');
 }
 
-export async function answerClarify(id: string, answer: string): Promise<{ ok: string }> {
+export async function answerClarify(
+  answers: { question_id: string; selected: string[] }[],
+): Promise<{ ok: string }> {
   return request('/clarify/answer', {
     method: 'POST',
-    body: JSON.stringify({ id, answer }),
+    body: JSON.stringify({ answers }),
   });
 }
 
-export async function getPlanPending(): Promise<{ id: string; message: string; plan: Record<string, unknown> }> {
+export async function clarifyUseRecommended(): Promise<{ ok: string }> {
+  return request('/clarify/answer', {
+    method: 'POST',
+    body: JSON.stringify({ use_all_recommended: true }),
+  });
+}
+
+// Plan: GET /api/plan/pending → {pending, ask: PlanAsk} | {pending: false}
+//       POST /api/plan/approve → body {decision: "approve"|"replan"}
+export async function getPlanPending(): Promise<{ pending: boolean; ask?: PlanAsk }> {
   return request('/plan/pending');
 }
 
-export async function approvePlan(id: string, approved: boolean): Promise<{ ok: string }> {
+export async function approvePlan(decision: 'approve' | 'replan'): Promise<{ ok: string }> {
   return request('/plan/approve', {
     method: 'POST',
-    body: JSON.stringify({ id, approved }),
+    body: JSON.stringify({ decision }),
   });
 }
 
-export async function getContinuePending(): Promise<{ id: string; message: string }> {
+// Continue: GET /api/continue/pending → {pending, ask: ContinueAsk} | {pending: false}
+//           POST /api/continue/answer → body {action: "continue"|"stop"|"flag_only"}
+export async function getContinuePending(): Promise<{ pending: boolean; ask?: ContinueAsk }> {
   return request('/continue/pending');
 }
 
-export async function answerContinue(id: string, answer: string): Promise<{ ok: string }> {
+export async function answerContinue(action: 'continue' | 'stop' | 'flag_only'): Promise<{ ok: string }> {
   return request('/continue/answer', {
     method: 'POST',
-    body: JSON.stringify({ id, answer }),
+    body: JSON.stringify({ action }),
   });
 }
 
-export async function getEscalatePending(): Promise<{ id: string; message: string; task_id: string; detail: string }> {
+// Escalate: GET /api/escalate/pending → {pending, ask: EscalateAsk} | {pending: false}
+//           POST /api/escalate/answer → body {action: "retry"|"re_scope"|"mark_done"|"abort"}
+export async function getEscalatePending(): Promise<{ pending: boolean; ask?: EscalateAsk }> {
   return request('/escalate/pending');
 }
 
 export async function answerEscalate(
-  id: string,
   action: 'retry' | 're_scope' | 'mark_done' | 'abort',
 ): Promise<{ ok: string }> {
   return request('/escalate/answer', {
     method: 'POST',
-    body: JSON.stringify({ id, action }),
+    body: JSON.stringify({ action }),
   });
 }
 
-export async function getShellPending(): Promise<{ id: string; message: string; command: string }> {
+// Shell: GET /api/shell/pending → {pending, ask: ShellAsk} | {pending: false}
+//        POST /api/shell/approve → body {decision: "approve"|"deny"}
+export async function getShellPending(): Promise<{ pending: boolean; ask?: ShellAsk }> {
   return request('/shell/pending');
 }
 
-export async function approveShell(
-  id: string,
-  approved: boolean,
-): Promise<{ ok: string }> {
+export async function approveShell(decision: 'approve' | 'deny'): Promise<{ ok: string }> {
   return request('/shell/approve', {
     method: 'POST',
-    body: JSON.stringify({ id, approved }),
+    body: JSON.stringify({ decision }),
   });
 }

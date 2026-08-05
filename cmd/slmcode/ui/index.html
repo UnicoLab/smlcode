@@ -30,8 +30,16 @@
   <script src="/vendor/babel.min.js"></script>
   <script type="text/babel" src="/app.jsx"></script>
   <noscript>SLMCode Studio requires JavaScript.</noscript>
-  <footer style="text-align:center;padding:0.5rem;font-size:0.72rem;color:var(--muted);position:fixed;bottom:0;width:100%;background:var(--bg);border-top:1px solid var(--line);z-index:5">
-    Made with ♥ by <a href="https://unicolab.ai" target="_blank" rel="noreferrer" style="color:var(--accent);text-decoration:none">UnicoLab</a> — AI & Innovation
+  <footer style="text-align:center;padding:0.5rem;font-size:0.75rem;position:fixed;bottom:0;width:100%;background:var(--bg);border-top:1px solid var(--line);z-index:5;display:flex;align-items:center;justify-content:center;gap:0.4rem;flex-wrap:wrap">
+    <span style="color:var(--muted)">Made with</span>
+    <span style="color:#e53e3e;font-size:1rem;animation:pulse 2s infinite">♥</span>
+    <span style="color:var(--muted)">by</span>
+    <a href="https://unicolab.ai" target="_blank" rel="noreferrer" style="color:var(--accent);text-decoration:none;font-weight:700">UnicoLab</a>
+    <span style="color:var(--muted)">—</span>
+    <span style="background:linear-gradient(135deg,#7c3aed,#3b82f6,#10b981);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">AI & Innovation</span>
   </footer>
+  <style>
+    @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25)} }
+  </style>
 </body>
 </html>

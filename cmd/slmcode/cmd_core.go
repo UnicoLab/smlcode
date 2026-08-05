@@ -350,7 +350,7 @@ func versionCmd() *cobra.Command {
 				fmt.Println(cli.Dim("source: " + SourceRoot))
 			}
 			fmt.Println(cli.Dim("update: slmcode update"))
-			fmt.Println(cli.Accent("https://unicolab.ai") + cli.Dim(" — AI & Innovation"))
+			fmt.Println(cli.Accent("https://unicolab.ai") + cli.Dim("  —  ") + cli.Bold(cli.Magenta("AI")) + " " + cli.Bold(cli.Cyan("&")) + " " + cli.Bold(cli.Green("Innovation")) + "  " + cli.Red("♥"))
 		},
 	}
 }

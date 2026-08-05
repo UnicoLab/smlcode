@@ -1,0 +1,62 @@
+# ── SLMCode Stack: Qwen (Alibaba) ──
+# Qwen Coder models via OpenRouter, Together, or local Ollama/oMLX.
+# API key: set QWEN_API_KEY / OPENROUTER_API_KEY env var.
+# Run: make stack-apply stack=qwen
+
+provider: openrouter
+endpoint: https://openrouter.ai/api/v1
+model: qwen/qwen-2.5-coder-32b-instruct
+backend: slmcode
+temperature: 0.12
+max_tokens: 4096
+max_parallel: 2
+max_retries: 4
+max_context_kb: 64
+think_passes: 2
+
+# Qwen profile — excellent coding SLM
+model_profiles:
+  default:
+    context_limit: 65536
+    max_tokens: 4096
+    thinking_budget_tokens: 6144
+    skill_token_budget: 350
+    knowledge_token_budget: 260
+    temperature: 0.12
+    max_turns: 28
+  qwen:
+    context_limit: 65536
+    max_tokens: 4096
+    thinking_budget_tokens: 4096
+    skill_token_budget: 280
+    knowledge_token_budget: 200
+    temperature: 0.12
+    max_turns: 28
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# OpenRouter pricing
+price_preset: openrouter

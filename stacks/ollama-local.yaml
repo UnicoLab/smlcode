@@ -1,0 +1,53 @@
+# ── SLMCode Stack: Ollama Local ──
+# Any local model served by Ollama.
+# Run: make stack-apply stack=ollama-local
+
+provider: ollama
+endpoint: http://127.0.0.1:11434
+model: qwen2.5-coder:7b
+backend: slmcode
+temperature: 0.1
+max_tokens: 2048
+max_parallel: 2
+max_retries: 4
+max_context_kb: 32
+think_passes: 1
+
+# Local Ollama profile
+model_profiles:
+  default:
+    context_limit: 32768
+    max_tokens: 2048
+    thinking_budget_tokens: 2048
+    skill_token_budget: 220
+    knowledge_token_budget: 160
+    temperature: 0.1
+    max_turns: 20
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# Local = free
+price_preset: local

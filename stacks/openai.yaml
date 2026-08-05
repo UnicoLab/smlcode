@@ -1,0 +1,54 @@
+# ── SLMCode Stack: OpenAI ──
+# GPT-4o / o3-mini via OpenAI API.
+# API key: set OPENAI_API_KEY env var.
+# Run: make stack-apply stack=openai
+
+provider: openai
+endpoint: https://api.openai.com/v1
+model: gpt-4o
+backend: slmcode
+temperature: 0.15
+max_tokens: 4096
+max_parallel: 4
+max_retries: 3
+max_context_kb: 128
+think_passes: 2
+
+# OpenAI profile — maximum capability
+model_profiles:
+  default:
+    context_limit: 131072
+    max_tokens: 4096
+    thinking_budget_tokens: 8192
+    skill_token_budget: 500
+    knowledge_token_budget: 400
+    temperature: 0.15
+    max_turns: 40
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# OpenAI pricing
+price_preset: openai

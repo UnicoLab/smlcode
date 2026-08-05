@@ -1,0 +1,59 @@
+# ── SLMCode Stack: oMLX Local (default) ──
+# Ultra-light local stack using Apple MLX on Mac.
+# Run: make stack-apply stack=omlx-local
+# Or: slmcode stack apply omlx-local
+
+provider: omlx
+endpoint: http://127.0.0.1:8000/v1
+model: Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
+backend: slmcode
+temperature: 0.12
+max_tokens: 3072
+max_parallel: 2
+max_retries: 4
+max_context_kb: 32
+think_passes: 1
+
+# Budget-friendly SLM profile
+model_profiles:
+  default:
+    context_limit: 32768
+    max_tokens: 3072
+    thinking_budget_tokens: 4096
+    skill_token_budget: 300
+    knowledge_token_budget: 200
+    temperature: 0.12
+    max_turns: 24
+  7b:
+    context_limit: 16384
+    max_tokens: 2048
+    thinking_budget_tokens: 2048
+    skill_token_budget: 220
+    knowledge_token_budget: 160
+    temperature: 0.1
+    max_turns: 18
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false

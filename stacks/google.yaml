@@ -1,0 +1,54 @@
+# ── SLMCode Stack: Google Gemini ──
+# Gemini models via Gemini API (OpenAI-compatible endpoint).
+# API key: set GEMINI_API_KEY or GOOGLE_API_KEY env var.
+# Run: make stack-apply stack=google
+
+provider: gemini
+endpoint: https://generativelanguage.googleapis.com/v1beta/openai/
+model: gemini-2.0-flash
+backend: slmcode
+temperature: 0.15
+max_tokens: 4096
+max_parallel: 3
+max_retries: 3
+max_context_kb: 128
+think_passes: 2
+
+# Gemini profile — huge context, fast
+model_profiles:
+  default:
+    context_limit: 131072
+    max_tokens: 4096
+    thinking_budget_tokens: 8192
+    skill_token_budget: 500
+    knowledge_token_budget: 400
+    temperature: 0.15
+    max_turns: 36
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# Google pricing
+price_preset: gemini

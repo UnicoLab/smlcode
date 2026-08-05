@@ -85,17 +85,17 @@ jobs:
 
             **macOS / Linux / WSL**
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/UnicoLab/slmcode/main/scripts/install-remote.sh | bash
             ```
 
             **Windows (PowerShell)**
             ```powershell
-            irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
+            iem https://raw.githubusercontent.com/UnicoLab/slmcode/main/scripts/install.ps1 | iex
             ```
 
             **Homebrew**
             ```bash
-            brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
+            brew install --formula https://raw.githubusercontent.com/UnicoLab/slmcode/main/Formula/slmcode.rb
             ```
 
             Made with ♥ by [UnicoLab](https://unicolab.ai)

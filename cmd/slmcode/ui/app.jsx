@@ -407,6 +407,17 @@ const PROVIDER_PRESETS = [
   { id: "custom", label: "custom (OpenAI-compat)" },
 ];
 
+const STACKS = [
+  { id: "omlx-local", label: "oMLX Local", provider: "omlx", endpoint: "http://127.0.0.1:8000/v1", model: "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit", badge: "local" },
+  { id: "deepseek", label: "DeepSeek", provider: "deepseek", endpoint: "https://api.deepseek.com/v1", model: "deepseek-chat", badge: "cloud" },
+  { id: "qwen", label: "Qwen Coder", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "qwen/qwen-2.5-coder-32b-instruct", badge: "cloud" },
+  { id: "google", label: "Google Gemini", provider: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-2.0-flash", badge: "cloud" },
+  { id: "openai", label: "OpenAI GPT-4o", provider: "openai", endpoint: "https://api.openai.com/v1", model: "gpt-4o", badge: "cloud" },
+  { id: "ollama-local", label: "Ollama Local", provider: "ollama", endpoint: "http://127.0.0.1:11434", model: "qwen2.5-coder:7b", badge: "local" },
+  { id: "openrouter", label: "OpenRouter", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "anthropic/claude-sonnet-4", badge: "cloud" },
+  { id: "groq", label: "Groq (fast)", provider: "groq", endpoint: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", badge: "cloud" },
+];
+
 /** Lightweight markdown → HTML for Studio docs (no CDN). */
 function renderMarkdown(src) {
   const esc = (s) => String(s)
@@ -2412,6 +2423,38 @@ function App() {
                 <p className="lead" style={{ fontSize: "0.75rem", marginTop: 0 }}>
                   Any OpenAI-compatible endpoint works — oMLX, Ollama, LM Studio, cloud OpenAI, OpenRouter, vLLM, …
                 </p>
+                <div className="stack-picker" style={{ marginBottom: "0.75rem" }}>
+                  <div className="field-label" style={{ fontSize: "0.78rem", fontWeight: 600, marginBottom: "0.35rem", color: "var(--muted)" }}>Quick stack</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+                    {STACKS.map((s) => {
+                      const active = config.provider === s.provider && config.model === s.model;
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className={"sm" + (active ? " primary" : " ghost")}
+                          title={s.provider + " · " + s.model}
+                          onClick={() => saveConfig({
+                            provider: s.provider,
+                            endpoint: s.endpoint,
+                            model: s.model,
+                          })}
+                          style={{ fontSize: "0.72rem", padding: "0.25rem 0.55rem" }}
+                        >
+                          {active ? "✓ " : ""}{s.label}
+                          <span style={{
+                            fontSize: "0.6rem",
+                            marginLeft: "0.3rem",
+                            padding: "0 0.3rem",
+                            borderRadius: "99px",
+                            background: s.badge === "local" ? "var(--accent-dim)" : "var(--bg-muted)",
+                            color: s.badge === "local" ? "var(--accent-bright)" : "var(--muted)",
+                          }}>{s.badge}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <label>Provider
                   <select
                     value={PROVIDER_PRESETS.some((p) => p.id === config.provider) ? config.provider : "custom"}

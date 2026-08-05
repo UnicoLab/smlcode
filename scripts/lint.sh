@@ -17,6 +17,30 @@ echo "==> go vet"
 go vet ./...
 
 echo "==> ui-check"
-make ui-check
+# Validate embedded UI files
+if [[ ! -f cmd/slmcode/ui/styles.css ]]; then
+  echo "ERROR: cmd/slmcode/ui/styles.css missing"
+  exit 1
+fi
+if [[ ! -f cmd/slmcode/ui/app.jsx ]]; then
+  echo "ERROR: cmd/slmcode/ui/app.jsx missing"
+  exit 1
+fi
+if [[ ! -f cmd/slmcode/ui/index.html ]]; then
+  echo "ERROR: cmd/slmcode/ui/index.html missing"
+  exit 1
+fi
+
+# CSS validation
+if ! grep -q 'data-theme' cmd/slmcode/ui/styles.css; then
+  echo "ERROR: styles.css missing data-theme selector"
+  exit 1
+fi
+if ! grep -q 'slmcode-theme' cmd/slmcode/ui/app.jsx; then
+  echo "ERROR: app.jsx missing slmcode-theme reference"
+  exit 1
+fi
+
+echo "==> ui-check: OK"
 
 echo "lint: OK"

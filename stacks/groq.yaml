@@ -1,0 +1,51 @@
+# ── SLMCode Stack: Groq (fast inference) ──
+# Groq LPU — blazing fast open-source model serving.
+# API key: set GROQ_API_KEY env var.
+# Run: make stack-apply stack=groq
+
+provider: groq
+endpoint: https://api.groq.com/openai/v1
+model: llama-3.3-70b-versatile
+backend: slmcode
+temperature: 0.15
+max_tokens: 4096
+max_parallel: 4
+max_retries: 3
+max_context_kb: 64
+think_passes: 2
+
+# Groq profile — speed-first
+model_profiles:
+  default:
+    context_limit: 65536
+    max_tokens: 4096
+    thinking_budget_tokens: 4096
+    skill_token_budget: 400
+    knowledge_token_budget: 300
+    temperature: 0.15
+    max_turns: 32
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false

@@ -1,0 +1,54 @@
+# ── SLMCode Stack: DeepSeek ──
+# DeepSeek V3 / R1 via DeepSeek API or OpenRouter.
+# API key: set DEEPSEEK_API_KEY env var or api_key field below.
+# Run: make stack-apply stack=deepseek
+
+provider: deepseek
+endpoint: https://api.deepseek.com/v1
+model: deepseek-chat
+backend: slmcode
+temperature: 0.15
+max_tokens: 4096
+max_parallel: 3
+max_retries: 3
+max_context_kb: 64
+think_passes: 2
+
+# DeepSeek profile — generous context, strong reasoning
+model_profiles:
+  default:
+    context_limit: 65536
+    max_tokens: 4096
+    thinking_budget_tokens: 8192
+    skill_token_budget: 400
+    knowledge_token_budget: 300
+    temperature: 0.15
+    max_turns: 32
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# Price tracking (DeepSeek API prices)
+price_preset: deepseek

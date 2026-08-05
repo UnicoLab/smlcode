@@ -1,0 +1,54 @@
+# ── SLMCode Stack: OpenRouter (any model) ──
+# Universal gateway to hundreds of models.
+# API key: set OPENROUTER_API_KEY env var.
+# Run: make stack-apply stack=openrouter
+
+provider: openrouter
+endpoint: https://openrouter.ai/api/v1
+model: anthropic/claude-sonnet-4
+backend: slmcode
+temperature: 0.15
+max_tokens: 4096
+max_parallel: 3
+max_retries: 3
+max_context_kb: 128
+think_passes: 2
+
+# OpenRouter profile
+model_profiles:
+  default:
+    context_limit: 131072
+    max_tokens: 4096
+    thinking_budget_tokens: 8192
+    skill_token_budget: 500
+    knowledge_token_budget: 400
+    temperature: 0.15
+    max_turns: 36
+
+# Quality gates
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+worker_critique: true
+
+# Harness invariants
+write_guard: true
+read_before_edit: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+wave_snapshots: true
+hooks_enabled: true
+
+# Interactions
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+
+# OpenRouter pricing
+price_preset: openrouter

@@ -9,7 +9,7 @@ repos:
         exclude: ^(assets/|.*\.(png|jpg|jpeg|gif|webp|ico)$)
       - id: check-yaml
         args: [--allow-multiple-documents]
-        exclude: ^mkdocs\.yml$
+        exclude: ^(mkdocs\.yml|stacks/.*)$
       - id: check-added-large-files
         args: [--maxkb=1024]
       - id: check-merge-conflict

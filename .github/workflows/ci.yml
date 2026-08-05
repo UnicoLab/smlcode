@@ -17,7 +17,7 @@ jobs:
   lint-test:
     name: Lint & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,14 +33,41 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Lint
+      - name: Go Lint
         run: make lint
 
-      - name: Test
+      - name: Go Test
         run: make test
 
-      - name: Build
+      - name: UI Check
+        run: make ui-check
+
+      - name: Go Build
         run: make build
+
+  web-check:
+    name: Web Frontend Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        run: cd web && npm ci
+
+      - name: Type check
+        run: cd web && npx tsc --noEmit
+
+      - name: Build web
+        run: cd web && npm run build
 
   pre-commit:
     name: Pre-commit

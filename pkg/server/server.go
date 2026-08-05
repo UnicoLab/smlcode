@@ -41,6 +41,9 @@ type Server struct {
 	subs    map[chan orchestrator.Event]struct{}
 }
 
+// Version is set at build time via -ldflags from the main package.
+var Version = "dev"
+
 func New(h *harness.Harness, ui fs.FS) *Server {
 	s := &Server{
 		h:    h,
@@ -159,6 +162,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"ok":       true,
 		"api":      "ok",
 		"ui":       "embedded",
+		"version":  Version,
 		"provider": s.h.Config.Provider,
 		"model":    s.h.Config.Model,
 		"backend":  s.h.Config.Backend,

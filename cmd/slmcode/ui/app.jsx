@@ -861,6 +861,7 @@ function App() {
 
   const refreshBoard = useCallback(async () => {
     const b = normalizeBoard(await api("/api/board"));
+    if (!mountedRef.current) return;
     setBoard(b);
     const cur = selectedRef.current;
     if (cur) {
@@ -872,8 +873,10 @@ function App() {
   const refreshArchives = useCallback(async () => {
     try {
       const list = await api("/api/archives");
+      if (!mountedRef.current) return;
       setArchives(Array.isArray(list) ? list : []);
     } catch (_) {
+      if (!mountedRef.current) return;
       setArchives([]);
     }
   }, []);
@@ -881,8 +884,10 @@ function App() {
   const refreshQueries = useCallback(async () => {
     try {
       const list = await api("/api/queries");
+      if (!mountedRef.current) return;
       setQueries(Array.isArray(list) ? list : []);
     } catch (_) {
+      if (!mountedRef.current) return;
       setQueries([]);
     }
   }, []);
@@ -898,6 +903,7 @@ function App() {
         api("/api/agents").catch(() => []),
         api("/api/pipeline").catch(() => null),
       ]);
+      if (!mountedRef.current) return;
       setHealth(h);
       setApiConnected(!!h?.ok);
       setConfig(c);
@@ -920,8 +926,10 @@ function App() {
         if (last?.phase && last.phase !== "idle") setPhase(last.phase);
       }
       await refreshBoard();
+      if (!mountedRef.current) return;
       await refreshArchives();
       await refreshQueries();
+      if (!mountedRef.current) return;
       setErr("");
     } catch (e) {
       setApiConnected(false);
@@ -1656,6 +1664,7 @@ function App() {
         <strong>{apiConnected ? "API connected" : "API offline"}</strong>
         <span>· SSE {sseConnected ? "live" : "reconnecting…"}</span>
         <span>· {health?.provider || "…"} / {String(health?.model || "").split("/").pop() || "…"}</span>
+        {health?.version ? <span className="pipeline-phase-id" style={{fontSize:"0.68rem",padding:"1px 6px"}}>v{health.version}</span> : null}
         <span className="conn-root" title={health?.root || ""}>{health?.root ? health.root.replace(/^\/Users\/[^/]+/, "~") : ""}</span>
         {!apiConnected && (
           <button className="sm ghost" onClick={() => refresh()}>Retry</button>

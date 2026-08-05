@@ -22,13 +22,17 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Suppress the harmless babel-standalone precompile warning.
+    (function(){var w=console.warn;console.warn=function(){if(arguments[0]&&typeof arguments[0]==='string'&&arguments[0].indexOf('in-browser Babel')>=0)return;w.apply(console,arguments)}})();
+  </script>
 </head>
 <body>
   <div id="root"></div>
   <script src="/vendor/react.production.min.js"></script>
   <script src="/vendor/react-dom.production.min.js"></script>
   <script src="/vendor/babel.min.js"></script>
-  <script type="text/babel" data-presets="react" src="/app.jsx"></script>
+  <script type="text/babel" src="/app.jsx"></script>
   <noscript>SLMCode Studio requires JavaScript.</noscript>
   <footer style="text-align:center;padding:0.5rem;font-size:0.75rem;position:fixed;bottom:0;width:100%;background:var(--bg);border-top:1px solid var(--line);z-index:5;display:flex;align-items:center;justify-content:center;gap:0.4rem;flex-wrap:wrap">
     <span style="color:var(--muted)">Made with</span>

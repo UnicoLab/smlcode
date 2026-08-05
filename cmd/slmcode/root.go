@@ -16,6 +16,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/server"
 )
 
 //go:embed all:ui
@@ -40,6 +41,7 @@ var (
 func main() {
 	// Keep CLI UX clean — GoLangGraph registries are chatty at Info.
 	logrus.SetLevel(logrus.WarnLevel)
+	server.Version = Version
 
 	root := &cobra.Command{
 		Use:   "slmcode",

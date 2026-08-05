@@ -7,6 +7,7 @@ site/
 .DS_Store
 web/node_modules/
 web/dist/
+web/tsconfig.tsbuildinfo
 .env
 .env.*
 .env.local

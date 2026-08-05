@@ -53,13 +53,13 @@ func Banner() string {
    ╚══════╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝`
 	tagline := Dim("  SLM-first coding harness · oMLX · atomic tasks · live kanban") + "\n"
 	brand := "  " +
-		Red("♥") + " " +
-		Yellow("m") + Green("a") + Cyan("d") + Blue("e") + Magenta(" ") +
-		Red("w") + Yellow("i") + Green("t") + Cyan("h") + Blue(" ") +
-		Magenta("♥") + Red(" ") + Yellow("b") + Green("y") + Cyan(" ") +
+		Magenta("♥") + " " +
+		Blue("m") + Cyan("a") + Blue("d") + Cyan("e") + " " +
+		Blue("w") + Cyan("i") + Blue("t") + Cyan("h") + " " +
+		Magenta("♥") + " " + Blue("b") + Cyan("y") + " " +
 		Bold(Cyan("UnicoLab")) +
 		Dim("  —  ") +
-		Bold(Magenta("AI")) + " " + Bold(Cyan("&")+" ") + Bold(Green("Innovation")) +
+		Bold(Magenta("AI")) + " " + Dim("&") + " " + Bold(Blue("Innovation")) +
 		"\n"
 	return Accent(logo) + "\n" + tagline + brand
 }

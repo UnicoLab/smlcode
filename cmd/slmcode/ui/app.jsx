@@ -1656,6 +1656,7 @@ function App() {
           <span>1. Type a task above → <em>Run</em></span>
           <span>2. Watch <em>Live</em> while agents work</span>
           <span>3. Drag cards on the <em>Board</em> anytime</span>
+          <span style="color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem;">Made with ♥ by <a href="https://unicolab.ai" target="_blank" rel="noreferrer" style="color: var(--accent);">UnicoLab</a> — AI & Innovation</span>
         </div>
       )}
 

@@ -51,7 +51,8 @@ func Banner() string {
    ╚════██║██║     ██║╚██╔╝██║██║     ██║   ██║██║  ██║██╔══╝
    ███████║███████╗██║ ╚═╝ ██║╚██████╗╚██████╔╝██████╔╝███████╗
    ╚══════╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝`
-	return Accent(logo) + "\n" + Dim("  SLM-first coding harness · oMLX · atomic tasks · live kanban") + "\n"
+	return Accent(logo) + "\n" + Dim("  SLM-first coding harness · oMLX · atomic tasks · live kanban") + "\n" +
+		Dim("  ") + Accent("https://unicolab.ai") + Dim(" · AI & Innovation") + "\n"
 }
 
 func Header(title string) {

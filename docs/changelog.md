@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.3 — Studio React style fix
+
+### Fixes
+- Studio Quick-start footer used HTML string `style` attrs → React error #62 crash
+- `make lint` gofmt ignores `.slmcode/` workspace artifacts
+
+---
+
 ## v0.7.3 — Incomplete finalize recovery
 
 ### Highlights

@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 echo "==> gofmt"
-unformatted="$(gofmt -l . | grep -v '^vendor/' || true)"
+# Skip gitignored workspace state (.slmcode/) and vendored trees.
+unformatted="$(gofmt -l . | grep -vE '^(vendor/|\.slmcode/)' || true)"
 if [[ -n "$unformatted" ]]; then
   echo "gofmt needed on:"
   echo "$unformatted"

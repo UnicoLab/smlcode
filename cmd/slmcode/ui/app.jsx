@@ -1677,7 +1677,7 @@ function App() {
           <span>1. Type a task above → <em>Run</em></span>
           <span>2. Watch <em>Live</em> while agents work</span>
           <span>3. Drag cards on the <em>Board</em> anytime</span>
-          <span style="color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem;">Made with <span style="color:#e53e3e">♥</span> by <a href="https://unicolab.ai" target="_blank" rel="noreferrer" style="color: var(--accent); font-weight: 700;">UnicoLab</a> — <span style="background:linear-gradient(135deg,#7c3aed,#3b82f6,#0ea5e9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:700">AI & Innovation</span></span>
+          <span style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: "0.3rem" }}>Made with <span style={{ color: "#e53e3e" }}>♥</span> by <a href="https://unicolab.ai" target="_blank" rel="noreferrer" style={{ color: "var(--accent)", fontWeight: 700 }}>UnicoLab</a> — <span style={{ background: "linear-gradient(135deg,#7c3aed,#3b82f6,#0ea5e9)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", fontWeight: 700 }}>AI & Innovation</span></span>
         </div>
       )}
 

@@ -1,7 +1,8 @@
 # ── SLMCode Stack: OpenAI ──
 # GPT-4o / o3-mini via OpenAI API.
 # API key: set OPENAI_API_KEY env var.
-# Run: make stack-apply stack=openai
+# Apply: slmcode stack apply openai
+# Or: make stack-apply stack=openai
 
 provider: openai
 endpoint: https://api.openai.com/v1
@@ -49,6 +50,16 @@ plan_approve: auto
 escalate_ask: ask
 continue_ask: ask
 auto_approve: false
+
+# Optional per-role LLM pins (applied with: slmcode stack apply openai --agents)
+# Empty agent fields in Studio/YAML still mean "inherit this stack".
+agents:
+  worker:
+    model: gpt-4o-mini
+  deep:
+    model: gpt-4o
+  reviewer:
+    model: gpt-4o-mini
 
 # OpenAI pricing
 price_preset: openai

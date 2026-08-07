@@ -37,7 +37,11 @@ slmcode tui
 
 | Command | Effect |
 |---------|--------|
-| `/compact` | Shrink noisy context 🧹 |
+| `/compact [heuristic\|llm\|auto]` | Shrink noisy context 🧹 |
+| `/models` | Catalog / search enabled models 🔎 |
+| `/mcp` | MCP server status 🔌 |
+| `/auth` | Show / set provider keys (`.slmcode/auth.json`) 🔑 |
+| `/schema` | Dump config JSON schema 📐 |
 | `/sessions` | Browse saved runs 📼 |
 | `/stats` | Phase latency + token estimates 📊 |
 | `/permission` | Write / shell policy 🛡️ |

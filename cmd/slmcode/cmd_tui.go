@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,9 +13,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/authstore"
 	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/hitl"
+	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
@@ -247,13 +251,20 @@ func runPremiumTUI() error {
 			}
 			return false, nil
 		case "/compact":
+			if arg == "heuristic" || arg == "llm" || arg == "auto" {
+				h.Config.ContextCompactEngine = arg
+				_ = h.Config.Save()
+				fmt.Println(cli.Success("context_compact_engine = " + arg))
+				arg = "context"
+			}
 			if arg == "context" || arg == "ctx" {
 				res, err := h.Orchestrator.CompactContextNow()
 				if err != nil {
 					return false, err
 				}
 				if res.Compacted {
-					fmt.Println(cli.Success(fmt.Sprintf("CONTEXT compacted %d→%d bytes", res.BeforeBytes, res.AfterBytes)))
+					fmt.Println(cli.Success(fmt.Sprintf("CONTEXT compacted %d→%d bytes (engine=%s)",
+						res.BeforeBytes, res.AfterBytes, h.Config.ContextCompactEngine)))
 				} else {
 					fmt.Println(cli.Dim(fmt.Sprintf("CONTEXT already lean (%d bytes)", res.BeforeBytes)))
 				}
@@ -355,18 +366,105 @@ func runPremiumTUI() error {
 			if arg == "" {
 				return false, fmt.Errorf("usage: /model <id>")
 			}
-			h.Config.Model = arg
+			h.Config.ApplyPatch(config.Patch{Model: &arg})
 			_ = h.Config.Save()
-			fmt.Println(cli.Success("model = " + arg + " (restart TUI to rebuild agents)"))
+			if err := h.RebuildOrchestrator(); err != nil {
+				fmt.Println(cli.Warn("model = " + arg + " (saved; rebuild failed: " + err.Error() + ")"))
+			} else {
+				h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+				fmt.Println(cli.Success("model = " + arg + " (active_stack cleared; orchestrator rebuilt)"))
+			}
 			sess.SetState(loadDashboardFromHarness(h))
+			return false, nil
+		case "/models":
+			cat := models.Find(context.Background(), h.Config, arg, 24)
+			fmt.Println(cli.Bold(fmt.Sprintf("Models (%s) auth=%s", cat.Provider, cat.Auth.Source)))
+			if cat.Error != "" {
+				fmt.Println(cli.Warn(cat.Error))
+			}
+			for i, m := range cat.Matches {
+				cost := ""
+				if i < len(cat.Costs) && cat.Costs[i].Known {
+					cost = fmt.Sprintf("  ~$%.2f/$%.2f /MTok", cat.Costs[i].PromptPerMTok, cat.Costs[i].CompletionPerMTok)
+				}
+				cur := ""
+				if m.ID == cat.Current {
+					cur = " *"
+				}
+				fmt.Printf("  %s%s%s\n", m.Selector, cur, cli.Dim(cost))
+			}
+			if len(cat.EnabledModels) > 0 {
+				fmt.Println(cli.Dim("enabled_models: " + strings.Join(cat.EnabledModels, ", ")))
+			}
+			return false, nil
+		case "/mcp":
+			st := h.Orchestrator.MCPStatus()
+			fmt.Println(cli.Bold("MCP — " + st.MetaTool))
+			fmt.Println(cli.Dim(st.Pattern))
+			if !st.Enabled {
+				fmt.Println(cli.Dim("no mcp_servers configured"))
+				return false, nil
+			}
+			for _, srv := range st.Servers {
+				conn := "offline"
+				if srv.Connected {
+					conn = "connected"
+				}
+				fmt.Printf("  %s [%s] %s tools=%d\n", srv.Name, conn, srv.Transport, srv.ToolCount)
+				if len(srv.Tools) > 0 {
+					fmt.Println(cli.Dim("    " + strings.Join(srv.Tools, ", ")))
+				}
+			}
+			return false, nil
+		case "/schema":
+			for _, f := range config.Schema() {
+				enum := ""
+				if len(f.Enum) > 0 {
+					enum = " (" + strings.Join(f.Enum, "|") + ")"
+				}
+				fmt.Printf("  %-28s %-8s %s%s\n", f.Key, f.Type, f.Label, enum)
+			}
+			fmt.Println(cli.Dim("--- slash extras ---"))
+			for _, line := range config.SlashHelp() {
+				fmt.Println("  " + line)
+			}
+			return false, nil
+		case "/auth":
+			parts2 := strings.Fields(arg)
+			if len(parts2) >= 2 && parts2[0] == "set" {
+				key := strings.Join(parts2[1:], " ")
+				if err := authstore.Set(h.Config.SlmDir(), h.Config.Provider, key); err != nil {
+					return false, err
+				}
+				h.Config.APIKey = key
+				_ = h.Config.Save()
+				if err := h.RebuildOrchestrator(); err != nil {
+					fmt.Println(cli.Warn("auth.json saved; rebuild failed: " + err.Error()))
+				} else {
+					h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+					fmt.Println(cli.Success("API key saved to .slmcode/auth.json for " + h.Config.Provider))
+				}
+				return false, nil
+			}
+			st := models.ResolveAuth(h.Config)
+			fmt.Printf("  provider=%s configured=%v source=%s\n", st.Provider, st.Configured, st.Source)
+			if st.Message != "" {
+				fmt.Println(cli.Dim("  " + st.Message))
+			}
+			fmt.Println(cli.Dim("  usage: /auth set <api-key>"))
 			return false, nil
 		case "/provider":
 			if arg == "" {
 				return false, fmt.Errorf("usage: /provider <name>")
 			}
-			h.Config.Provider = arg
+			h.Config.ApplyPatch(config.Patch{Provider: &arg})
 			_ = h.Config.Save()
-			fmt.Println(cli.Success("provider = " + arg + " (restart TUI to rebuild)"))
+			if err := h.RebuildOrchestrator(); err != nil {
+				fmt.Println(cli.Warn("provider = " + arg + " (saved; rebuild failed: " + err.Error() + ")"))
+			} else {
+				h.Orchestrator.OnEvent(func(e orchestrator.Event) { sess.Observe(e) })
+				fmt.Println(cli.Success("provider = " + arg + " (active_stack cleared; orchestrator rebuilt)"))
+			}
 			sess.SetState(loadDashboardFromHarness(h))
 			return false, nil
 		case "/run":
@@ -391,7 +489,7 @@ func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) e
 	custom, _ := cli.LoadProjectCustoms(h.Config.AgentsDir())
 	switch cmd.Action {
 	case "list":
-		fmt.Print(cli.FormatAgentList(custom))
+		fmt.Print(cli.FormatAgentListWithGlobals(custom, h.Config.Provider, h.Config.Model))
 		return nil
 	case "help":
 		fmt.Println(cli.Bold("Agent CRUD (Studio parity)"))
@@ -403,13 +501,15 @@ func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) e
 		fmt.Println("  " + cli.Cyan("/agent edit <id> model=…") + "         patch fields")
 		fmt.Println("  " + cli.Cyan("/agent delete <id>") + "               delete custom / clear override")
 		fmt.Println(cli.Dim("  Fields: title description provider model endpoint skills tools max_iter max_tokens temperature system_prompt"))
+		fmt.Println(cli.Dim("  Empty model/provider inherits active stack — see also: slmcode stack apply --agents"))
 		return nil
 	case "show":
 		a := agents.AgentDetail(cmd.ID, custom)
 		if a == nil {
 			return fmt.Errorf("agent %q not found", cmd.ID)
 		}
-		fmt.Print(cli.FormatAgentShow(a))
+		enriched := agents.EnrichPublicSpecs([]map[string]interface{}{a}, h.Config.Provider, h.Config.Model, h.Config.ActiveStack)
+		fmt.Print(cli.FormatAgentShow(enriched[0]))
 		return nil
 	case "delete":
 		if err := agents.DeleteCustom(h.Config.AgentsDir(), cmd.ID); err != nil {

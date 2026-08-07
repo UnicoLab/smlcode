@@ -96,6 +96,15 @@ export interface Config {
   price_preset: string;
   price_prompt_per_mtok: number;
   price_completion_per_mtok: number;
+  active_stack?: string;
+  enabled_models?: string[];
+  llm_retry_count?: number;
+  llm_retry_delay_ms?: number;
+  context_compact_engine?: string;
+  react_compact?: boolean;
+  session_event_log?: boolean;
+  auto_refine?: boolean;
+  auto_refine_max_rounds?: number;
   root: string;
   skills_dirs: string[];
   listen: string;
@@ -116,11 +125,64 @@ export interface Health {
   events: number;
 }
 
-// ── Models ──
+// ── Models / Auth ──
+export interface ModelMatch {
+  provider: string;
+  id: string;
+  name?: string;
+  selector: string;
+}
+
+export interface AuthStatus {
+  provider: string;
+  configured: boolean;
+  required: boolean;
+  source?: string;
+  env_key?: string;
+  has_api_key: boolean;
+  message?: string;
+  auth_json?: Record<string, boolean>;
+  auth_path?: string;
+}
+
+export interface ModelCost {
+  provider: string;
+  model: string;
+  prompt_per_mtok: number;
+  completion_per_mtok: number;
+  source: string;
+  known: boolean;
+}
+
 export interface ModelsResponse {
   models: string[];
+  matches?: ModelMatch[];
   current: string;
+  provider?: string;
+  endpoint?: string;
+  active_stack?: string;
+  query?: string;
+  auth?: AuthStatus;
+  enabled_models?: string[];
+  costs?: ModelCost[];
   error?: string;
+}
+
+export interface MCPStatus {
+  enabled: boolean;
+  meta_tool: string;
+  pattern?: string;
+  servers: Array<{
+    name: string;
+    connected: boolean;
+    transport: string;
+    read_only: boolean;
+    tools?: string[];
+    tool_count: number;
+    error?: string;
+  }>;
+  total_tools: number;
+  configured: number;
 }
 
 // ── SSE Events ──
@@ -233,6 +295,12 @@ export interface AgentSpec {
   custom?: boolean;
   builtin?: boolean;
   override?: boolean;
+  /** Resolved model after stack/global inheritance */
+  effective_model?: string;
+  effective_provider?: string;
+  inherits_model?: boolean;
+  inherits_provider?: boolean;
+  active_stack?: string;
 }
 
 // ── Skills ──
@@ -284,6 +352,12 @@ export interface QueryView {
 }
 
 // ── Stack Presets ──
+export interface StackAgentDefault {
+  model?: string;
+  provider?: string;
+  endpoint?: string;
+}
+
 export interface StackPreset {
   id: string;
   label: string;
@@ -302,6 +376,31 @@ export interface StackPreset {
   env_key?: string;
   color: string;
   active: boolean;
+  agents?: Record<string, StackAgentDefault>;
+}
+
+export interface StacksResponse {
+  stacks: StackPreset[];
+  active_stack?: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+}
+
+export interface StackApplyResult {
+  stack_id: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+  agents_updated?: string[];
+  agents_cleared?: string[];
+  conflicting_agents?: string[];
+}
+
+export interface StackApplyResponse {
+  ok: boolean;
+  result: StackApplyResult;
+  config: Config;
 }
 
 // ── Status ──

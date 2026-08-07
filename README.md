@@ -127,6 +127,9 @@ Deep dive: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**
 - ⚡ Token-stream early-exit + SLM JSON repair
 - 🖥️ Premium TUI + offline Studio GUI (`http://127.0.0.1:7420`)
 - 🔐 Shell permission modes: `allow` | `ask` | `deny`
+- 📦 **Stacks** — `slmcode stack apply omlx-local|deepseek|…` (global + optional per-agent pins)
+- 🔑 **Auth store** — `.slmcode/auth.json` + Studio/TUI `/auth` (keep keys out of config)
+- 🔎 **Model catalog** — `find_models` + Studio costs / enabled models
 
 ---
 
@@ -156,6 +159,8 @@ slmcode studio               # http://127.0.0.1:7420
 Useful knobs:
 
 ```bash
+slmcode stack list
+slmcode stack apply omlx-local          # or: deepseek, openai, ollama-local, …
 slmcode run --think-passes 2 --parallel 3 --retries 2 "…"
 slmcode run --agent explorer "Where is auth handled?"
 slmcode run --skill atomic-coding "Refactor helpers"
@@ -169,6 +174,7 @@ slmcode config set dry_run false
 | Command | Purpose |
 |---------|---------|
 | `init` / `doctor` / `config` | Workspace + provider health |
+| `stack` / `agent` | Apply model stacks; inspect agent pins |
 | `run -v` | Full pipeline + live stream |
 | `tui` / bare `slmcode` | Premium interactive TUI |
 | `chat` | Classic REPL |
@@ -176,7 +182,7 @@ slmcode config set dry_run false
 | `studio` | GUI + SSE API |
 | `update` | Refresh install (binary or source) |
 
-TUI: `/compact`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/resume`.
+TUI: `/compact`, `/models`, `/mcp`, `/auth`, `/schema`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/resume`.
 
 ---
 

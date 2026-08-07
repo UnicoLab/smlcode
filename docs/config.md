@@ -24,6 +24,7 @@ slmcode config set <key> <value>
 provider: omlx          # or ollama, openai, lmstudio, openrouter, …
 endpoint: http://127.0.0.1:8000/v1
 model: Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
+active_stack: omlx-local  # last applied stacks/<id>.yaml (optional UI highlight)
 api_key: ""             # prefer env vars
 ```
 
@@ -32,9 +33,14 @@ api_key: ""             # prefer env vars
 | `provider` | Unknown names → OpenAI-compatible ✨ |
 | `endpoint` | Auto-defaults per preset if empty |
 | `model` | Whatever your gateway serves |
-| `api_key` | Avoid committing; use env 🔑 |
+| `active_stack` | Set by `slmcode stack apply`; cleared on manual model/provider edit |
+| `api_key` | Avoid committing; use env or `.slmcode/auth.json` 🔑 |
+| `enabled_models` | Optional allow-list of model ids (empty = all) |
+| `llm_retry_count` / `llm_retry_delay_ms` | Provider HTTP retries (≠ board `max_retries`) |
 
 Env: `SLMCODE_PROVIDER`, `SLMCODE_MODEL`, `SLMCODE_ENDPOINT`, `SLMCODE_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, …
+
+**Auth resolution order:** `config.api_key` → `SLMCODE_API_KEY` → `.slmcode/auth.json` → provider env (`OPENAI_API_KEY`, …) → omlx settings.
 
 ---
 
@@ -112,8 +118,15 @@ plan_approve: auto        # off | auto | ask  (Plan Mode gate before execute)
 auto_approve: false       # skip plan/shell/clarify HITL waits
 shell_permission: allow   # allow | ask | deny (ask = interactive approve)
 context_compact: true     # mid-run CONTEXT.md summarization
+context_compact_engine: heuristic  # heuristic | llm | auto
 react_compact: true       # ReAct conversation watchdog (compact at %)
 react_compact_at_percent: 80
+session_event_log: true   # .slmcode/queries/<id>/events.jsonl
+auto_refine: false        # append wave lessons into CONTEXT as refine notes
+auto_refine_max_rounds: 2
+enabled_models: []        # optional catalog allow-list
+llm_retry_count: 3
+llm_retry_delay_ms: 1000
 wave_snapshots: true      # per-wave rewind under .slmcode/waves/
 file_checkpoints: true    # first-write-wins backup before edit/write
 shell_whitelist: true     # SAFE_PREFIXES for ws_shell (little-coder)
@@ -149,9 +162,13 @@ execute. `plan_approve: ask` pauses with a Studio modal / `POST /api/plan/approv
 Copy `.slmcode-hooks.example.json` → `.slmcode/hooks.json`. PreToolUse non-zero
 exit blocks the tool. PostToolUse can run `compileall` after writes.
 
-`mcp_servers` registers a read-only `mcp_call` tool. Wave snapshots: TUI
-`/rewind list` / `/rewind <id>`, API `GET/POST /api/rewind`. Real context
-compact: `/compact context` or `POST /api/compact`.
+`mcp_servers` registers a **single** read-only meta-tool `mcp_call` (do not
+explode one tool per MCP capability). Status: TUI `/mcp`, API `GET /api/mcp`.
+Wave snapshots: TUI `/rewind list` / `/rewind <id>`, API `GET/POST /api/rewind`.
+Context compact: `/compact context` (or `/compact llm|auto|heuristic`),
+`POST /api/compact`. Session event tree: `GET /api/queries/{id}/events`.
+Config field schema: `GET /api/config/schema`. Auth store: `PUT /api/auth`,
+TUI `/auth set <key>`.
 
 ### QA / smoke / acceptance
 

@@ -94,14 +94,29 @@ func TestPromoteBoardOnQAGreenRejectsPlaceholders(t *testing.T) {
 
 func TestBoardHasEscalated(t *testing.T) {
 	if !boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
-		Notes: "ESCALATED: review rejected after max retries",
+		Column: plan.ColToScope,
+		Notes:  "ESCALATED: review rejected after max retries",
 	}}}) {
 		t.Fatal("expected escalated")
+	}
+	if !boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
+		Column: plan.ColBlocked, Error: "blocked",
+	}}}) {
+		t.Fatal("blocked column is open escalation")
 	}
 	if boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
 		Column: plan.ColDone, Output: `{"status":"done"}`,
 	}}}) {
 		t.Fatal("done board should not look escalated")
+	}
+	// Recovered after escalate: leftover notes must not poison success.
+	if boardHasEscalated(&plan.Board{Tasks: []plan.Task{{
+		Column: plan.ColDone,
+		Notes:  "ESCALATED: review rejected after max retries.",
+		Review: "needs human — later fixed",
+		Output: `{"status":"done","summary":"ok"}`,
+	}}}) {
+		t.Fatal("done task with historical escalate notes is not open escalation")
 	}
 }
 

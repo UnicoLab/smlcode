@@ -1,10 +1,11 @@
 # ── SLMCode Stack: DeepSeek ──
 # DeepSeek V3 / R1 via DeepSeek API or OpenRouter.
 # API key: set DEEPSEEK_API_KEY env var or api_key field below.
-# Run: make stack-apply stack=deepseek
+# Apply: slmcode stack apply deepseek
+# Or: make stack-apply stack=deepseek
 
 provider: deepseek
-endpoint: https://api.deepseek.com/v1
+endpoint: https://api.deepseek.com
 model: deepseek-chat
 backend: slmcode
 temperature: 0.15

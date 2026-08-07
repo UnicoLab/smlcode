@@ -36,12 +36,13 @@ type ToolInfo struct {
 	InputSchema map[string]interface{}
 }
 
-// Manager hosts thin read-only MCP clients and registers them as ws_mcp_* tools.
+// Manager hosts thin read-only MCP clients and registers them as a single mcp_call meta-tool.
 type Manager struct {
 	Servers []ServerConfig
 	Log     func(string, ...interface{})
 	mu      sync.Mutex
 	clients map[string]*client
+	infos   []ToolInfo // last Connect discovery
 }
 
 type client struct {
@@ -90,7 +91,20 @@ func (m *Manager) Connect(ctx context.Context) ([]ToolInfo, error) {
 		}
 		all = append(all, toolsList...)
 	}
+	m.mu.Lock()
+	m.infos = append([]ToolInfo{}, all...)
+	m.mu.Unlock()
 	return all, nil
+}
+
+// LastInfos returns tools discovered on the last Connect.
+func (m *Manager) LastInfos() []ToolInfo {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]ToolInfo{}, m.infos...)
 }
 
 // Close shuts down stdio servers.

@@ -110,8 +110,16 @@ curl -N http://127.0.0.1:7420/api/events
 | `GET`/`PUT` | `/api/pipeline` · `POST /api/pipeline/reset` |
 | `GET`/`PUT` | `/api/docs`, `/api/docs/{name}` |
 | `GET`/`POST`/`PATCH`/`DELETE` | board / tasks |
-| `GET`/`POST`/`PUT`/`DELETE` | `/api/agents` (custom + overrides) |
-| `GET` | `/api/skills` `/api/models` |
+| `GET`/`POST`/`PUT`/`DELETE` | `/api/agents` (custom + overrides; includes `effective_model`) |
+| `GET` | `/api/skills` |
+| `GET` | `/api/models?q=&limit=` (search + auth + costs + enabled_models) |
+| `GET` | `/api/auth` (provider credential status + auth.json keys) |
+| `PUT` | `/api/auth` (`{"provider","api_key"}` → `.slmcode/auth.json`) |
+| `GET` | `/api/mcp` (MCP servers + `mcp_call` meta-tool status) |
+| `GET` | `/api/config/schema` (patchable field metadata + slash help) |
+| `GET` | `/api/queries/{id}/events` (JSONL session event tree) |
+| `GET` | `/api/stacks` · `/api/stacks/{id}` |
+| `POST` | `/api/stacks/{id}/apply` (`clear_agent_llm`, `apply_agent_defaults`, `force_agents`) |
 | `POST` | `/api/runs` `/api/runs/stop` |
 | `GET` | `/api/runs/latest` `/api/events` |
 | `GET`/`POST` | `/api/escalate/pending` · `/api/escalate/answer` |

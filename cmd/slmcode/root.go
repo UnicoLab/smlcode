@@ -111,6 +111,8 @@ Examples:
 		commitCmd(),
 		applyCmd(),
 		configCmd(),
+		stackCmd(),
+		agentCmd(),
 		doctorCmd(),
 		watchCmd(),
 		evalCmd(),

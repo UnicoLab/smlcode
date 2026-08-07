@@ -78,6 +78,43 @@ Studio → **Settings** writes the same file. One source of truth. Less “which
 
 ---
 
+## Stacks (presets) 📦
+
+Named YAML packs under `stacks/*.yaml` set **global** provider/model + harness knobs.
+They merge into `.slmcode/config.yaml` without wiping `listen`, `skills_dirs`, MCP, or API keys.
+
+```bash
+slmcode stack list
+slmcode stack show omlx-local
+slmcode stack apply deepseek
+slmcode stack apply openai --agents          # also write optional per-role pins
+slmcode stack apply ollama-local --clear-agent-llm  # agents inherit new stack
+```
+
+Studio → **Settings → Model Stack** calls `POST /api/stacks/{id}/apply` (same merge).
+
+Optional `agents:` block in a stack YAML pins roles (applied only with `--agents` /
+“Apply stack agent defaults”). Empty agent fields always mean **inherit the stack**.
+
+`active_stack` in config tracks the last applied preset for UI highlighting.
+
+### Auth, scoped models, costs
+
+| Knob | Purpose |
+|------|---------|
+| `.slmcode/auth.json` | Provider keys separate from `config.yaml` (`/auth set`, `PUT /api/auth`) |
+| `enabled_models` | Optional allow-list for `GET /api/models` + Studio picker |
+| `llm_retry_count` / `llm_retry_delay_ms` | Provider HTTP retries (≠ board `max_retries`) |
+| Catalog costs | Ballpark `$/MTok` on model search; usage `$` also uses `price_preset` |
+
+```bash
+slmcode tui
+# /models gpt
+# /auth set sk-...
+```
+
+---
+
 ## Built-in presets 🗂️
 
 | Provider | Default endpoint | Notes |
@@ -89,7 +126,7 @@ Studio → **Settings** writes the same file. One source of truth. Less “which
 | `openrouter` | `https://openrouter.ai/api/v1` | Many models 🌈 |
 | `groq` | `https://api.groq.com/openai/v1` | Fast ⚡ |
 | `together` | `https://api.together.xyz/v1` | |
-| `deepseek` | `https://api.deepseek.com/v1` | |
+| `deepseek` | `https://api.deepseek.com` | OpenAI-compat client appends `/v1` |
 | `mistral` | `https://api.mistral.ai/v1` | |
 | `fireworks` | `https://api.fireworks.ai/inference/v1` | |
 | `gemini` / `google` | Google OpenAI-compat URL | |

@@ -53,8 +53,13 @@ func escalatedTaskIDs(board *plan.Board) []string {
 	}
 	var ids []string
 	for _, t := range board.Tasks {
+		t.Normalize()
+		if t.Column == plan.ColDone {
+			continue
+		}
 		blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review)
-		if strings.Contains(blob, "escalated") || strings.Contains(blob, "needs human") ||
+		if t.Column == plan.ColBlocked ||
+			strings.Contains(blob, "escalated") || strings.Contains(blob, "needs human") ||
 			strings.Contains(blob, "max retries") || strings.Contains(blob, "placeholder gap") ||
 			(t.Column == plan.ColToScope && strings.TrimSpace(t.Error) != "") {
 			ids = append(ids, t.ID)

@@ -40,7 +40,15 @@ Secondary goal: smile at least once. 😄
 
 === "🌌 Other"
 
-    Flags, env, or Studio Settings — [Providers](providers.md). Bring your own brain.
+    Flags, env, Studio Settings, or a **stack**:
+
+    ```bash
+    slmcode stack list
+    slmcode stack apply deepseek   # needs DEEPSEEK_API_KEY or /auth set
+    slmcode doctor
+    ```
+
+    Details → [Providers](providers.md). Bring your own brain.
 
 </li>
 

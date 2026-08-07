@@ -1,6 +1,6 @@
 MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.8.3
+VERSION ?= 0.9.0
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -54,16 +54,20 @@ help: ## Show this help
 
 # ── Stack: list available stacks ──
 stack-list:
-	@echo "Available SLMCode stacks:"
-	@echo ""
-	@for f in $(STACKS_DIR)/*.yaml; do \
-		name=$$(basename "$$f" .yaml); \
-		prov=$$(grep -E '^provider:' "$$f" | head -1 | sed 's/provider: *//'); \
-		model=$$(grep -E '^model:' "$$f" | head -1 | sed 's/model: *//'); \
-		printf "  %-20s → %-12s %s\n" "$$name" "$$prov" "$$model"; \
-	done
-	@echo ""
-	@echo "Usage: make stack-apply stack=<name>"
+	@if command -v slmcode >/dev/null 2>&1 || [ -x ./bin/slmcode ]; then \
+		(./bin/slmcode stack list 2>/dev/null || slmcode stack list); \
+	else \
+		echo "Available SLMCode stacks:"; \
+		echo ""; \
+		for f in $(STACKS_DIR)/*.yaml; do \
+			name=$$(basename "$$f" .yaml); \
+			prov=$$(grep -E '^provider:' "$$f" | head -1 | sed 's/provider: *//'); \
+			model=$$(grep -E '^model:' "$$f" | head -1 | sed 's/model: *//'); \
+			printf "  %-20s → %-12s %s\n" "$$name" "$$prov" "$$model"; \
+		done; \
+		echo ""; \
+		echo "Usage: slmcode stack apply <name>   (or: make stack-apply stack=<name>)"; \
+	fi
 
 # ── Stack: show a stack config ──
 stack-show:
@@ -75,39 +79,25 @@ stack-show:
 	@echo "═══ Stack: $(stack) ═══"
 	@cat "$(STACKS_DIR)/$(stack).yaml"
 
-# ── Stack: apply a stack config ──
+# ── Stack: apply via slmcode (merge — keeps listen/skills/mcp/api_key) ──
+# Optional: agents=1 clear=1 force=1
 stack-apply:
-	@if [ ! -f "$(STACKS_DIR)/$(stack).yaml" ]; then \
-		echo "Stack '$(stack)' not found. Available:"; \
-		ls $(STACKS_DIR)/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml//'; \
+	@if [ -z "$(stack)" ]; then echo "Usage: make stack-apply stack=<name> [agents=1] [clear=1]"; exit 1; fi
+	@FLAGS=""; \
+	if [ "$(agents)" = "1" ]; then FLAGS="$$FLAGS --agents"; fi; \
+	if [ "$(clear)" = "1" ]; then FLAGS="$$FLAGS --clear-agent-llm"; fi; \
+	if [ "$(force)" = "1" ]; then FLAGS="$$FLAGS --force-agents"; fi; \
+	if [ -x ./bin/slmcode ]; then \
+		./bin/slmcode stack apply $(stack) $$FLAGS; \
+	elif command -v slmcode >/dev/null 2>&1; then \
+		slmcode stack apply $(stack) $$FLAGS; \
+	else \
+		echo "slmcode binary not found — run: make build && ./bin/slmcode stack apply $(stack)"; \
 		exit 1; \
 	fi
-	@CONFIG_PATH="$${SLMCODE_CONFIG:-$$(pwd)/.slmcode/config.yaml}"; \
-	if [ -f "$$CONFIG_PATH" ]; then \
-		echo "⚠  Config already exists at $$CONFIG_PATH"; \
-		echo "   Run 'make stack-apply-force stack=$(stack)' to overwrite"; \
-		echo "   Or 'make stack-new name=my-backup' to save current config first"; \
-		exit 1; \
-	fi
-	@mkdir -p .slmcode
-	@cp "$(STACKS_DIR)/$(stack).yaml" .slmcode/config.yaml
-	@echo "✔ Stack '$(stack)' applied → .slmcode/config.yaml"
-	@echo "  Provider: $$(grep '^provider:' .slmcode/config.yaml | sed 's/provider: *//')"
-	@echo "  Model:    $$(grep '^model:' .slmcode/config.yaml | sed 's/model: *//')"
-	@echo ""
-	@echo "  Run your task: slmcode run -v \"your task\""
 
-# ── Stack: force-apply a stack config ──
-stack-apply-force:
-	@if [ ! -f "$(STACKS_DIR)/$(stack).yaml" ]; then \
-		echo "Stack '$(stack)' not found. Available:"; \
-		ls $(STACKS_DIR)/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml//'; \
-		exit 1; \
-	fi
-	@mkdir -p .slmcode
-	@cp "$(STACKS_DIR)/$(stack).yaml" .slmcode/config.yaml
-	@echo "✔ Stack '$(stack)' force-applied → .slmcode/config.yaml"
-	@grep -E '^(provider|model|backend):' .slmcode/config.yaml | sed 's/^/  /'
+# ── Stack: apply (same as stack-apply; kept for backwards compat) ──
+stack-apply-force: stack-apply
 
 # ── Stack: edit a stack ──
 stack-edit:
@@ -171,6 +161,7 @@ test: ## Run unit tests
 e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 	go test ./test/e2e/ -count=1 -timeout 30m
 	@if command -v node >/dev/null 2>&1; then node cmd/slmcode/ui/markdown_node_test.js; fi
+	@./scripts/e2e_prime_smoke.sh
 	@if [ "$$RUN_E2E" = "1" ]; then \
 		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \
 	fi

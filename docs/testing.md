@@ -69,8 +69,13 @@ slmcode apply
 
 ```bash
 make lint && make test && make docs-build
-RUN_E2E=1 make e2e
+make e2e                 # offline e2e + prime CLI/API smoke
+RUN_E2E=1 make e2e       # also live oMLX / multi-agent
+./scripts/e2e_prime_smoke.sh   # stacks/agents/models/auth/mcp alone
 ```
+
+Offline prime-port coverage: `TestPrimePortsEndToEnd` (stacks apply, auth.json,
+find_models allowlist, compact, events, Studio APIs).
 
 ---
 

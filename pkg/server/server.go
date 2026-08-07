@@ -11,21 +11,25 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/authstore"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/hitl"
+	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/stacks"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
@@ -134,6 +138,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
+	s.mux.HandleFunc("GET /api/auth", s.handleAuthStatus)
+	s.mux.HandleFunc("PUT /api/auth", s.handlePutAuth)
+	s.mux.HandleFunc("GET /api/mcp", s.handleMCPStatus)
+	s.mux.HandleFunc("GET /api/config/schema", s.handleConfigSchema)
+	s.mux.HandleFunc("GET /api/queries/{id}/events", s.handleQueryEvents)
+	s.mux.HandleFunc("GET /api/stacks", s.handleListStacks)
+	s.mux.HandleFunc("GET /api/stacks/{id}", s.handleGetStack)
+	s.mux.HandleFunc("POST /api/stacks/{id}/apply", s.handleApplyStack)
 	s.mux.HandleFunc("GET /api/agents", s.handleAgents)
 	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
 	s.mux.HandleFunc("POST /api/agents", s.handleCreateAgent)
@@ -842,59 +854,103 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	cfg := s.h.Config
-	cfg.ResolveAPIKey()
-	endpoint := strings.TrimRight(cfg.Endpoint, "/")
-	url := endpoint + "/models"
-	if config.IsOllama(cfg.Provider) {
-		base := strings.TrimSuffix(endpoint, "/v1")
-		url = strings.TrimRight(base, "/") + "/api/tags"
-	} else if !strings.HasSuffix(endpoint, "/v1") {
-		url = endpoint + "/v1/models"
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		q = r.URL.Query().Get("query")
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	limit := 64
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	cat := models.Find(r.Context(), s.h.Config, q, limit)
+	writeJSON(w, cat)
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	st := models.ResolveAuth(s.h.Config)
+	writeJSON(w, map[string]interface{}{
+		"provider":    st.Provider,
+		"configured":  st.Configured,
+		"required":    st.Required,
+		"source":      st.Source,
+		"env_key":     st.EnvKey,
+		"has_api_key": st.HasAPIKey,
+		"message":     st.Message,
+		"auth_json":   authstore.PublicKeys(s.h.Config.SlmDir()),
+		"auth_path":   authstore.Path(s.h.Config.SlmDir()),
+	})
+}
+
+func (s *Server) handlePutAuth(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	prov := body.Provider
+	if prov == "" {
+		prov = s.h.Config.Provider
+	}
+	if err := authstore.Set(s.h.Config.SlmDir(), prov, body.APIKey); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	// Refresh in-memory config key when targeting active provider.
+	if config.NormalizeProvider(prov) == config.NormalizeProvider(s.h.Config.Provider) &&
+		strings.TrimSpace(body.APIKey) != "" {
+		s.h.Config.APIKey = strings.TrimSpace(body.APIKey)
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":   true,
+		"auth": models.ResolveAuth(s.h.Config),
+	})
+}
+
+func (s *Server) handleMCPStatus(w http.ResponseWriter, r *http.Request) {
+	if s.h.Orchestrator == nil {
+		writeJSON(w, map[string]interface{}{
+			"enabled": false, "meta_tool": "mcp_call", "servers": []interface{}{},
+		})
+		return
+	}
+	writeJSON(w, s.h.Orchestrator.MCPStatus())
+}
+
+func (s *Server) handleConfigSchema(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"fields": config.Schema(),
+		"slash":  config.SlashHelp(),
+	})
+}
+
+func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	limit := 2000
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	events, err := session.ReadEvents(s.h.Config.SlmDir(), id, limit)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	if events == nil {
+		events = []session.EventRecord{}
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeJSON(w, map[string]interface{}{"models": []string{cfg.Model}, "error": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var names []string
-	var payload map[string]interface{}
-	if json.Unmarshal(body, &payload) == nil {
-		if data, ok := payload["data"].([]interface{}); ok {
-			for _, m := range data {
-				if mm, ok := m.(map[string]interface{}); ok {
-					if id, ok := mm["id"].(string); ok {
-						names = append(names, id)
-					}
-				}
-			}
-		}
-		if models, ok := payload["models"].([]interface{}); ok {
-			for _, m := range models {
-				if mm, ok := m.(map[string]interface{}); ok {
-					if id, ok := mm["name"].(string); ok {
-						names = append(names, id)
-					} else if id, ok := mm["model"].(string); ok {
-						names = append(names, id)
-					}
-				}
-			}
-		}
-	}
-	if len(names) == 0 {
-		names = []string{cfg.Model}
-	}
-	writeJSON(w, map[string]interface{}{"models": names, "current": cfg.Model})
+	writeJSON(w, map[string]interface{}{"id": id, "events": events})
+}
+
+// enrichAgentMaps attaches effective_* inheritance fields for Studio/TUI.
+func (s *Server) enrichAgentMaps(list []map[string]interface{}) []map[string]interface{} {
+	cfg := s.h.Config
+	return agents.EnrichPublicSpecs(list, config.NormalizeProvider(cfg.Provider), cfg.Model, cfg.ActiveStack)
 }
 
 func (s *Server) agentDirs() []string {
@@ -916,14 +972,85 @@ func (s *Server) rebuildOrchestrator() error {
 	return nil
 }
 
+func (s *Server) handleListStacks(w http.ResponseWriter, r *http.Request) {
+	list, err := stacks.List()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	cfg := s.h.Config
+	out := make([]map[string]any, 0, len(list))
+	for i := range list {
+		out = append(out, list[i].PresetView(list[i].Matches(cfg)))
+	}
+	writeJSON(w, map[string]any{
+		"stacks":       out,
+		"active_stack": cfg.ActiveStack,
+		"provider":     cfg.Provider,
+		"model":        cfg.Model,
+		"endpoint":     cfg.Endpoint,
+	})
+}
+
+func (s *Server) handleGetStack(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	st, err := stacks.Load(id)
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	writeJSON(w, st.PresetView(st.Matches(s.h.Config)))
+}
+
+func (s *Server) handleApplyStack(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	st, err := stacks.Load(id)
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	var body struct {
+		ApplyAgentDefaults bool `json:"apply_agent_defaults"`
+		ForceAgents        bool `json:"force_agents"`
+		ClearAgentLLM      bool `json:"clear_agent_llm"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	c := s.h.Config
+	res, err := stacks.Apply(c, st, c.AgentsDir(), stacks.ApplyOptions{
+		ApplyAgentDefaults: body.ApplyAgentDefaults,
+		ForceAgents:        body.ForceAgents,
+		ClearAgentLLM:      body.ClearAgentLLM,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := c.Save(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":     true,
+		"result": res,
+		"config": c.Public(),
+	})
+}
+
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, agents.PublicSpecsWithCustom(s.loadCustomAgents()))
+	list := agents.PublicSpecsWithCustom(s.loadCustomAgents())
+	writeJSON(w, s.enrichAgentMaps(list))
 }
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 	if a := agents.AgentDetail(id, s.loadCustomAgents()); a != nil {
-		writeJSON(w, a)
+		writeJSON(w, s.enrichAgentMaps([]map[string]interface{}{a})[0])
 		return
 	}
 	http.Error(w, "not found", 404)
@@ -947,6 +1074,10 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.rebuildOrchestrator(); err != nil {
 		http.Error(w, "saved but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	if detail := agents.AgentDetail(got.ID, s.loadCustomAgents()); detail != nil {
+		writeJSON(w, s.enrichAgentMaps([]map[string]interface{}{detail})[0])
 		return
 	}
 	writeJSON(w, got)
@@ -978,6 +1109,10 @@ func (s *Server) handlePutAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.rebuildOrchestrator(); err != nil {
 		http.Error(w, "saved but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	if detail := agents.AgentDetail(got.ID, s.loadCustomAgents()); detail != nil {
+		writeJSON(w, s.enrichAgentMaps([]map[string]interface{}{detail})[0])
 		return
 	}
 	writeJSON(w, got)

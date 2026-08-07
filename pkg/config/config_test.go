@@ -6,6 +6,28 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 )
 
+func TestNormalizeProviderGoogleAlias(t *testing.T) {
+	if NormalizeProvider("google") != "gemini" {
+		t.Fatalf("google should alias to gemini, got %s", NormalizeProvider("google"))
+	}
+}
+
+func TestApplyPatchTemperatureAndActiveStack(t *testing.T) {
+	c := Default(t.TempDir())
+	temp := 0.12
+	tok := 3072
+	stack := "omlx-local"
+	c.ApplyPatch(Patch{Temperature: &temp, MaxTokens: &tok, ActiveStack: &stack})
+	if c.Temperature != 0.12 || c.MaxTokens != 3072 || c.ActiveStack != "omlx-local" {
+		t.Fatalf("patch: temp=%v tokens=%d stack=%s", c.Temperature, c.MaxTokens, c.ActiveStack)
+	}
+	model := "other"
+	c.ApplyPatch(Patch{Model: &model})
+	if c.ActiveStack != "" {
+		t.Fatalf("manual model edit should clear active_stack, got %q", c.ActiveStack)
+	}
+}
+
 func TestApplyPatchIgnoresRedactedAPIKey(t *testing.T) {
 	c := Default(t.TempDir())
 	c.APIKey = "real-secret"

@@ -1063,10 +1063,16 @@ func (w *Workspace) hasGit() bool {
 	return err == nil
 }
 
-// ToolNames returns the coding tool names for agent config.
+// ToolNames returns the coding tool names registered by RegisterCodingTools.
 func ToolNames() []string {
 	return []string{
 		"ws_read", "ws_write", "ws_edit", "ws_patch", "ws_mv", "ws_delete",
 		"ws_list", "ws_glob", "ws_grep", "ws_shell", "git_status", "git_diff",
 	}
+}
+
+// SpecialistToolNames are meta-tools registered outside workspace
+// (find_models, mcp_call) but allowlisted on coding agents.
+func SpecialistToolNames() []string {
+	return []string{"find_models", "mcp_call"}
 }

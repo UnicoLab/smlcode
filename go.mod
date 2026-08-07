@@ -3,7 +3,7 @@ module github.com/UnicoLab/slmcode
 go 1.23.0
 
 require (
-	github.com/piotrlaczkowski/GoLangGraph v0.2.1
+	github.com/piotrlaczkowski/GoLangGraph v0.2.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/term v0.33.0

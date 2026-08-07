@@ -114,7 +114,10 @@ export default function LiveView() {
             >
               <option value="">Any agent</option>
               {agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.title}</option>
+                <option key={a.id} value={a.id}>
+                  {a.title || a.id}
+                  {a.effective_model ? ` · ${a.effective_model}` : ''}
+                </option>
               ))}
             </select>
           )}

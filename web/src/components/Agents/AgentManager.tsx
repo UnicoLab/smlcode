@@ -227,7 +227,7 @@ export default function AgentManager() {
                   value={form.model || ''}
                   onChange={(e) => setForm({ ...form, model: e.target.value })}
                   className="input-mono"
-                  placeholder="default model"
+                  placeholder="empty = inherit stack/global"
                 />
               </div>
               <div>
@@ -237,8 +237,21 @@ export default function AgentManager() {
                   value={form.provider || ''}
                   onChange={(e) => setForm({ ...form, provider: e.target.value })}
                   className="input-mono"
-                  placeholder="default provider"
+                  placeholder="empty = inherit stack/global"
                 />
+              </div>
+              <div className="md:col-span-2">
+                <label className="label">Endpoint (override)</label>
+                <input
+                  type="text"
+                  value={form.endpoint || ''}
+                  onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
+                  className="input-mono"
+                  placeholder="empty = provider default / global endpoint"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Resolution: agent override → active stack / global config. Leave blank to inherit.
+                </p>
               </div>
               <label className="flex items-center gap-3">
                 <input
@@ -295,10 +308,18 @@ export default function AgentManager() {
               <div className="flex items-center gap-2 mt-3 flex-wrap">
                 {agent.custom && <span className="badge-brand">custom</span>}
                 {!agent.custom && <span className="badge-neutral">built-in</span>}
+                {agent.override && <span className="badge-brand">override</span>}
                 {agent.skills && agent.skills.length > 0 && (
                   <span className="badge-brand">{agent.skills.length} skills</span>
                 )}
-                {agent.model && <span className="badge-neutral">{agent.model}</span>}
+                <span className="badge-neutral flex items-center gap-1" title="Effective LLM after stack inheritance">
+                  <Cpu size={10} />
+                  {agent.effective_provider || agent.provider || 'stack'}/
+                  {agent.effective_model || agent.model || 'inherit'}
+                </span>
+                {agent.inherits_model && agent.inherits_provider && (
+                  <span className="badge-neutral">inherits stack</span>
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-2 mt-3 text-[10px] text-gray-400">

@@ -1,7 +1,13 @@
 # ── SLMCode Stack: Google Gemini ──
 # Gemini models via Gemini API (OpenAI-compatible endpoint).
 # API key: set GEMINI_API_KEY or GOOGLE_API_KEY env var.
-# Run: make stack-apply stack=google
+# Apply: slmcode stack apply google
+# Or: make stack-apply stack=google
+
+label: Google Gemini
+description: Gemini — long context
+icon: "💎"
+env_key: GOOGLE_API_KEY
 
 provider: gemini
 endpoint: https://generativelanguage.googleapis.com/v1beta/openai/

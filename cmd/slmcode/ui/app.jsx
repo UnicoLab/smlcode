@@ -409,7 +409,7 @@ const PROVIDER_PRESETS = [
 
 const STACKS = [
   { id: "omlx-local", label: "oMLX Local", provider: "omlx", endpoint: "http://127.0.0.1:8000/v1", model: "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit", badge: "local" },
-  { id: "deepseek", label: "DeepSeek", provider: "deepseek", endpoint: "https://api.deepseek.com/v1", model: "deepseek-chat", badge: "cloud" },
+  { id: "deepseek", label: "DeepSeek", provider: "deepseek", endpoint: "https://api.deepseek.com", model: "deepseek-chat", badge: "cloud" },
   { id: "qwen", label: "Qwen Coder", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "qwen/qwen-2.5-coder-32b-instruct", badge: "cloud" },
   { id: "google", label: "Google Gemini", provider: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-2.0-flash", badge: "cloud" },
   { id: "openai", label: "OpenAI GPT-4o", provider: "openai", endpoint: "https://api.openai.com/v1", model: "gpt-4o", badge: "cloud" },

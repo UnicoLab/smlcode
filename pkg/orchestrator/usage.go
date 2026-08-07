@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/models"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 )
@@ -18,6 +19,8 @@ type TokenUsage struct {
 	CostUSD          float64 `json:"cost_usd,omitempty"`
 	CostConfigured   bool    `json:"cost_configured,omitempty"`
 	CostNote         string  `json:"cost_note,omitempty"`
+	CostSource       string  `json:"cost_source,omitempty"` // catalog | preset | config
+	Model            string  `json:"model,omitempty"`
 }
 
 func (o *Orchestrator) recordUsage(u llm.Usage, estimated bool) {
@@ -64,6 +67,11 @@ func (o *Orchestrator) snapshotUsage() *TokenUsage {
 		return nil
 	}
 	out := o.usage
+	if o.cfg != nil {
+		out.Model = o.cfg.Model
+		mc := models.LookupCost(o.cfg, o.cfg.Model)
+		out.CostSource = mc.Source
+	}
 	if cost, ok := estimateCostUSD(o.cfg, out); ok {
 		out.CostUSD = cost
 		out.CostConfigured = true
@@ -76,6 +84,10 @@ func (o *Orchestrator) snapshotUsage() *TokenUsage {
 func estimateCostUSD(cfg *config.Config, u TokenUsage) (float64, bool) {
 	if cfg == nil {
 		return 0, false
+	}
+	mc := models.LookupCost(cfg, cfg.Model)
+	if usd, ok := models.EstimateUSD(mc, u.PromptTokens, u.CompletionTokens); ok {
+		return usd, true
 	}
 	pin, cout, ok := cfg.PriceRates()
 	if !ok {

@@ -48,6 +48,8 @@ slmcode <command> --help
 | `studio` | GUI + HTTP/SSE (`--listen host:port`) 🎨 |
 | `doctor` | Provider/model/workspace health 🩺 |
 | `init` | Create `.slmcode/` scaffolding 🌱 |
+| `stack` | list / show / apply provider+model presets 📦 |
+| `agent` | list / show / set per-agent LLM pins 🧩 |
 | `update` | Refresh binary (release) or rebuild from source ⬆️ |
 | `version` | Print version metadata |
 
@@ -105,6 +107,23 @@ Query sugar: `@skill:name`, `@file:path`, `@folder:path` (when supported by inst
 
 ---
 
+## `stack` & `agent` 📦
+
+```bash
+slmcode stack list
+slmcode stack show deepseek
+slmcode stack apply omlx-local
+slmcode stack apply deepseek --clear-agent-llm   # agents inherit stack LLM
+slmcode stack apply openai --agents              # also write optional role pins
+
+slmcode agent list
+slmcode agent show worker
+slmcode agent set worker --model … --provider …  # pin; empty = inherit stack
+```
+
+Stacks live in `stacks/*.yaml`. DeepSeek default endpoint: `https://api.deepseek.com`
+(OpenAI-compat client appends `/v1`). Details → [🔌 Providers](providers.md).
+
 ## `config` ⚙️
 
 ```bash
@@ -114,6 +133,7 @@ slmcode config set model qwen2.5-coder:14b
 slmcode config set permission review
 ```
 
+Prefer `.slmcode/auth.json` (or env) for keys — not committed YAML.
 Full field list → [⚙️ Config reference](config.md).
 
 ---

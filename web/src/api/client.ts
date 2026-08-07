@@ -29,6 +29,9 @@ import type {
   ContinueAsk,
   EscalateAsk,
   ShellAsk,
+  StackApplyResponse,
+  StacksResponse,
+  AuthStatus,
 } from '@/types';
 
 const BASE = '/api';
@@ -78,9 +81,47 @@ export async function updateConfig(patch: ConfigPatch): Promise<Config> {
   });
 }
 
-// ── Models ──
-export async function getModels(): Promise<ModelsResponse> {
-  return request<ModelsResponse>('/models');
+// ── Stacks ──
+export async function getStacks(): Promise<StacksResponse> {
+  return request<StacksResponse>('/stacks');
+}
+
+export async function applyStack(
+  id: string,
+  opts?: { apply_agent_defaults?: boolean; force_agents?: boolean; clear_agent_llm?: boolean },
+): Promise<StackApplyResponse> {
+  return request<StackApplyResponse>(`/stacks/${encodeURIComponent(id)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(opts || {}),
+  });
+}
+
+// ── Models / Auth ──
+export async function getModels(opts?: { q?: string; limit?: number }): Promise<ModelsResponse> {
+  const params = new URLSearchParams();
+  if (opts?.q) params.set('q', opts.q);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<ModelsResponse>(`/models${qs ? `?${qs}` : ''}`);
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return request<AuthStatus>('/auth');
+}
+
+export async function putAuthKey(apiKey: string, provider?: string): Promise<{ ok: boolean; auth: AuthStatus }> {
+  return request('/auth', {
+    method: 'PUT',
+    body: JSON.stringify({ api_key: apiKey, provider: provider || '' }),
+  });
+}
+
+export async function getMCPStatus(): Promise<import('@/types').MCPStatus> {
+  return request('/mcp');
+}
+
+export async function getConfigSchema(): Promise<{ fields: Array<{ key: string; type: string; label: string; group: string; enum?: string[]; patchable: boolean; description?: string }>; slash: string[] }> {
+  return request('/config/schema');
 }
 
 // ── Board ──

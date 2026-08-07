@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/authstore"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"gopkg.in/yaml.v3"
 )
@@ -50,6 +51,9 @@ func NormalizeProvider(p string) string {
 		return "openai"
 	case "lm-studio", "lm_studio":
 		return "lmstudio"
+	case "google":
+		// Alias — stack YAMLs and Gemini API docs use "gemini".
+		return "gemini"
 	default:
 		return p
 	}
@@ -82,7 +86,7 @@ func DefaultEndpointFor(provider string) string {
 	case "together":
 		return "https://api.together.xyz/v1"
 	case "deepseek":
-		return "https://api.deepseek.com/v1"
+		return "https://api.deepseek.com"
 	case "fireworks":
 		return "https://api.fireworks.ai/inference/v1"
 	case "mistral":
@@ -140,6 +144,12 @@ type Config struct {
 	ThinkPasses  int           `yaml:"think_passes" json:"think_passes"`
 	TaskTimeout  time.Duration `yaml:"task_timeout" json:"task_timeout"`
 
+	// EnabledModels optionally scopes the selectable catalog (empty = all).
+	EnabledModels []string `yaml:"enabled_models" json:"enabled_models"`
+	// LLMRetryCount / LLMRetryDelayMS are provider HTTP retries (≠ MaxRetries board loop).
+	LLMRetryCount   int `yaml:"llm_retry_count" json:"llm_retry_count"`
+	LLMRetryDelayMS int `yaml:"llm_retry_delay_ms" json:"llm_retry_delay_ms"`
+
 	// QAGate runs an iterate-until-green test command after the board finishes.
 	QAGate          bool   `yaml:"qa_gate" json:"qa_gate"`
 	QAGateCommand   string `yaml:"qa_gate_command" json:"qa_gate_command"` // empty = auto-detect
@@ -192,11 +202,19 @@ type Config struct {
 	CompactMode bool `yaml:"compact_mode" json:"compact_mode"`
 	// ContextCompact enables mid-run CONTEXT.md summarization when oversized.
 	ContextCompact bool `yaml:"context_compact" json:"context_compact"`
+	// ContextCompactEngine: heuristic | llm | auto (LLM with heuristic fallback).
+	ContextCompactEngine string `yaml:"context_compact_engine" json:"context_compact_engine"`
 	// ReactCompact enables mid-run ReAct conversation compaction (context watchdog).
 	ReactCompact bool `yaml:"react_compact" json:"react_compact"`
 	// ReactCompactAtPercent triggers ReAct compaction at this % of MaxContextKB
 	// (little-coder default 80). <=0 or >=100 disables.
 	ReactCompactAtPercent int `yaml:"react_compact_at_percent" json:"react_compact_at_percent"`
+	// SessionEventLog writes .slmcode/queries/<id>/events.jsonl during runs.
+	SessionEventLog bool `yaml:"session_event_log" json:"session_event_log"`
+	// AutoRefine appends refine notes from wave lessons into CONTEXT.
+	AutoRefine bool `yaml:"auto_refine" json:"auto_refine"`
+	// AutoRefineMaxRounds caps refine passes per run (default 2).
+	AutoRefineMaxRounds int `yaml:"auto_refine_max_rounds" json:"auto_refine_max_rounds"`
 	// WaveSnapshots stores per-wave file rewind points under .slmcode/waves/.
 	WaveSnapshots bool `yaml:"wave_snapshots" json:"wave_snapshots"`
 	// FileCheckpoints snapshots each file before first write/edit (first-write-wins).
@@ -226,6 +244,10 @@ type Config struct {
 
 	// ModelProfiles overrides skill/knowledge/thinking budgets by model id.
 	ModelProfiles map[string]ModelProfile `yaml:"model_profiles" json:"model_profiles"`
+
+	// ActiveStack is the last applied stacks/<id>.yaml preset (UI highlight + docs).
+	// Empty means the user configured provider/model manually.
+	ActiveStack string `yaml:"active_stack,omitempty" json:"active_stack,omitempty"`
 
 	// MCPServers are thin read-only MCP connections (stdio or HTTP).
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
@@ -273,6 +295,12 @@ func Default(root string) *Config {
 		MaxContextKB:          DefaultMaxContextKB,
 		ThinkPasses:           DefaultThinkPasses,
 		TaskTimeout:           DefaultTaskTimeout,
+		LLMRetryCount:         3,
+		LLMRetryDelayMS:       1000,
+		ContextCompactEngine:  "heuristic",
+		SessionEventLog:       true,
+		AutoRefine:            false,
+		AutoRefineMaxRounds:   2,
 		QAGate:                true,
 		QAGateMaxRounds:       DefaultQAGateRounds,
 		PostWorkerSmoke:       true,
@@ -334,6 +362,11 @@ func (c *Config) ResolveAPIKey() {
 		c.APIKey = v
 		return
 	}
+	// .slmcode/auth.json (prime-agent auth.json style) — before provider env.
+	if key, ok := authstore.Get(c.SlmDir(), c.Provider); ok {
+		c.APIKey = key
+		return
+	}
 	p := NormalizeProvider(c.Provider)
 	switch p {
 	case "omlx":
@@ -362,6 +395,14 @@ func (c *Config) ResolveAPIKey() {
 		}
 	case "deepseek":
 		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+			c.APIKey = v
+		}
+	case "gemini", "google":
+		if v := os.Getenv("GOOGLE_API_KEY"); v != "" {
+			c.APIKey = v
+			return
+		}
+		if v := os.Getenv("GEMINI_API_KEY"); v != "" {
 			c.APIKey = v
 		}
 	default:
@@ -564,6 +605,24 @@ func normalize(c *Config) {
 	if c.ReactCompactAtPercent > 100 {
 		c.ReactCompactAtPercent = 100
 	}
+	switch strings.ToLower(strings.TrimSpace(c.ContextCompactEngine)) {
+	case "llm", "auto", "heuristic":
+		c.ContextCompactEngine = strings.ToLower(strings.TrimSpace(c.ContextCompactEngine))
+	default:
+		c.ContextCompactEngine = "heuristic"
+	}
+	if c.LLMRetryCount < 0 {
+		c.LLMRetryCount = 0
+	}
+	if c.LLMRetryCount == 0 && c.LLMRetryDelayMS == 0 {
+		// Preserve zero when explicitly cleared; Default() sets 3/1000.
+	}
+	if c.LLMRetryDelayMS < 0 {
+		c.LLMRetryDelayMS = 0
+	}
+	if c.AutoRefineMaxRounds <= 0 {
+		c.AutoRefineMaxRounds = 2
+	}
 	if c.ThinkingBudgetTokens < 0 {
 		c.ThinkingBudgetTokens = 0
 	}
@@ -587,52 +646,72 @@ func normalize(c *Config) {
 
 // Patch is a partial config update. Nil fields are left unchanged.
 type Patch struct {
-	Model                  *string   `json:"model,omitempty"`
-	Provider               *string   `json:"provider,omitempty"`
-	Endpoint               *string   `json:"endpoint,omitempty"`
-	APIKey                 *string   `json:"api_key,omitempty"`
-	Backend                *string   `json:"backend,omitempty"`
-	Mode                   *string   `json:"mode,omitempty"`
-	Specialist             *string   `json:"specialist,omitempty"`
-	PinnedSkills           *[]string `json:"pinned_skills,omitempty"`
-	ThinkPasses            *int      `json:"think_passes,omitempty"`
-	MaxParallel            *int      `json:"max_parallel,omitempty"`
-	MaxRetries             *int      `json:"max_retries,omitempty"`
-	MaxContextKB           *int      `json:"max_context_kb,omitempty"`
-	QAGate                 *bool     `json:"qa_gate,omitempty"`
-	QAGateCommand          *string   `json:"qa_gate_command,omitempty"`
-	QAGateMaxRounds        *int      `json:"qa_gate_max_rounds,omitempty"`
-	PostWorkerSmoke        *bool     `json:"post_worker_smoke,omitempty"`
-	ClarifyMode            *string   `json:"clarify_mode,omitempty"`
-	ClarifyTimeoutSec      *int      `json:"clarify_timeout_sec,omitempty"`
-	ScopeJudge             *bool     `json:"scope_judge,omitempty"`
-	PlanApprove            *string   `json:"plan_approve,omitempty"`
-	PlanApproveTimeoutSec  *int      `json:"plan_approve_timeout_sec,omitempty"`
-	PlaceholderPass        *bool     `json:"placeholder_pass,omitempty"`
-	ContinueAsk            *string   `json:"continue_ask,omitempty"`
-	ContinueAskTimeoutSec  *int      `json:"continue_ask_timeout_sec,omitempty"`
-	EscalateAsk            *string   `json:"escalate_ask,omitempty"`
-	EscalateAskTimeoutSec  *int      `json:"escalate_ask_timeout_sec,omitempty"`
-	EscalateTimeoutAgent   *string   `json:"escalate_timeout_agent,omitempty"`
-	AutoApprove            *bool     `json:"auto_approve,omitempty"`
-	ShellPermission        *string   `json:"shell_permission,omitempty"`
-	ShellAskTimeoutSec     *int      `json:"shell_ask_timeout_sec,omitempty"`
-	ContextCompact         *bool     `json:"context_compact,omitempty"`
-	WaveSnapshots          *bool     `json:"wave_snapshots,omitempty"`
-	HooksEnabled           *bool     `json:"hooks_enabled,omitempty"`
-	DryRun                 *bool     `json:"dry_run,omitempty"`
-	Verbose                *bool     `json:"verbose,omitempty"`
-	Permission             *string   `json:"permission,omitempty"`
-	CompactMode            *bool     `json:"compact_mode,omitempty"`
-	Listen                 *string   `json:"listen,omitempty"`
-	EmbeddingEnabled       *bool     `json:"embedding_enabled,omitempty"`
-	EmbeddingEndpoint      *string   `json:"embedding_endpoint,omitempty"`
-	EmbeddingModel         *string   `json:"embedding_model,omitempty"`
-	EmbeddingAPIKey        *string   `json:"embedding_api_key,omitempty"`
-	EmbeddingTopK          *int      `json:"embedding_top_k,omitempty"`
-	PricePreset            *string   `json:"price_preset,omitempty"`
-	PricePromptPerMTok     *float64  `json:"price_prompt_per_mtok,omitempty"`
-	PriceCompletionPerMTok *float64  `json:"price_completion_per_mtok,omitempty"`
+	Model                  *string                  `json:"model,omitempty"`
+	Provider               *string                  `json:"provider,omitempty"`
+	Endpoint               *string                  `json:"endpoint,omitempty"`
+	APIKey                 *string                  `json:"api_key,omitempty"`
+	Backend                *string                  `json:"backend,omitempty"`
+	Mode                   *string                  `json:"mode,omitempty"`
+	Specialist             *string                  `json:"specialist,omitempty"`
+	PinnedSkills           *[]string                `json:"pinned_skills,omitempty"`
+	Temperature            *float64                 `json:"temperature,omitempty"`
+	MaxTokens              *int                     `json:"max_tokens,omitempty"`
+	ThinkPasses            *int                     `json:"think_passes,omitempty"`
+	MaxParallel            *int                     `json:"max_parallel,omitempty"`
+	MaxRetries             *int                     `json:"max_retries,omitempty"`
+	MaxContextKB           *int                     `json:"max_context_kb,omitempty"`
+	ActiveStack            *string                  `json:"active_stack,omitempty"`
+	ModelProfiles          *map[string]ModelProfile `json:"model_profiles,omitempty"`
+	QAGate                 *bool                    `json:"qa_gate,omitempty"`
+	QAGateCommand          *string                  `json:"qa_gate_command,omitempty"`
+	QAGateMaxRounds        *int                     `json:"qa_gate_max_rounds,omitempty"`
+	PostWorkerSmoke        *bool                    `json:"post_worker_smoke,omitempty"`
+	ClarifyMode            *string                  `json:"clarify_mode,omitempty"`
+	ClarifyTimeoutSec      *int                     `json:"clarify_timeout_sec,omitempty"`
+	ScopeJudge             *bool                    `json:"scope_judge,omitempty"`
+	PlanApprove            *string                  `json:"plan_approve,omitempty"`
+	PlanApproveTimeoutSec  *int                     `json:"plan_approve_timeout_sec,omitempty"`
+	PlaceholderPass        *bool                    `json:"placeholder_pass,omitempty"`
+	ContinueAsk            *string                  `json:"continue_ask,omitempty"`
+	ContinueAskTimeoutSec  *int                     `json:"continue_ask_timeout_sec,omitempty"`
+	EscalateAsk            *string                  `json:"escalate_ask,omitempty"`
+	EscalateAskTimeoutSec  *int                     `json:"escalate_ask_timeout_sec,omitempty"`
+	EscalateTimeoutAgent   *string                  `json:"escalate_timeout_agent,omitempty"`
+	AutoApprove            *bool                    `json:"auto_approve,omitempty"`
+	ShellPermission        *string                  `json:"shell_permission,omitempty"`
+	ShellAskTimeoutSec     *int                     `json:"shell_ask_timeout_sec,omitempty"`
+	ContextCompact         *bool                    `json:"context_compact,omitempty"`
+	WaveSnapshots          *bool                    `json:"wave_snapshots,omitempty"`
+	HooksEnabled           *bool                    `json:"hooks_enabled,omitempty"`
+	WriteGuard             *bool                    `json:"write_guard,omitempty"`
+	ReadBeforeEdit         *bool                    `json:"read_before_edit,omitempty"`
+	ToolGuidance           *bool                    `json:"tool_guidance,omitempty"`
+	KnowledgeInject        *bool                    `json:"knowledge_inject,omitempty"`
+	QualityMonitor         *bool                    `json:"quality_monitor,omitempty"`
+	StaticQuality          *bool                    `json:"static_quality,omitempty"`
+	ThinkingBudget         *bool                    `json:"thinking_budget,omitempty"`
+	WorkerCritique         *bool                    `json:"worker_critique,omitempty"`
+	DryRun                 *bool                    `json:"dry_run,omitempty"`
+	Verbose                *bool                    `json:"verbose,omitempty"`
+	Permission             *string                  `json:"permission,omitempty"`
+	CompactMode            *bool                    `json:"compact_mode,omitempty"`
+	Listen                 *string                  `json:"listen,omitempty"`
+	EmbeddingEnabled       *bool                    `json:"embedding_enabled,omitempty"`
+	EmbeddingEndpoint      *string                  `json:"embedding_endpoint,omitempty"`
+	EmbeddingModel         *string                  `json:"embedding_model,omitempty"`
+	EmbeddingAPIKey        *string                  `json:"embedding_api_key,omitempty"`
+	EmbeddingTopK          *int                     `json:"embedding_top_k,omitempty"`
+	PricePreset            *string                  `json:"price_preset,omitempty"`
+	PricePromptPerMTok     *float64                 `json:"price_prompt_per_mtok,omitempty"`
+	PriceCompletionPerMTok *float64                 `json:"price_completion_per_mtok,omitempty"`
+	EnabledModels          *[]string                `json:"enabled_models,omitempty"`
+	LLMRetryCount          *int                     `json:"llm_retry_count,omitempty"`
+	LLMRetryDelayMS        *int                     `json:"llm_retry_delay_ms,omitempty"`
+	ContextCompactEngine   *string                  `json:"context_compact_engine,omitempty"`
+	ReactCompact           *bool                    `json:"react_compact,omitempty"`
+	SessionEventLog        *bool                    `json:"session_event_log,omitempty"`
+	AutoRefine             *bool                    `json:"auto_refine,omitempty"`
+	AutoRefineMaxRounds    *int                     `json:"auto_refine_max_rounds,omitempty"`
 }
 
 // ApplyPatch merges a partial update and re-normalizes permission/dry-run.
@@ -681,6 +760,12 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.PinnedSkills != nil {
 		c.PinnedSkills = append([]string{}, (*p.PinnedSkills)...)
 	}
+	if p.Temperature != nil && *p.Temperature >= 0 {
+		c.Temperature = *p.Temperature
+	}
+	if p.MaxTokens != nil && *p.MaxTokens > 0 {
+		c.MaxTokens = *p.MaxTokens
+	}
 	if p.ThinkPasses != nil && *p.ThinkPasses > 0 {
 		c.ThinkPasses = *p.ThinkPasses
 	}
@@ -692,6 +777,15 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.MaxContextKB != nil && *p.MaxContextKB > 0 {
 		c.MaxContextKB = *p.MaxContextKB
+	}
+	if p.ActiveStack != nil {
+		c.ActiveStack = strings.TrimSpace(*p.ActiveStack)
+	} else if providerChanged || (p.Model != nil && *p.Model != "") {
+		// Manual provider/model edits leave stack highlight unless explicitly set.
+		c.ActiveStack = ""
+	}
+	if p.ModelProfiles != nil && len(*p.ModelProfiles) > 0 {
+		c.ModelProfiles = *p.ModelProfiles
 	}
 	if p.QAGate != nil {
 		c.QAGate = *p.QAGate
@@ -753,6 +847,30 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.HooksEnabled != nil {
 		c.HooksEnabled = *p.HooksEnabled
 	}
+	if p.WriteGuard != nil {
+		c.WriteGuard = *p.WriteGuard
+	}
+	if p.ReadBeforeEdit != nil {
+		c.ReadBeforeEdit = *p.ReadBeforeEdit
+	}
+	if p.ToolGuidance != nil {
+		c.ToolGuidance = *p.ToolGuidance
+	}
+	if p.KnowledgeInject != nil {
+		c.KnowledgeInject = *p.KnowledgeInject
+	}
+	if p.QualityMonitor != nil {
+		c.QualityMonitor = *p.QualityMonitor
+	}
+	if p.StaticQuality != nil {
+		c.StaticQuality = *p.StaticQuality
+	}
+	if p.ThinkingBudget != nil {
+		c.ThinkingBudget = *p.ThinkingBudget
+	}
+	if p.WorkerCritique != nil {
+		c.WorkerCritique = *p.WorkerCritique
+	}
 	if p.Verbose != nil {
 		c.Verbose = *p.Verbose
 	}
@@ -803,6 +921,30 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.PriceCompletionPerMTok != nil {
 		c.PriceCompletionPerMTok = *p.PriceCompletionPerMTok
+	}
+	if p.EnabledModels != nil {
+		c.EnabledModels = append([]string{}, (*p.EnabledModels)...)
+	}
+	if p.LLMRetryCount != nil && *p.LLMRetryCount >= 0 {
+		c.LLMRetryCount = *p.LLMRetryCount
+	}
+	if p.LLMRetryDelayMS != nil && *p.LLMRetryDelayMS >= 0 {
+		c.LLMRetryDelayMS = *p.LLMRetryDelayMS
+	}
+	if p.ContextCompactEngine != nil && strings.TrimSpace(*p.ContextCompactEngine) != "" {
+		c.ContextCompactEngine = strings.TrimSpace(*p.ContextCompactEngine)
+	}
+	if p.ReactCompact != nil {
+		c.ReactCompact = *p.ReactCompact
+	}
+	if p.SessionEventLog != nil {
+		c.SessionEventLog = *p.SessionEventLog
+	}
+	if p.AutoRefine != nil {
+		c.AutoRefine = *p.AutoRefine
+	}
+	if p.AutoRefineMaxRounds != nil && *p.AutoRefineMaxRounds > 0 {
+		c.AutoRefineMaxRounds = *p.AutoRefineMaxRounds
 	}
 	normalize(c)
 }

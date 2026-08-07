@@ -257,7 +257,13 @@ func PromptAgentForm(in io.Reader, out io.Writer, base agents.CustomSpec, creati
 }
 
 // FormatAgentList renders a compact agent roster for the TUI.
+// Pass globalProvider/globalModel so effective LLM (inherit vs pin) is visible.
 func FormatAgentList(custom []agents.CustomSpec) string {
+	return FormatAgentListWithGlobals(custom, "", "")
+}
+
+// FormatAgentListWithGlobals includes effective provider/model after stack inheritance.
+func FormatAgentListWithGlobals(custom []agents.CustomSpec, globalProvider, globalModel string) string {
 	var b strings.Builder
 	for _, a := range agents.PublicSpecsWithCustom(custom) {
 		id, _ := a["id"].(string)
@@ -270,13 +276,26 @@ func FormatAgentList(custom []agents.CustomSpec) string {
 		}
 		prov, _ := a["provider"].(string)
 		model, _ := a["model"].(string)
+		effP := strings.TrimSpace(prov)
+		if effP == "" {
+			effP = globalProvider
+		}
+		effM := strings.TrimSpace(model)
+		if effM == "" {
+			effM = globalModel
+		}
 		extra := ""
-		if prov != "" || model != "" {
-			extra = "  " + Dim(strings.TrimSpace(prov+" "+model))
+		if effP != "" || effM != "" {
+			tag := strings.TrimSpace(effP + "/" + effM)
+			if strings.TrimSpace(prov) == "" && strings.TrimSpace(model) == "" && (globalProvider != "" || globalModel != "") {
+				tag += " (inherit)"
+			}
+			extra = "  " + Dim(tag)
 		}
 		b.WriteString(fmt.Sprintf("  %s @%-14s %s%s\n", mark, id, title, extra))
 	}
 	b.WriteString(Dim("  /agent show|new|edit|delete <id>  ·  inline: /agent new id=foo title=Bar provider=openai endpoint=http://…\n"))
+	b.WriteString(Dim("  empty model/provider = inherit active stack / global config\n"))
 	return b.String()
 }
 
@@ -287,7 +306,8 @@ func FormatAgentShow(a map[string]interface{}) string {
 	}
 	keys := []string{
 		"id", "title", "description", "provider", "model", "endpoint",
-		"skills", "tools", "temperature", "max_tokens", "max_iter",
+		"effective_provider", "effective_model", "inherits_model", "inherits_provider",
+		"active_stack", "skills", "tools", "temperature", "max_tokens", "max_iter",
 		"system_prompt", "custom", "builtin", "override", "path",
 	}
 	var b strings.Builder

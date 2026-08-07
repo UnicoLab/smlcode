@@ -99,7 +99,10 @@ type Runner struct {
 	CorrectorRole string
 	// OnEscalate pauses the task for human decision (nil = leave in to_scope).
 	OnEscalate EscalateHandler
-	waveN      int
+	// OnOverflowCompact is called once per wave when an LLM reports context overflow;
+	// after it returns, the failed task is retried once.
+	OnOverflowCompact func(ctx context.Context) error
+	waveN             int
 	// ResumedReact is set true when any task continued from message history
 	// (used by tests / observability to assert no cold replan).
 	ResumedReact bool
@@ -326,18 +329,49 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 			continue
 		}
 		if res.Error != nil {
+			// Context overflow → compact CONTEXT/react once, then retry this task.
+			if compact.IsContextOverflow(res.Error) && r.OnOverflowCompact != nil {
+				r.Log("%s context overflow — compacting and retrying once", t.ID)
+				if cerr := r.OnOverflowCompact(ctx); cerr != nil {
+					r.Log("%s overflow compact: %v", t.ID, cerr)
+				} else {
+					retryReq := ggagent.SubAgentRequest{
+						AgentID: role, Input: r.taskInput(t), Timeout: r.Timeout,
+						ShareState: true, TaskID: t.ID,
+					}
+					if r.applyResumeRequest(&retryReq, t.ID) {
+						r.ResumedReact = true
+					}
+					retryRes, rerr := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{retryReq}, r.Shared)
+					if rerr == nil && len(retryRes) > 0 && retryRes[0].Error == nil {
+						res = retryRes[0]
+						r.noteUsage(res, retryReq.Input, outputString(res))
+						// fall through to success path below
+						goto overflowOK
+					}
+					if len(retryRes) > 0 {
+						res = retryRes[0]
+						if res.Error != nil {
+							r.Log("%s overflow retry still failed: %v", t.ID, res.Error)
+						}
+					}
+				}
+			}
 			// Still persist partial conversation when available.
 			if len(res.Messages) > 0 {
 				r.saveReactFromResult(t.ID, role, res)
 			}
-			t.MoveTo(plan.ColBlocked)
-			t.Error = res.Error.Error()
-			board.UpdateTask(t)
-			r.fire("agent_end", role, t.ID, "error", strings.Join(t.Files, ", "), t.Error)
-			if r.FailureHandler != nil {
-				_ = r.FailureHandler.ReportTaskFailure(board, t, res.Error, 0)
+			if res.Error != nil {
+				t.MoveTo(plan.ColBlocked)
+				t.Error = res.Error.Error()
+				board.UpdateTask(t)
+				r.fire("agent_end", role, t.ID, "error", strings.Join(t.Files, ", "), t.Error)
+				if r.FailureHandler != nil {
+					_ = r.FailureHandler.ReportTaskFailure(board, t, res.Error, 0)
+				}
+				continue
 			}
-			continue
+		overflowOK:
 		}
 		r.clearReact(t.ID)
 		t.Output = outputString(res)

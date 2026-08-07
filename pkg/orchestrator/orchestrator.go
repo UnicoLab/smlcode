@@ -21,10 +21,12 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/mcp"
+	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
+	"github.com/UnicoLab/slmcode/pkg/refine"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
@@ -94,6 +96,8 @@ type Orchestrator struct {
 	latencyMs map[string]int64
 	// usage accumulates token counts for the in-flight run.
 	usage TokenUsage
+	// refineRound counts auto-refine passes in the current run.
+	refineRound int
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -172,6 +176,9 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := models.RegisterFindModelsTool(toolReg, cfg); err != nil {
+		return nil, err
+	}
 
 	var mcpMgr *mcp.Manager
 	if len(cfg.MCPServers) > 0 {
@@ -199,6 +206,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
 	factory.CustomDirs = append([]string{cfg.AgentsDir()}, agents.GlobalAgentRoots()...)
+	factory.ModelProfiles = cfg.ModelProfiles
 	if prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model); prof.MaxTokens > 0 || prof.MaxTurns > 0 || prof.Temperature > 0 {
 		factory.ProfileMaxTokens = prof.MaxTokens
 		factory.ProfileMaxTurns = prof.MaxTurns
@@ -305,6 +313,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	o.mu.Lock()
 	o.latencyMs = map[string]int64{}
 	o.usage = TokenUsage{}
+	o.refineRound = 0
 	o.mu.Unlock()
 
 	o.emit("init", "starting "+runID, "")
@@ -837,6 +846,15 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
 		o.recordUsage(u, estimated)
 	}
+	runner.OnOverflowCompact = func(ctx context.Context) error {
+		_, err := o.CompactContextNow()
+		if o.cfg.ReactCompact {
+			// Force react watchdog rearm so next resume compacts aggressively.
+			o.emitFull("execute", stream.KindDebug, "compact", "",
+				"overflow: CONTEXT compacted; ReAct will compact on resume", "", "")
+		}
+		return err
+	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.maybeCompactContext(ctx)
@@ -1278,6 +1296,20 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		o.shared.SetGlobal("latest_lessons", md)
 	}
 
+	o.refineRound++
+	if refine.ShouldRun(o.cfg.AutoRefine, o.cfg.AutoRefineMaxRounds, o.refineRound, len(lessons)) {
+		out := refine.Build(refine.Input{
+			Query: query, Lessons: lessons,
+			WaveNote: learning.ContextDelta(wave), Round: o.refineRound,
+		})
+		if !out.Skip && out.Markdown != "" {
+			_ = o.store.Append(contextstore.DocContext, "Refine", out.Markdown)
+			o.emitFull("learn", stream.KindOutput, "refine", "",
+				fmt.Sprintf("auto-refine round %d (%d lessons)", o.refineRound, len(lessons)),
+				"", truncate(out.Markdown, 400))
+		}
+	}
+
 	// Keep descriptions lean; BuildInput injects fresh packs at execute time.
 	for i := range board.Tasks {
 		t := board.Tasks[i]
@@ -1287,9 +1319,15 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 	}
 }
 
+func (o *Orchestrator) contextSummarizer() compact.Summarizer {
+	return func(ctx context.Context, body string, maxBytes int) (string, error) {
+		prompt := compact.BuildLLMCompactPrompt(body, maxBytes)
+		return o.runRole(ctx, "memory", prompt)
+	}
+}
+
 // maybeCompactContext summarizes CONTEXT.md when it exceeds the pack budget.
 func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
-	_ = ctx
 	if o == nil || o.cfg == nil || !o.cfg.ContextCompact || o.store == nil {
 		return
 	}
@@ -1304,13 +1342,18 @@ func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
 	if !compact.NeedsCompact(body, soft, soft*2) {
 		return
 	}
-	res := compact.HeuristicSummarize(body, soft*1024)
+	engine := o.cfg.ContextCompactEngine
+	var llm compact.Summarizer
+	if engine == "llm" || engine == "auto" {
+		llm = o.contextSummarizer()
+	}
+	res := compact.Summarize(ctx, engine, body, soft*1024, llm)
 	if !res.Compacted {
 		return
 	}
 	_ = o.store.Write(contextstore.DocContext, res.Summary)
 	o.emitFull("learn", stream.KindOutput, "compact", "",
-		fmt.Sprintf("CONTEXT compacted %d→%d bytes", res.BeforeBytes, res.AfterBytes),
+		fmt.Sprintf("CONTEXT compacted %d→%d bytes (engine=%s)", res.BeforeBytes, res.AfterBytes, engine),
 		"", truncate(res.Summary, 400))
 }
 
@@ -1324,7 +1367,15 @@ func (o *Orchestrator) CompactContextNow() (compact.Result, error) {
 	if max <= 0 {
 		max = 24 * 1024
 	}
-	res := compact.HeuristicSummarize(body, max)
+	engine := "heuristic"
+	if o.cfg != nil && o.cfg.ContextCompactEngine != "" {
+		engine = o.cfg.ContextCompactEngine
+	}
+	var llm compact.Summarizer
+	if engine == "llm" || engine == "auto" {
+		llm = o.contextSummarizer()
+	}
+	res := compact.Summarize(context.Background(), engine, body, max, llm)
 	if res.Compacted {
 		_ = o.store.Write(contextstore.DocContext, res.Summary)
 	}
@@ -1372,6 +1423,13 @@ func (o *Orchestrator) emitFull(phase, kind, agent, taskID, msg, scope, output s
 		}
 		fmt.Printf("[%s] %s\n", prefix, msg)
 	}
+	if o.cfg != nil && o.cfg.SessionEventLog && o.currentTurn != nil {
+		_ = session.AppendEvent(o.cfg.SlmDir(), o.currentTurn.ID, session.EventRecord{
+			Phase: phase, Kind: kind, Agent: agent, TaskID: taskID,
+			Message: msg, Scope: scope,
+			Model: o.cfg.Model,
+		})
+	}
 	if o.onEvent != nil {
 		o.onEvent(Event{
 			Phase: phase, Kind: kind, Message: msg, TaskID: taskID,
@@ -1379,6 +1437,14 @@ func (o *Orchestrator) emitFull(phase, kind, agent, taskID, msg, scope, output s
 			Time: time.Now(),
 		})
 	}
+}
+
+// MCPStatus returns connected MCP servers (nil-safe).
+func (o *Orchestrator) MCPStatus() mcp.StatusReport {
+	if o == nil || o.mcpMgr == nil {
+		return mcp.StatusReport{MetaTool: "mcp_call", Pattern: "single meta-tool mcp_call", Servers: []mcp.ServerStatus{}}
+	}
+	return o.mcpMgr.Status(o.mcpMgr.LastInfos())
 }
 
 func wantsDocsExplorer(query string) bool {
@@ -1614,7 +1680,7 @@ func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
 	}
 	if o.cfg.ToolGuidance || o.cfg.KnowledgeInject {
 		opt := augment.Options{}
-		prof := o.resolvedProfile()
+		prof := o.resolvedProfileForRole(t.Role)
 		if !o.cfg.ToolGuidance {
 			opt.SkillBudget = -1
 		} else if prof.SkillTokenBudget > 0 {
@@ -1633,10 +1699,24 @@ func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
 }
 
 func (o *Orchestrator) resolvedProfile() config.ModelProfile {
+	return o.resolvedProfileForRole("")
+}
+
+// resolvedProfileForRole uses the agent's effective model (override ?? global).
+func (o *Orchestrator) resolvedProfileForRole(role string) config.ModelProfile {
 	if o == nil || o.cfg == nil {
 		return config.ResolveModelProfile(nil, "")
 	}
-	return config.ResolveModelProfile(o.cfg.ModelProfiles, o.cfg.Model)
+	model := o.cfg.Model
+	if role != "" && o.factory != nil {
+		for _, spec := range o.factory.AllSpecs() {
+			if spec.ID == role {
+				model = o.factory.EffectiveModel(spec)
+				break
+			}
+		}
+	}
+	return config.ResolveModelProfile(o.cfg.ModelProfiles, model)
 }
 
 func formatWorkerPromptFor(t plan.Task) string {

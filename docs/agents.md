@@ -19,19 +19,23 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `coordinator` | — | JSON actions | Pre-exec + each wave 🧭 |
 | `orchestrator` | — | decisions | Reserved |
 | `context` | — | CONTEXT body | Run start 📝 |
-| `explorer` | ✅ | file map | Deep explore 🔎 |
-| `docs` | ✅ | docs map | Docs/API queries 📚 |
+| `explorer` | ✅ + `find_models` / `mcp_call` | file map | Deep explore 🔎 |
+| `docs` | ✅ + `find_models` / `mcp_call` | docs map | Docs/API queries 📚 |
 | `architect` | — | design JSON | Large/refactor 🏛️ |
 | `planner` | — | plan JSON | Always 📋 |
 | `splitter` | — | tasks JSON | Always ✂️ |
-| `worker` | ✅ | status | Execute 🛠️ |
-| `deep` | ✅ | status | Multi-step 🧪 |
+| `worker` | ✅ + `find_models` / `mcp_call` | status | Execute 🛠️ |
+| `deep` | ✅ + `find_models` / `mcp_call` | status | Multi-step 🧪 |
 | `reviewer` | — | approve JSON | Critic 🔍 |
-| `corrector` | ✅ | status | On reject 🔧 |
-| `tester` | ✅ | passed + commands | Real shell verify (pytest/go/smoke) ✅ |
-| `placeholder` | ✅ | status + gaps | Fill stubs / flag precise gaps 🩹 |
+| `corrector` | ✅ + `find_models` / `mcp_call` | status | On reject 🔧 |
+| `tester` | ✅ + `find_models` / `mcp_call` | passed + commands | Real shell verify (pytest/go/smoke) ✅ |
+| `placeholder` | ✅ + `find_models` / `mcp_call` | status + gaps | Fill stubs / flag precise gaps 🩹 |
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
+
+!!! note "🧰 Coding tools"
+    Coding agents share `ws_*` + `git_*` plus **`find_models`** (auth-gated catalog)
+    and **`mcp_call`** (single MCP meta-tool — never one tool per MCP capability).
 
 !!! note "⚖ @escalate"
     Fired only when a task hits **max review retries** and the human does not answer
@@ -56,6 +60,17 @@ curl -s localhost:7420/api/agents | jq '.[].id'
 ```
 
 Fields: `skills`, `model`, `provider`, `endpoint`, `tools`, `temperature`, `max_tokens`, `max_iter`, `system_prompt`.
+
+**LLM inheritance:** empty `model` / `provider` / `endpoint` means inherit the active
+[stack](providers.md#stacks-presets) (global `config.yaml`). Per-agent pins always win.
+
+```text
+agent.model    ?? stack/global.model
+agent.provider ?? stack/global.provider
+agent.endpoint ?? (agent.provider ? default : global.endpoint)
+```
+
+`model_profiles` resolve against each agent’s **effective** model (not only the global one).
 
 Different endpoints → unique backend keys (no accidental shared gateway).
 

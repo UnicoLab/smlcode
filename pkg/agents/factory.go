@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
@@ -32,7 +33,7 @@ type RoleSpec struct {
 
 // Specs returns the built-in specialist roster (Claude Code / Antigravity inspired).
 func Specs() []RoleSpec {
-	coding := workspace.ToolNames()
+	coding := append(workspace.ToolNames(), workspace.SpecialistToolNames()...)
 	return []RoleSpec{
 		{ID: "coordinator", Title: "Coordinate board & specialists", Description: "Supervises the kanban board; does not implement code.", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 512},
 		{ID: "orchestrator", Title: "High-level orchestration", Description: "Coordinates specialists with short structured decisions.", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 512},
@@ -185,6 +186,30 @@ func AgentDetail(id string, custom []CustomSpec) map[string]interface{} {
 	return nil
 }
 
+// EnrichPublicSpecs attaches effective_* inheritance fields using global LLM defaults.
+func EnrichPublicSpecs(list []map[string]interface{}, globalProvider, globalModel, activeStack string) []map[string]interface{} {
+	gp := strings.TrimSpace(globalProvider)
+	gm := strings.TrimSpace(globalModel)
+	for _, m := range list {
+		model, _ := m["model"].(string)
+		provider, _ := m["provider"].(string)
+		effModel := strings.TrimSpace(model)
+		if effModel == "" {
+			effModel = gm
+		}
+		effProvider := strings.TrimSpace(provider)
+		if effProvider == "" {
+			effProvider = gp
+		}
+		m["effective_model"] = effModel
+		m["effective_provider"] = effProvider
+		m["inherits_model"] = strings.TrimSpace(model) == ""
+		m["inherits_provider"] = strings.TrimSpace(provider) == ""
+		m["active_stack"] = activeStack
+	}
+	return list
+}
+
 // FindSpec returns a built-in RoleSpec by id, or nil.
 func FindSpec(id string) *RoleSpec {
 	id = strings.ToLower(strings.TrimSpace(id))
@@ -204,7 +229,10 @@ type Factory struct {
 	Model      string
 	Provider   string
 	CustomDirs []string
-	// Optional model-profile caps (little-coder benchmark-profiles).
+	// ModelProfiles resolves caps against each agent's effective model
+	// (per-agent override ?? global stack/config model).
+	ModelProfiles map[string]config.ModelProfile
+	// Optional global fallback caps when ModelProfiles is empty.
 	ProfileMaxTokens int
 	ProfileMaxTurns  int
 	ProfileTemp      float64
@@ -215,9 +243,31 @@ func NewFactory(llmManager *llm.ProviderManager, toolReg *tools.ToolRegistry, mo
 	return &Factory{LLM: llmManager, Tools: toolReg, Model: model, Provider: provider}
 }
 
+// EffectiveModel returns the model an agent will use (override or global).
+func (f *Factory) EffectiveModel(spec RoleSpec) string {
+	if strings.TrimSpace(spec.Model) != "" {
+		return strings.TrimSpace(spec.Model)
+	}
+	if f == nil {
+		return ""
+	}
+	return f.Model
+}
+
+// EffectiveProvider returns the friendly provider name (not registry key).
+func (f *Factory) EffectiveProvider(spec RoleSpec) string {
+	if strings.TrimSpace(spec.Provider) != "" {
+		return config.NormalizeProvider(spec.Provider)
+	}
+	if f == nil {
+		return ""
+	}
+	return config.NormalizeProvider(f.Provider)
+}
+
 // AllSpecs returns built-in + custom role specs (with builtin overrides merged).
 func (f *Factory) AllSpecs() []RoleSpec {
-	coding := workspace.ToolNames()
+	coding := append(workspace.ToolNames(), workspace.SpecialistToolNames()...)
 	out := append([]RoleSpec{}, Specs()...)
 	custom, _ := LoadCustomSpecs(f.CustomDirs...)
 	index := map[string]int{}
@@ -289,32 +339,44 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	if len(spec.Tools) > 0 {
 		cfg.Type = agent.AgentTypeReAct
 	}
-	cfg.Model = f.Model
-	if spec.Model != "" {
-		cfg.Model = spec.Model
-	}
+	cfg.Model = f.EffectiveModel(spec)
 	// Friendly YAML/UI names stay on RoleSpec; AgentConfig.Provider is the unique
 	// registry key when endpoint differs (openai@http://host:port/v1).
 	cfg.Provider = backends.ResolveAgentProviderKey(f.Provider, spec.Provider, spec.Endpoint, "")
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature
-	if f.ProfileTemp > 0 && isCodingRole(spec.ID) {
-		cfg.Temperature = f.ProfileTemp
-	}
 	cfg.MaxTokens = spec.MaxTokens
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = 2048
-	}
-	if f.ProfileMaxTokens > 0 && isCodingRole(spec.ID) && cfg.MaxTokens > f.ProfileMaxTokens {
-		cfg.MaxTokens = f.ProfileMaxTokens
 	}
 	cfg.MaxIterations = spec.MaxIter
 	if cfg.MaxIterations == 0 {
 		cfg.MaxIterations = 8
 	}
-	if f.ProfileMaxTurns > 0 && isCodingRole(spec.ID) && cfg.MaxIterations > f.ProfileMaxTurns {
-		cfg.MaxIterations = f.ProfileMaxTurns
+	// Resolve model_profiles against this agent's effective model so a worker on
+	// qwen:7b is not capped by a frontier global profile (and vice versa).
+	profMaxTok, profMaxTurns, profTemp := f.ProfileMaxTokens, f.ProfileMaxTurns, f.ProfileTemp
+	if len(f.ModelProfiles) > 0 {
+		prof := config.ResolveModelProfile(f.ModelProfiles, cfg.Model)
+		if prof.MaxTokens > 0 {
+			profMaxTok = prof.MaxTokens
+		}
+		if prof.MaxTurns > 0 {
+			profMaxTurns = prof.MaxTurns
+		}
+		if prof.Temperature > 0 {
+			profTemp = prof.Temperature
+		}
+	}
+	if profTemp > 0 && isCodingRole(spec.ID) {
+		cfg.Temperature = profTemp
+	}
+	if profMaxTok > 0 && isCodingRole(spec.ID) && cfg.MaxTokens > profMaxTok {
+		cfg.MaxTokens = profMaxTok
+	}
+	if profMaxTurns > 0 && isCodingRole(spec.ID) && cfg.MaxIterations > profMaxTurns {
+		cfg.MaxIterations = profMaxTurns
 	}
 	// Token-stream early-exit: cancel remaining decode once a complete JSON /
 	// tool-call is formed. Critical for slow local SLMs (oMLX / Ollama).

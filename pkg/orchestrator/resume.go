@@ -135,6 +135,10 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
 		o.recordUsage(u, estimated)
 	}
+	runner.OnOverflowCompact = func(ctx context.Context) error {
+		_, err := o.CompactContextNow()
+		return err
+	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.maybeCompactContext(ctx)
@@ -630,12 +634,20 @@ func renameDiskOK(root, query string, board *plan.Board) bool {
 	return plan.RenameSatisfied(root, spec, focus)
 }
 
-// boardHasEscalated reports whether any task was escalated / needs human review.
+// boardHasEscalated reports whether any *open* task still needs human review.
+// Historical "ESCALATED…" notes on done tasks must not fail an otherwise green run.
 func boardHasEscalated(board *plan.Board) bool {
 	if board == nil {
 		return false
 	}
 	for _, t := range board.Tasks {
+		t.Normalize()
+		if t.Column == plan.ColDone {
+			continue
+		}
+		if t.Column == plan.ColBlocked {
+			return true
+		}
 		blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review + " " + t.Output)
 		if strings.Contains(blob, "escalated") ||
 			strings.Contains(blob, "needs human") ||

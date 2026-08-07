@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.0 — Stacks, auth store & strict-provider ReAct
+
+### Highlights
+- **Stacks CLI + Studio** — `slmcode stack list|show|apply`, `GET/POST /api/stacks…`,
+  Settings → Model Stack; hierarchy `stack → agent pin → runtime`
+- **Per-agent LLM pins** — `slmcode agent …`, `effective_model` / `effective_provider` on APIs
+- **Models catalog** — `GET /api/models`, `find_models` tool, costs + enabled_models allowlist
+- **Auth store** — `.slmcode/auth.json` via `/auth`, `PUT /api/auth` (keys out of config.yaml)
+- **Prime-agent ports** — LLM compaction engines, session `events.jsonl`, MCP status,
+  auto-refine after waves, config schema (`GET /api/config/schema`)
+- **DeepSeek** — default endpoint `https://api.deepseek.com` (client appends `/v1`)
+- **GoLangGraph v0.2.2** — ReAct appends `role=tool` messages; no finalize race that
+  skipped `act` (fixes DeepSeek 400 “insufficient tool messages”)
+- **Success semantics** — historical `ESCALATED…` notes on **done** tasks no longer fail a green run
+
+### Live smoke
+- `RUN_E2E=1 go test ./test/e2e/ -run TestLiveStacksOMLXAndDeepSeek` (omlx-local + deepseek)
+
+---
+
 ## v0.8.3 — Studio React style fix
 
 ### Fixes

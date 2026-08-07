@@ -35,6 +35,21 @@ func llmTimeout(cfg *config.Config) time.Duration {
 	return 5 * time.Minute
 }
 
+func llmRetry(cfg *config.Config) (count int, delay time.Duration) {
+	count = 3
+	delay = time.Second
+	if cfg == nil {
+		return count, delay
+	}
+	if cfg.LLMRetryCount >= 0 {
+		count = cfg.LLMRetryCount
+	}
+	if cfg.LLMRetryDelayMS > 0 {
+		delay = time.Duration(cfg.LLMRetryDelayMS) * time.Millisecond
+	}
+	return count, delay
+}
+
 // RegisterLLM wires the configured provider into a ProviderManager.
 //
 // Supported:
@@ -137,6 +152,7 @@ func registerOllamaNamed(m *llm.ProviderManager, regName string, cfg *config.Con
 	if regName == "" {
 		regName = "ollama"
 	}
+	retryN, retryD := llmRetry(cfg)
 	p, err := llm.NewOllamaProvider(&llm.ProviderConfig{
 		Type:        "ollama",
 		Endpoint:    endpoint,
@@ -144,6 +160,8 @@ func registerOllamaNamed(m *llm.ProviderManager, regName string, cfg *config.Con
 		Temperature: cfg.Temperature,
 		MaxTokens:   cfg.MaxTokens,
 		Timeout:     llmTimeout(cfg),
+		RetryCount:  retryN,
+		RetryDelay:  retryD,
 	})
 	if err != nil {
 		return err
@@ -185,6 +203,7 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 	if apiKey == "" {
 		apiKey = "local"
 	}
+	retryN, retryD := llmRetry(cfg)
 	p, err := llm.NewOpenAIProvider(&llm.ProviderConfig{
 		Type:        "openai",
 		Name:        regName,
@@ -194,6 +213,8 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 		Temperature: cfg.Temperature,
 		MaxTokens:   cfg.MaxTokens,
 		Timeout:     llmTimeout(cfg),
+		RetryCount:  retryN,
+		RetryDelay:  retryD,
 	})
 	if err != nil {
 		return err

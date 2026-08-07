@@ -30,7 +30,7 @@ web/
 │   ├── types/index.ts         # TypeScript interfaces
 │   ├── components/
 │   │   ├── Layout.tsx         # App shell (sidebar + topbar + content)
-│   │   ├── TopBar.tsx         # Query input, run/stop, model selector
+│   │   ├── TopBar.tsx         # Query, run/stop, model search + costs + cycle
 │   │   ├── Sidebar.tsx        # Navigation + stats + connection status
 │   │   ├── Board/
 │   │   │   ├── KanbanBoard.tsx # Drag-and-drop task board
@@ -56,20 +56,24 @@ web/
 
 ## Model Stacks
 
-The StackSelector provides one-click switching between 8 pre-configured model stacks:
+Studio **Settings → Model Stack** loads presets from `GET /api/stacks` (YAML in
+`../stacks/`). Apply uses `POST /api/stacks/{id}/apply` (merge — keeps listen,
+skills, MCP, API keys). Optional checkboxes: clear agent LLM pins, apply stack
+`agents:` defaults, force overwrite.
 
-| Stack | Provider | Model |
-|-------|----------|-------|
-| oMLX Local | omlx | Qwen3-Coder-30B-A3B-Instruct-MLX-4bit |
-| DeepSeek | deepseek | deepseek-chat |
-| Qwen Coder | openrouter | qwen/qwen-2.5-coder-32b-instruct |
-| Google Gemini | gemini | gemini-2.0-flash |
-| OpenAI GPT-4o | openai | gpt-4o |
-| Ollama Local | ollama | qwen2.5-coder:7b |
-| OpenRouter | openrouter | anthropic/claude-sonnet-4 |
-| Groq | groq | llama-3.3-70b-versatile |
+```bash
+slmcode stack list
+slmcode stack apply deepseek
+slmcode stack apply openai --agents
+# or: make stack-apply stack=deepseek agents=1
+```
 
-Stack YAML configs live in `../stacks/` — use `make stack-apply stack=<name>` to apply them from the CLI.
+Hierarchy: stack sets global provider/model → each agent may override → empty
+agent fields inherit the stack.
+
+TopBar model menu: `GET /api/models` (auth-aware, `enabled_models` filter, `$/MTok`
+costs, Cycle through allow-list). Settings: compact engine, retries, auto-refine,
+MCP status (`GET /api/mcp`), Save key to `auth.json` (`PUT /api/auth`).
 
 ## Build
 

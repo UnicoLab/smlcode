@@ -1,6 +1,11 @@
 # ── SLMCode Stack: Ollama Local ──
 # Any local model served by Ollama.
-# Run: make stack-apply stack=ollama-local
+# Apply: slmcode stack apply ollama-local
+# Or: make stack-apply stack=ollama-local
+
+label: Ollama Local
+description: Run models locally via Ollama
+icon: "🦙"
 
 provider: ollama
 endpoint: http://127.0.0.1:11434

@@ -1,7 +1,8 @@
 # ── SLMCode Stack: Qwen (Alibaba) ──
 # Qwen Coder models via OpenRouter, Together, or local Ollama/oMLX.
 # API key: set QWEN_API_KEY / OPENROUTER_API_KEY env var.
-# Run: make stack-apply stack=qwen
+# Apply: slmcode stack apply qwen
+# Or: make stack-apply stack=qwen
 
 provider: openrouter
 endpoint: https://openrouter.ai/api/v1

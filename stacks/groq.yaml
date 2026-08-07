@@ -1,7 +1,8 @@
 # ── SLMCode Stack: Groq (fast inference) ──
 # Groq LPU — blazing fast open-source model serving.
 # API key: set GROQ_API_KEY env var.
-# Run: make stack-apply stack=groq
+# Apply: slmcode stack apply groq
+# Or: make stack-apply stack=groq
 
 provider: groq
 endpoint: https://api.groq.com/openai/v1

@@ -13,3 +13,4 @@ web/tsconfig.tsbuildinfo
 .env.local
 # Reference checkout used during development; not part of the slmcode release.
 little-coder/
+prime-agent/

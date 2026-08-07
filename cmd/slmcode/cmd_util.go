@@ -12,8 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/skills"
@@ -303,6 +305,11 @@ func runDoctor() error {
 	cli.KeyVal("provider", ws.Config.Provider)
 	cli.KeyVal("model", ws.Config.Model)
 	cli.KeyVal("endpoint", ws.Config.Endpoint)
+	if ws.Config.ActiveStack != "" {
+		cli.KeyVal("active_stack", ws.Config.ActiveStack)
+	} else {
+		cli.KeyVal("active_stack", "(none — manual provider/model)")
+	}
 	cli.KeyVal("backend", ws.Config.Backend)
 	cli.KeyVal("permission", ws.Config.Permission)
 	cli.KeyVal("shell", ws.Config.ShellPermission)
@@ -362,14 +369,26 @@ func runDoctor() error {
 			fmt.Println(cli.Warn(fmt.Sprintf("LLM responded %d at %s", resp.StatusCode, url)))
 		}
 	}
-	if ws.Config.APIKey == "" {
-		if config.NormalizeProvider(ws.Config.Provider) == "omlx" {
-			fmt.Println(cli.Warn("api_key empty — oMLX often requires auth; set OMLX_API_KEY or ~/.omlx/settings.json"))
-		} else if !config.IsOllama(ws.Config.Provider) && ws.Config.Provider != "lmstudio" {
-			fmt.Println(cli.Warn("api_key empty — set SLMCODE_API_KEY or OPENAI_API_KEY if the provider requires auth"))
-		}
+	auth := models.ResolveAuth(ws.Config)
+	if auth.Configured {
+		fmt.Println(cli.Success(fmt.Sprintf("auth OK (%s)", auth.Source)))
+	} else if auth.Required {
+		fmt.Println(cli.Error(auth.Message))
 	} else {
-		fmt.Println(cli.Success("api_key present"))
+		fmt.Println(cli.Dim("auth: local provider — key optional"))
+	}
+	custom, _ := agents.LoadCustomSpecs(append([]string{ws.Config.AgentsDir()}, agents.GlobalAgentRoots()...)...)
+	var pinned []string
+	for _, a := range custom {
+		if a.Model != "" || a.Provider != "" || a.Endpoint != "" {
+			pinned = append(pinned, a.ID)
+		}
+	}
+	if len(pinned) > 0 {
+		fmt.Println(cli.Warn(fmt.Sprintf("agents pinning LLM (override stack): %s", strings.Join(pinned, ", "))))
+		fmt.Println(cli.Dim("  tip: slmcode stack apply <name> --clear-agent-llm   or   slmcode agent clear-llm <id>"))
+	} else {
+		fmt.Println(cli.Success("agents inherit stack/global LLM"))
 	}
 	sk, _ := ws.Skills.List()
 	fmt.Println(cli.Success(fmt.Sprintf("%d skills loaded", len(sk))))

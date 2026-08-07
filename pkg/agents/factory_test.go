@@ -3,6 +3,8 @@ package agents
 import (
 	"strings"
 	"testing"
+
+	"github.com/UnicoLab/slmcode/pkg/config"
 )
 
 func TestSpecsRoster(t *testing.T) {
@@ -25,6 +27,30 @@ func TestSpecsRoster(t *testing.T) {
 	}
 	if len(want) > 0 {
 		t.Fatalf("missing specs: %v", want)
+	}
+}
+
+func TestCodingAgentsAllowFindModelsAndMCP(t *testing.T) {
+	need := map[string]bool{"find_models": false, "mcp_call": false}
+	for _, s := range Specs() {
+		if s.ID != "worker" && s.ID != "explorer" && s.ID != "deep" {
+			continue
+		}
+		have := map[string]bool{}
+		for _, tool := range s.Tools {
+			have[tool] = true
+		}
+		for name := range need {
+			if !have[name] {
+				t.Fatalf("%s missing tool %s in allowlist %v", s.ID, name, s.Tools)
+			}
+			need[name] = true
+		}
+	}
+	for name, ok := range need {
+		if !ok {
+			t.Fatalf("tool %s never checked", name)
+		}
 	}
 }
 
@@ -140,5 +166,44 @@ func TestDefinitionUsesUniqueProviderKeyForEndpoint(t *testing.T) {
 	def2 := f.definition(spec2)
 	if def2.GetConfig().Provider != "openai" {
 		t.Fatalf("friendly name lost: %q", def2.GetConfig().Provider)
+	}
+}
+
+func TestDefinitionResolvesProfilePerAgentModel(t *testing.T) {
+	f := &Factory{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		ModelProfiles: map[string]config.ModelProfile{
+			"default":          {MaxTokens: 8192, MaxTurns: 40, Temperature: 0.2},
+			"qwen2.5-coder:7b": {MaxTokens: 1024, MaxTurns: 12, Temperature: 0.1},
+			"gpt-4o":           {MaxTokens: 4096, MaxTurns: 32, Temperature: 0.15},
+		},
+		ProfileMaxTokens: 8192,
+		ProfileMaxTurns:  40,
+		ProfileTemp:      0.2,
+	}
+	worker := RoleSpec{
+		ID: "worker", SystemPrompt: "x", Model: "qwen2.5-coder:7b",
+		Provider: "ollama", MaxTokens: 3072, MaxIter: 16, Temperature: 0.12,
+	}
+	cfg := f.definition(worker).GetConfig()
+	if cfg.Model != "qwen2.5-coder:7b" {
+		t.Fatalf("model=%s", cfg.Model)
+	}
+	if cfg.MaxTokens != 1024 {
+		t.Fatalf("max_tokens=%d want 1024 from per-agent profile", cfg.MaxTokens)
+	}
+	if cfg.MaxIterations != 12 {
+		t.Fatalf("max_iter=%d want 12", cfg.MaxIterations)
+	}
+
+	// Inherit global model → gpt-4o profile, not the factory fallback 8192.
+	inherit := RoleSpec{ID: "worker", SystemPrompt: "x", MaxTokens: 8000, MaxIter: 50}
+	cfg2 := f.definition(inherit).GetConfig()
+	if cfg2.Model != "gpt-4o" {
+		t.Fatalf("inherit model=%s", cfg2.Model)
+	}
+	if cfg2.MaxTokens != 4096 {
+		t.Fatalf("inherit max_tokens=%d want 4096", cfg2.MaxTokens)
 	}
 }

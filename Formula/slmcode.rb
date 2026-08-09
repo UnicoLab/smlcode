@@ -7,35 +7,31 @@
 #   brew tap UnicoLab/smlcode https://github.com/UnicoLab/smlcode
 #   brew install slmcode
 class Slmcode < Formula
-  desc "Coding harness for SLMs and any OpenAI-compatible LLM"
+  desc "Coding harness for SLMs and any OpenAI-compatible LLM — building blocks, language packs, Studio UI"
   homepage "https://unicolab.ai"
-  version "0.9.0"
+  version "0.10.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"
-      sha256 "b01ffbc032db404e015cc1a7f2ffdd914efd872753a62e507f9dfe2a966aaf4a"
+      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode-v#{version}-darwin-arm64.tar.gz"
+      sha256 "3ce026ca0ae18b8e91d6255c03702bce405aa13e7007cad0c80e3236d9e3af02"
     end
     on_intel do
-      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_amd64"
-      sha256 "977b48d54c64ea1e09b1883bc47e49247ac7bb7200e0839e1cecdfbb1143e558"
+      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode-v#{version}-darwin-amd64.tar.gz"
+      sha256 "5e7c829832f0c3d75d7def3997717a3cf02a3c2ffef6bd39bd03f2d882edf638"
     end
   end
 
   on_linux do
-    on_arm do
-      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_arm64"
-      sha256 "4e87aaf9da4bc5b38e7609556e6467ac5bd6aef57eccff44ae1b982e7008704c"
-    end
     on_intel do
-      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_amd64"
-      sha256 "8ff9770e85354f85bfe3a4877a27e180fe25022c6b809c62fb7b063fe6ff87fc"
+      url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode-v#{version}-linux-amd64.tar.gz"
+      sha256 "6963b35d4a688303f20b31544ef61e94a595f130a69a2955b9d273053d02575a"
     end
   end
 
   def install
-    bin.install Dir["slmcode_*"].first => "slmcode"
+    bin.install Dir["slmcode-v#{version}-*"].first => "slmcode"
   end
 
   test do

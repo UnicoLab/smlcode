@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getAgents, createAgent, updateAgent, deleteAgent } from '@/api/client';
+import { getAgents, getAgent, createAgent, updateAgent, deleteAgent } from '@/api/client';
 import type { AgentSpec } from '@/types';
 import {
   Bot,
@@ -33,6 +33,7 @@ const EMPTY_AGENT: AgentSpec = {
 export default function AgentManager() {
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState<AgentSpec | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<AgentSpec>(EMPTY_AGENT);
@@ -58,10 +59,20 @@ export default function AgentManager() {
     setEditing(null);
   };
 
-  const handleEdit = (agent: AgentSpec) => {
-    setForm({ ...agent });
+  const handleEdit = async (agent: AgentSpec) => {
     setEditing(agent);
     setCreating(false);
+    setDetailLoading(true);
+    try {
+      const detail = await getAgent(agent.id);
+      setForm({ ...detail });
+    } catch (e) {
+      console.error('Failed to load agent detail:', e);
+      // Fall back to list data (prompts may be missing)
+      setForm({ ...agent });
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const handleCancel = () => {
@@ -127,6 +138,9 @@ export default function AgentManager() {
             <div className="flex items-center justify-between">
               <h2 className="font-bold text-lg">
                 {creating ? 'Create Agent' : `Edit ${editing?.title}`}
+                {editing?.builtin && (
+                  <span className="badge-neutral ml-2 text-xs align-middle">built-in</span>
+                )}
               </h2>
               <div className="flex items-center gap-2">
                 <button onClick={handleCancel} className="btn-ghost text-sm">Cancel</button>
@@ -137,6 +151,14 @@ export default function AgentManager() {
               </div>
             </div>
 
+            {detailLoading && (
+              <div className="flex items-center justify-center py-12 text-gray-400">
+                <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-3" />
+                Loading agent detail…
+              </div>
+            )}
+
+            {!detailLoading && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="label">Agent ID</label>
@@ -263,6 +285,7 @@ export default function AgentManager() {
                 <span className="text-sm">Enable built-in tools</span>
               </label>
             </div>
+            )}
           </div>
         )}
 

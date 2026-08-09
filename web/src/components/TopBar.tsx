@@ -7,8 +7,6 @@ import {
   Sun,
   Zap,
   Settings,
-  PanelLeftClose,
-  PanelLeft,
   ChevronDown,
 } from 'lucide-react';
 import { AppContext } from '@/App';
@@ -16,12 +14,7 @@ import { startRun, stopRun, getModels, getAgents, updateConfig } from '@/api/cli
 import type { AgentSpec, AuthStatus, ModelCost } from '@/types';
 import clsx from 'clsx';
 
-interface TopBarProps {
-  onToggleSidebar: () => void;
-  sidebarOpen: boolean;
-}
-
-export default function TopBar({ onToggleSidebar, sidebarOpen }: TopBarProps) {
+export default function TopBar() {
   const ctx = useContext(AppContext);
   const navigate = useNavigate();
 
@@ -135,14 +128,6 @@ export default function TopBar({ onToggleSidebar, sidebarOpen }: TopBarProps) {
 
   return (
     <header className="h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10">
-      <button
-        onClick={onToggleSidebar}
-        className="btn-ghost p-2 rounded-lg"
-        title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
-      >
-        {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
-      </button>
-
       <button onClick={() => navigate('/')} className="flex items-center gap-2 shrink-0">
         <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
           <Zap size={14} className="text-white" />

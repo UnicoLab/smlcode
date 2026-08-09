@@ -33,6 +33,9 @@ import {
   Tag,
   AlertCircle,
   Loader2,
+  RefreshCw,
+  Clock,
+  Lightbulb,
 } from 'lucide-react';
 
 // ── Constants ──
@@ -45,6 +48,39 @@ const STATUS_BADGE: Record<string, string> = {
   blocked: 'badge-error',
   scoped: 'badge-neutral',
 };
+
+const COLUMN_COLORS: Record<string, { text: string; badge: string }> = {
+  done:         { text: 'text-emerald-500', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  failed:       { text: 'text-red-500',     badge: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400' },
+  in_progress:  { text: 'text-amber-500',   badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' },
+  in_review:    { text: 'text-blue-500',    badge: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' },
+  blocked:      { text: 'text-red-500',     badge: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400' },
+  scoped:       { text: 'text-gray-500',    badge: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-400' },
+  to_scope:     { text: 'text-purple-500',  badge: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' },
+  ready_to_dev: { text: 'text-cyan-500',    badge: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-400' },
+  todo:         { text: 'text-gray-500',    badge: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-400' },
+};
+
+const ROLE_ICONS: Record<string, string> = {
+  worker:        '🔧',
+  deep:          '🧠',
+  tester:        '🧪',
+  reviewer:      '👁️',
+  corrector:     '✏️',
+  coordinator:   '🎯',
+  orchestrator:  '🎼',
+  planner:       '📋',
+  architect:     '🏗️',
+  explorer:      '🔍',
+  splitter:      '✂️',
+  docs:          '📖',
+  placeholder:   '⚡',
+  escalate:      '🚨',
+  memory:        '💾',
+  context:       '📝',
+};
+
+const COMMON_ROLES = ['worker', 'tester', 'reviewer', 'corrector', 'explorer', 'planner', 'architect', 'splitter'];
 
 // ── Types ──
 interface NewTaskForm {
@@ -63,6 +99,19 @@ const EMPTY_FORM: NewTaskForm = {
   files: '',
 };
 
+function timeAgo(iso: string): string {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return `${d}d ago`;
+}
+
 // ── Component ──
 export default function LiveTaskPanel() {
   // ── App context ──
@@ -72,6 +121,10 @@ export default function LiveTaskPanel() {
   // ── State: tasks ──
   const [board, setBoard] = useState<Board | null>(null);
   const [tasksLoading, setTasksLoading] = useState(true);
+  const [locallyAddedIds, setLocallyAddedIds] = useState<Set<string>>(new Set());
+  const [optimisticTasks, setOptimisticTasks] = useState<Task[]>([]);
+  const [lastPollTime, setLastPollTime] = useState<number>(Date.now());
+  const [refreshing, setRefreshing] = useState(false);
 
   // ── State: agents ──
   const [agents, setAgents] = useState<AgentSpec[]>([]);
@@ -108,15 +161,68 @@ export default function LiveTaskPanel() {
   const [tempOverride, setTempOverride] = useState<boolean>(false);
   const [tempValue, setTempValue] = useState(config?.temperature ?? 0.7);
 
+  // ── State: agent hints (sessionStorage-backed) ──
+  const [agentHints, setAgentHints] = useState<string>(() => {
+    try { return sessionStorage.getItem('slmcode:agentHints') || ''; }
+    catch { return ''; }
+  });
+  const [hintsSaved, setHintsSaved] = useState(false);
+
   // ── Data fetching ──
   const fetchTasks = useCallback(async () => {
     try {
       const b = await getTasks();
-      setBoard(b);
+
+      // ── Optimistic merge: preserve locally-added tasks not yet on server ──
+      setOptimisticTasks((prev) => {
+        const serverIds = new Set(b.tasks.map((t) => t.id));
+        // Keep only optimistic tasks whose IDs are not yet in the server response
+        const stillMissing = prev.filter((t) => !serverIds.has(t.id));
+        // Remove confirmed IDs from the tracking set
+        setLocallyAddedIds((prevIds) => {
+          const next = new Set(prevIds);
+          for (const id of next) {
+            if (serverIds.has(id)) next.delete(id);
+          }
+          return next;
+        });
+        return stillMissing;
+      });
+
+      // Merge optimistic tasks into the board
+      setOptimisticTasks((prev) => {
+        if (prev.length === 0) {
+          setBoard(b);
+          return prev;
+        }
+        const mergedTasks = [...prev, ...b.tasks];
+        const mergedByColumn: Record<string, Task[]> = {};
+        for (const col of b.columns) {
+          mergedByColumn[col] = mergedTasks.filter((t) => t.column === col);
+        }
+        // Also collect columns from optimistic tasks
+        for (const t of prev) {
+          if (!mergedByColumn[t.column]) mergedByColumn[t.column] = [];
+          if (!mergedByColumn[t.column].some((ex) => ex.id === t.id)) {
+            mergedByColumn[t.column].push(t);
+          }
+        }
+        const allColumns = [...new Set([...b.columns, ...Object.keys(mergedByColumn)])];
+        setBoard({
+          ...b,
+          tasks: mergedTasks,
+          columns: allColumns,
+          by_column: mergedByColumn,
+        });
+        return prev;
+      });
+
+      setLastPollTime(Date.now());
     } catch (err) {
       // silently ignore polling errors
     } finally {
       setTasksLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -165,7 +271,7 @@ export default function LiveTaskPanel() {
     setAdding(true);
     setAddError(null);
     try {
-      await addTask({
+      const created = await addTask({
         title: newTask.title.trim(),
         description: newTask.description.trim(),
         role: newTask.role || undefined,
@@ -175,14 +281,26 @@ export default function LiveTaskPanel() {
           .map((f) => f.trim())
           .filter(Boolean),
       });
+      // ── Optimistic: store the returned task and track its ID ──
+      setOptimisticTasks((prev) => [...prev, created]);
+      setLocallyAddedIds((prev) => new Set(prev).add(created.id));
       setNewTask(EMPTY_FORM);
       setShowAddForm(false);
+      // Still refetch to get the board updated, but optimistic task preserves it
       await fetchTasks();
     } catch (err: any) {
       setAddError(err?.message || 'Failed to add task');
     } finally {
       setAdding(false);
     }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    // Clear optimistic state on manual refresh to force a clean slate
+    setOptimisticTasks([]);
+    setLocallyAddedIds(new Set());
+    await fetchTasks();
   };
 
   const handleEditTitle = async (task: Task) => {
@@ -223,6 +341,13 @@ export default function LiveTaskPanel() {
     try {
       await deleteTask(id);
       setDeleteId(null);
+      // Remove from optimistic tracking as well
+      setOptimisticTasks((prev) => prev.filter((t) => t.id !== id));
+      setLocallyAddedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       await fetchTasks();
     } catch {
       // ignore
@@ -263,6 +388,17 @@ export default function LiveTaskPanel() {
     } finally {
       setContextSaving(false);
     }
+  };
+
+  // ── Agent hints ──
+  const handleSaveHints = () => {
+    try { sessionStorage.setItem('slmcode:agentHints', agentHints); } catch { /* ignore */ }
+    setHintsSaved(true);
+    setTimeout(() => setHintsSaved(false), 2000);
+  };
+
+  const handleQuickFillRole = (role: string) => {
+    setNewTask((p) => ({ ...p, role: p.role === role ? '' : role }));
   };
 
   // ── Derived: tasks grouped by column ──
@@ -335,7 +471,41 @@ export default function LiveTaskPanel() {
       </div>
 
       {/* ═══════════════════════════════════════════════════ */}
-      {/* ── SECTION 6: Worker Precision ── */}
+      {/* ── SECTION 6: Agent Hints ── */}
+      {/* ═══════════════════════════════════════════════════ */}
+      <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
+        <div className="flex items-center gap-2 mb-2">
+          <Lightbulb size={13} className="text-yellow-500 shrink-0" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Agent Hints
+          </span>
+        </div>
+        <p className="text-[9px] text-gray-400 mb-2">
+          Extra notes for agents. Not saved to CONTEXT.md — stored per-session.
+        </p>
+        <textarea
+          value={agentHints}
+          onChange={(e) => setAgentHints(e.target.value)}
+          placeholder="e.g. 'Prefer functional components', 'Use async/await', 'Follow existing error-handling patterns'…"
+          rows={3}
+          className="input text-[10px] resize-none mb-2"
+        />
+        <button
+          onClick={handleSaveHints}
+          disabled={!agentHints.trim()}
+          className="btn-primary text-[10px] py-1 px-2.5 gap-1 w-full"
+        >
+          {hintsSaved ? (
+            <Check size={11} />
+          ) : (
+            <Save size={11} />
+          )}
+          {hintsSaved ? 'Hints saved' : 'Save hints'}
+        </button>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── SECTION 7: Worker Precision ── */}
       {/* ═══════════════════════════════════════════════════ */}
       <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
         <div className="flex items-center gap-2 mb-2">
@@ -400,7 +570,7 @@ export default function LiveTaskPanel() {
       {/* ── SECTION 1+2: Task Header + Add Button ── */}
       {/* ═══════════════════════════════════════════════════ */}
       <div className="p-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <Settings2 size={13} className="text-gray-400 shrink-0" />
           <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
             Tasks
@@ -408,19 +578,55 @@ export default function LiveTaskPanel() {
           {taskCount > 0 && (
             <span className="badge-neutral text-[9px]">{taskCount}</span>
           )}
+          {locallyAddedIds.size > 0 && (
+            <span className="text-[9px] text-amber-500" title={`${locallyAddedIds.size} task(s) pending sync`}>
+              (+{locallyAddedIds.size})
+            </span>
+          )}
         </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="btn-ghost p-1 rounded-md"
-          title="Add task"
-        >
-          <Plus size={14} className={clsx(showAddForm && 'rotate-45 transition-transform')} />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="btn-ghost p-1 rounded-md"
+            title="Refresh tasks"
+          >
+            <RefreshCw size={13} className={clsx(refreshing && 'animate-spin')} />
+          </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="btn-ghost p-1 rounded-md"
+            title="Add task"
+          >
+            <Plus size={14} className={clsx(showAddForm && 'rotate-45 transition-transform')} />
+          </button>
+        </div>
       </div>
 
       {/* ── Add Task Form ── */}
       {showAddForm && (
         <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt space-y-2 animate-slide-up">
+          {/* Quick-fill role buttons */}
+          <div>
+            <div className="text-[9px] text-gray-400 mb-1.5">Quick role:</div>
+            <div className="flex flex-wrap gap-1">
+              {COMMON_ROLES.map((role) => (
+                <button
+                  key={role}
+                  onClick={() => handleQuickFillRole(role)}
+                  className={clsx(
+                    'text-[9px] py-0.5 px-1.5 rounded-full border transition-colors',
+                    newTask.role === role
+                      ? 'bg-brand-100 border-brand-300 text-brand-700 dark:bg-brand-900/40 dark:border-brand-700 dark:text-brand-300'
+                      : 'border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-brand-300 dark:hover:border-brand-600',
+                  )}
+                >
+                  {ROLE_ICONS[role] || ''} {role}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <input
             type="text"
             value={newTask.title}
@@ -444,7 +650,7 @@ export default function LiveTaskPanel() {
             <option value="">Role (any)</option>
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.title || a.id}
+                {ROLE_ICONS[a.id] || ''} {a.title || a.id}
               </option>
             ))}
           </select>
@@ -499,12 +705,12 @@ export default function LiveTaskPanel() {
       {/* ── SECTION 1: Task List ── */}
       {/* ═══════════════════════════════════════════════════ */}
       <div className="flex-1 overflow-y-auto">
-        {tasksLoading && taskCount === 0 ? (
+        {tasksLoading && taskCount === 0 && optimisticTasks.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-[10px] text-gray-400">
             <Loader2 size={12} className="animate-spin mr-2" />
             Loading tasks…
           </div>
-        ) : taskCount === 0 ? (
+        ) : taskCount === 0 && optimisticTasks.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-[10px] text-gray-400 gap-1">
             <MessageSquare size={16} className="mb-1 opacity-50" />
             No tasks yet
@@ -521,25 +727,23 @@ export default function LiveTaskPanel() {
               const tasks = byColumn[col] || [];
               if (tasks.length === 0) return null;
 
+              const colColors = COLUMN_COLORS[col] || COLUMN_COLORS.scoped;
+
               return (
                 <div key={col}>
-                  {/* Column header */}
+                  {/* Column header with colored badge */}
                   <div className="px-3 py-1.5 flex items-center gap-2 glass-alt">
                     <span
                       className={clsx(
                         'text-[10px] font-semibold uppercase tracking-wider',
-                        col === 'done'
-                          ? 'text-emerald-500'
-                          : col === 'failed'
-                            ? 'text-red-500'
-                            : col === 'in_progress'
-                              ? 'text-amber-500'
-                              : 'text-gray-400',
+                        colColors.text,
                       )}
                     >
                       {col.replace(/_/g, ' ')}
                     </span>
-                    <span className="badge-neutral text-[9px]">{tasks.length}</span>
+                    <span className={clsx('text-[9px] px-1.5 py-0.5 rounded-full font-medium', colColors.badge)}>
+                      {tasks.length}
+                    </span>
                   </div>
 
                   {/* Tasks in column */}
@@ -547,12 +751,14 @@ export default function LiveTaskPanel() {
                     const isExpanded = expandedTasks.has(task.id);
                     const isEditing = editingId === task.id;
                     const isConfirmingDelete = deleteId === task.id;
+                    const isPending = locallyAddedIds.has(task.id);
 
                     return (
                       <div
                         key={task.id}
                         className={clsx(
                           'px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors border-b border-gray-50 dark:border-gray-800/30',
+                          isPending && 'bg-amber-50/50 dark:bg-amber-900/10',
                         )}
                       >
                         {/* Compact row */}
@@ -568,6 +774,13 @@ export default function LiveTaskPanel() {
                               <ChevronRight size={12} />
                             )}
                           </button>
+
+                          {/* Role icon */}
+                          {task.role && ROLE_ICONS[task.role] && (
+                            <span className="shrink-0 mt-0.5 text-[11px]" title={task.role}>
+                              {ROLE_ICONS[task.role]}
+                            </span>
+                          )}
 
                           {/* Title (inline-edit on double-click) */}
                           <div
@@ -611,8 +824,20 @@ export default function LiveTaskPanel() {
                                 </button>
                               </div>
                             ) : (
-                              <div className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">
-                                {task.title}
+                              <div>
+                                <div className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">
+                                  {isPending && (
+                                    <span className="text-amber-500 mr-1" title="Pending sync">⏳</span>
+                                  )}
+                                  {task.title}
+                                </div>
+                                {/* Acceptance criteria preview */}
+                                {task.acceptance && (
+                                  <div className="text-[9px] text-gray-400 dark:text-gray-500 truncate mt-0.5 flex items-center gap-1">
+                                    <Check size={9} className="shrink-0" />
+                                    {task.acceptance.slice(0, 60)}{task.acceptance.length > 60 ? '…' : ''}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -639,11 +864,6 @@ export default function LiveTaskPanel() {
                             >
                               {task.status}
                             </span>
-
-                            {/* Role */}
-                            {task.role && (
-                              <span className="badge-neutral text-[9px]">{task.role}</span>
-                            )}
 
                             {/* Delete button */}
                             {isConfirmingDelete ? (
@@ -683,6 +903,17 @@ export default function LiveTaskPanel() {
                         {/* Expanded details */}
                         {isExpanded && (
                           <div className="ml-5 mt-2 space-y-2 pl-2 border-l-2 border-gray-100 dark:border-gray-800">
+                            {/* Task age */}
+                            {task.updated_at && (
+                              <div className="flex items-center gap-1 text-[9px] text-gray-400">
+                                <Clock size={9} />
+                                Created {timeAgo(task.updated_at)}
+                                {isPending && (
+                                  <span className="text-amber-500 ml-1">(pending sync)</span>
+                                )}
+                              </div>
+                            )}
+
                             {/* Description */}
                             <div>
                               <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
@@ -815,10 +1046,17 @@ export default function LiveTaskPanel() {
       <div className="px-3 py-1.5 border-t border-gray-200 dark:border-gray-800 glass-alt flex items-center justify-between text-[9px] text-gray-400">
         <span>
           {taskCount} task{taskCount !== 1 ? 's' : ''}
+          {locallyAddedIds.size > 0 && ` (${locallyAddedIds.size} pending)`}
         </span>
-        <span className="tabular-nums">
-          {columns.length} column{columns.length !== 1 ? 's' : ''}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="tabular-nums">
+            {columns.length} column{columns.length !== 1 ? 's' : ''}
+          </span>
+          <span className="tabular-nums text-gray-300 dark:text-gray-600">·</span>
+          <span className="tabular-nums">
+            Updated {timeAgo(new Date(lastPollTime).toISOString()) || 'just now'}
+          </span>
+        </div>
       </div>
     </div>
   );

@@ -85,7 +85,8 @@ func balance(s string) string {
 }
 
 // RepairJSON attempts common SLM JSON fixes: trailing commas, single quotes,
-// bare keys, truncated closing braces, and markdown fences.
+// bare keys, truncated closing braces, python bools, markdown fences, and
+// extraneous text before/after the JSON object.
 func RepairJSON(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -94,6 +95,9 @@ func RepairJSON(raw string) (string, error) {
 	if extracted := ExtractJSON(raw); extracted != "" {
 		raw = extracted
 	}
+	// Apply SLM-specific pre-fixes
+	raw = fixPythonBools(raw)
+	raw = truncateAfterClosingBrace(raw)
 	if json.Valid([]byte(raw)) {
 		return raw, nil
 	}
@@ -110,14 +114,53 @@ func RepairJSON(raw string) (string, error) {
 		if c == "" {
 			continue
 		}
+		c = fixPythonBools(c)
 		if json.Valid([]byte(c)) {
 			return c, nil
 		}
-		if extracted := ExtractJSON(c); extracted != "" && json.Valid([]byte(extracted)) {
-			return extracted, nil
+		if extracted := ExtractJSON(c); extracted != "" {
+			extracted = fixPythonBools(extracted)
+			if json.Valid([]byte(extracted)) {
+				return extracted, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("unrepairable json")
+}
+
+// fixPythonBools converts Python-style True/False/None to JSON true/false/null.
+func fixPythonBools(s string) string {
+	// Only replace whole-word matches to avoid false positives
+	s = regexp.MustCompile(`\bTrue\b`).ReplaceAllString(s, "true")
+	s = regexp.MustCompile(`\bFalse\b`).ReplaceAllString(s, "false")
+	s = regexp.MustCompile(`\bNone\b`).ReplaceAllString(s, "null")
+	return s
+}
+
+// truncateAfterClosingBrace removes extraneous text after the final closing
+// brace or bracket. SLMs often append explanations after the JSON.
+func truncateAfterClosingBrace(s string) string {
+	// Find the last complete JSON object or array
+	depth := 0
+	lastClose := -1
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				lastClose = i
+			}
+		}
+	}
+	if lastClose > 0 && lastClose < len(s)-1 {
+		cand := strings.TrimSpace(s[:lastClose+1])
+		if json.Valid([]byte(cand)) {
+			return cand
+		}
+	}
+	return s
 }
 
 // RepairAndUnmarshal repairs then unmarshals into dest.

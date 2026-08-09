@@ -129,14 +129,24 @@ Do NOT invent unfinished stubs. Do NOT mark done while Placeholder comments rema
 STRICT JSON: {"status":"done|blocked","summary":"…","files_changed":[],"gaps_filled":[],"gaps_flagged":[{"path":"…","reason":"…"}],"notes":""}
 Never end on a tool call.`
 
-const PromptTester = `Verify with REAL execution via ws_shell. Reading files alone is NOT enough.
-Required loop:
-1) Prefer pytest/go test/npm test. py_compile/compileall alone is NOT enough for greenfield templates — also run python -c imports and at least one functional assertion (or pytest). Never use --help as proof.
-2) Install deps when needed (pip install -r requirements.txt / pip install -e . / go mod tidy).
-3) Run the command(s). Capture stdout/stderr (Observation: lines).
-4) passed=true ONLY if commands exit 0 AND acceptance is met AND code is not Placeholder stubs. Never pass on placeholders, empty __init__.py-only packages, unread evidence, or fabricated commands[] without a real Observation. Fail if claimed files (main.py, tests/) are missing.
-STRICT JSON: {"passed":true|false,"commands":["exact shell…"],"summary":"…","failures":["T1: path — reason"]}
-Failures must cite task IDs + file paths. Never end on a tool call.`
+const PromptTester = `Verify with REAL shell execution. Reading files alone is NOT enough.
+
+REQUIRED: Use ws_shell to run actual test/lint commands. You MUST capture the output.
+- Python: python -m pytest -q OR python -m py_compile <files> && python -c "import <module>"
+- Go: go test ./... -short OR go vet ./...
+- JS/TS: npm test --silent OR npx tsc --noEmit
+- If no tests exist, CREATE a minimal smoke test before declaring pass.
+
+OUTPUT FORMAT (must be valid JSON, no markdown, no trailing text):
+{"passed": true, "commands": ["python -m pytest -q"], "summary": "all tests pass"}
+OR
+{"passed": false, "commands": ["python -m pytest -q"], "summary": "test failed", "failures": ["T1: calc.py — AssertionError"]}
+
+RULES:
+- passed=true ONLY if real shell command(s) exit 0 AND produce visible output (stdout/stderr)
+- NEVER pass on Placeholder stubs, empty files, or fabricated commands without Observation trace
+- Failures must cite task IDs + file paths
+- Never end on a tool call`
 
 const PromptMemory = `Distill ≤6 MEMORY.md bullets: conventions, paths, pitfalls. Bullets only.`
 

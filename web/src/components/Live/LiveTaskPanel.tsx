@@ -1,0 +1,825 @@
+// ── LiveTaskPanel ──
+// Compact sidebar panel for task management + context injection in LiveView.
+// Self-contained: fetches its own data from the API.
+import { useState, useEffect, useCallback, useContext } from 'react';
+import { AppContext } from '@/App';
+import {
+  getTasks,
+  addTask,
+  patchTask,
+  deleteTask,
+  getAgents,
+  getDoc,
+  updateDoc,
+} from '@/api/client';
+import type { Task, AgentSpec, Board } from '@/types';
+import clsx from 'clsx';
+import {
+  Plus,
+  Edit3,
+  Trash2,
+  Save,
+  X,
+  Target,
+  Sliders,
+  Thermometer,
+  FileText,
+  MessageSquare,
+  Settings2,
+  ChevronDown,
+  ChevronRight,
+  Check,
+  ListChecks,
+  Tag,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
+
+// ── Constants ──
+const POLL_INTERVAL = 5000;
+const STATUS_BADGE: Record<string, string> = {
+  done: 'badge-success',
+  failed: 'badge-error',
+  in_progress: 'badge-warn',
+  in_review: 'badge-warn',
+  blocked: 'badge-error',
+  scoped: 'badge-neutral',
+};
+
+// ── Types ──
+interface NewTaskForm {
+  title: string;
+  description: string;
+  role: string;
+  acceptance: string;
+  files: string;
+}
+
+const EMPTY_FORM: NewTaskForm = {
+  title: '',
+  description: '',
+  role: '',
+  acceptance: '',
+  files: '',
+};
+
+// ── Component ──
+export default function LiveTaskPanel() {
+  // ── App context ──
+  const ctx = useContext(AppContext);
+  const config = ctx?.config;
+
+  // ── State: tasks ──
+  const [board, setBoard] = useState<Board | null>(null);
+  const [tasksLoading, setTasksLoading] = useState(true);
+
+  // ── State: agents ──
+  const [agents, setAgents] = useState<AgentSpec[]>([]);
+
+  // ── State: add task form ──
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newTask, setNewTask] = useState<NewTaskForm>(EMPTY_FORM);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  // ── State: edit ──
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editAcceptance, setEditAcceptance] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // ── State: delete confirmation ──
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // ── State: expanded tasks ──
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
+
+  // ── State: context injection ──
+  const [contextContent, setContextContent] = useState('');
+  const [contextLoading, setContextLoading] = useState(true);
+  const [contextSaving, setContextSaving] = useState(false);
+  const [contextSaved, setContextSaved] = useState(false);
+  const [extraContext, setExtraContext] = useState('');
+
+  // ── State: temperature override ──
+  const [tempOverride, setTempOverride] = useState<boolean>(false);
+  const [tempValue, setTempValue] = useState(config?.temperature ?? 0.7);
+
+  // ── Data fetching ──
+  const fetchTasks = useCallback(async () => {
+    try {
+      const b = await getTasks();
+      setBoard(b);
+    } catch (err) {
+      // silently ignore polling errors
+    } finally {
+      setTasksLoading(false);
+    }
+  }, []);
+
+  const fetchAgents = useCallback(async () => {
+    try {
+      const list = await getAgents();
+      setAgents(list);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const fetchContext = useCallback(async () => {
+    try {
+      const doc = await getDoc('CONTEXT.md');
+      setContextContent(doc.content || '');
+    } catch {
+      setContextContent('');
+    } finally {
+      setContextLoading(false);
+    }
+  }, []);
+
+  // Poll tasks every POLL_INTERVAL ms
+  useEffect(() => {
+    fetchTasks();
+    fetchAgents();
+    fetchContext();
+    const interval = setInterval(fetchTasks, POLL_INTERVAL);
+    return () => clearInterval(interval);
+  }, [fetchTasks, fetchAgents, fetchContext]);
+
+  // Sync temp value when config loads
+  useEffect(() => {
+    if (config && !tempOverride) {
+      setTempValue(config.temperature);
+    }
+  }, [config, tempOverride]);
+
+  // ── Task actions ──
+  const handleAddTask = async () => {
+    if (!newTask.title.trim()) {
+      setAddError('Title is required');
+      return;
+    }
+    setAdding(true);
+    setAddError(null);
+    try {
+      await addTask({
+        title: newTask.title.trim(),
+        description: newTask.description.trim(),
+        role: newTask.role || undefined,
+        acceptance: newTask.acceptance.trim(),
+        files: newTask.files
+          .split(/[\n,]/)
+          .map((f) => f.trim())
+          .filter(Boolean),
+      });
+      setNewTask(EMPTY_FORM);
+      setShowAddForm(false);
+      await fetchTasks();
+    } catch (err: any) {
+      setAddError(err?.message || 'Failed to add task');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleEditTitle = async (task: Task) => {
+    if (editTitle.trim() && editTitle.trim() !== task.title) {
+      setSaving(true);
+      try {
+        await patchTask(task.id, { title: editTitle.trim() });
+        await fetchTasks();
+      } catch {
+        // ignore
+      } finally {
+        setSaving(false);
+      }
+    }
+    setEditingId(null);
+  };
+
+  const handleSaveExpanded = async (task: Task) => {
+    setSaving(true);
+    try {
+      const patch: Partial<Task> = {};
+      if (editDescription !== task.description) patch.description = editDescription;
+      if (editAcceptance !== task.acceptance) patch.acceptance = editAcceptance;
+      if (editNotes !== task.notes) patch.notes = editNotes;
+      if (Object.keys(patch).length > 0) {
+        await patchTask(task.id, patch);
+        await fetchTasks();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeleting(true);
+    try {
+      await deleteTask(id);
+      setDeleteId(null);
+      await fetchTasks();
+    } catch {
+      // ignore
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpandedTasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // ── Context injection ──
+  const handleSaveContext = async () => {
+    setContextSaving(true);
+    setContextSaved(false);
+    try {
+      let content = contextContent;
+      if (extraContext.trim()) {
+        content +=
+          (content.endsWith('\n') ? '' : '\n') +
+          `\n<!-- Extra context (injected from LiveTaskPanel) -->\n${extraContext.trim()}\n`;
+      }
+      await updateDoc('CONTEXT.md', content);
+      setContextContent(content);
+      setContextSaved(true);
+      setTimeout(() => setContextSaved(false), 2000);
+    } catch {
+      // ignore
+    } finally {
+      setContextSaving(false);
+    }
+  };
+
+  // ── Derived: tasks grouped by column ──
+  const columns = board?.columns || [];
+  const byColumn = board?.by_column || {};
+  const taskCount = board?.tasks?.length || 0;
+
+  // ── Render ──
+  return (
+    <div className="flex flex-col h-full max-w-[400px] text-xs">
+      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── SECTION 5: Context Injection ── */}
+      {/* ═══════════════════════════════════════════════════ */}
+      <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
+        <div className="flex items-center gap-2 mb-2">
+          <Target size={13} className="text-brand-500 shrink-0" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Context Injection
+          </span>
+        </div>
+
+        {/* Pinned skills */}
+        {config?.pinned_skills && config.pinned_skills.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2">
+            {config.pinned_skills.map((s) => (
+              <span
+                key={s}
+                className="badge-brand text-[10px]"
+              >
+                {s}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Current query/context preview */}
+        <div className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 line-clamp-2">
+          {contextLoading ? (
+            <span className="italic">Loading context…</span>
+          ) : contextContent ? (
+            contextContent.slice(0, 140) + (contextContent.length > 140 ? '…' : '')
+          ) : (
+            <span className="italic">No CONTEXT.md yet</span>
+          )}
+        </div>
+
+        {/* Extra context input */}
+        <textarea
+          value={extraContext}
+          onChange={(e) => setExtraContext(e.target.value)}
+          placeholder="Extra context notes for workers…"
+          rows={2}
+          className="input text-[10px] resize-none mb-2"
+        />
+
+        <button
+          onClick={handleSaveContext}
+          disabled={contextSaving || !extraContext.trim()}
+          className="btn-primary text-[10px] py-1 px-2.5 gap-1 w-full"
+        >
+          {contextSaving ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : contextSaved ? (
+            <Check size={11} />
+          ) : (
+            <Save size={11} />
+          )}
+          {contextSaved ? 'Saved' : 'Save to CONTEXT.md'}
+        </button>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── SECTION 6: Worker Precision ── */}
+      {/* ═══════════════════════════════════════════════════ */}
+      <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
+        <div className="flex items-center gap-2 mb-2">
+          <Thermometer size={13} className="text-amber-500 shrink-0" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Worker Precision
+          </span>
+        </div>
+
+        {/* Current config temperature display */}
+        <div className="flex items-center justify-between mb-2 px-2 py-1 rounded bg-white/50 dark:bg-gray-900/50">
+          <span className="text-[10px] text-gray-400">Config temp</span>
+          <span className="text-[10px] font-mono font-bold text-gray-700 dark:text-gray-300">
+            {config?.temperature?.toFixed(2) ?? '0.70'}
+          </span>
+        </div>
+
+        {/* Override toggle */}
+        <label className="flex items-center gap-2 mb-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={tempOverride}
+            onChange={(e) => {
+              setTempOverride(e.target.checked);
+              if (!e.target.checked) setTempValue(config?.temperature ?? 0.7);
+            }}
+            className="rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500"
+          />
+          <span className="text-[10px] text-gray-500 dark:text-gray-400">
+            Override for next run
+          </span>
+        </label>
+
+        {/* Temperature slider */}
+        {tempOverride && (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <Sliders size={11} className="text-gray-400 shrink-0" />
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={tempValue}
+                onChange={(e) => setTempValue(parseFloat(e.target.value))}
+                className="flex-1 h-1 accent-brand-500"
+              />
+              <span className="text-[10px] font-mono font-bold text-brand-600 dark:text-brand-400 w-9 text-right tabular-nums">
+                {tempValue.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between text-[9px] text-gray-400 px-1">
+              <span>Precise</span>
+              <span>Balanced</span>
+              <span>Creative</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── SECTION 1+2: Task Header + Add Button ── */}
+      {/* ═══════════════════════════════════════════════════ */}
+      <div className="p-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Settings2 size={13} className="text-gray-400 shrink-0" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Tasks
+          </span>
+          {taskCount > 0 && (
+            <span className="badge-neutral text-[9px]">{taskCount}</span>
+          )}
+        </div>
+        <button
+          onClick={() => setShowAddForm(!showAddForm)}
+          className="btn-ghost p-1 rounded-md"
+          title="Add task"
+        >
+          <Plus size={14} className={clsx(showAddForm && 'rotate-45 transition-transform')} />
+        </button>
+      </div>
+
+      {/* ── Add Task Form ── */}
+      {showAddForm && (
+        <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt space-y-2 animate-slide-up">
+          <input
+            type="text"
+            value={newTask.title}
+            onChange={(e) => setNewTask((p) => ({ ...p, title: e.target.value }))}
+            placeholder="Task title *"
+            className="input text-xs h-8"
+            autoFocus
+          />
+          <textarea
+            value={newTask.description}
+            onChange={(e) => setNewTask((p) => ({ ...p, description: e.target.value }))}
+            placeholder="Description"
+            rows={2}
+            className="input text-xs resize-none"
+          />
+          <select
+            value={newTask.role}
+            onChange={(e) => setNewTask((p) => ({ ...p, role: e.target.value }))}
+            className="input text-xs h-8"
+          >
+            <option value="">Role (any)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.title || a.id}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={newTask.acceptance}
+            onChange={(e) => setNewTask((p) => ({ ...p, acceptance: e.target.value }))}
+            placeholder="Acceptance criteria"
+            className="input text-xs h-8"
+          />
+          <input
+            type="text"
+            value={newTask.files}
+            onChange={(e) => setNewTask((p) => ({ ...p, files: e.target.value }))}
+            placeholder="Files (comma or newline separated)"
+            className="input text-xs h-8"
+          />
+          {addError && (
+            <div className="flex items-center gap-1 text-[10px] text-red-500">
+              <AlertCircle size={10} />
+              {addError}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleAddTask}
+              disabled={adding || !newTask.title.trim()}
+              className="btn-primary text-[10px] py-1 px-3 gap-1"
+            >
+              {adding ? (
+                <Loader2 size={10} className="animate-spin" />
+              ) : (
+                <Plus size={10} />
+              )}
+              Add
+            </button>
+            <button
+              onClick={() => {
+                setShowAddForm(false);
+                setNewTask(EMPTY_FORM);
+                setAddError(null);
+              }}
+              className="btn-ghost text-[10px] py-1 px-3"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── SECTION 1: Task List ── */}
+      {/* ═══════════════════════════════════════════════════ */}
+      <div className="flex-1 overflow-y-auto">
+        {tasksLoading && taskCount === 0 ? (
+          <div className="flex items-center justify-center py-8 text-[10px] text-gray-400">
+            <Loader2 size={12} className="animate-spin mr-2" />
+            Loading tasks…
+          </div>
+        ) : taskCount === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-[10px] text-gray-400 gap-1">
+            <MessageSquare size={16} className="mb-1 opacity-50" />
+            No tasks yet
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="text-brand-500 hover:text-brand-600 mt-1"
+            >
+              + Add your first task
+            </button>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-800/50">
+            {columns.map((col) => {
+              const tasks = byColumn[col] || [];
+              if (tasks.length === 0) return null;
+
+              return (
+                <div key={col}>
+                  {/* Column header */}
+                  <div className="px-3 py-1.5 flex items-center gap-2 glass-alt">
+                    <span
+                      className={clsx(
+                        'text-[10px] font-semibold uppercase tracking-wider',
+                        col === 'done'
+                          ? 'text-emerald-500'
+                          : col === 'failed'
+                            ? 'text-red-500'
+                            : col === 'in_progress'
+                              ? 'text-amber-500'
+                              : 'text-gray-400',
+                      )}
+                    >
+                      {col.replace(/_/g, ' ')}
+                    </span>
+                    <span className="badge-neutral text-[9px]">{tasks.length}</span>
+                  </div>
+
+                  {/* Tasks in column */}
+                  {tasks.map((task) => {
+                    const isExpanded = expandedTasks.has(task.id);
+                    const isEditing = editingId === task.id;
+                    const isConfirmingDelete = deleteId === task.id;
+
+                    return (
+                      <div
+                        key={task.id}
+                        className={clsx(
+                          'px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors border-b border-gray-50 dark:border-gray-800/30',
+                        )}
+                      >
+                        {/* Compact row */}
+                        <div className="flex items-start gap-2">
+                          {/* Expand chevron */}
+                          <button
+                            onClick={() => toggleExpand(task.id)}
+                            className="shrink-0 mt-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                          >
+                            {isExpanded ? (
+                              <ChevronDown size={12} />
+                            ) : (
+                              <ChevronRight size={12} />
+                            )}
+                          </button>
+
+                          {/* Title (inline-edit on double-click) */}
+                          <div
+                            className="flex-1 min-w-0"
+                            onDoubleClick={() => {
+                              setEditingId(task.id);
+                              setEditTitle(task.title);
+                            }}
+                          >
+                            {isEditing ? (
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="text"
+                                  value={editTitle}
+                                  onChange={(e) => setEditTitle(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleEditTitle(task);
+                                    if (e.key === 'Escape') setEditingId(null);
+                                  }}
+                                  onBlur={() => handleEditTitle(task)}
+                                  className="input text-xs h-7 flex-1"
+                                  autoFocus
+                                />
+                                <button
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    handleEditTitle(task);
+                                  }}
+                                  className="text-brand-500 hover:text-brand-600"
+                                >
+                                  <Save size={12} />
+                                </button>
+                                <button
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    setEditingId(null);
+                                  }}
+                                  className="text-gray-400 hover:text-gray-600"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">
+                                {task.title}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Badges */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            {/* Files count */}
+                            {task.files?.length > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 text-[9px] text-gray-400"
+                                title={task.files.join(', ')}
+                              >
+                                <FileText size={9} />
+                                {task.files.length}
+                              </span>
+                            )}
+
+                            {/* Status */}
+                            <span
+                              className={clsx(
+                                'text-[9px]',
+                                STATUS_BADGE[task.status] || 'badge-neutral',
+                              )}
+                            >
+                              {task.status}
+                            </span>
+
+                            {/* Role */}
+                            {task.role && (
+                              <span className="badge-neutral text-[9px]">{task.role}</span>
+                            )}
+
+                            {/* Delete button */}
+                            {isConfirmingDelete ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleDelete(task.id)}
+                                  disabled={deleting}
+                                  className="text-red-500 hover:text-red-700"
+                                  title="Confirm delete"
+                                >
+                                  {deleting ? (
+                                    <Loader2 size={11} className="animate-spin" />
+                                  ) : (
+                                    <Check size={12} />
+                                  )}
+                                </button>
+                                <button
+                                  onClick={() => setDeleteId(null)}
+                                  className="text-gray-400 hover:text-gray-600"
+                                  title="Cancel"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setDeleteId(task.id)}
+                                className="text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 hover:opacity-100"
+                                title="Delete task"
+                              >
+                                <Trash2 size={11} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Expanded details */}
+                        {isExpanded && (
+                          <div className="ml-5 mt-2 space-y-2 pl-2 border-l-2 border-gray-100 dark:border-gray-800">
+                            {/* Description */}
+                            <div>
+                              <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
+                                <FileText size={9} /> Description
+                              </div>
+                              <textarea
+                                value={editDescription}
+                                onChange={(e) => setEditDescription(e.target.value)}
+                                rows={2}
+                                className="input text-[10px] resize-none"
+                                placeholder="No description"
+                                onFocus={() => {
+                                  if (editingId !== task.id) {
+                                    setEditingId(task.id);
+                                    setEditDescription(task.description || '');
+                                    setEditAcceptance(task.acceptance || '');
+                                    setEditNotes(task.notes || '');
+                                  }
+                                }}
+                              />
+                            </div>
+
+                            {/* Acceptance criteria */}
+                            <div>
+                              <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
+                                <Check size={9} /> Acceptance
+                              </div>
+                              <textarea
+                                value={editAcceptance}
+                                onChange={(e) => setEditAcceptance(e.target.value)}
+                                rows={2}
+                                className="input text-[10px] resize-none"
+                                placeholder="No acceptance criteria"
+                              />
+                            </div>
+
+                            {/* Checklist */}
+                            {task.checklist && task.checklist.length > 0 && (
+                              <div>
+                                <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
+                                  <ListChecks size={9} /> Checklist
+                                </div>
+                                <div className="space-y-0.5">
+                                  {task.checklist.map((item) => (
+                                    <div
+                                      key={item.id}
+                                      className="flex items-start gap-1.5 text-[10px]"
+                                    >
+                                      <span
+                                        className={clsx(
+                                          'shrink-0 mt-0.5',
+                                          item.done
+                                            ? 'text-emerald-500'
+                                            : 'text-gray-300 dark:text-gray-600',
+                                        )}
+                                      >
+                                        {item.done ? (
+                                          <Check size={10} />
+                                        ) : (
+                                          <div className="w-2.5 h-2.5 rounded-sm border border-gray-300 dark:border-gray-600" />
+                                        )}
+                                      </span>
+                                      <span
+                                        className={clsx(
+                                          item.done &&
+                                            'line-through text-gray-400 dark:text-gray-500',
+                                        )}
+                                      >
+                                        {item.text}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Output */}
+                            {task.output && (
+                              <div>
+                                <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
+                                  <MessageSquare size={9} /> Output
+                                </div>
+                                <div className="text-[10px] text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 rounded p-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap font-mono">
+                                  {task.output.slice(0, 500)}
+                                  {task.output.length > 500 && '…'}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Notes */}
+                            <div>
+                              <div className="text-[9px] font-semibold text-gray-400 uppercase mb-0.5 flex items-center gap-1">
+                                <Tag size={9} /> Notes
+                              </div>
+                              <textarea
+                                value={editNotes}
+                                onChange={(e) => setEditNotes(e.target.value)}
+                                rows={2}
+                                className="input text-[10px] resize-none"
+                                placeholder="No notes"
+                              />
+                            </div>
+
+                            {/* Save button for expanded edits */}
+                            <button
+                              onClick={() => handleSaveExpanded(task)}
+                              disabled={saving}
+                              className="btn-primary text-[10px] py-1 px-2.5 gap-1"
+                            >
+                              {saving ? (
+                                <Loader2 size={10} className="animate-spin" />
+                              ) : (
+                                <Save size={10} />
+                              )}
+                              Save changes
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Footer stats ── */}
+      <div className="px-3 py-1.5 border-t border-gray-200 dark:border-gray-800 glass-alt flex items-center justify-between text-[9px] text-gray-400">
+        <span>
+          {taskCount} task{taskCount !== 1 ? 's' : ''}
+        </span>
+        <span className="tabular-nums">
+          {columns.length} column{columns.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+    </div>
+  );
+}

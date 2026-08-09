@@ -827,6 +827,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.Focus = o.focus
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
+	runner.ReviewParallel = o.cfg.MaxParallel >= 2
 	runner.Timeout = o.cfg.TaskTimeout
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector

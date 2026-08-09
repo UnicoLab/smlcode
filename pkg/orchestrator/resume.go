@@ -117,6 +117,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.Focus = o.focus
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
+	runner.ReviewParallel = o.cfg.MaxParallel >= 2
 	runner.Timeout = o.cfg.TaskTimeout
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
@@ -207,10 +208,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 	if o.cfg.QAGate || o.cfg.PostWorkerSmoke {
 		cmd := strings.TrimSpace(o.cfg.QAGateCommand)
 		if cmd == "" {
-		cmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
-		if cmd == "" {
-			cmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
-		}
+			cmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
+			if cmd == "" {
+				cmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
+			}
 		}
 		if cmd != "" {
 			if prep := quality.BootstrapDeps(o.cfg.Root, cmd); prep != "" {
@@ -419,10 +420,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 
 	qaCmd := strings.TrimSpace(o.cfg.QAGateCommand)
 	if qaCmd == "" {
-	qaCmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
-	if qaCmd == "" {
-		qaCmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
-	}
+		qaCmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
+		if qaCmd == "" {
+			qaCmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
+		}
 	}
 	qaFailed := o.runQAGate(ctx, query, board)
 	if qaFailed {

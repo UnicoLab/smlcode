@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/compact"
@@ -97,6 +98,8 @@ type Runner struct {
 	// ReviewerRole / CorrectorRole come from pipeline.execute (defaults reviewer/corrector).
 	ReviewerRole  string
 	CorrectorRole string
+	// ReviewParallel enables parallel review+correct for tasks without shared files.
+	ReviewParallel bool
 	// OnEscalate pauses the task for human decision (nil = leave in to_scope).
 	OnEscalate EscalateHandler
 	// OnOverflowCompact is called once per wave when an LLM reports context overflow;
@@ -542,12 +545,31 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
 		t.MoveTo(plan.ColInReview)
 		board.UpdateTask(t)
-		// Use the pre-wave snapshot so disk evidence survives finalize JSON that
-		// omits tool traces (reviewAndCorrect must not re-baseline after writes).
-		if err := r.reviewAndCorrect(ctx, board, t, snapshots[i]); err != nil {
-			r.Log("review/correct %s: %v", t.ID, err)
-			if isCancelResult(err, ggagent.SubAgentResult{}) {
-				canceled = true
+	}
+
+	// ── Review wave: run review+correct in parallel for independent tasks ──
+	// Collect tasks that finished execution from the board (not needExec copies)
+	var reviewTasks []plan.Task
+	for _, t := range needExec {
+		if bt, ok := board.Get(t.ID); ok && bt.Column == plan.ColInReview && bt.Error == "" {
+			reviewTasks = append(reviewTasks, bt)
+		}
+	}
+	if r.ReviewParallel && len(reviewTasks) > 1 {
+		r.Log("parallel review: %d task(s), max_parallel=%d", len(reviewTasks), r.MaxParallel)
+		r.reviewWave(ctx, board, reviewTasks, snapIndexed(snapshots, needExec, needIdx))
+		for _, t := range reviewTasks {
+			board.UpdateTask(t)
+		}
+	} else {
+		for _, t := range reviewTasks {
+			// Use the pre-wave snapshot so disk evidence survives finalize JSON.
+			snap := idxForTask(t.ID, needExec, needIdx, snapshots)
+			if err := r.reviewAndCorrect(ctx, board, t, snap); err != nil {
+				r.Log("review/correct %s: %v", t.ID, err)
+				if isCancelResult(err, ggagent.SubAgentResult{}) {
+					canceled = true
+				}
 			}
 		}
 	}
@@ -1895,4 +1917,101 @@ func renameOK(root string, t plan.Task) bool {
 		focus = expandTaskFocus(t)
 	}
 	return plan.RenameSatisfied(root, spec, focus)
+}
+
+// snapIndexed builds a snapshot map indexed by task ID from the parallel arrays.
+func snapIndexed(snapshots []map[string]string, tasks []plan.Task, indices []int) map[string]map[string]string {
+	m := make(map[string]map[string]string, len(tasks))
+	for j, t := range tasks {
+		i := indices[j]
+		if i < len(snapshots) {
+			m[t.ID] = snapshots[i]
+		}
+	}
+	return m
+}
+
+// idxForTask finds the snapshot for a task ID from the indexed arrays.
+func idxForTask(taskID string, tasks []plan.Task, indices []int, snapshots []map[string]string) map[string]string {
+	for j, t := range tasks {
+		if t.ID == taskID && indices[j] < len(snapshots) {
+			return snapshots[indices[j]]
+		}
+	}
+	return nil
+}
+
+// reviewWave runs review+correct in parallel for all tasks that finished in the wave.
+// Tasks that share files are serialized per shared-file group to avoid conflicts.
+func (r *Runner) reviewWave(ctx context.Context, board *plan.Board, tasks []plan.Task, snapshots map[string]map[string]string) {
+	if len(tasks) == 0 {
+		return
+	}
+	if len(tasks) == 1 || r.MaxParallel < 2 {
+		for _, t := range tasks {
+			snap, _ := snapshots[t.ID]
+			if err := r.reviewAndCorrect(ctx, board, t, snap); err != nil {
+				r.Log("review/correct %s: %v", t.ID, err)
+			}
+		}
+		return
+	}
+
+	// Group tasks by shared files to avoid parallel conflicts.
+	// Independent tasks (no shared files) run in their own group.
+	type group struct {
+		tasks []plan.Task
+		files map[string]bool
+	}
+	var groups []*group
+	for _, t := range tasks {
+		assigned := false
+		for _, g := range groups {
+			for _, f := range t.Files {
+				if g.files[f] {
+					g.tasks = append(g.tasks, t)
+					for _, f2 := range t.Files {
+						g.files[f2] = true
+					}
+					assigned = true
+					break
+				}
+			}
+			if assigned {
+				break
+			}
+		}
+		if !assigned {
+			fm := make(map[string]bool)
+			for _, f := range t.Files {
+				fm[f] = true
+			}
+			groups = append(groups, &group{tasks: []plan.Task{t}, files: fm})
+		}
+	}
+
+	// Process each group: groups run in parallel, tasks within a group run sequentially.
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, r.MaxParallel)
+	for _, g := range groups {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(g *group) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			for _, t := range g.tasks {
+				r.Log("%s review (parallel group, %d files)", t.ID, len(g.files))
+				snap, _ := snapshots[t.ID]
+				if err := r.reviewAndCorrect(ctx, board, t, snap); err != nil {
+					r.Log("review/correct %s: %v", t.ID, err)
+				}
+				mu.Lock()
+				board.UpdateTask(t)
+				r.persist(board)
+				mu.Unlock()
+			}
+		}(g)
+	}
+	wg.Wait()
 }

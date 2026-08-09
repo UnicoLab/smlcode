@@ -163,6 +163,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/queries", s.handleListQueries)
 	s.mux.HandleFunc("GET /api/queries/{id}", s.handleGetQuery)
 	s.mux.HandleFunc("GET /api/workspace/file", s.handleWorkspaceFile)
+	s.mux.HandleFunc("GET /api/workspace/tree", s.handleWorkspaceTree)
 
 	if s.ui != nil {
 		fileServer := http.FileServer(http.FS(s.ui))
@@ -1397,4 +1398,51 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"path": path, "content": string(data), "size": len(data)})
+}
+
+// handleWorkspaceTree lists files and directories in a workspace subdirectory.
+func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	fullPath := filepath.Join(s.h.Config.Root, filepath.Clean(path))
+	if !strings.HasPrefix(fullPath, filepath.Clean(s.h.Config.Root)) {
+		http.Error(w, "path traversal", 403)
+		return
+	}
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	type treeEntry struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size,omitempty"`
+	}
+	var result []treeEntry
+	for _, e := range entries {
+		// Skip hidden files/directories
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		entry := treeEntry{
+			Name:  e.Name(),
+			Path:  filepath.Join(path, e.Name()),
+			IsDir: e.IsDir(),
+		}
+		if !e.IsDir() {
+			if info, err := e.Info(); err == nil {
+				entry.Size = info.Size()
+			}
+		}
+		result = append(result, entry)
+	}
+	// Sort: directories first, then alphabetical
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].IsDir != result[j].IsDir {
+			return result[i].IsDir
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	writeJSON(w, map[string]any{"path": path, "entries": result})
 }

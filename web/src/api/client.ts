@@ -455,3 +455,8 @@ export async function applyPipelinePreset(id: string): Promise<{ ok: boolean; re
 export async function getWorkspaceFile(path: string): Promise<{ path: string; content: string; size: number }> {
   return request(`/workspace/file?path=${encodeURIComponent(path)}`);
 }
+
+export async function getWorkspaceTree(path?: string): Promise<{ path: string; entries: Array<{ name: string; path: string; is_dir: boolean; size?: number }> }> {
+  const params = path ? `?path=${encodeURIComponent(path)}` : '';
+  return request(`/workspace/tree${params}`);
+}

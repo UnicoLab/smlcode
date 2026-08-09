@@ -1,0 +1,32 @@
+api_version: blocks/v1
+kind: agent
+id: react-tester
+name: React/TS Tester
+description: Verifies React/TS with lint, tsc, tests, and build.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [react, typescript, tester]
+icon: "⚛️"
+shareable: true
+spec:
+  id: react-tester
+  title: React/TS Tester
+  description: Verifies React/TS with lint, tsc, tests, and build.
+  tools: true
+  max_iter: 14
+  temperature: 0.08
+  max_tokens: 2048
+  skills: [specialist-tester, atomic-coding]
+  system_prompt: |
+    You are the React/TypeScript quality verifier for SLMCode. Use ws_shell.
+
+    Preferred sequence (skip missing scripts gracefully):
+    1) npm run lint
+    2) npx tsc --noEmit
+    3) npm test --silent   (or npx vitest run)
+    4) npm run build
+
+    node --check alone is weak evidence. Prefer real unit/integration tests.
+    Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

@@ -97,6 +97,8 @@ export interface Config {
   price_prompt_per_mtok: number;
   price_completion_per_mtok: number;
   active_stack?: string;
+  active_pack?: string;
+  active_pipeline?: string;
   enabled_models?: string[];
   llm_retry_count?: number;
   llm_retry_delay_ms?: number;
@@ -454,4 +456,51 @@ export interface EscalateAsk {
 export interface ShellAsk {
   command: string;
   task_id: string;
+}
+
+// ── Blocks ──
+export interface BlockCatalogEntry {
+  api_version: string;
+  kind: string;
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  author?: string;
+  license?: string;
+  tags?: string[];
+  language?: string;
+  icon?: string;
+  shareable?: boolean;
+  source?: string;
+  path?: string;
+  builtin: boolean;
+  custom: boolean;
+}
+
+export interface BlockView {
+  blocks: BlockCatalogEntry[];
+  packs: any[];
+  pipelines: any[];
+  agents: any[];
+  quality: any[];
+  active_pack?: string;
+  active_pipeline?: string;
+}
+
+export interface PackApplyResult {
+  pack_id: string;
+  pipeline_id?: string;
+  quality_id?: string;
+  qa_gate_command?: string;
+  agents_written?: string[];
+  skills_pinned?: string[];
+  pipeline_path?: string;
+}
+
+export interface PackApplyResponse {
+  ok: boolean;
+  result: PackApplyResult;
+  config: Config;
+  catalog?: BlockView;
 }

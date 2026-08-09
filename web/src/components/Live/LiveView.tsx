@@ -139,6 +139,22 @@ export default function LiveView() {
         </div>
       </div>
 
+      {/* Active config indicator */}
+      {(ctx?.config?.active_pack || ctx?.config?.active_stack || ctx?.config?.active_pipeline) && (
+        <div className="px-4 py-1.5 glass-alt border-b border-gray-100 dark:border-gray-700 flex items-center gap-3">
+          <span className="text-[10px] text-gray-400 font-medium">Active:</span>
+          {ctx.config.active_pack && (
+            <span className="badge-brand text-[10px]">📦 {ctx.config.active_pack}</span>
+          )}
+          {ctx.config.active_pipeline && (
+            <span className="badge-neutral text-[10px]">{ctx.config.active_pipeline}</span>
+          )}
+          {ctx.config.active_stack && (
+            <span className="badge-neutral text-[10px]">⚡ {ctx.config.active_stack}</span>
+          )}
+        </div>
+      )}
+
       {/* Content area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Event log */}

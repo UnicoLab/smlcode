@@ -3,6 +3,7 @@ import { AppContext } from '@/App';
 import { getAuthStatus, getMCPStatus, putAuthKey, updateConfig } from '@/api/client';
 import type { AuthStatus, ConfigPatch, MCPStatus } from '@/types';
 import StackSelector from './StackSelector';
+import PackSelector from './PackSelector';
 import {
   Cpu,
   Key,
@@ -13,6 +14,7 @@ import {
   Zap,
   Save,
   RotateCcw,
+  Package,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -108,6 +110,27 @@ export default function SettingsPanel() {
               endpoint: cfg.endpoint,
               active_stack: cfg.active_stack,
             }}
+            onApplied={() => {
+              setLocal({});
+              ctx?.refresh();
+            }}
+          />
+        </section>
+
+        {/* Language Pack Selector */}
+        <section className="card p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+              <Package size={20} className="text-amber-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold">Language Pack</h2>
+              <p className="text-sm text-gray-500">Switch between Go, Python, React pipelines in one click</p>
+            </div>
+          </div>
+          <PackSelector
+            currentPack={cfg.active_pack || ''}
+            currentPipeline={cfg.active_pipeline || ''}
             onApplied={() => {
               setLocal({});
               ctx?.refresh();

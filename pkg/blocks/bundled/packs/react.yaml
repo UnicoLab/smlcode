@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: react
+name: React/TypeScript Language Pack
+description: >-
+  Ready-to-use React/TS engineering pack — pipeline, quality (lint/tsc/test/build),
+  and frontend-aware worker/tester agents for Vite or Next.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [react, typescript, vite, next, pack, marketplace]
+icon: "⚛️"
+shareable: true
+spec:
+  pipeline: react
+  quality: react
+  agents: [react-worker, react-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: react-tester
+  override_worker: react-worker

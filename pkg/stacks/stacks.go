@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"gopkg.in/yaml.v3"
 )
@@ -37,7 +38,10 @@ type Stack struct {
 	Endpoint    string                  `json:"endpoint"`
 	Model       string                  `json:"model"`
 	Backend     string                  `json:"backend,omitempty"`
-	Agents      map[string]AgentDefault `json:"agents,omitempty"`
+	// Agents is optional per-role LLM pins.
+	Agents map[string]AgentDefault `json:"agents,omitempty"`
+	// Pack optionally applies a language/domain building-block pack when the stack is applied.
+	Pack string `json:"pack,omitempty"`
 	// Raw holds the YAML map for precise key-aware merges.
 	raw map[string]any
 }
@@ -52,6 +56,10 @@ type ApplyOptions struct {
 	// ClearAgentLLM clears model/provider/endpoint on all agent overrides so they
 	// inherit the new stack globals. Other override fields (prompt, skills) stay.
 	ClearAgentLLM bool
+	// ApplyPack applies stack.pack (language pack) when set.
+	ApplyPack bool
+	// ForcePackAgents overwrites agent YAML when materializing pack agents.
+	ForcePackAgents bool
 }
 
 // ApplyResult summarizes what changed.
@@ -63,6 +71,9 @@ type ApplyResult struct {
 	AgentsUpdated     []string `json:"agents_updated,omitempty"`
 	AgentsCleared     []string `json:"agents_cleared,omitempty"`
 	ConflictingAgents []string `json:"conflicting_agents,omitempty"`
+	PackID            string   `json:"pack_id,omitempty"`
+	PipelineID        string   `json:"pipeline_id,omitempty"`
+	QAGateCommand     string   `json:"qa_gate_command,omitempty"`
 }
 
 // FindDir locates the stacks/ directory (env, cwd walk, executable, source tree).
@@ -211,6 +222,7 @@ func Parse(id, path string, data []byte) (*Stack, error) {
 	if s.Description == "" {
 		s.Description = defaultDescription(id, s.Provider)
 	}
+	s.Pack = strKey(raw, "pack")
 	if agentsRaw, ok := raw["agents"].(map[string]any); ok {
 		s.Agents = map[string]AgentDefault{}
 		for role, v := range agentsRaw {
@@ -283,7 +295,42 @@ func Apply(cfg *config.Config, s *Stack, agentsDir string, opts ApplyOptions) (*
 		res.AgentsUpdated = updated
 	}
 
+	if opts.ApplyPack && strings.TrimSpace(s.Pack) != "" {
+		reg, err := blocks.Load(cfg.Root)
+		if err != nil {
+			return nil, fmt.Errorf("load blocks: %w", err)
+		}
+		packRes, err := blocks.ApplyPack(cfg, reg, s.Pack, blocks.ApplyOptions{
+			MaterializeAgents: true,
+			ForceAgents:       opts.ForcePackAgents,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("apply pack %q: %w", s.Pack, err)
+		}
+		res.PackID = packRes.PackID
+		res.PipelineID = packRes.PipelineID
+		res.QAGateCommand = packRes.QAGateCommand
+		if len(packRes.AgentsWritten) > 0 {
+			res.AgentsUpdated = mergeUniqueSorted(res.AgentsUpdated, packRes.AgentsWritten)
+		}
+	}
+
 	return res, nil
+}
+
+func mergeUniqueSorted(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(append([]string{}, a...), b...) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
@@ -728,6 +775,7 @@ func (s *Stack) PresetView(active bool) map[string]any {
 		"max_context_kb": maxCtx,
 		"think_passes":   think,
 		"agents":         s.Agents,
+		"pack":           s.Pack,
 		"active":         active,
 	}
 }

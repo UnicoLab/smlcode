@@ -1,0 +1,60 @@
+api_version: blocks/v1
+kind: quality
+id: python
+name: Python Quality Pack
+description: >-
+  Production Python verify pack — ruff format/check, optional mypy/pyright,
+  pytest, packaging-aware (pyproject/uv/requirements). Prefer uv run when uv.lock exists.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: python
+tags: [python, ruff, pytest, mypy, lint]
+icon: "🐍"
+shareable: true
+spec:
+  detect:
+    files: [pyproject.toml, requirements.txt, setup.py, uv.lock]
+    extensions: [.py]
+    priority: 15
+  format:
+    - cmd: ruff format --check .
+      label: ruff format
+      optional: true
+  lint:
+    - cmd: ruff check .
+      label: ruff check
+      optional: true
+  typecheck:
+    - cmd: mypy .
+      label: mypy
+      optional: true
+    - cmd: pyright
+      label: pyright
+      optional: true
+  test:
+    - cmd: python -m pytest -q
+      label: pytest
+  build:
+    - cmd: python -m compileall -q .
+      label: compileall
+      optional: true
+  smoke: python -m pytest -q
+  qa_gate: python -m pytest -q
+  safe_prefixes:
+    - python -m pytest
+    - python -m py_compile
+    - python -m compileall
+    - python main.py
+    - python app.py
+    - uv run pytest
+    - uv run ruff
+    - pytest
+    - ruff
+    - mypy
+    - pyright
+  tester_hints: |
+    Prefer: python -m pytest -q (or uv run pytest -q when uv.lock exists).
+    Lint: ruff check . ; format: ruff format .
+    Typecheck when configured: mypy . or pyright.
+    Do NOT treat compileall alone as success for greenfield projects.

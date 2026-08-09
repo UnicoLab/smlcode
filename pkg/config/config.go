@@ -249,6 +249,11 @@ type Config struct {
 	// Empty means the user configured provider/model manually.
 	ActiveStack string `yaml:"active_stack,omitempty" json:"active_stack,omitempty"`
 
+	// ActivePack is the last applied language/domain building-block pack (go|python|react|…).
+	ActivePack string `yaml:"active_pack,omitempty" json:"active_pack,omitempty"`
+	// ActivePipeline is the last applied named pipeline block id (may match pack pipeline).
+	ActivePipeline string `yaml:"active_pipeline,omitempty" json:"active_pipeline,omitempty"`
+
 	// MCPServers are thin read-only MCP connections (stdio or HTTP).
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 
@@ -661,6 +666,8 @@ type Patch struct {
 	MaxRetries             *int                     `json:"max_retries,omitempty"`
 	MaxContextKB           *int                     `json:"max_context_kb,omitempty"`
 	ActiveStack            *string                  `json:"active_stack,omitempty"`
+	ActivePack             *string                  `json:"active_pack,omitempty"`
+	ActivePipeline         *string                  `json:"active_pipeline,omitempty"`
 	ModelProfiles          *map[string]ModelProfile `json:"model_profiles,omitempty"`
 	QAGate                 *bool                    `json:"qa_gate,omitempty"`
 	QAGateCommand          *string                  `json:"qa_gate_command,omitempty"`
@@ -783,6 +790,12 @@ func (c *Config) ApplyPatch(p Patch) {
 	} else if providerChanged || (p.Model != nil && *p.Model != "") {
 		// Manual provider/model edits leave stack highlight unless explicitly set.
 		c.ActiveStack = ""
+	}
+	if p.ActivePack != nil {
+		c.ActivePack = strings.TrimSpace(*p.ActivePack)
+	}
+	if p.ActivePipeline != nil {
+		c.ActivePipeline = strings.TrimSpace(*p.ActivePipeline)
 	}
 	if p.ModelProfiles != nil && len(*p.ModelProfiles) > 0 {
 		c.ModelProfiles = *p.ModelProfiles

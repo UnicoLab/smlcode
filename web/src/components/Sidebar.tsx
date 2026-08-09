@@ -12,6 +12,7 @@ import {
   Cpu,
   Wifi,
   WifiOff,
+  Package,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { getHealth } from '@/api/client';
@@ -29,6 +30,7 @@ const navItems: NavItem[] = [
   { to: '/board', label: 'Board', icon: <Kanban size={18} /> },
   { to: '/pipeline', label: 'Pipeline', icon: <Workflow size={18} /> },
   { to: '/agents', label: 'Agents', icon: <Bot size={18} /> },
+  { to: '/blocks', label: 'Blocks', icon: <Package size={18} /> },
   { to: '/skills', label: 'Skills', icon: <Puzzle size={18} /> },
 ];
 
@@ -132,6 +134,14 @@ export default function Sidebar() {
           <div className="flex items-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
             <Cpu size={12} />
             <span className="truncate">{ctx.config.provider} / {ctx.config.model}</span>
+          </div>
+        )}
+
+        {/* Active Pack */}
+        {ctx?.config?.active_pack && (
+          <div className="flex items-center gap-2 text-[10px] text-brand-600 dark:text-brand-400">
+            <Package size={12} />
+            <span className="truncate font-medium">Pack: {ctx.config.active_pack}</span>
           </div>
         )}
 

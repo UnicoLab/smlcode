@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/knowledge"
 	"github.com/UnicoLab/slmcode/pkg/learning"
@@ -206,7 +207,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 	if o.cfg.QAGate || o.cfg.PostWorkerSmoke {
 		cmd := strings.TrimSpace(o.cfg.QAGateCommand)
 		if cmd == "" {
-			cmd = quality.DetectProjectCommand(o.cfg.Root)
+		cmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
+		if cmd == "" {
+			cmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
+		}
 		}
 		if cmd != "" {
 			if prep := quality.BootstrapDeps(o.cfg.Root, cmd); prep != "" {
@@ -415,7 +419,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 
 	qaCmd := strings.TrimSpace(o.cfg.QAGateCommand)
 	if qaCmd == "" {
-		qaCmd = quality.DetectProjectCommand(o.cfg.Root)
+	qaCmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
+	if qaCmd == "" {
+		qaCmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
+	}
 	}
 	qaFailed := o.runQAGate(ctx, query, board)
 	if qaFailed {

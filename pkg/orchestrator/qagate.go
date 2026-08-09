@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
@@ -21,7 +22,10 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 	}
 	cmd := strings.TrimSpace(o.cfg.QAGateCommand)
 	if cmd == "" {
-		cmd = quality.DetectProjectCommand(o.cfg.Root)
+		cmd = blocks.ResolveQAGateCommand(o.cfg.Root, o.cfg.Root, o.cfg.ActivePack)
+		if cmd == "" {
+			cmd = quality.DetectProjectCommandWithPack(o.cfg.Root, o.cfg.ActivePack)
+		}
 	}
 	if cmd == "" {
 		o.emit("test", "qa_gate: no auto test/smoke command — set qa_gate_command", "")

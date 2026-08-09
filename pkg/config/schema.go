@@ -40,6 +40,10 @@ func Schema() []FieldSchema {
 		{Key: "price_preset", Type: "string", Label: "Price preset", Group: "cost", Patchable: true,
 			Enum: []string{"", "off", "local", "omlx", "openai", "anthropic", "openrouter"}},
 		{Key: "active_stack", Type: "string", Label: "Active stack", Group: "stacks", Patchable: true},
+		{Key: "active_pack", Type: "string", Label: "Active pack", Group: "blocks", Patchable: true,
+			Description: "Language/domain building-block pack id (go, python, react, …)"},
+		{Key: "active_pipeline", Type: "string", Label: "Active pipeline block", Group: "blocks", Patchable: true,
+			Description: "Named pipeline preset id from the blocks catalog"},
 	}
 }
 

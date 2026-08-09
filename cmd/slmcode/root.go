@@ -113,6 +113,7 @@ Examples:
 		configCmd(),
 		stackCmd(),
 		agentCmd(),
+		blockCmd(),
 		doctorCmd(),
 		watchCmd(),
 		evalCmd(),

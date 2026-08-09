@@ -154,6 +154,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/pipeline", s.handleGetPipeline)
 	s.mux.HandleFunc("PUT /api/pipeline", s.handlePutPipeline)
 	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)
+	s.mux.HandleFunc("GET /api/blocks", s.handleListBlocks)
+	s.mux.HandleFunc("GET /api/blocks/{kind}/{id}", s.handleGetBlock)
+	s.mux.HandleFunc("POST /api/packs/{id}/apply", s.handleApplyPack)
+	s.mux.HandleFunc("POST /api/pipeline-presets/{id}/apply", s.handleApplyPipelineBlock)
 	s.mux.HandleFunc("GET /api/archives", s.handleListArchives)
 	s.mux.HandleFunc("GET /api/archives/{name}", s.handleGetArchive)
 	s.mux.HandleFunc("GET /api/queries", s.handleListQueries)
@@ -1013,6 +1017,8 @@ func (s *Server) handleApplyStack(w http.ResponseWriter, r *http.Request) {
 		ApplyAgentDefaults bool `json:"apply_agent_defaults"`
 		ForceAgents        bool `json:"force_agents"`
 		ClearAgentLLM      bool `json:"clear_agent_llm"`
+		ApplyPack          bool `json:"apply_pack"`
+		ForcePackAgents    bool `json:"force_pack_agents"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -1022,6 +1028,8 @@ func (s *Server) handleApplyStack(w http.ResponseWriter, r *http.Request) {
 		ApplyAgentDefaults: body.ApplyAgentDefaults,
 		ForceAgents:        body.ForceAgents,
 		ClearAgentLLM:      body.ClearAgentLLM,
+		ApplyPack:          body.ApplyPack,
+		ForcePackAgents:    body.ForcePackAgents,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), 500)

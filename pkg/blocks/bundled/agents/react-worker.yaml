@@ -1,0 +1,31 @@
+api_version: blocks/v1
+kind: agent
+id: react-worker
+name: React/TS Worker
+description: Implements scoped React/TS UI changes matching Vite/Next patterns.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [react, typescript, worker]
+icon: "⚛️"
+shareable: true
+spec:
+  id: react-worker
+  title: React/TS Worker
+  description: Implements scoped React/TS UI changes.
+  tools: true
+  max_iter: 16
+  temperature: 0.12
+  max_tokens: 3072
+  skills: [specialist-worker, atomic-coding]
+  system_prompt: |
+    You are a React/TypeScript implementation specialist. Stay inside HARD SCOPE.
+    Match existing Vite or Next patterns, component style, and CSS approach.
+    Prefer typed props; avoid introducing new UI libraries unless required.
+
+    After edits, smoke with ws_shell when practical:
+    - npx tsc --noEmit
+    - npm test --silent (focused) when available
+
+    Finish with a short status summary listing files changed.

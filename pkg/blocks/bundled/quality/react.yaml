@@ -1,0 +1,52 @@
+api_version: blocks/v1
+kind: quality
+id: react
+name: React/TypeScript Quality Pack
+description: >-
+  Production React/TS verify pack for Vite or Next — eslint/lint, tsc --noEmit,
+  unit tests (vitest/jest/npm test), and production build.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [react, typescript, vite, next, eslint, vitest]
+icon: "⚛️"
+shareable: true
+spec:
+  detect:
+    files: [package.json, tsconfig.json, vite.config.ts, vite.config.js, next.config.js, next.config.mjs, next.config.ts]
+    extensions: [.tsx, .ts, .jsx, .js]
+    priority: 18
+  format:
+    - cmd: npm run format --if-present
+      label: format
+      optional: true
+  lint:
+    - cmd: npm run lint
+      label: lint
+      optional: true
+  typecheck:
+    - cmd: npx tsc --noEmit
+      label: tsc
+      optional: true
+  test:
+    - cmd: npm test --silent
+      label: npm test
+  build:
+    - cmd: npm run build
+      label: build
+  smoke: npm test --silent
+  qa_gate: npm test --silent
+  safe_prefixes:
+    - npm test
+    - npm run
+    - npx tsc
+    - npx vitest
+    - yarn test
+    - pnpm test
+    - node --check
+  tester_hints: |
+    Prefer: npm test (vitest/jest) then npm run build.
+    Typecheck: npx tsc --noEmit when tsconfig.json exists.
+    Lint: npm run lint when script present.
+    node --check alone is weak — prefer real tests.

@@ -176,6 +176,15 @@ func DetectProjectCommand(root string) string {
 	return ""
 }
 
+// DetectProjectCommandWithPack uses legacy workspace heuristics.
+// Callers should prefer blocks.ResolveQAGateCommand for active pack resolution first.
+func DetectProjectCommandWithPack(root, activePack string) string {
+	if root == "" {
+		return ""
+	}
+	return DetectProjectCommand(root)
+}
+
 func detectPythonProjectCommand(root string) string {
 	hasPyProject := fileExists(filepath.Join(root, "pyproject.toml"))
 	hasPytestIni := fileExists(filepath.Join(root, "pytest.ini"))

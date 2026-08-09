@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
@@ -122,6 +123,30 @@ func chatSlash(h *harness.Harness, line string, run func(string) error) (bool, e
 		for _, s := range list {
 			fmt.Printf("  • %s — %s\n", s.Name, s.Description)
 		}
+		return false, nil
+	case "/blocks":
+		reg, err := blocks.Load(h.Config.Root)
+		if err != nil {
+			return false, err
+		}
+		for _, e := range reg.Catalog("") {
+			fmt.Printf("  %s  %-24s  %s\n", cli.Accent(e.Kind), e.ID, cli.Dim(e.Name))
+		}
+		return false, nil
+	case "/pack":
+		if arg == "" {
+			return false, fmt.Errorf("usage: /pack <go|python|react>")
+		}
+		reg, err := blocks.Load(h.Config.Root)
+		if err != nil {
+			return false, err
+		}
+		res, err := blocks.ApplyPack(h.Config, reg, arg, blocks.ApplyOptions{MaterializeAgents: true})
+		if err != nil {
+			return false, err
+		}
+		_ = h.Config.Save()
+		fmt.Println(cli.Success(fmt.Sprintf("pack applied: %s (pipeline: %s, qa_gate: %s)", res.PackID, res.PipelineID, res.QAGateCommand)))
 		return false, nil
 	case "/doctor":
 		return false, runDoctor()

@@ -1,0 +1,87 @@
+api_version: blocks/v1
+kind: pipeline
+id: go
+name: Go Engineering Pipeline
+description: >-
+  Full SLMCode graph tuned for Go modules — explore/plan/execute with a Go-aware
+  tester slot, go vet / race tests in verify, and sensible execute-loop roles.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: go
+tags: [go, golang, pipeline]
+icon: "🐹"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - architect
+    - clarify
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Prepare
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: Design
+      steps: [architect, clarify, plan, split]
+    - id: build
+      label: Build
+      steps: [coord, execute, learn]
+    - id: verify
+      label: Verify
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load skills & knowledge packs, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: explorer, when: auto, label: Explore, tip: Discover relevant Go packages, group: prepare}
+    docs: {agent: docs, when: auto, label: Docs, tip: Read README/docs & Go module layout, group: prepare}
+    architect: {agent: architect, when: auto, label: Architect, tip: Shape approach & packages, group: design}
+    clarify: {agent: "", when: auto, label: Clarify, tip: Lock PRD / ask decisions, group: design}
+    plan: {agent: planner, when: always, label: Plan, tip: Write the execution plan, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: worker, when: always, label: Execute, tip: Workers implement + review, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture lessons mid-run, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Fill placeholders / flag gaps, group: verify}
+    test: {agent: go-tester, when: always, label: Test, tip: Go vet + race tests + build, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: go-worker
+    reviewer: reviewer
+    corrector: corrector
+    max_waves: 2
+  slots:
+    - id: go-quality-gate
+      agent: go-tester
+      title: Go quality reminder
+      before: execute
+      when: always
+      persist_to: scratch
+      fail_mode: continue
+      input: |
+        Before implementing, remember Go quality bar:
+        - gofmt / goimports clean
+        - go vet ./...
+        - go test ./... -race -count=1
+        - go build ./...
+        Query:
+        {{query}}

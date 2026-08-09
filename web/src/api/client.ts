@@ -427,3 +427,26 @@ export async function approveShell(decision: 'approve' | 'deny'): Promise<{ ok: 
     body: JSON.stringify({ decision }),
   });
 }
+
+// ── Blocks ──
+import type { BlockCatalogEntry, BlockView, PackApplyResponse } from '@/types';
+
+export async function getBlocks(kind?: string): Promise<{ blocks: BlockCatalogEntry[]; kind?: string } & BlockView> {
+  const params = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  return request(`/blocks${params}`);
+}
+
+export async function getBlock(kind: string, id: string): Promise<any> {
+  return request(`/blocks/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
+}
+
+export async function applyPack(id: string, opts?: { materialize_agents?: boolean; force_agents?: boolean }): Promise<PackApplyResponse> {
+  return request(`/packs/${encodeURIComponent(id)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(opts || { materialize_agents: true }),
+  });
+}
+
+export async function applyPipelinePreset(id: string): Promise<{ ok: boolean; result: { pipeline_id: string } }> {
+  return request(`/pipeline-presets/${encodeURIComponent(id)}/apply`, { method: 'POST' });
+}

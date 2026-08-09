@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: python
+name: Python Language Pack
+description: >-
+  Ready-to-use Python engineering pack — pipeline, quality (ruff/pytest/types),
+  and Python-aware worker/tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: python
+tags: [python, pytest, ruff, pack, marketplace]
+icon: "🐍"
+shareable: true
+spec:
+  pipeline: python
+  quality: python
+  agents: [python-worker, python-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: python-tester
+  override_worker: python-worker

@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: go
+name: Go Language Pack
+description: >-
+  Ready-to-use Go engineering pack — pipeline, quality (fmt/vet/race/build),
+  and Go-aware worker/tester agents. Apply to wire stacks and Studio discovery.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: go
+tags: [go, golang, pack, marketplace]
+icon: "🐹"
+shareable: true
+spec:
+  pipeline: go
+  quality: go
+  agents: [go-worker, go-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: go-tester
+  override_worker: go-worker

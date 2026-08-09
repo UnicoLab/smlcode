@@ -1,0 +1,52 @@
+api_version: blocks/v1
+kind: quality
+id: go
+name: Go Quality Pack
+description: >-
+  Production Go verify pack — gofmt/goimports, go vet, optional golangci-lint,
+  go test -race, and go build. Optimized for modules with go.mod.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: go
+tags: [go, golang, lint, test, race, fmt]
+icon: "🐹"
+shareable: true
+spec:
+  detect:
+    files: [go.mod]
+    extensions: [.go]
+    priority: 20
+  format:
+    - cmd: gofmt -l .
+      label: gofmt
+    - cmd: goimports -l .
+      label: goimports
+      optional: true
+  lint:
+    - cmd: go vet ./...
+      label: go vet
+    - cmd: golangci-lint run
+      label: golangci-lint
+      optional: true
+  test:
+    - cmd: go test ./... -race -count=1
+      label: go test -race
+  build:
+    - cmd: go build ./...
+      label: go build
+  smoke: go test ./... -short
+  qa_gate: go test ./... -race -count=1
+  safe_prefixes:
+    - go test
+    - go vet
+    - gofmt
+    - goimports
+    - golangci-lint
+    - go build
+    - go mod
+  tester_hints: |
+    Prefer: go test ./... -race -count=1
+    Fast smoke: go test ./... -short
+    Always run go vet ./... before claiming pass.
+    Optional: golangci-lint run when available.

@@ -6,6 +6,7 @@ import LiveView from './components/Live/LiveView';
 import SettingsPanel from './components/Settings/SettingsPanel';
 import PipelineEditor from './components/Pipeline/PipelineEditor';
 import AgentManager from './components/Agents/AgentManager';
+import BlockManager from './components/Blocks/BlockManager';
 import SkillManager from './components/Skills/SkillManager';
 import MarkdownEditorView from './components/Docs/MarkdownEditor';
 import { getHealth, getConfig } from './api/client';
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="board" element={<KanbanBoard />} />
           <Route path="pipeline" element={<PipelineEditor />} />
           <Route path="agents" element={<AgentManager />} />
+          <Route path="blocks" element={<BlockManager />} />
           <Route path="skills" element={<SkillManager />} />
           <Route path="docs/:docId" element={<MarkdownEditorView />} />
           <Route path="settings" element={<SettingsPanel />} />

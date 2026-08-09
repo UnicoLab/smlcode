@@ -143,7 +143,11 @@ export default function LiveView() {
 
   useEffect(() => {
     connectSSE();
-    getLatestRun().then(setResult).catch(() => {});
+    // Sync running state from latest run on remount
+    getLatestRun().then((r) => {
+      setResult(r);
+      if (!r.running && r.result) setRunning(false);
+    }).catch(() => {});
     return () => {
       eventSource.current?.close();
     };

@@ -366,179 +366,104 @@ export default function LiveView() {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* Pipeline Progress Strip — always visible */}
+      {/* Pipeline Progress — full-width animated strip */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white/50 dark:bg-gray-900/50">
-          <div className="flex items-center gap-2 mb-2">
-            <Layers size={14} className="text-gray-400" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-              Pipeline Progress
-            </span>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {groups.map((group, gi) => {
-              const groupPhaseStates = group.phases.map((p) => phaseStateMap[p] || 'pending');
-              const hasActive = groupPhaseStates.includes('active');
-              const allDone = groupPhaseStates.every((s) => s === 'completed');
-              const allPending = groupPhaseStates.every((s) => s === 'pending');
+      <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-gray-50 via-white to-gray-50 dark:from-gray-900 dark:via-gray-850 dark:to-gray-900">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {groups.map((group, gi) => {
+            const done = group.phases.filter((p) => phaseStateMap[p] === 'completed').length;
+            const active = group.phases.some((p) => phaseStateMap[p] === 'active');
+            const allDone = done === group.phases.length;
+            const pct = group.phases.length > 0 ? Math.round((done / group.phases.length) * 100) : 0;
 
-              return (
-                <div key={group.id} className="flex items-center gap-2">
-                  {/* Separator arrow between groups */}
-                  {gi > 0 && (
-                    <ChevronDown
-                      size={12}
-                      className="text-gray-300 dark:text-gray-600 rotate-[-90deg] shrink-0"
-                    />
-                  )}
-
-                  {/* Group card */}
-                  <div
-                    className={clsx(
-                      'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-all duration-300',
-                      GROUP_BG_COLORS[group.color],
-                      hasActive
-                        ? clsx(GROUP_BORDER_COLORS[group.color], 'shadow-sm')
-                        : allDone
-                          ? 'border-emerald-300 dark:border-emerald-700'
-                          : 'border-gray-200 dark:border-gray-700',
-                    )}
-                  >
-                    {/* Group label */}
-                    <span
-                      className={clsx(
-                        'text-[10px] font-semibold uppercase tracking-wider mr-1',
-                        allDone
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : hasActive
-                            ? GROUP_TEXT_COLORS[group.color]
-                            : 'text-gray-400 dark:text-gray-500',
-                      )}
-                    >
-                      {group.label}
-                    </span>
-
-                    {/* Phase dots */}
-                    {group.phases.map((phase) => {
-                      const state = phaseStateMap[phase] || 'pending';
-                      const isActive = state === 'active';
-                      const isCompleted = state === 'completed';
-                      const dotColor = PHASE_DOT_COLORS[phase] || 'bg-gray-400';
-
-                      return (
-                        <div
-                          key={phase}
-                          className="relative flex items-center justify-center"
-                          title={`${phase}${isActive ? ' (active)' : isCompleted ? ' (completed)' : ''}`}
-                        >
-                          {isCompleted ? (
-                            <CheckCircle2
-                              size={14}
-                              className="text-emerald-500 dark:text-emerald-400"
-                            />
-                          ) : isActive ? (
-                            <div className="relative">
-                              <Circle
-                                size={14}
-                                className={clsx(dotColor, 'animate-pulse')}
-                                fill="currentColor"
-                              />
-                              {/* Outer pulse ring */}
-                              <span
-                                className={clsx(
-                                  'absolute inset-0 rounded-full animate-ping opacity-40',
-                                  dotColor.replace('bg-', 'bg-'),
-                                )}
-                              />
-                            </div>
-                          ) : (
-                            <Circle
-                              size={10}
-                              className="text-gray-300 dark:text-gray-600"
-                              fill="currentColor"
-                            />
-                          )}
-                        </div>
-                      );
+            return (
+              <div key={group.id} className="flex items-center gap-1">
+                {gi > 0 && <ChevronDown size={10} className="text-gray-300 dark:text-gray-600 -rotate-90 shrink-0" />}
+                <div className={clsx(
+                  'relative flex items-center gap-2 px-3 py-2 rounded-xl border-2 transition-all duration-500 min-w-[120px]',
+                  active ? clsx(GROUP_BG_COLORS[group.color], 'shadow-md scale-105 border-current') :
+                  allDone ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-700' :
+                  'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 opacity-75'
+                )}>
+                  <div className="flex flex-col gap-0.5">
+                    <span className={clsx('text-[10px] font-bold uppercase tracking-wider leading-none', allDone ? 'text-emerald-600' : active ? 'text-current opacity-80' : 'text-gray-400')}>{group.label}</span>
+                    <span className="text-[9px] text-gray-400 font-mono tabular-nums leading-none">{done}/{group.phases.length}</span>
+                  </div>
+                  {/* Progress bar */}
+                  <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden min-w-[40px]">
+                    <div className={clsx('h-full rounded-full transition-all duration-700', allDone ? 'bg-emerald-500' : active ? 'bg-current opacity-70' : 'bg-gray-300')} style={{ width: `${pct}%` }} />
+                  </div>
+                  {/* Phase dots */}
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    {group.phases.map((p) => {
+                      const s = phaseStateMap[p] || 'pending';
+                      return s === 'completed' ? <CheckCircle2 key={p} size={12} className="text-emerald-500" /> :
+                        s === 'active' ? <div key={p} className="relative"><div className={clsx('w-2.5 h-2.5 rounded-full animate-pulse', PHASE_DOT_COLORS[p] || 'bg-blue-500')} /></div> :
+                        <div key={p} className="w-2 h-2 rounded-full bg-gray-300 dark:bg-gray-600" />;
                     })}
                   </div>
+                  {active && <div className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-brand-500 animate-ping" />}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
+      </div>
 
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* Stats Dashboard Row — always visible */}
+      {/* Live Stats Bar — prominent cards */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 glass-alt">
-          <div className="flex items-center gap-4 flex-wrap">
-            {/* Phases completed */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-              <Target size={14} className="text-sky-500" />
-              <div>
-                <span className="text-[10px] text-gray-400 font-medium">Phases</span>
-                <span className="ml-1.5 text-sm font-bold text-gray-800 dark:text-gray-200 tabular-nums">
-                  {stats.phasesCompleted}
-                  <span className="text-gray-400 font-normal">/{stats.totalPhases}</span>
-                </span>
+      <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-gradient-to-r from-gray-50 via-white to-gray-50 dark:from-gray-900 dark:via-gray-850 dark:to-gray-900">
+        <div className="flex items-center gap-3">
+          {/* Phases */}
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
+            <div className="w-8 h-8 rounded-lg bg-sky-100 dark:bg-sky-900/30 flex items-center justify-center"><Target size={16} className="text-sky-600" /></div>
+            <div>
+              <div className="text-[10px] text-gray-400 font-medium leading-none">Phases</div>
+              <div className="text-base font-bold text-gray-800 dark:text-white tabular-nums leading-tight">{stats.phasesCompleted}<span className="text-sm text-gray-400 font-normal">/{stats.totalPhases}</span></div>
+            </div>
+          </div>
+          {/* Agent */}
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
+            <div className={clsx('w-8 h-8 rounded-lg flex items-center justify-center', activeAgentId ? 'bg-violet-100 dark:bg-violet-900/30' : 'bg-gray-100 dark:bg-gray-800')}>
+              <Bot size={16} className={activeAgentId ? 'text-violet-600' : 'text-gray-400'} />
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-400 font-medium leading-none">Agent</div>
+              <div className="text-sm font-bold text-gray-800 dark:text-white leading-tight truncate max-w-[120px]">
+                {activeAgentId ? (activeAgentSpec?.title || activeAgentId) : <span className="text-gray-400 font-normal">idle</span>}
               </div>
             </div>
-
-            {/* Active agent */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-              <Bot size={14} className="text-violet-500" />
-              <div>
-                <span className="text-[10px] text-gray-400 font-medium">Agent</span>
-                <span className="ml-1.5 text-sm font-bold text-gray-800 dark:text-gray-200">
-                  {activeAgentId ? (
-                    <span className="text-violet-600 dark:text-violet-400">
-                      {activeAgentSpec?.title || activeAgentId}
-                    </span>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </span>
-              </div>
+          </div>
+          {/* Tasks */}
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center"><Zap size={16} className="text-amber-600" /></div>
+            <div>
+              <div className="text-[10px] text-gray-400 font-medium leading-none">Tasks</div>
+              <div className={clsx('text-base font-bold tabular-nums leading-tight', stats.tasksSeen > 0 ? 'text-amber-600' : 'text-gray-400')}>{stats.tasksSeen}</div>
             </div>
-
-            {/* Tasks */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-              <Zap size={14} className="text-amber-500" />
-              <div>
-                <span className="text-[10px] text-gray-400 font-medium">Tasks</span>
-                <span className="ml-1.5 text-sm font-bold text-gray-800 dark:text-gray-200 tabular-nums">
-                  {stats.tasksSeen > 0 ? (
-                    <span className="text-amber-600 dark:text-amber-400">{stats.tasksSeen}</span>
-                  ) : (
-                    <span className="text-gray-400">0</span>
-                  )}
-                </span>
-              </div>
+          </div>
+          {/* Events */}
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md transition-shadow">
+            <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center"><Activity size={16} className="text-emerald-600" /></div>
+            <div>
+              <div className="text-[10px] text-gray-400 font-medium leading-none">Events</div>
+              <div className="text-base font-bold text-gray-800 dark:text-white tabular-nums leading-tight">{stats.eventsCount}</div>
             </div>
-
-            {/* Events count */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-              <Activity size={14} className="text-emerald-500" />
-              <div>
-                <span className="text-[10px] text-gray-400 font-medium">Events</span>
-                <span className="ml-1.5 text-sm font-bold text-gray-800 dark:text-gray-200 tabular-nums">
-                  {stats.eventsCount}
-                </span>
-              </div>
+          </div>
+          {/* Running */}
+          {running && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-50 dark:bg-brand-950/30 border-2 border-brand-300 dark:border-brand-700 shadow-sm animate-pulse">
+              <Loader2 size={18} className="text-brand-500 animate-spin" />
+              <span className="text-sm font-bold text-brand-700 dark:text-brand-300">Running</span>
             </div>
-
-            {/* Running indicator */}
-            {running && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-brand-50 dark:bg-brand-950/30 border border-brand-200 dark:border-brand-800">
-                <Loader2 size={14} className="text-brand-500 animate-spin" />
-                <span className="text-[11px] font-semibold text-brand-600 dark:text-brand-400">
-                  Running…
-                </span>
-              </div>
-            )}
+          )}
+          {/* Progress bar for overall pipeline */}
+          <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden min-w-[60px]">
+            <div className="h-full bg-gradient-to-r from-brand-400 to-brand-600 rounded-full transition-all duration-1000" style={{ width: `${totalPhases > 0 ? Math.round((stats.phasesCompleted / totalPhases) * 100) : 0}%` }} />
           </div>
         </div>
+      </div>
 
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* Active Agent Panel */}

@@ -668,7 +668,10 @@ func ParseReviewJSON(raw string) ReviewResult {
 // WorkerLooksComplete detects SLM worker/explorer success signals.
 func WorkerLooksComplete(output string) bool {
 	lower := strings.ToLower(output)
-	if strings.Contains(lower, `"status":"done"`) || strings.Contains(lower, `"status": "done"`) {
+	// Handle all variations of status:done that SLMs might output
+	if strings.Contains(lower, `"status":"done"`) || strings.Contains(lower, `"status": "done"`) ||
+		strings.Contains(lower, `"status":"Done"`) || strings.Contains(lower, `"status": "Done"`) ||
+		strings.Contains(lower, `status:done`) || strings.Contains(lower, `status: done`) {
 		return true
 	}
 	if strings.Contains(lower, "dry-run: would") && (strings.Contains(lower, "edit") || strings.Contains(lower, "write")) {

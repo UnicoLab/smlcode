@@ -84,9 +84,10 @@ const FILE_PATTERNS: RegExp[] = [
   /\b[a-zA-Z_][\w.-]*\/\S*\.(?:go|mod|sum|work)\b/gi,
   /\b[a-zA-Z_][\w.-]*\/\S*\.(?:py|pyx|pyi)\b/gi,
   /\b[a-zA-Z_][\w.-]*\/\S*\.(?:tsx?|jsx?|mjs|cjs)\b/gi,
-  /\b[a-zA-Z_][\w.-]*\/\S*\.(?:rs|java|rb|php|c|cc|cpp|cxx|h|hh|hpp|hxx|css|scss|less|html|vue|svelte|yaml|yml|json|toml|md|sql|sh|bash|dockerfile|makefile|cmake|xml|svg|graphql|proto|tf)\b/gi,
+  /\b[a-zA-Z_][\w.-]*\/\S*\.(?:rs|java|rb|php|c|cc|cpp|cxx|h|hh|hpp|hxx|css|scss|less|html|vue|svelte|astro|yaml|yml|json|toml|md|mdx|sql|sh|bash|zsh|dockerfile|makefile|cmake|xml|svg|graphql|gql|proto|tf|kt|swift|scala|clj|ex|exs|nix|env|cfg|ini|txt|lock|prisma)\b/gi,
   /(?:\/[\w.-]+)+\.[a-z]{1,6}\b/gi,
   /(?:\.\.?\/[\w.-]+)+\.[a-z]{1,6}\b/gi,
+  /\b[\w.-]*\/[\w.-]+\.[a-z]{1,6}\b/gi,
 ];
 
 // ── Helpers ──
@@ -174,7 +175,7 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
           results.push({ path, status: 'unknown', events: [], lastEvent: null });
         }
       }
-      const simpleRe = /\b([\w.-]+\.(?:go|py|tsx?|jsx?|rs|java|rb|css|html|md|yaml|yml|json|toml))\b/gi;
+      const simpleRe = /\b([\w.-]+\.(?:go|py|pyx|tsx?|jsx?|mjs|cjs|rs|java|rb|php|css|scss|less|html|vue|svelte|astro|md|mdx|yaml|yml|json|toml|sql|sh|bash|xml|svg|graphql|gql|kt|swift|ex|exs|nix|env|cfg|ini|txt|lock|prisma|tf|proto|c|cc|cpp|h|hh|hpp))\b/gi;
       let sm: RegExpExecArray | null;
       while ((sm = simpleRe.exec(text)) !== null) {
         const path = sm[1];
@@ -382,23 +383,39 @@ export default function FileInspector({ events, running }: Props) {
   const [validFiles, setValidFiles] = useState<Set<string>>(new Set());
 
   // Validate extracted files against workspace (only show files that exist)
-  useEffect(() => {
+  const validateExtractedFiles = useCallback(() => {
     const extracted = extractFiles(events);
     const filesToCheck = extracted.map(f => f.path);
     if (filesToCheck.length === 0) return;
-    let cancelled = false;
-    // Check first 20 files (batch)
-    const check = filesToCheck.slice(0, 20);
+    // Check first 30 files (batch)
+    const check = filesToCheck.slice(0, 30);
     Promise.allSettled(check.map(p => getWorkspaceFile(p))).then(results => {
-      if (cancelled) return;
       const valid = new Set<string>();
       results.forEach((r, i) => {
         if (r.status === 'fulfilled') valid.add(check[i]);
       });
-      setValidFiles(valid);
+      setValidFiles(prev => {
+        // Merge with existing valid files (don't lose previously validated files)
+        const merged = new Set(prev);
+        valid.forEach(f => merged.add(f));
+        return merged;
+      });
     });
-    return () => { cancelled = true; };
   }, [events]);
+
+  // Validate files when events change
+  useEffect(() => {
+    validateExtractedFiles();
+  }, [validateExtractedFiles]);
+
+  // Poll for file validation while running
+  useEffect(() => {
+    if (!running) return;
+    const interval = setInterval(() => {
+      validateExtractedFiles();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [running, validateExtractedFiles]);
 
   // Fetch actual file content from workspace when a file is selected
   useEffect(() => {
@@ -414,11 +431,29 @@ export default function FileInspector({ events, running }: Props) {
 
   // ── Derived data ──
   const allFiles = useMemo(() => extractFiles(events), [events]);
-  // Only show files that exist in workspace, or all files if none validated yet
+  // Show ALL extracted files when no validFiles check has completed yet,
+  // but also show files even if validation fails (agents may create files in subdirectories).
+  // Only filter out obvious false positives.
   const files = useMemo(() => {
     if (validFiles.size > 0) return allFiles.filter(f => validFiles.has(f.path));
-    // Also filter out common false positives (files mentioned in agent instructions)
-    return allFiles.filter(f => !f.path.startsWith('pkg/') && !f.path.startsWith('cmd/') && f.path !== 'AGENTS.md');
+    // If we haven't validated yet, show all extracted files (filter obvious false positives only)
+    return allFiles.filter(f => {
+      const name = f.path.toLowerCase();
+      return !name.includes('agents.md') &&
+        !name.includes('project.md') &&
+        !name.includes('memory.md') &&
+        !name.includes('context.md') &&
+        !name.includes('readme.md') &&
+        !name.startsWith('pkg/') &&
+        !name.startsWith('cmd/') &&
+        !name.startsWith('.git/') &&
+        !name.startsWith('node_modules/') &&
+        !name.startsWith('vendor/') &&
+        !name.startsWith('stacks/') &&
+        !name.startsWith('skills/') &&
+        !name.startsWith('web/') &&
+        !name.startsWith('.slmcode/');
+    });
   }, [allFiles, validFiles]);
 
   const selectedFileInfo = useMemo(
@@ -428,8 +463,9 @@ export default function FileInspector({ events, running }: Props) {
 
   const fileContent = useMemo((): string => {
     // Prefer actual file content from workspace API
-    if (fetchedContent) return fetchedContent;
+    if (fetchedContent !== null) return fetchedContent;
     if (!selectedFileInfo) return '';
+    // Try to find meaningful code output from events
     for (const event of [...selectedFileInfo.events].reverse()) {
       if (event.output) {
         // If the output looks like code content (not just a brief message), use it
@@ -439,11 +475,9 @@ export default function FileInspector({ events, running }: Props) {
         }
       }
     }
-    // Fallback: concatenate relevant event messages
-    return selectedFileInfo.events
-      .map((e) => `// [${e.phase}/${e.kind}] ${e.message}`)
-      .join('\n');
-  }, [selectedFileInfo]);
+    // No content available: return empty string so the UI shows the "not available" state
+    return '';
+  }, [fetchedContent, selectedFileInfo]);
 
   const contentLines = useMemo(() => {
     const lines = fileContent.split('\n');

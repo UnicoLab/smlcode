@@ -102,13 +102,11 @@ export default function LiveView() {
     const next = typeof v === 'function' ? v(localEvents) : v;
     setLocalEvents(next);
     ctx?.setLiveEvents?.(next);
-    try { sessionStorage.setItem('slmcode:events', JSON.stringify(next.slice(-200))); } catch {}
   };
   const running = ctx?.liveRunning || localRunning;
   const setRunning = (v: boolean) => {
     setLocalRunning(v);
     ctx?.setLiveRunning?.(v);
-    sessionStorage.setItem('slmcode:running', String(v));
   };
   const result = ctx?.liveResult || null;
   const setResult = ctx?.setLiveResult || (() => {});
@@ -461,7 +459,7 @@ export default function LiveView() {
             <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center"><Zap size={16} className="text-amber-600" /></div>
             <div>
               <div className="text-[10px] text-gray-400 font-medium leading-none">Tasks</div>
-              <div className={clsx('text-base font-bold tabular-nums leading-tight', stats.tasksSeen > 0 ? 'text-amber-600' : 'text-gray-400')}>{stats.tasksSeen}</div>
+              <div className={clsx('text-base font-bold tabular-nums leading-tight', (stats.tasksSeen ?? 0) > 0 ? 'text-amber-600' : 'text-gray-400')}>{stats.tasksSeen ?? 0}</div>
             </div>
           </div>
           {/* Events */}

@@ -196,7 +196,7 @@ export default function AgentManager() {
                 <textarea
                   value={form.system_prompt || ''}
                   onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-                  className="input font-mono text-xs h-32 resize-none"
+                  className="input font-mono text-xs h-48 resize-y"
                   placeholder="You are a specialist agent…"
                 />
                 <p className="text-[10px] text-gray-400 mt-1">
@@ -329,6 +329,12 @@ export default function AgentManager() {
 
               {agent.description && (
                 <p className="text-xs text-gray-500 mt-3 line-clamp-2">{agent.description}</p>
+              )}
+
+              {agent.system_prompt && (
+                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2 line-clamp-2 font-mono leading-relaxed">
+                  {agent.system_prompt}
+                </p>
               )}
 
               <div className="flex items-center gap-2 mt-3 flex-wrap">

@@ -62,12 +62,14 @@ const FILE_PATTERNS: RegExp[] = [
   /\b[a-zA-Z_][\w.-]*\/\S*\.(?:py|pyx|pyi)\b/gi,
   // typescript / javascript / react: src/components/App.tsx, lib/utils.ts
   /\b[a-zA-Z_][\w.-]*\/\S*\.(?:tsx?|jsx?|mjs|cjs)\b/gi,
-  // rust / java / c-family / web / config / data
-  /\b[a-zA-Z_][\w.-]*\/\S*\.(?:rs|java|rb|php|c|cc|cpp|cxx|h|hh|hpp|hxx|css|scss|less|html|vue|svelte|yaml|yml|json|toml|md|sql|sh|bash|dockerfile|makefile|cmake|xml|svg|graphql|proto|tf)\b/gi,
+  // rust / java / c-family / web / config / data / any extension
+  /\b[a-zA-Z_][\w.-]*\/\S*\.(?:rs|java|rb|php|c|cc|cpp|cxx|h|hh|hpp|hxx|css|scss|less|html|vue|svelte|yaml|yml|json|toml|md|mdx|sql|sh|bash|zsh|dockerfile|makefile|cmake|xml|svg|graphql|proto|tf|gql|kt|swift|scala|clj|ex|exs|nix|env|cfg|ini|txt|lock|prisma|astro)\b/gi,
   // absolute paths: /some/path/to/file.go
   /(?:\/[\w.-]+)+\.[a-z]{1,6}\b/gi,
   // relative paths: ./path/file.go or ../path/file.go
   /(?:\.\.?\/[\w.-]+)+\.[a-z]{1,6}\b/gi,
+  // path/file style without leading dir prefix: dir/file.ext
+  /\b[\w.-]*\/[\w.-]+\.[a-z]{1,6}\b/gi,
 ];
 
 // ── Helpers ──
@@ -142,7 +144,7 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
         }
       }
       // Standalone filenames with extensions (no directory prefix)
-      const simpleRe = /([\w.-]+\.(?:go|py|tsx?|jsx?|rs|java|rb|css|html|md|yaml|yml|json|toml))/gi;
+      const simpleRe = /\b([\w.-]+\.(?:go|py|tsx?|jsx?|rs|java|rb|css|html|md|mdx|yaml|yml|json|toml|sh|bash|sql|xml|svg|env|cfg|ini|txt|lock))\b/gi;
       let sm: RegExpExecArray | null;
       while ((sm = simpleRe.exec(text)) !== null) {
         const path = sm[1];

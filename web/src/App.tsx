@@ -37,9 +37,24 @@ export default function App() {
     if (stored) return stored === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
-  const [liveEvents, setLiveEvents] = useState<RunEvent[]>([]);
-  const [liveRunning, setLiveRunning] = useState(false);
+  const [liveEvents, setLiveEventsInternal] = useState<RunEvent[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem('slmcode:events') || '[]'); } catch { return []; }
+  });
+  const [liveRunning, setLiveRunningInternal] = useState(() => sessionStorage.getItem('slmcode:running') === 'true');
   const [liveResult, setLiveResult] = useState<LatestRunResponse | null>(null);
+
+  const setLiveEvents = useCallback((events: RunEvent[] | ((prev: RunEvent[]) => RunEvent[])) => {
+    setLiveEventsInternal((prev) => {
+      const next = typeof events === 'function' ? events(prev) : events;
+      try { sessionStorage.setItem('slmcode:events', JSON.stringify(next.slice(-200))); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  const setLiveRunning = useCallback((r: boolean) => {
+    setLiveRunningInternal(r);
+    try { sessionStorage.setItem('slmcode:running', String(r)); } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);

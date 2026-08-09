@@ -176,6 +176,7 @@ export default function LiveTaskPanel() {
 
       // ── Optimistic merge: preserve locally-added tasks not yet on server ──
       setOptimisticTasks((prev) => {
+        if (!prev || !Array.isArray(prev)) return [];
         const tasks = b.tasks || [];
         const cols = b.columns || [];
         const byCol = b.by_column || {};
@@ -195,6 +196,7 @@ export default function LiveTaskPanel() {
 
       // Merge optimistic tasks into the board
       setOptimisticTasks((prev) => {
+        if (!prev || !Array.isArray(prev)) return [];
         if (prev.length === 0) {
           setBoard(b);
           return prev;
@@ -413,7 +415,7 @@ export default function LiveTaskPanel() {
 
   // ── Render ──
   return (
-    <div className="flex flex-col h-full max-w-[400px] text-xs">
+    <div className="flex flex-col h-full text-xs overflow-y-auto">
       {/* ═══════════════════════════════════════════════════ */}
       {/* ── SECTION 5: Context Injection ── */}
       {/* ═══════════════════════════════════════════════════ */}
@@ -728,7 +730,7 @@ export default function LiveTaskPanel() {
           </div>
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-800/50">
-            {columns.map((col) => {
+            {(columns || []).map((col) => {
               const tasks = byColumn[col] || [];
               if (tasks.length === 0) return null;
 
@@ -752,7 +754,7 @@ export default function LiveTaskPanel() {
                   </div>
 
                   {/* Tasks in column */}
-                  {tasks.map((task) => {
+                  {(tasks || []).map((task) => {
                     const isExpanded = expandedTasks.has(task.id);
                     const isEditing = editingId === task.id;
                     const isConfirmingDelete = deleteId === task.id;
@@ -962,7 +964,7 @@ export default function LiveTaskPanel() {
                                   <ListChecks size={9} /> Checklist
                                 </div>
                                 <div className="space-y-0.5">
-                                  {task.checklist.map((item) => (
+                                  {(task.checklist || []).map((item) => (
                                     <div
                                       key={item.id}
                                       className="flex items-start gap-1.5 text-[10px]"

@@ -18,6 +18,8 @@ import { startRun, stopRun, getLatestRun, getAgents, getPipeline } from '@/api/c
 import type { RunEvent, LatestRunResponse, AgentSpec, PipelineView } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
+import LiveFileInspector from './LiveFileInspector';
+import HITLPopup from './HITLPopup';
 import clsx from 'clsx';
 
 // ── Pipeline group definitions ──
@@ -94,7 +96,7 @@ export default function LiveView() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<LatestRunResponse | null>(null);
   const [query, setQuery] = useState('');
-  const [sidebarTab, setSidebarTab] = useState<'tasks' | 'result'>('tasks');
+  const [sidebarTab, setSidebarTab] = useState<'tasks' | 'result' | 'files'>('tasks');
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
   const [pipelineView, setPipelineView] = useState<PipelineView | null>(null);
@@ -331,18 +333,37 @@ export default function LiveView() {
         </div>
       </div>
 
-      {/* ── Active config indicator ── */}
-      {(ctx?.config?.active_pack || ctx?.config?.active_stack || ctx?.config?.active_pipeline) && (
-        <div className="px-4 py-1.5 glass-alt border-b border-gray-100 dark:border-gray-700 flex items-center gap-3">
+      {/* ── Active pipeline + config indicator ── */}
+      {(ctx?.config?.active_pack || ctx?.config?.active_pipeline || ctx?.config?.active_stack || running) && (
+        <div className="px-4 py-1.5 glass-alt border-b border-gray-100 dark:border-gray-700 flex items-center gap-3 flex-wrap">
           <span className="text-[10px] text-gray-400 font-medium">Active:</span>
-          {ctx.config.active_pack && (
+          {ctx?.config?.active_pack && (
             <span className="badge-brand text-[10px]">📦 {ctx.config.active_pack}</span>
           )}
-          {ctx.config.active_pipeline && (
-            <span className="badge-neutral text-[10px]">{ctx.config.active_pipeline}</span>
+          {ctx?.config?.active_pipeline && (
+            <span className="badge-neutral text-[10px]">⚙️ {ctx.config.active_pipeline}</span>
           )}
-          {ctx.config.active_stack && (
+          {ctx?.config?.active_stack && (
             <span className="badge-neutral text-[10px]">⚡ {ctx.config.active_stack}</span>
+          )}
+          {running && pipelineView?.config?.execute && (
+            <>
+              <span className="text-[10px] text-gray-300">|</span>
+              <span className="text-[10px] text-gray-400">worker:</span>
+              <span className="badge-neutral text-[10px]">{pipelineView.config.execute.default_role || 'worker'}</span>
+              <span className="text-[10px] text-gray-400">review:</span>
+              <span className="badge-neutral text-[10px]">{pipelineView.config.execute.reviewer || 'reviewer'}</span>
+              {(pipelineView.config.execute.max_waves ?? 0) > 0 && (
+                <span className="text-[10px] text-gray-400">waves: {pipelineView.config.execute.max_waves}</span>
+              )}
+            </>
+          )}
+          {running && ctx?.config && (ctx.config as any).qa_gate_command && (
+            <>
+              <span className="text-[10px] text-gray-300">|</span>
+              <span className="text-[10px] text-gray-400">qa:</span>
+              <span className="badge-neutral text-[10px] font-mono">{(ctx.config as any).qa_gate_command}</span>
+            </>
           )}
         </div>
       )}
@@ -649,6 +670,17 @@ export default function LiveView() {
             >
               📊 Result{result?.result ? ' ✓' : ''}
             </button>
+            <button
+              onClick={() => setSidebarTab('files')}
+              className={clsx(
+                'flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
+                sidebarTab === 'files'
+                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+                  : 'border-transparent text-gray-400 hover:text-gray-600',
+              )}
+            >
+              📁 Files
+            </button>
           </div>
 
           {/* Tab content */}
@@ -682,9 +714,13 @@ export default function LiveView() {
                 )}
               </div>
             )}
+            {sidebarTab === 'files' && (
+              <LiveFileInspector events={events} running={running} />
+            )}
           </div>
         </div>
       </div>
+      <HITLPopup running={running} />
     </div>
   );
 }

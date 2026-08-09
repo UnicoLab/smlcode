@@ -99,6 +99,7 @@ export interface Config {
   active_stack?: string;
   active_pack?: string;
   active_pipeline?: string;
+  qa_gate_command?: string;
   enabled_models?: string[];
   llm_retry_count?: number;
   llm_retry_delay_ms?: number;

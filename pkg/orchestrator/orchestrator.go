@@ -1337,7 +1337,7 @@ func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
 	}
 	soft := o.cfg.MaxContextKB
 	if soft <= 0 {
-		soft = 32
+		soft = 16
 	}
 	if !compact.NeedsCompact(body, soft, soft*2) {
 		return
@@ -1365,7 +1365,7 @@ func (o *Orchestrator) CompactContextNow() (compact.Result, error) {
 	}
 	max := o.cfg.MaxContextKB * 1024
 	if max <= 0 {
-		max = 24 * 1024
+		max = 16 * 1024
 	}
 	engine := "heuristic"
 	if o.cfg != nil && o.cfg.ContextCompactEngine != "" {

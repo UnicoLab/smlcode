@@ -20,30 +20,37 @@ type ModelProfile struct {
 func DefaultModelProfiles() map[string]ModelProfile {
 	return map[string]ModelProfile{
 		"default": {
-			SkillTokenBudget: 300, KnowledgeTokenBudget: 200,
-			ThinkingBudgetTokens: 4096, MaxTokens: 3072, Temperature: 0.12,
+			ContextLimit: 16384, MaxTurns: 20,
+			SkillTokenBudget: 260, KnowledgeTokenBudget: 180,
+			ThinkingBudgetTokens: 3072, MaxTokens: 3072, Temperature: 0.12,
 		},
 		"7b": {
+			ContextLimit: 8192, MaxTurns: 16,
 			SkillTokenBudget: 220, KnowledgeTokenBudget: 160,
 			ThinkingBudgetTokens: 2048, MaxTokens: 2048, Temperature: 0.1,
 		},
 		"1.5b": {
+			ContextLimit: 4096, MaxTurns: 12,
 			SkillTokenBudget: 160, KnowledgeTokenBudget: 120,
 			ThinkingBudgetTokens: 1024, MaxTokens: 1536, Temperature: 0.08,
 		},
 		"3b": {
+			ContextLimit: 4096, MaxTurns: 14,
 			SkillTokenBudget: 180, KnowledgeTokenBudget: 140,
 			ThinkingBudgetTokens: 1536, MaxTokens: 1792, Temperature: 0.1,
 		},
 		"14b": {
-			SkillTokenBudget: 350, KnowledgeTokenBudget: 240,
-			ThinkingBudgetTokens: 4096, MaxTokens: 4096, Temperature: 0.12,
+			ContextLimit: 16384, MaxTurns: 20,
+			SkillTokenBudget: 320, KnowledgeTokenBudget: 220,
+			ThinkingBudgetTokens: 3072, MaxTokens: 4096, Temperature: 0.12,
 		},
 		"32b": {
-			SkillTokenBudget: 400, KnowledgeTokenBudget: 280,
-			ThinkingBudgetTokens: 6144, MaxTokens: 4096, Temperature: 0.15,
+			ContextLimit: 32768, MaxTurns: 24,
+			SkillTokenBudget: 380, KnowledgeTokenBudget: 260,
+			ThinkingBudgetTokens: 4096, MaxTokens: 4096, Temperature: 0.15,
 		},
 		"qwen": {
+			ContextLimit: 32768, MaxTurns: 24,
 			SkillTokenBudget: 280, KnowledgeTokenBudget: 200,
 			ThinkingBudgetTokens: 3072, MaxTokens: 3072, Temperature: 0.12,
 		},

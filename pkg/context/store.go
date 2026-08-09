@@ -93,11 +93,14 @@ func (s *Store) Append(name, sectionTitle, body string) error {
 }
 
 // Bundle packs selected docs into a single prompt-friendly string, truncated
-// to maxBytes to keep SLM context windows healthy.
+// to maxBytes to keep SLM context windows healthy. An 80 % safety margin is
+// applied so the bundle does not crowd out system prompts and response space.
 func (s *Store) Bundle(maxBytes int, names ...string) (string, error) {
 	if maxBytes <= 0 {
-		maxBytes = 24 * 1024
+		maxBytes = 16 * 1024
 	}
+	// Safety margin: reserve 20 % for system prompt + response overhead.
+	effective := int(float64(maxBytes) * 0.80)
 	var b strings.Builder
 	for _, name := range names {
 		body, err := s.Read(name)
@@ -108,8 +111,8 @@ func (s *Store) Bundle(maxBytes int, names ...string) (string, error) {
 			continue
 		}
 		section := fmt.Sprintf("### %s\n\n%s\n\n", name, body)
-		if b.Len()+len(section) > maxBytes {
-			remain := maxBytes - b.Len() - 32
+		if b.Len()+len(section) > effective {
+			remain := effective - b.Len() - 32
 			if remain > 0 {
 				b.WriteString(section[:remain])
 				b.WriteString("\n…\n")

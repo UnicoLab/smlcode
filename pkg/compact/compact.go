@@ -17,7 +17,7 @@ type Result struct {
 // NeedsCompact reports whether body exceeds soft/hard budgets.
 func NeedsCompact(body string, softKB, hardKB int) bool {
 	if hardKB <= 0 {
-		hardKB = 48
+		hardKB = 32
 	}
 	if softKB <= 0 {
 		softKB = hardKB * 3 / 4
@@ -32,7 +32,7 @@ func HeuristicSummarize(body string, maxBytes int) Result {
 	body = strings.TrimSpace(body)
 	before := len(body)
 	if maxBytes <= 0 {
-		maxBytes = 24 * 1024
+		maxBytes = 16 * 1024
 	}
 	if before <= maxBytes {
 		return Result{BeforeBytes: before, AfterBytes: before, Compacted: false, Summary: body}

@@ -21,6 +21,25 @@ type TaskPack struct {
 	LeanFiles  bool              `json:"-"` // tighter per-file caps for workers
 }
 
+const (
+	// SafetyMarginPercent reserves headroom for system prompts, instruction
+	// overhead, and model response space so the pack never crowds out the
+	// model's ability to reason and generate (critical for small 7B–30B SLMs).
+	SafetyMarginPercent = 80
+
+	// MaxLeanPackBytes is the hard ceiling for a lean (worker/corrector) pack
+	// regardless of the configured MaxContextKB. This keeps per-task context
+	// below ~12 KB — safe for even 16 K-window models.
+	MaxLeanPackBytes = 12 * 1024
+
+	// MinRemainingBytes is the floor below which we stop adding content.
+	MinRemainingBytes = 256
+
+	// MaxSkillFraction is the maximum share of remaining budget given to skills
+	// when context is tight (15% of remaining after files+docs).
+	MaxSkillFraction = 15 // percent
+)
+
 // Packer builds incremental, budgeted context packs from markdown + file excerpts.
 type Packer struct {
 	Store    *Store
@@ -50,6 +69,13 @@ func (p *Packer) ClearCache() {
 
 // Build creates a role-specific pack. docNames select .slmcode markdown slices;
 // filePaths are optional workspace files (truncated per file).
+//
+// An 80 % safety margin is applied so the pack never crowds out the system
+// prompt, agent instructions, and model response space (critical for SLMs).
+// For lean roles (worker, corrector, …) focus files are packed before
+// exploration docs because the agent needs code context more than project
+// history. Skills are truncated relative to remaining budget rather than a
+// hardcoded cap.
 func (p *Packer) Build(role, query string, docNames []string, filePaths []string, skillsMarkdown string) (*TaskPack, error) {
 	cacheKey := role + "\x00" + query + "\x00" + strings.Join(docNames, ",") + "\x00" +
 		strings.Join(filePaths, ",") + "\x00" + skillsMarkdown
@@ -72,26 +98,30 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 		Files:  map[string]string{},
 		Skills: skillsMarkdown,
 	}
-	budget := p.MaxBytes
+
+	// --- budget with safety margin ---
+	budget := int(float64(p.MaxBytes) * float64(SafetyMarginPercent) / 100.0)
 	used := 0
 	lean := isLeanRole(role)
 	pack.LeanFiles = lean
 
-	fileLimit := 8000
-	docLimit := 0 // 0 = only budget
-	skillCap := budget
-	if lean {
-		// Faster SLM inference: tighter excerpts + smaller docs/skills.
-		if budget > 16*1024 {
-			budget = 16 * 1024
-		}
-		fileLimit = 2800
-		docLimit = 1800
-		skillCap = 900
+	// Lean cap: never exceed MaxLeanPackBytes for worker/corrector roles,
+	// so even budget-rich stacks (128 KB) don't drown small SLMs.
+	if lean && budget > MaxLeanPackBytes {
+		budget = MaxLeanPackBytes
 	}
+
+	fileLimit := (budget * 50) / 100 // 50 % of budget per file
+	docLimit := 0                    // 0 = only budget (no extra doc cap for non-lean)
+	if lean {
+		fileLimit = min(fileLimit, 2800)
+		docLimit = min(budget/4, 1800)
+	}
+
+	// --- helper: take a content blob into a dest map ---
 	take := func(label, content string, dest map[string]string, fileCap bool) {
 		content = strings.TrimSpace(content)
-		if content == "" || budget-used < 256 {
+		if content == "" || budget-used < MinRemainingBytes {
 			return
 		}
 		max := budget - used
@@ -108,34 +138,64 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 		used += len(content)
 	}
 
-	for _, name := range docNames {
-		body, err := p.Store.Read(name)
-		if err != nil {
-			continue
+	// --- pack ordering ---
+	// Lean roles (worker, corrector, etc.): files first — they need code
+	// context more than exploration output. Other roles: docs first.
+	if lean {
+		// Files first: focus code over long exploration docs.
+		for _, rel := range filePaths {
+			if budget-used < MinRemainingBytes {
+				break
+			}
+			abs := filepath.Join(p.Root, rel)
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				continue
+			}
+			take(rel, string(data), pack.Files, true)
 		}
-		take(name, body, pack.Docs, false)
+		for _, name := range docNames {
+			if budget-used < MinRemainingBytes {
+				break
+			}
+			body, err := p.Store.Read(name)
+			if err != nil {
+				continue
+			}
+			take(name, body, pack.Docs, false)
+		}
+	} else {
+		// Docs first: planners, architects, reviewers need project context.
+		for _, name := range docNames {
+			body, err := p.Store.Read(name)
+			if err != nil {
+				continue
+			}
+			take(name, body, pack.Docs, false)
+		}
+		for _, rel := range filePaths {
+			if budget-used < MinRemainingBytes {
+				break
+			}
+			abs := filepath.Join(p.Root, rel)
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				continue
+			}
+			take(rel, string(data), pack.Files, true)
+		}
 	}
 
-	for _, rel := range filePaths {
-		if budget-used < 256 {
-			break
-		}
-		abs := filepath.Join(p.Root, rel)
-		data, err := os.ReadFile(abs)
-		if err != nil {
-			continue
-		}
-		take(rel, string(data), pack.Files, true)
-	}
-
-	if skillsMarkdown != "" && budget-used > 256 {
+	// --- skills: scale cap by remaining budget ---
+	if skillsMarkdown != "" && budget-used > MinRemainingBytes {
 		sk := skillsMarkdown
-		cap := budget - used
-		if skillCap > 0 && skillCap < cap {
-			cap = skillCap
+		// Give skills at most MaxSkillFraction % of remaining budget.
+		skillCap := (budget - used) * MaxSkillFraction / 100
+		if skillCap <= 0 {
+			skillCap = budget - used
 		}
-		if len(sk) > cap {
-			sk = sk[:cap] + "\n...[truncated]"
+		if len(sk) > skillCap {
+			sk = sk[:skillCap] + "\n...[truncated]"
 		}
 		pack.Skills = sk
 		used += len(sk)

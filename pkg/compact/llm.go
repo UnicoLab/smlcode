@@ -19,7 +19,7 @@ func Summarize(ctx context.Context, engine string, body string, maxBytes int, ll
 	body = strings.TrimSpace(body)
 	before := len(body)
 	if maxBytes <= 0 {
-		maxBytes = 24 * 1024
+		maxBytes = 16 * 1024
 	}
 	if before <= maxBytes {
 		return Result{BeforeBytes: before, AfterBytes: before, Compacted: false, Summary: body}

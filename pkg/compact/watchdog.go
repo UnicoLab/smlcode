@@ -148,7 +148,7 @@ func CompactChatMessages(msgs []ChatMsg, keepLast int) ([]ChatMsg, bool) {
 // WindowTokensFromKB converts a context KB budget into an approximate token window.
 func WindowTokensFromKB(kb int) int {
 	if kb <= 0 {
-		kb = 32
+		kb = 16
 	}
 	return EstimateTokens(kb * 1024)
 }

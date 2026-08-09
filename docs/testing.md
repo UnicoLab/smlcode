@@ -29,7 +29,10 @@ mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
 printf 'package main\n\nfunc Hello() string { return "hi" }\n' > hello.go
 printf '# Agents\n\nPrefer tiny Go edits and godoc comments.\n' > AGENTS.md
 slmcode init
-slmcode blocks apply go            # apply Go pipeline + QA gate
+# Apply the Go language pack: tuned pipeline, go-worker/go-tester agents,
+# and quality gate (go vet + go test). Always run this after init so the
+# pipeline is configured for your language before the first run.
+slmcode blocks apply go
 slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting. Keep it tiny."
 cat hello.go && slmcode board && slmcode session list
 ```

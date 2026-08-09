@@ -23,7 +23,7 @@ const (
 	DefaultMaxRetries   = 4
 	DefaultMaxParallel  = 2
 	DefaultThinkPasses  = 1
-	DefaultMaxContextKB = 32
+	DefaultMaxContextKB = 16
 	DefaultTaskTimeout  = 12 * time.Minute
 	DefaultQAGateRounds = 3
 )

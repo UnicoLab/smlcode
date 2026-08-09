@@ -56,6 +56,32 @@ The loop reloads `board.json` each wave. Chaos, but *structured* chaos.
 
 ---
 
+## File inspector 🔍
+
+The **File Inspector** page lets you browse and inspect any file in the workspace
+without leaving Studio. Click any file in the tree to open it in a read-only viewer
+with syntax highlighting and line numbers.
+
+| Feature | Details |
+|---------|---------|
+| 📂 **File tree** | Full project tree — click any file to inspect |
+| 🎨 **Syntax highlighting** | Language-aware highlighting for Go, Python, JS/TS, YAML, JSON, Markdown, and more |
+| 🔢 **Line numbers** | Gutter line numbers for precise referencing |
+| 🆚 **Diff view** | Toggle to compare current file content against the last checkpoint snapshot (`rewind` data) |
+| 🔄 **Live refresh** | File content auto-refreshes when workers write changes during a run |
+| 🧊 **Read-only** | Inspection only — no accidental edits. Use the TUI or your editor to make changes |
+
+Use the File Inspector to:
+- Verify worker edits at a glance during a run
+- Spot-check generated code before the tester phase
+- Compare diffs against the pre-run checkpoint to understand what changed
+- Browse AGENTS.md, CONTEXT.md, and MEMORY.md in one place
+
+Access it from the left navigation bar — the `📄 Files` tab sits alongside Agents,
+Skills, and Blocks.
+
+---
+
 ## Human-in-the-loop modals ✋
 
 Studio blocks the relevant step with a modal (pipeline header shows **Awaiting you**):
@@ -81,6 +107,24 @@ TUI: `/escalate re_scope|retry|mark_done|abort` while the banner shows escalate 
 On timeout the dedicated **@escalate** arbitrator picks retry / re-scope / abort / mark_done.
 
 API: `GET /api/escalate/pending` · `POST /api/escalate/answer` `{"action":"retry"}`.
+
+### HITL popup overlay
+
+v0.10.1 introduced a redesigned **HITL popup** — a modal overlay that replaces the
+old inline prompt pattern with a focused, non-dismissible dialog:
+
+| Element | Behavior |
+|---------|----------|
+| ⏱️ **Countdown timer** | Visible countdown bar showing remaining decision time; pulses red when under 10 seconds |
+| 🏷️ **Context header** | Shows affected task ID, agent name, and retry count (for escalate) |
+| 🎯 **Action buttons** | Large, color-coded buttons for each available action (approve, deny, retry, re-scope, etc.) |
+| 🚫 **Non-dismissible** | Cannot click away or close — a decision is required (or the timeout fires) |
+| 📝 **Optional note** | Text field for adding a rationale that gets logged with the decision |
+| 🔔 **Pipeline indicator** | The pipeline progress strip shows **Awaiting you** with a pulsing amber indicator |
+
+The popup appears for all HITL triggers: clarify, plan approve, escalate, continue,
+and shell permission requests. When the timeout fires, the configured fallback agent
+(e.g. `@escalate` for escalate decisions) takes over automatically.
 
 ---
 

@@ -14,6 +14,38 @@
 - All existing functionality preserved: SSE streaming, run/stop, specialist picker,
   config badges, event scrolling, result summary.
 
+### SLM Optimizations
+
+- **JSON repair improvements** — The repair engine now handles Python-style boolean
+  literals (`True`/`False`) by normalizing them to JSON `true`/`false` before parsing.
+  Trailing text after closing braces — a common SLM artifact where the model appends
+  commentary after completing JSON output — is stripped automatically, reducing parse
+  failures on partial or over-eager completions.
+- **Tester gate robustness** — Regex-based pass detection scans tester output for 20+
+  known shell/test-framework success markers (`PASS`, `ok`, `success`, `tests passed`,
+  `All tests passed`, `0 failures`, green check variants). This makes the tester agent
+  reliably recognize passing test runs regardless of framework (Go test, pytest, Jest,
+  etc.) or output format quirks.
+- **Worker status detection** — Smarter heuristics for detecting worker completion
+  status from partial, malformed, or tool-chain-terminated output. Reduces false
+  "incomplete" classifications when the worker produced valid changes but the final
+  JSON was truncated or blocked by a tool call.
+- **Improved tester prompt** — Tuned tester agent system prompt for better SLM
+  adherence: explicit pass/fail criteria, shell command expectations, and a
+  structured output schema that small models can follow more consistently.
+- **LiveView enhancements** — Pipeline progress strip now reflects slot insertions
+  (before/after/replace) with distinct styling. Group labels remain sticky during
+  scroll in long runs. Event cards include tool-call metadata (tool name, args
+  summary) inline.
+- **HITL popup** — New modal overlay in Studio for escalate, clarify, continue, and
+  shell-permission decisions. Replaces the inline prompt pattern with a focused,
+  non-dismissible dialog that includes a visible countdown timer, action buttons,
+  and contextual metadata (affected task, agent, retry count).
+- **File inspector** — New Studio page for browsing workspace files with syntax
+  highlighting, line numbers, and a diff view against the last checkpoint snapshot.
+  Supports read-only inspection of any file in the project tree during or after
+  runs — useful for verifying worker edits without leaving the Studio.
+
 ---
 
 ## v0.10.0 — Building Blocks, Language Packs & One-Click Pipeline Switching

@@ -162,6 +162,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/archives/{name}", s.handleGetArchive)
 	s.mux.HandleFunc("GET /api/queries", s.handleListQueries)
 	s.mux.HandleFunc("GET /api/queries/{id}", s.handleGetQuery)
+	s.mux.HandleFunc("GET /api/workspace/file", s.handleWorkspaceFile)
 
 	if s.ui != nil {
 		fileServer := http.FileServer(http.FS(s.ui))
@@ -1376,4 +1377,24 @@ func spaHandler(fileServer http.Handler) http.Handler {
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// handleWorkspaceFile reads a file from the project workspace.
+func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "path required", 400)
+		return
+	}
+	fullPath := filepath.Join(s.h.Config.Root, filepath.Clean(path))
+	if !strings.HasPrefix(fullPath, filepath.Clean(s.h.Config.Root)) {
+		http.Error(w, "path traversal", 403)
+		return
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	writeJSON(w, map[string]any{"path": path, "content": string(data), "size": len(data)})
 }

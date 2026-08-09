@@ -19,7 +19,7 @@ import {
   Eye,
   AlertCircle,
 } from 'lucide-react';
-import { addTask, updateDoc, getDoc } from '@/api/client';
+import { addTask, updateDoc, getDoc, getWorkspaceFile } from '@/api/client';
 import type { RunEvent } from '@/types';
 import clsx from 'clsx';
 
@@ -378,6 +378,20 @@ export default function FileInspector({ events, running }: Props) {
 
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
+  const [fetchedContent, setFetchedContent] = useState<string | null>(null);
+
+  // Fetch actual file content from workspace when a file is selected
+  useEffect(() => {
+    if (!selectedFile) { setFetchedContent(null); return; }
+    let cancelled = false;
+    getWorkspaceFile(selectedFile).then((r) => {
+      if (!cancelled) setFetchedContent(r.content);
+    }).catch(() => {
+      if (!cancelled) setFetchedContent(null);
+    });
+    return () => { cancelled = true; };
+  }, [selectedFile]);
+
   // ── Derived data ──
   const files = useMemo(() => extractFiles(events), [events]);
 
@@ -387,8 +401,9 @@ export default function FileInspector({ events, running }: Props) {
   );
 
   const fileContent = useMemo((): string => {
+    // Prefer actual file content from workspace API
+    if (fetchedContent) return fetchedContent;
     if (!selectedFileInfo) return '';
-    // Try to extract content from events, newest first
     for (const event of [...selectedFileInfo.events].reverse()) {
       if (event.output) {
         // If the output looks like code content (not just a brief message), use it

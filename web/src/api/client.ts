@@ -450,3 +450,8 @@ export async function applyPack(id: string, opts?: { materialize_agents?: boolea
 export async function applyPipelinePreset(id: string): Promise<{ ok: boolean; result: { pipeline_id: string } }> {
   return request(`/pipeline-presets/${encodeURIComponent(id)}/apply`, { method: 'POST' });
 }
+
+// ── Workspace files ──
+export async function getWorkspaceFile(path: string): Promise<{ path: string; content: string; size: number }> {
+  return request(`/workspace/file?path=${encodeURIComponent(path)}`);
+}

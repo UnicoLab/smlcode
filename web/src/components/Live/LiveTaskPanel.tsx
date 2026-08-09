@@ -172,10 +172,14 @@ export default function LiveTaskPanel() {
   const fetchTasks = useCallback(async () => {
     try {
       const b = await getTasks();
+      if (!b || !b.tasks) { setBoard(null); return; }
 
       // ── Optimistic merge: preserve locally-added tasks not yet on server ──
       setOptimisticTasks((prev) => {
-        const serverIds = new Set(b.tasks.map((t) => t.id));
+        const tasks = b.tasks || [];
+        const cols = b.columns || [];
+        const byCol = b.by_column || {};
+        const serverIds = new Set(tasks.map((t) => t.id));
         // Keep only optimistic tasks whose IDs are not yet in the server response
         const stillMissing = prev.filter((t) => !serverIds.has(t.id));
         // Remove confirmed IDs from the tracking set
@@ -195,19 +199,20 @@ export default function LiveTaskPanel() {
           setBoard(b);
           return prev;
         }
-        const mergedTasks = [...prev, ...b.tasks];
+        const tList = b.tasks || [];
+        const cList = b.columns || [];
+        const mergedTasks = [...prev, ...tList];
         const mergedByColumn: Record<string, Task[]> = {};
-        for (const col of b.columns) {
+        for (const col of cList) {
           mergedByColumn[col] = mergedTasks.filter((t) => t.column === col);
         }
-        // Also collect columns from optimistic tasks
         for (const t of prev) {
           if (!mergedByColumn[t.column]) mergedByColumn[t.column] = [];
           if (!mergedByColumn[t.column].some((ex) => ex.id === t.id)) {
             mergedByColumn[t.column].push(t);
           }
         }
-        const allColumns = [...new Set([...b.columns, ...Object.keys(mergedByColumn)])];
+        const allColumns = [...new Set([...cList, ...Object.keys(mergedByColumn)])];
         setBoard({
           ...b,
           tasks: mergedTasks,

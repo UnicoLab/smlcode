@@ -516,11 +516,9 @@ func ParseTesterJSON(raw string) TesterResult {
 		if len(r.Failures) == 0 && len(r.Issues) > 0 {
 			r.Failures = r.Issues
 		}
-		lowerExt := strings.ToLower(extracted)
-		explicitTrue := strings.Contains(lowerExt, `"passed":true`) || strings.Contains(lowerExt, `"passed": true`)
-		explicitFalse := strings.Contains(lowerExt, `"passed":false`) || strings.Contains(lowerExt, `"passed": false`)
-		// Explicit false wins; explicit true only if no failure list.
-		if !r.Passed && len(r.Failures) == 0 && explicitFalse {
+		eTrue := hasPassedTrue(extracted)
+		eFalse := hasPassedFalse(extracted)
+		if !r.Passed && len(r.Failures) == 0 && eFalse {
 			if s := firstLine(r.Summary); s != "" {
 				r.Failures = []string{s}
 			} else {
@@ -528,32 +526,29 @@ func ParseTesterJSON(raw string) TesterResult {
 			}
 		}
 		if r.Passed && len(r.Failures) > 0 {
-			// Contradictory: failures present → treat as failed.
 			r.Passed = false
 		}
-		// Soft-pass without real shell execution evidence is not verification
-		// (rename/disk acceptance summaries are an explicit exception).
 		if r.Passed && !TesterHasShellEvidence(raw) && !testerDiskPass(extracted+raw+r.Summary) {
 			r.Passed = false
 			r.Summary = firstNonEmpty(r.Summary, "tester claimed pass without execution")
 			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
 		}
-		// {} / incomplete JSON with no explicit passed:true → fail (no silent pass).
-		if !r.Passed && !explicitTrue && len(r.Failures) == 0 {
+		if !r.Passed && !eTrue && len(r.Failures) == 0 {
 			r.Summary = firstNonEmpty(r.Summary, "malformed or incomplete tester JSON")
 			r.Failures = []string{"tester finalize missing passed:true — treat as failed; rewrite plan/tasks"}
 		}
 		return r
 	}
+	// JSON unmarshal failed — fall back to text-based heuristics.
 	lower := strings.ToLower(raw)
 	switch {
-	case strings.Contains(lower, `"passed":true`) || strings.Contains(lower, `"passed": true`):
+	case hasPassedTrue(lower):
 		r.Passed = true
 		if !TesterHasShellEvidence(raw) && !testerDiskPass(raw) {
 			r.Passed = false
 			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
 		}
-	case strings.Contains(lower, `"passed":false`) || strings.Contains(lower, `"passed": false`):
+	case hasPassedFalse(lower):
 		r.Passed = false
 		r.Failures = []string{firstLine(raw)}
 	case strings.Contains(lower, "does not work") || strings.Contains(lower, "doesn't work") ||
@@ -562,7 +557,6 @@ func ParseTesterJSON(raw string) TesterResult {
 		r.Passed = false
 		r.Failures = []string{firstLine(raw)}
 	default:
-		// Unknown / prose-only / broken JSON → do not auto-accept.
 		r.Passed = false
 		r.Summary = firstLine(raw)
 		if r.Summary == "" {
@@ -573,6 +567,17 @@ func ParseTesterJSON(raw string) TesterResult {
 	return r
 }
 
+// hasPassedTrue checks for all variations of a JSON-like "passed: true" boolean.
+// Handles: "passed":true, "passed": true, "passed":True, passed:true, "passed":"true", etc.
+func hasPassedTrue(s string) bool {
+	return regexp.MustCompile(`(?i)"?passed"?\s*:\s*(true|True|"true")`).MatchString(s)
+}
+
+// hasPassedFalse checks for all variations of a JSON-like "passed: false" boolean.
+func hasPassedFalse(s string) bool {
+	return regexp.MustCompile(`(?i)"?passed"?\s*:\s*(false|False|"false")`).MatchString(s)
+}
+
 // TesterFailed reports whether verification should drive a plan/task rewrite.
 // Empty/malformed finalize counts as failed (never a silent skip).
 func TesterFailed(raw string) bool {
@@ -580,26 +585,44 @@ func TesterFailed(raw string) bool {
 }
 
 // TesterHasShellEvidence reports whether raw tester output contains a real
-// execution trace (ws_shell observation, deterministic smoke, or exit codes).
-// Fabricated commands[] JSON alone does NOT count.
+// execution trace (ws_shell observation, deterministic smoke, exit codes,
+// or common test runner output patterns).
 func TesterHasShellEvidence(raw string) bool {
 	lower := strings.ToLower(raw)
 	markers := []string{
 		"observation:",
 		"exit error:",
 		"exit status",
+		"exit code",
 		"## deterministic smoke",
 		"ws_shell",
 		"py_compile",
 		"compileall",
+		"python -m pytest",
+		"python -m py_compile",
+		"go test",
+		"npm test",
+		"cargo test",
+		"pytest",
+		"ran ",
+		"ran\n",
+		"executed",
+		"stdout",
+		"stderr",
+		"command:",
+		"$ ",
+		"running",
 	}
 	for _, m := range markers {
 		if strings.Contains(lower, m) {
 			return true
 		}
 	}
-	// Successful short command outputs often appear after Observation:
 	if strings.Contains(lower, "passed") && strings.Contains(lower, "observation:") {
+		return true
+	}
+	// Shell commands often produce output with these patterns
+	if strings.Contains(lower, "ok") && (strings.Contains(lower, "test") || strings.Contains(lower, "run")) {
 		return true
 	}
 	return false

@@ -15,6 +15,7 @@ import {
   Package,
   ChevronLeft,
   ChevronRight,
+  FileCode,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { getHealth } from '@/api/client';
@@ -34,6 +35,7 @@ const navItems: NavItem[] = [
   { to: '/agents', label: 'Agents', icon: <Bot size={18} /> },
   { to: '/blocks', label: 'Blocks', icon: <Package size={18} /> },
   { to: '/skills', label: 'Skills', icon: <Puzzle size={18} /> },
+  { to: '/files', label: 'Files', icon: <FileCode size={18} /> },
 ];
 
 const docItems: NavItem[] = [

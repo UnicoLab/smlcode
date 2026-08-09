@@ -7,6 +7,7 @@ import SettingsPanel from './components/Settings/SettingsPanel';
 import PipelineEditor from './components/Pipeline/PipelineEditor';
 import AgentManager from './components/Agents/AgentManager';
 import BlockManager from './components/Blocks/BlockManager';
+import FileInspector from './components/Files/FileInspector';
 import SkillManager from './components/Skills/SkillManager';
 import MarkdownEditorView from './components/Docs/MarkdownEditor';
 import { getHealth, getConfig } from './api/client';
@@ -61,6 +62,7 @@ export default function App() {
           <Route path="pipeline" element={<PipelineEditor />} />
           <Route path="agents" element={<AgentManager />} />
           <Route path="blocks" element={<BlockManager />} />
+          <Route path="files" element={<FileInspector events={[]} running={false} />} />
           <Route path="skills" element={<SkillManager />} />
           <Route path="docs/:docId" element={<MarkdownEditorView />} />
           <Route path="settings" element={<SettingsPanel />} />

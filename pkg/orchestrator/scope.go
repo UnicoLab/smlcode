@@ -34,10 +34,12 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	if mode == plan.ClarifyOff {
 		return plan.ScopeInterview{}
 	}
-	// Always interview when vague; also run a light pass when explore found little
-	// structure and the query is greenfield-ish (even if heuristic said skip).
-	if !plan.NeedsClarification(query) && !forceClarifyGreenfield(query) {
-		return plan.ScopeInterview{}
+	// When explicitly set to ask, ALWAYS run the interview (user wants to review).
+	// When auto, skip for concrete queries that don't need clarification.
+	if mode != plan.ClarifyAsk {
+		if !plan.NeedsClarification(query) && !forceClarifyGreenfield(query) {
+			return plan.ScopeInterview{}
+		}
 	}
 
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseClarify)

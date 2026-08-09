@@ -183,6 +183,10 @@ type PackSpec struct {
 	OverrideTester string `yaml:"override_tester,omitempty" json:"override_tester,omitempty"`
 	// OverrideWorker sets execute.default_role when set.
 	OverrideWorker string `yaml:"override_worker,omitempty" json:"override_worker,omitempty"`
+	// DeferPlanApprove forces plan_approve=ask for this pack (human must approve plan).
+	DeferPlanApprove bool `yaml:"defer_plan_approve,omitempty" json:"defer_plan_approve,omitempty"`
+	// DeferClarify forces clarify_mode=ask for this pack (pause for user decisions).
+	DeferClarify bool `yaml:"defer_clarify,omitempty" json:"defer_clarify,omitempty"`
 }
 
 // PackBlock is a shareable language pack.

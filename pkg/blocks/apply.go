@@ -22,13 +22,13 @@ type ApplyOptions struct {
 
 // ApplyResult summarizes what changed when applying a pack or pipeline.
 type ApplyResult struct {
-	PackID           string   `json:"pack_id,omitempty"`
-	PipelineID       string   `json:"pipeline_id,omitempty"`
-	QualityID        string   `json:"quality_id,omitempty"`
-	QAGateCommand    string   `json:"qa_gate_command,omitempty"`
-	AgentsWritten    []string `json:"agents_written,omitempty"`
-	SkillsPinned     []string `json:"skills_pinned,omitempty"`
-	PipelinePath     string   `json:"pipeline_path,omitempty"`
+	PackID        string   `json:"pack_id,omitempty"`
+	PipelineID    string   `json:"pipeline_id,omitempty"`
+	QualityID     string   `json:"quality_id,omitempty"`
+	QAGateCommand string   `json:"qa_gate_command,omitempty"`
+	AgentsWritten []string `json:"agents_written,omitempty"`
+	SkillsPinned  []string `json:"skills_pinned,omitempty"`
+	PipelinePath  string   `json:"pipeline_path,omitempty"`
 }
 
 // ApplyPack materializes a language/domain pack into cfg + project files.
@@ -67,6 +67,12 @@ func ApplyPack(cfg *config.Config, reg *Registry, packID string, opts ApplyOptio
 		}
 		if pack.Spec.OverrideWorker != "" {
 			cfgCopy.Execute.DefaultRole = pack.Spec.OverrideWorker
+		}
+		if pack.Spec.DeferPlanApprove {
+			cfg.PlanApprove = "ask"
+		}
+		if pack.Spec.DeferClarify {
+			cfg.ClarifyMode = "ask"
 		}
 		cfgCopy.Normalize()
 		if err := cfgCopy.Validate(); err != nil {

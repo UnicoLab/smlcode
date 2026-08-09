@@ -60,6 +60,7 @@ mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
 printf 'package main\n\nfunc Hello() string { return "hi" }\n' > hello.go
 printf '# Agents\n\nPrefer tiny Go edits and clear godoc comments.\n' > AGENTS.md
 slmcode init
+slmcode blocks apply go   # apply Go-optimized pipeline + quality checks
 ```
 
 Edit `.slmcode/PROJECT.md` with two honest sentences about the stack.

@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.10.0 — Building Blocks, Language Packs & One-Click Pipeline Switching
+
+### Highlights
+- **Building Blocks system** — Marketplace-ready YAML presets: pipelines, agents, quality packs,
+  language packs. Four block kinds with `api_version: blocks/v1` schema.
+- **Predefined language packs** — 🐹 Go, 🐍 Python, ⚛️ React/TypeScript ready to use.
+  Each pack includes tuned pipeline, language-specific worker/tester agents, and quality gates.
+- **Blocks CLI** — `slmcode blocks list|show|apply|validate` — full block lifecycle management.
+- **Chat REPL commands** — `/blocks` lists all blocks, `/pack <id>` applies a language pack.
+- **BlockManager UI** — New Studio page: tabbed browser for all blocks, one-click apply,
+  active indicators, source badges (builtin/custom).
+- **PipelineEditor enhancement** — Preset selector for one-click switching between
+  Go/Python/React pipelines directly from the pipeline editor.
+- **PackSelector in Settings** — Switch language packs from the Settings page,
+  alongside the existing Stack Selector.
+- **Active config indicators** — LiveView and Sidebar now show active pack, pipeline,
+  and stack badges during runs.
+- **AGENTS.md** — Comprehensive 416-line contributor guide at project root.
+- **18 blocks tests** — Full test coverage: registry loading, validation, catalog filtering,
+  quality detection, QA gate resolution, meta validation, edge cases.
+
+### Fixes
+- Import cycle resolved: `blocks → agents → workspace → quality → blocks`.
+  Quality smoke detection now delegates to `blocks.ResolveQAGateCommand` in orchestrator layer.
+- `active_pack` and `active_pipeline` fields added to config schema and Studio Config type.
+
+---
+
 ## v0.9.0 — Stacks, auth store & strict-provider ReAct
 
 ### Highlights

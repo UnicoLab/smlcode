@@ -26,6 +26,7 @@ Less “paste the monorepo”. More “ship the tiny win”.
 <span class="slm-pill">🍎 oMLX default</span>
 <span class="slm-pill">🖥️ Premium TUI</span>
 <span class="slm-pill">🎨 Offline Studio</span>
+<span class="slm-pill">🧱 Building blocks</span>
 <span class="slm-pill">🔌 Any provider</span>
 <span class="slm-pill">💚 UnicoLab</span>
 </div>

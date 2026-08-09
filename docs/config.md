@@ -34,6 +34,8 @@ api_key: ""             # prefer env vars
 | `endpoint` | Auto-defaults per preset if empty |
 | `model` | Whatever your gateway serves |
 | `active_stack` | Set by `slmcode stack apply`; cleared on manual model/provider edit |
+| `active_pack` | Last applied language pack (go, python, react) via `slmcode blocks apply` |
+| `active_pipeline` | Active pipeline block id; may match active pack's pipeline |
 | `api_key` | Avoid committing; use env or `.slmcode/auth.json` 🔑 |
 | `enabled_models` | Optional allow-list of model ids (empty = all) |
 | `llm_retry_count` / `llm_retry_delay_ms` | Provider HTTP retries (≠ board `max_retries`) |

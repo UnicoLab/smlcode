@@ -50,6 +50,7 @@ slmcode <command> --help
 | `init` | Create `.slmcode/` scaffolding 🌱 |
 | `stack` | list / show / apply provider+model presets 📦 |
 | `agent` | list / show / set per-agent LLM pins 🧩 |
+| `blocks` | list / show / apply / validate building blocks 🧱 |
 | `update` | Refresh binary (release) or rebuild from source ⬆️ |
 | `version` | Print version metadata |
 
@@ -123,6 +124,30 @@ slmcode agent set worker --model … --provider …  # pin; empty = inherit stac
 
 Stacks live in `stacks/*.yaml`. DeepSeek default endpoint: `https://api.deepseek.com`
 (OpenAI-compat client appends `/v1`). Details → [🔌 Providers](providers.md).
+
+## `blocks` 🧱
+
+```bash
+# List all building blocks, grouped by kind
+slmcode blocks list
+
+# Show details of a specific block
+slmcode blocks show pipeline go
+slmcode blocks show agent python-worker
+slmcode blocks show pack react
+
+# Apply a language pack (writes pipeline.yaml + config)
+slmcode blocks apply go
+slmcode blocks apply python --materialize-agents
+slmcode blocks apply react --force
+
+# Validate all block YAML configs
+slmcode blocks validate
+```
+
+Blocks are marketplace-ready YAML presets: pipelines, agents, quality packs, and language packs.
+Three predefined language packs ship built-in: 🐹 Go, 🐍 Python, ⚛️ React/TypeScript.
+Custom blocks go in `.slmcode/blocks/`. Details → [🧱 Blocks](blocks.md).
 
 ## `config` ⚙️
 

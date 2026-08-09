@@ -13,6 +13,27 @@ Take a number. Or just `Ctrl+F`.
 
 ---
 
+## Building blocks 🧱
+
+??? question "🧱 How do I switch between Go and Python pipelines?"
+    ```bash
+    slmcode blocks apply go      # Go pipeline + go-worker + go-tester
+    slmcode blocks apply python  # Python pipeline + python-worker + pytest
+    slmcode blocks apply react   # React/TS pipeline + react-tester
+    ```
+    In Studio: Settings → Pack Selector, or Pipeline tab → preset selector.
+
+??? question "🧱 Can I create my own pipeline or agent blocks?"
+    Yes! Drop YAML files in `.slmcode/blocks/pipelines/` or `.slmcode/blocks/agents/`.
+    Blocks are `api_version: blocks/v1` documents with marketplace metadata (id, version, author, license, tags).
+    Run `slmcode blocks validate` to check your custom blocks. See [🧱 Blocks](blocks.md) for the full schema.
+
+??? question "🧱 Where are the built-in blocks?"
+    Embedded in the binary via `go:embed` — always available. Project-level blocks in `.slmcode/blocks/` override them.
+    The discovery order is: project → user → env → builtin (first ID wins).
+
+---
+
 ## Install & PATH 📦
 
 ??? question "👻 `slmcode: command not found`"

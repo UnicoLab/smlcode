@@ -100,6 +100,42 @@ SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"
 
 ---
 
+## <span class="slm-kicker">05</span> Building blocks 🧱
+
+SLMCode pipelines, agents, quality checks, and language packs are all **YAML-configurable building blocks** — versioned, shareable, and marketplace-ready.
+
+```yaml
+# .slmcode/blocks/pipelines/my-lang.yaml
+api_version: blocks/v1
+kind: pipeline
+id: my-lang
+name: My Pipeline
+spec:
+  phases:
+    test: { agent: my-tester, when: always }
+  execute:
+    default_role: my-worker
+```
+
+**Discovery order**: project (`.slmcode/blocks/`) → user (`~/.slmcode/blocks/`) → env → builtin.
+Project blocks always win, so you can override any builtin for a specific project.
+
+**Four block kinds**:
+
+| Kind | What it defines |
+|------|----------------|
+| `pipeline` | Phase graph, loop agents, slots |
+| `agent` | Custom specialist or builtin override |
+| `quality` | Format/lint/test/build commands |
+| `pack` | Composes pipeline + quality + agents into a language pack |
+
+Predefined packs for Go 🐹, Python 🐍, and React ⚛️ ship built-in.
+Switch with `slmcode blocks apply <id>` or use the Studio's PackSelector.
+
+→ [🧱 Full blocks reference](blocks.md)
+
+---
+
 ## <span class="slm-kicker">05</span> Self-critic with evidence 🔍
 
 ```text

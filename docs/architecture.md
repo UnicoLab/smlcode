@@ -31,10 +31,14 @@ If you stuff the whole repo into context, don’t be surprised when the model na
 cmd/slmcode          CLI + embedded Studio (go:embed ui/)
 pkg/orchestrator     Pipeline runner + coordinator + sessions
 pkg/pipeline         Config-driven phases / slots / loop agents
+pkg/blocks           Building block registry + bundled YAML presets
 pkg/loop             Parallel execute → review → correct
 pkg/agents           Specialist prompts + custom YAML factory
+pkg/stacks           Provider/model stack presets
 pkg/plan             Kanban, sanitize, discover
 pkg/context          Markdown store + TaskPack budgeter
+pkg/quality          QA gate runner + smoke checks
+pkg/skills           SKILL.md loader
 pkg/knowledge        SKILLS.md + learned evolution
 pkg/learning         Wave lessons / deltas
 pkg/instructions     AGENTS.md / PROJECT loader
@@ -43,7 +47,6 @@ pkg/permissions      auto | dry-run | review
 pkg/multipass        Think → critique → refine
 pkg/stream           Live events (CLI + SSE)
 pkg/server           Studio HTTP + SSE
-pkg/skills           SKILL.md loader
 pkg/workspace        Real FS/git tools
 pkg/backends         OpenAI-compat / Ollama / optional CLIs
 pkg/harness          Public embed API

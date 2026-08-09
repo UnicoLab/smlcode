@@ -40,11 +40,12 @@ slmcode studio --listen 127.0.0.1:7421
 |------|-----|
 | 🎯 Query bar | Start / stop |
 | 🏭 Pipeline strip | Dynamic phases from `.slmcode/pipeline.yaml` |
-| 🧩 Pipeline tab | Bind agents per phase, insert slots, loop roles |
+| 🧩 Pipeline tab | Bind agents per phase, insert slots, loop roles, **switch presets** |
+| 🧱 Blocks tab | Browse & apply language packs, pipelines, agents, quality packs |
 | 📡 Live | `@agent`, scope, patches, slots, output |
 | 📋 Kanban | Drag, promote, edit mid-run (any agent role) |
 | 💾 Docs | Live markdown memory |
-| ⚙️ Settings | Provider, knobs, safety |
+| ⚙️ Settings | Provider, knobs, safety, **stack + pack selector** |
 
 ---
 

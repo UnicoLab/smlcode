@@ -29,6 +29,7 @@ mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
 printf 'package main\n\nfunc Hello() string { return "hi" }\n' > hello.go
 printf '# Agents\n\nPrefer tiny Go edits and godoc comments.\n' > AGENTS.md
 slmcode init
+slmcode blocks apply go            # apply Go pipeline + QA gate
 slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting. Keep it tiny."
 cat hello.go && slmcode board && slmcode session list
 ```

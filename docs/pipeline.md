@@ -19,15 +19,23 @@ agent, control the prompt template, fail mode, and where output lands. The UI fo
 
 ```bash
 slmcode init                 # writes default pipeline.yaml
+slmcode blocks apply go      # apply Go-optimized pipeline preset
 slmcode studio               # Pipeline tab → edit → Save
 curl -s localhost:7420/api/pipeline | jq .
 ```
+
+Or switch presets from the Studio:
+
+- **Pipeline tab**: Use the preset selector (Go, Python, React) for one-click switching
+- **Blocks tab**: Browse all pipeline presets and apply any
+- **Settings**: Use the Pack Selector to switch the entire language workflow
 
 Reset to built-ins:
 
 ```bash
 curl -s -X POST localhost:7420/api/pipeline/reset
-```
+# or via CLI:
+slmcode blocks apply go   # re-apply any preset
 
 ---
 
@@ -141,8 +149,42 @@ Specialist mode also accepts custom agent IDs.
 
 ---
 
+## Predefined pipeline presets
+
+SLMCode ships with three built-in pipeline presets, each optimized for a specific language:
+
+| Preset | Language | Tester Agent | Worker Agent | QA Gate |
+|--------|----------|-------------|-------------|---------|
+| `go` | 🐹 Go | `go-tester` | `go-worker` | `go test ./... -race -count=1` |
+| `python` | 🐍 Python | `python-tester` | `python-worker` | `python -m pytest -q` |
+| `react` | ⚛️ React/TS | `react-tester` | `react-worker` | `npm test --silent` |
+
+Each preset:
+- Sets the **test phase agent** to a language-specific verifier
+- Configures the **execute loop** with a language-aware worker
+- Adds **quality gate slots** with language-specific check reminders
+- Pins relevant **skills** like `atomic-coding` and `specialist-tester`
+
+Apply any preset via CLI, API, or Studio:
+
+```bash
+# CLI
+slmcode blocks apply python
+
+# API
+curl -X POST localhost:7420/api/packs/python/apply
+
+# API — apply just the pipeline (no QA gate)
+curl -X POST localhost:7420/api/pipeline-presets/python/apply
+```
+
+Custom presets can be created as YAML blocks — see [🧱 Blocks](blocks.md).
+
+---
+
 ## Related
 
+- [Blocks](blocks.md) — building blocks system + marketplace
 - [Agents](agents.md) — roster + custom YAML
 - [Config](config.md) — provider / quality knobs
 - [Studio](studio.md) — cockpit layout

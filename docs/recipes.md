@@ -33,6 +33,7 @@ cat hello.go
 ```bash
 cd ~/code/my-app
 slmcode init
+slmcode blocks apply python  # apply Python pipeline + quality pack
 slmcode config set permission review
 slmcode run -v "Add input validation to the login handler"
 slmcode apply          # when the staged patches look sane
@@ -69,6 +70,29 @@ If it wanders: tighten `AGENTS.md`, pin `atomic-coding`, force explore once.
 ```bash
 SLMCODE_FORCE_EXPLORE=1 slmcode run -v "…"
 ```
+
+---
+
+## Recipe: language pack switch 🧱
+
+Quickly switch your project's entire pipeline, agents, and quality checks to match the language:
+
+```bash
+# Switch a Go project to use Go pipeline + go-worker + go-tester + QA gate
+slmcode blocks apply go
+
+# Switch a Python project
+slmcode blocks apply python
+
+# Browse available packs
+slmcode blocks list
+
+# Validate custom blocks
+slmcode blocks validate
+```
+
+Language packs set QA gates, pin skills, and override worker/tester agents automatically.
+The PipelineEditor in Studio also has a one-click preset selector.
 
 ---
 

@@ -1363,15 +1363,16 @@ func spaHandler(fileServer http.Handler) http.Handler {
 			return
 		}
 		path := r.URL.Path
-		switch {
-		case strings.HasSuffix(path, ".jsx"):
-			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		case strings.HasSuffix(path, ".css"):
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case strings.HasSuffix(path, ".js"):
-			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		case path == "/" || path == "/index.html":
+		// Prevent caching for HTML, allow caching for hashed assets
+		if strings.HasSuffix(path, ".html") || path == "/" {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		} else if strings.HasSuffix(path, ".js") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		} else if strings.HasSuffix(path, ".css") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		}
 		fileServer.ServeHTTP(w, r)
 	})

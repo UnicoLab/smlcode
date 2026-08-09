@@ -92,10 +92,24 @@ type PhaseState = 'pending' | 'active' | 'completed';
 
 export default function LiveView() {
   const ctx = useContext(AppContext);
-  const events = ctx?.liveEvents || [];
-  const setEvents = ctx?.setLiveEvents || (() => {});
-  const running = ctx?.liveRunning || false;
-  const setRunning = ctx?.setLiveRunning || (() => {});
+  // Use sessionStorage-backed state so it survives page navigation
+  const [localEvents, setLocalEvents] = useState<RunEvent[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem('slmcode:events') || '[]'); } catch { return []; }
+  });
+  const [localRunning, setLocalRunning] = useState(() => sessionStorage.getItem('slmcode:running') === 'true');
+  const events = ctx?.liveEvents?.length ? ctx.liveEvents : localEvents;
+  const setEvents = (v: RunEvent[] | ((p: RunEvent[]) => RunEvent[])) => {
+    const next = typeof v === 'function' ? v(localEvents) : v;
+    setLocalEvents(next);
+    ctx?.setLiveEvents?.(next);
+    try { sessionStorage.setItem('slmcode:events', JSON.stringify(next.slice(-200))); } catch {}
+  };
+  const running = ctx?.liveRunning || localRunning;
+  const setRunning = (v: boolean) => {
+    setLocalRunning(v);
+    ctx?.setLiveRunning?.(v);
+    sessionStorage.setItem('slmcode:running', String(v));
+  };
   const result = ctx?.liveResult || null;
   const setResult = ctx?.setLiveResult || (() => {});
   const [query, setQuery] = useState('');

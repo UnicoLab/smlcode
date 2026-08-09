@@ -15,3 +15,4 @@ web/tsconfig.tsbuildinfo
 # Reference checkout used during development; not part of the slmcode release.
 little-coder/
 prime-agent/
+slmcode

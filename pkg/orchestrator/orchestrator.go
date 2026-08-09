@@ -500,149 +500,179 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.emit("init", fmt.Sprintf("indexed %d workspace file(s)", len(inventory)), "")
 	}
 
-	// 1 Context — shared memory for all specialists (pipeline-configurable agent)
-	if err := o.runPipelineSlots(ctx, "context", "before", query, "", ""); err != nil {
-		return nil, err
-	}
-	ctxAgent := o.phaseAgent("context", plan.RoleContext)
-	if o.phaseEnabled("context") && !o.Pipeline().HasReplace("context") {
-		o.emitAgent("context", ctxAgent, "", "updating working context", "", "")
-		pack, _ := o.packer.Build(ctxAgent, query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor(ctxAgent, query))
-		ctxOut, ctxErr := o.runRoleTracked(ctx, ctxAgent, "", pack.Render()+
-			"\nRewrite CONTEXT.md for this query (markdown). ONLY reference files from the authoritative workspace list. Include: Active focus, Recent findings, Open questions.")
-		if ctxErr != nil {
-			o.emit("context", "warning: "+ctxErr.Error(), "")
-		}
-		if strings.TrimSpace(ctxOut) != "" {
-			_ = o.store.Write(contextstore.DocContext, ensureHeading(ctxOut, "# Working Context"))
-		} else if len(inventory) > 0 {
-			_ = o.store.Write(contextstore.DocContext, "# Working Context\n\n## Active focus\n\n"+query+
-				"\n\n## Recent findings\n\n(awaiting explorer)\n\n## Workspace inventory\n\n- "+
-				strings.Join(inventory, "\n- ")+"\n")
-		}
-	} else if o.Pipeline().HasReplace("context") {
-		if err := o.runPipelineSlots(ctx, "context", "replace", query, "", ""); err != nil {
-			return nil, err
-		}
-	}
-	if err := o.runPipelineSlots(ctx, "context", "after", query, "", ""); err != nil {
-		return nil, err
-	}
-	// Re-assert authoritative paths after the context rewrite (SLMs often invent main.go).
-	if len(inventory) > 0 {
-		invMD := "- " + strings.Join(inventory, "\n- ")
-		_ = o.store.Append(contextstore.DocContext, "Workspace inventory (authoritative)", invMD)
-		if real := plan.FilterExisting(o.cfg.Root, discoveredEarly); len(real) > 0 {
-			_ = o.store.Append(contextstore.DocContext, "Likely targets (existing files only)",
-				"- "+strings.Join(real, "\n- "))
-		}
-	}
+	// 1+2 Context + Explore run in parallel after init.
+	// context is fast (≤400 words CONTEXT.md); explore does a codebase deep-dive.
+	var exploreOut, archOut, docsOut string
 
-	// 1b Ensure PROJECT.md is populated (was empty scaffold during self-use)
-	o.ensureProjectDoc(inventory)
-
-	// 2 Explore — skip deep dive when CONTEXT + FS discovery already enough.
-	// Higher think_passes forces deeper / parallel antigravity-style digs for SLMs.
-	var exploreOut string
-	var archOut string
-	if err := o.runPipelineSlots(ctx, "explore", "before", query, "", ""); err != nil {
-		return nil, err
-	}
-	exploreWhen := o.Pipeline().PhaseWhen("explore")
-	deep, reason := o.shouldDeepExplore(query)
-	if exploreWhen == pipeline.WhenNever || !o.phaseEnabled("explore") {
-		deep = false
-		reason = "pipeline: explore disabled"
-	} else if exploreWhen == pipeline.WhenAlways {
-		deep = true
-		reason = "pipeline: explore=always"
-	}
-	if o.Pipeline().HasReplace("explore") {
-		if err := o.runPipelineSlots(ctx, "explore", "replace", query, "", ""); err != nil {
-			return nil, err
-		}
-		exploreOut = `{"summary":"pipeline slot replaced explore","relevant_files":[],"notes":"custom explore slot"}`
-		o.shared.SetGlobal("exploration", exploreOut)
-		o.shared.SetGlobal("explore_mode", "slot")
-	} else if !deep {
-		o.emit("explore", reason, "")
-		discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, "")
-		ctxDoc, _ := o.store.Read(contextstore.DocContext)
-		memDoc, _ := o.store.Read(contextstore.DocMemory)
-		exploreOut = fmt.Sprintf(`{"summary":"reused project memory","relevant_files":[%s],"notes":"skipped deep explore"}`,
-			quoteJoin(discovered))
-		_ = o.store.Write(contextstore.DocScratch, "# Exploration (cached)\n\n"+exploreOut+
-			"\n\n## Context excerpt\n\n"+truncate(ctxDoc, 2000)+"\n\n## Memory excerpt\n\n"+truncate(memDoc, 1500))
-		o.shared.SetGlobal("exploration", exploreOut)
-		o.shared.SetGlobal("explore_mode", "cached")
-	} else {
-		expAgent := o.phaseAgent("explore", plan.RoleExplorer)
-		o.emitAgent("explore", expAgent, "", "codebase deep-dive", "", "")
-		expPack, _ := o.packer.Build(expAgent, query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor(expAgent, query))
-		explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
-		needDocs := (wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3) && o.phaseEnabled("docs") &&
-			o.Pipeline().PhaseWhen("docs") != pipeline.WhenNever
-		needArch := wantsArchitect(query) && o.cfg.ThinkPasses >= 2 && o.phaseEnabled("architect") &&
-			o.Pipeline().PhaseWhen("architect") != pipeline.WhenNever
-		if o.Pipeline().PhaseWhen("docs") == pipeline.WhenAlways {
-			needDocs = true
-		}
-		if o.Pipeline().PhaseWhen("architect") == pipeline.WhenAlways {
-			needArch = true
-		}
-		var docsOut string
-		exploreOut, archOut, docsOut, err = o.speculateDigs(ctx, query, explorePrompt, inventory, needDocs, needArch)
-		if err != nil {
-			return nil, fmt.Errorf("explorer: %w", err)
-		}
-		if docsOut != "" {
-			_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
-			exploreOut += "\n\n" + docsOut
-			o.shared.SetGlobal("docs_exploration", docsOut)
-		}
-		if archOut != "" {
-			_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
-			o.shared.SetGlobal("architecture", archOut)
-		}
-		_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
-		o.shared.SetGlobal("exploration", exploreOut)
-		o.shared.SetGlobal("explore_mode", "deep")
-	}
-	if err := o.runPipelineSlots(ctx, "explore", "after", query, exploreOut, ""); err != nil {
-		return nil, err
-	}
-
-	// 2b Architect pass for larger / design-ish queries (skip if already ran in parallel)
-	archWhen := o.Pipeline().PhaseWhen("architect")
-	wantArch := o.phaseEnabled("architect") && archWhen != pipeline.WhenNever &&
-		(archWhen == pipeline.WhenAlways || wantsArchitect(query))
-	if wantArch && strings.TrimSpace(archOut) == "" {
-		if err := o.runPipelineSlots(ctx, "architect", "before", query, exploreOut, ""); err != nil {
-			return nil, err
-		}
-		if o.Pipeline().HasReplace("architect") {
-			if err := o.runPipelineSlots(ctx, "architect", "replace", query, exploreOut, ""); err != nil {
-				return nil, err
+	parResults := runPhaseParallel(ctx,
+		func() phaseResult {
+			// --- 1 Context ---
+			if err := o.runPipelineSlots(ctx, "context", "before", query, "", ""); err != nil {
+				return phaseResult{name: "context", err: err}
 			}
-		} else {
-			archAgent := o.phaseAgent("architect", "architect")
-			o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
-			archPack, _ := o.packer.Build(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
-			archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
-			if strings.TrimSpace(archOut) != "" {
-				_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
-				o.shared.SetGlobal("architecture", archOut)
+			ctxAgent := o.phaseAgent("context", plan.RoleContext)
+			if o.phaseEnabled("context") && !o.Pipeline().HasReplace("context") {
+				o.emitAgent("context", ctxAgent, "", "updating working context", "", "")
+				pack, _ := o.packer.Build(ctxAgent, query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor(ctxAgent, query))
+				ctxOut, ctxErr := o.runRoleTracked(ctx, ctxAgent, "", pack.Render()+
+					"\nRewrite CONTEXT.md for this query (markdown). ONLY reference files from the authoritative workspace list. Include: Active focus, Recent findings, Open questions.")
+				if ctxErr != nil {
+					o.emit("context", "warning: "+ctxErr.Error(), "")
+				}
+				if strings.TrimSpace(ctxOut) != "" {
+					_ = o.store.Write(contextstore.DocContext, ensureHeading(ctxOut, "# Working Context"))
+				} else if len(inventory) > 0 {
+					_ = o.store.Write(contextstore.DocContext, "# Working Context\n\n## Active focus\n\n"+query+
+						"\n\n## Recent findings\n\n(awaiting explorer)\n\n## Workspace inventory\n\n- "+
+						strings.Join(inventory, "\n- ")+"\n")
+				}
+			} else if o.Pipeline().HasReplace("context") {
+				if err := o.runPipelineSlots(ctx, "context", "replace", query, "", ""); err != nil {
+					return phaseResult{name: "context", err: err}
+				}
 			}
-		}
-		if err := o.runPipelineSlots(ctx, "architect", "after", query, exploreOut, ""); err != nil {
-			return nil, err
-		}
+			if err := o.runPipelineSlots(ctx, "context", "after", query, "", ""); err != nil {
+				return phaseResult{name: "context", err: err}
+			}
+			// Re-assert authoritative paths after the context rewrite (SLMs often invent main.go).
+			if len(inventory) > 0 {
+				invMD := "- " + strings.Join(inventory, "\n- ")
+				_ = o.store.Append(contextstore.DocContext, "Workspace inventory (authoritative)", invMD)
+				if real := plan.FilterExisting(o.cfg.Root, discoveredEarly); len(real) > 0 {
+					_ = o.store.Append(contextstore.DocContext, "Likely targets (existing files only)",
+						"- "+strings.Join(real, "\n- "))
+				}
+			}
+			// 1b Ensure PROJECT.md is populated (was empty scaffold during self-use)
+			o.ensureProjectDoc(inventory)
+			return phaseResult{name: "context"}
+		},
+		func() phaseResult {
+			// --- 2 Explore ---
+			if err := o.runPipelineSlots(ctx, "explore", "before", query, "", ""); err != nil {
+				return phaseResult{name: "explore", err: err}
+			}
+			exploreWhen := o.Pipeline().PhaseWhen("explore")
+			deep, reason := o.shouldDeepExplore(query)
+			if exploreWhen == pipeline.WhenNever || !o.phaseEnabled("explore") {
+				deep = false
+				reason = "pipeline: explore disabled"
+			} else if exploreWhen == pipeline.WhenAlways {
+				deep = true
+				reason = "pipeline: explore=always"
+			}
+			if o.Pipeline().HasReplace("explore") {
+				if err := o.runPipelineSlots(ctx, "explore", "replace", query, "", ""); err != nil {
+					return phaseResult{name: "explore", err: err}
+				}
+				exploreOut = `{"summary":"pipeline slot replaced explore","relevant_files":[],"notes":"custom explore slot"}`
+				o.shared.SetGlobal("exploration", exploreOut)
+				o.shared.SetGlobal("explore_mode", "slot")
+			} else if !deep {
+				o.emit("explore", reason, "")
+				discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, "")
+				ctxDoc, _ := o.store.Read(contextstore.DocContext)
+				memDoc, _ := o.store.Read(contextstore.DocMemory)
+				exploreOut = fmt.Sprintf(`{"summary":"reused project memory","relevant_files":[%s],"notes":"skipped deep explore"}`,
+					quoteJoin(discovered))
+				_ = o.store.Write(contextstore.DocScratch, "# Exploration (cached)\n\n"+exploreOut+
+					"\n\n## Context excerpt\n\n"+truncate(ctxDoc, 2000)+"\n\n## Memory excerpt\n\n"+truncate(memDoc, 1500))
+				o.shared.SetGlobal("exploration", exploreOut)
+				o.shared.SetGlobal("explore_mode", "cached")
+			} else {
+				expAgent := o.phaseAgent("explore", plan.RoleExplorer)
+				o.emitAgent("explore", expAgent, "", "codebase deep-dive", "", "")
+				expPack, _ := o.packer.Build(expAgent, query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor(expAgent, query))
+				explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
+				needDocs := (wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3) && o.phaseEnabled("docs") &&
+					o.Pipeline().PhaseWhen("docs") != pipeline.WhenNever
+				needArch := wantsArchitect(query) && o.cfg.ThinkPasses >= 2 && o.phaseEnabled("architect") &&
+					o.Pipeline().PhaseWhen("architect") != pipeline.WhenNever
+				if o.Pipeline().PhaseWhen("docs") == pipeline.WhenAlways {
+					needDocs = true
+				}
+				if o.Pipeline().PhaseWhen("architect") == pipeline.WhenAlways {
+					needArch = true
+				}
+				var exploreErr error
+				exploreOut, archOut, docsOut, exploreErr = o.speculateDigs(ctx, query, explorePrompt, inventory, needDocs, needArch)
+				if exploreErr != nil {
+					return phaseResult{name: "explore", err: fmt.Errorf("explorer: %w", exploreErr)}
+				}
+				if docsOut != "" {
+					_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
+					exploreOut += "\n\n" + docsOut
+					o.shared.SetGlobal("docs_exploration", docsOut)
+				}
+				if archOut != "" {
+					_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+					o.shared.SetGlobal("architecture", archOut)
+				}
+				_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
+				o.shared.SetGlobal("exploration", exploreOut)
+				o.shared.SetGlobal("explore_mode", "deep")
+			}
+			if err := o.runPipelineSlots(ctx, "explore", "after", query, exploreOut, ""); err != nil {
+				return phaseResult{name: "explore", err: err}
+			}
+			return phaseResult{name: "explore", output: exploreOut}
+		},
+	)
+
+	// Explore errors are fatal; context errors are non-blocking warnings.
+	if r, ok := parResults["explore"]; ok && r.err != nil {
+		return nil, r.err
 	}
 
-	// 2c Scope interview (AskUserQuestion / pi-clarify style) → locked PRD.
-	interview := o.runScopeInterview(ctx, query, exploreOut)
-	clarify := interview.ToClarifyResult()
-	prd := interview.PRD
+	// 2b+2c Architect + Clarify run in parallel after explore.
+	// Both depend on explore output but not on each other.
+	var interview plan.ScopeInterview
+	var clarify plan.ClarifyResult
+	var prd plan.ScopePRD
+
+	archClarifyResults := runPhaseParallel(ctx,
+		func() phaseResult {
+			// --- 2b Architect (skip if already ran in speculative digs) ---
+			archWhen := o.Pipeline().PhaseWhen("architect")
+			wantArch := o.phaseEnabled("architect") && archWhen != pipeline.WhenNever &&
+				(archWhen == pipeline.WhenAlways || wantsArchitect(query))
+			if wantArch && strings.TrimSpace(archOut) == "" {
+				if err := o.runPipelineSlots(ctx, "architect", "before", query, exploreOut, ""); err != nil {
+					return phaseResult{name: "architect", err: err}
+				}
+				if o.Pipeline().HasReplace("architect") {
+					if err := o.runPipelineSlots(ctx, "architect", "replace", query, exploreOut, ""); err != nil {
+						return phaseResult{name: "architect", err: err}
+					}
+				} else {
+					archAgent := o.phaseAgent("architect", "architect")
+					o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
+					archPack, _ := o.packer.Build(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
+					archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
+					if strings.TrimSpace(archOut) != "" {
+						_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+						o.shared.SetGlobal("architecture", archOut)
+					}
+				}
+				if err := o.runPipelineSlots(ctx, "architect", "after", query, exploreOut, ""); err != nil {
+					return phaseResult{name: "architect", err: err}
+				}
+			}
+			return phaseResult{name: "architect"}
+		},
+		func() phaseResult {
+			// --- 2c Clarify / scope interview ---
+			interview = o.runScopeInterview(ctx, query, exploreOut)
+			clarify = interview.ToClarifyResult()
+			prd = interview.PRD
+			return phaseResult{name: "clarify"}
+		},
+	)
+
+	// Architect errors are fatal.
+	if r, ok := archClarifyResults["architect"]; ok && r.err != nil {
+		return nil, r.err
+	}
 
 	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)

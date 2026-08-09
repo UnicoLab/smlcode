@@ -42,6 +42,15 @@ type BuildInput func(t plan.Task) string
 // Mutates board for the chosen action (retry / re_scope / mark_done / abort).
 type EscalateHandler func(ctx context.Context, board *plan.Board, t plan.Task, detail string)
 
+// weakTaskEntry holds metadata for a task that needs self-critique refinement.
+type weakTaskEntry struct {
+	idx        int
+	role       string
+	snapshot   map[string]string
+	passes     int
+	incomplete bool
+}
+
 // Runner executes parallel workers → review → correct against a live board.
 type Runner struct {
 	Executor       SubAgentRunner
@@ -260,6 +269,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	var needIdx []int
 	snapshots := make([]map[string]string, len(wave))
 	roles := make([]string, len(wave))
+	var weakTasks []weakTaskEntry
 	for i, t := range wave {
 		role := normalizeExecRole(t.Role)
 		roles[i] = role
@@ -441,6 +451,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		// Auto self-critique when output is weak, or when think_passes>=2 and
 		// status JSON looks incomplete (worker multipass port).
 		wantCritique := r.WorkerCritique || r.ThinkPasses >= 2
+		taskDeferredToParallel := false
 		if wantCritique && (role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector) {
 			coreOut := stripPostSections(t.Output)
 			incomplete := !multipass.LooksCompleteJSON(coreOut)
@@ -469,82 +480,107 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 						passes = max
 					}
 				}
-				for pass := 1; pass <= passes; pass++ {
-					r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
-					r.fire("agent_start", r.correctorID(), t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
-					issues := []string{
-						"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
-					}
-					if r.ThinkPasses >= 2 && incomplete {
-						issues = append(issues,
-							"think_passes: previous answer lacked complete status JSON — refine and finish the task.")
-					}
-					if quality.StaticFailedInOutput(t.Output) {
-						issues = append(issues, "Replace stubs/placeholders with real code")
-					}
-					if quality.ClaimsFailedInOutput(t.Output) {
-						issues = append(issues, "Only list files_changed paths that exist on disk")
-					}
-					if quality.SmokeFailedInOutput(t.Output) {
-						issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
-					}
-					if quality.AcceptanceFailedInOutput(t.Output) {
-						issues = append(issues, "Fix failures shown in Acceptance smoke — make acceptance commands exit 0")
-					}
-					corrIn := formatCorrectPrompt(t, plan.ReviewResult{
-						Approved: false, Issues: issues, Summary: "worker self-critique",
+				// Collect weak tasks for possible parallel self-critique.
+				// When MaxParallel >= 2 and multiple tasks are weak, critique is deferred
+				// to runSelfCritiqueParallel after the per-task loop; otherwise runs inline.
+				if r.MaxParallel >= 2 {
+					weakTasks = append(weakTasks, weakTaskEntry{
+						idx: j, role: role, snapshot: snapshots[i], passes: passes, incomplete: incomplete,
 					})
-					corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
-						AgentID: r.correctorID(), Input: corrIn,
-						Timeout: r.Timeout, ShareState: true,
-					}}, r.Shared)
-					if len(corr) > 0 {
-						r.noteUsage(corr[0], corrIn, outputString(corr[0]))
-						if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
-							t.Output = out
-							mergeFilesChanged(&t)
-							if hint := r.diskEvidenceHint(t, snapshots[i]); hint != "" {
-								t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
-							}
-							if r.PostWorkerSmoke && quality.ShouldSmokeTask(t) {
-								sr := quality.RunPostWorkerSmoke(ctx, r.Root, t, r.Timeout)
-								if sec := quality.FormatSmokeSection(sr); sec != "" {
-									t.Output = strings.TrimSpace(t.Output) + sec
+					taskDeferredToParallel = true
+				} else {
+					for pass := 1; pass <= passes; pass++ {
+						r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
+						r.fire("agent_start", r.correctorID(), t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
+						issues := []string{
+							"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
+						}
+						if r.ThinkPasses >= 2 && incomplete {
+							issues = append(issues,
+								"think_passes: previous answer lacked complete status JSON — refine and finish the task.")
+						}
+						if quality.StaticFailedInOutput(t.Output) {
+							issues = append(issues, "Replace stubs/placeholders with real code")
+						}
+						if quality.ClaimsFailedInOutput(t.Output) {
+							issues = append(issues, "Only list files_changed paths that exist on disk")
+						}
+						if quality.SmokeFailedInOutput(t.Output) {
+							issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
+						}
+						if quality.AcceptanceFailedInOutput(t.Output) {
+							issues = append(issues, "Fix failures shown in Acceptance smoke — make acceptance commands exit 0")
+						}
+						corrIn := formatCorrectPrompt(t, plan.ReviewResult{
+							Approved: false, Issues: issues, Summary: "worker self-critique",
+						})
+						corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+							AgentID: r.correctorID(), Input: corrIn,
+							Timeout: r.Timeout, ShareState: true,
+						}}, r.Shared)
+						if len(corr) > 0 {
+							r.noteUsage(corr[0], corrIn, outputString(corr[0]))
+							if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
+								t.Output = out
+								mergeFilesChanged(&t)
+								if hint := r.diskEvidenceHint(t, snapshots[i]); hint != "" {
+									t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
 								}
-							}
-							if role == plan.RoleWorker || role == "deep" {
-								if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
-									if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+								if r.PostWorkerSmoke && quality.ShouldSmokeTask(t) {
+									sr := quality.RunPostWorkerSmoke(ctx, r.Root, t, r.Timeout)
+									if sec := quality.FormatSmokeSection(sr); sec != "" {
 										t.Output = strings.TrimSpace(t.Output) + sec
 									}
 								}
-							}
-							if r.StaticQuality {
-								if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
-									t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+								if role == plan.RoleWorker || role == "deep" {
+									if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
+										if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+											t.Output = strings.TrimSpace(t.Output) + sec
+										}
+									}
 								}
-							}
-							if r.ClaimsGate {
-								if issues := quality.CheckClaimedFiles(r.Root, t); len(issues) > 0 {
-									t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+								if r.StaticQuality {
+									if issues := quality.CheckStaticQuality(r.Root, t); len(issues) > 0 {
+										t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+									}
+								}
+								if r.ClaimsGate {
+									if issues := quality.CheckClaimedFiles(r.Root, t); len(issues) > 0 {
+										t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+									}
 								}
 							}
 						}
-					}
-					r.fire("agent_end", r.correctorID(), t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
-					coreOut = stripPostSections(t.Output)
-					incomplete = !multipass.LooksCompleteJSON(coreOut)
-					if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
-						!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) &&
-						!quality.AcceptanceFailedInOutput(t.Output) {
-						break
+						r.fire("agent_end", r.correctorID(), t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
+						coreOut = stripPostSections(t.Output)
+						incomplete = !multipass.LooksCompleteJSON(coreOut)
+						if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
+							!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) &&
+							!quality.AcceptanceFailedInOutput(t.Output) {
+							break
+						}
 					}
 				}
 			}
 		}
-		r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
-		t.MoveTo(plan.ColInReview)
-		board.UpdateTask(t)
+		if !taskDeferredToParallel {
+			r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
+			t.MoveTo(plan.ColInReview)
+			board.UpdateTask(t)
+		}
+	}
+
+	// ── Self-critique: run weak-task refinement in parallel ──
+	if len(weakTasks) > 1 && r.MaxParallel >= 2 {
+		r.runSelfCritiqueParallel(ctx, board, needExec, weakTasks)
+	} else {
+		for _, wt := range weakTasks {
+			t := &needExec[wt.idx]
+			r.runSelfCritiqueInline(ctx, t, wt.role, wt.snapshot, wt.passes, wt.incomplete)
+			r.fire("agent_end", wt.role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
+			t.MoveTo(plan.ColInReview)
+			board.UpdateTask(*t)
+		}
 	}
 
 	// ── Review wave: run review+correct in parallel for independent tasks ──
@@ -2012,6 +2048,188 @@ func (r *Runner) reviewWave(ctx context.Context, board *plan.Board, tasks []plan
 				mu.Unlock()
 			}
 		}(g)
+	}
+	wg.Wait()
+}
+
+// runSelfCritiqueInline runs the multi-pass self-critique loop for a single task
+// without mutex protection (caller must ensure sequential access).
+func (r *Runner) runSelfCritiqueInline(ctx context.Context, t *plan.Task, role string, snapshot map[string]string, passes int, incomplete bool) {
+	for pass := 1; pass <= passes; pass++ {
+		r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
+		r.fire("agent_start", r.correctorID(), t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
+		issues := []string{
+			"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
+		}
+		if r.ThinkPasses >= 2 && incomplete {
+			issues = append(issues,
+				"think_passes: previous answer lacked complete status JSON — refine and finish the task.")
+		}
+		if quality.StaticFailedInOutput(t.Output) {
+			issues = append(issues, "Replace stubs/placeholders with real code")
+		}
+		if quality.ClaimsFailedInOutput(t.Output) {
+			issues = append(issues, "Only list files_changed paths that exist on disk")
+		}
+		if quality.SmokeFailedInOutput(t.Output) {
+			issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
+		}
+		if quality.AcceptanceFailedInOutput(t.Output) {
+			issues = append(issues, "Fix failures shown in Acceptance smoke — make acceptance commands exit 0")
+		}
+		corrIn := formatCorrectPrompt(*t, plan.ReviewResult{
+			Approved: false, Issues: issues, Summary: "worker self-critique",
+		})
+		corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+			AgentID: r.correctorID(), Input: corrIn,
+			Timeout: r.Timeout, ShareState: true,
+		}}, r.Shared)
+		if len(corr) > 0 {
+			r.noteUsage(corr[0], corrIn, outputString(corr[0]))
+			if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
+				t.Output = out
+				mergeFilesChanged(t)
+				if hint := r.diskEvidenceHint(*t, snapshot); hint != "" {
+					t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
+				}
+				if r.PostWorkerSmoke && quality.ShouldSmokeTask(*t) {
+					sr := quality.RunPostWorkerSmoke(ctx, r.Root, *t, r.Timeout)
+					if sec := quality.FormatSmokeSection(sr); sec != "" {
+						t.Output = strings.TrimSpace(t.Output) + sec
+					}
+				}
+				if role == plan.RoleWorker || role == "deep" {
+					if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
+						if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+							t.Output = strings.TrimSpace(t.Output) + sec
+						}
+					}
+				}
+				if r.StaticQuality {
+					if issues := quality.CheckStaticQuality(r.Root, *t); len(issues) > 0 {
+						t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+					}
+				}
+				if r.ClaimsGate {
+					if issues := quality.CheckClaimedFiles(r.Root, *t); len(issues) > 0 {
+						t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+					}
+				}
+			}
+		}
+		r.fire("agent_end", r.correctorID(), t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
+		coreOut := stripPostSections(t.Output)
+		incomplete = !multipass.LooksCompleteJSON(coreOut)
+		if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
+			!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) &&
+			!quality.AcceptanceFailedInOutput(t.Output) {
+			break
+		}
+	}
+}
+
+// runSelfCritiqueParallel runs self-critique for multiple weak tasks in parallel goroutines.
+// Each goroutine runs the same refinement loop as runSelfCritiqueInline with mutex
+// protection for shared logger, event, usage, and board operations.
+func (r *Runner) runSelfCritiqueParallel(ctx context.Context, board *plan.Board, needExec []plan.Task, entries []weakTaskEntry) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, r.MaxParallel)
+	for i := range entries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(e *weakTaskEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			t := &needExec[e.idx]
+			role := e.role
+			passes := e.passes
+			incomplete := e.incomplete
+			for pass := 1; pass <= passes; pass++ {
+				mu.Lock()
+				r.Log("%s worker-critique: weak/incomplete output — refine pass %d/%d", t.ID, pass, passes)
+				r.fire("agent_start", r.correctorID(), t.ID, "worker self-critique", strings.Join(t.Files, ", "), "")
+				mu.Unlock()
+
+				issues := []string{
+					"Self-critique: fix smoke/static/claims failures; make real ws_edit/ws_patch; re-smoke; finish with status JSON.",
+				}
+				if r.ThinkPasses >= 2 && incomplete {
+					issues = append(issues,
+						"think_passes: previous answer lacked complete status JSON — refine and finish the task.")
+				}
+				if quality.StaticFailedInOutput(t.Output) {
+					issues = append(issues, "Replace stubs/placeholders with real code")
+				}
+				if quality.ClaimsFailedInOutput(t.Output) {
+					issues = append(issues, "Only list files_changed paths that exist on disk")
+				}
+				if quality.SmokeFailedInOutput(t.Output) {
+					issues = append(issues, "Fix compile/test failures shown in Deterministic smoke")
+				}
+				if quality.AcceptanceFailedInOutput(t.Output) {
+					issues = append(issues, "Fix failures shown in Acceptance smoke — make acceptance commands exit 0")
+				}
+
+				corrIn := formatCorrectPrompt(*t, plan.ReviewResult{
+					Approved: false, Issues: issues, Summary: "worker self-critique",
+				})
+				corr, _ := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
+					AgentID: r.correctorID(), Input: corrIn,
+					Timeout: r.Timeout, ShareState: true,
+				}}, r.Shared)
+
+				mu.Lock()
+				if len(corr) > 0 {
+					r.noteUsage(corr[0], corrIn, outputString(corr[0]))
+					if out := outputString(corr[0]); strings.TrimSpace(out) != "" {
+						t.Output = out
+						mergeFilesChanged(t)
+						if hint := r.diskEvidenceHint(*t, e.snapshot); hint != "" {
+							t.Output = strings.TrimSpace(t.Output) + "\n\n## Disk evidence\n" + hint
+						}
+						if r.PostWorkerSmoke && quality.ShouldSmokeTask(*t) {
+							sr := quality.RunPostWorkerSmoke(ctx, r.Root, *t, r.Timeout)
+							if sec := quality.FormatSmokeSection(sr); sec != "" {
+								t.Output = strings.TrimSpace(t.Output) + sec
+							}
+						}
+						if role == plan.RoleWorker || role == "deep" {
+							if ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout); ar.Ran {
+								if sec := quality.FormatAcceptanceSection(ar); sec != "" {
+									t.Output = strings.TrimSpace(t.Output) + sec
+								}
+							}
+						}
+						if r.StaticQuality {
+							if issues := quality.CheckStaticQuality(r.Root, *t); len(issues) > 0 {
+								t.Output = strings.TrimSpace(t.Output) + quality.FormatStaticSection(issues)
+							}
+						}
+						if r.ClaimsGate {
+							if issues := quality.CheckClaimedFiles(r.Root, *t); len(issues) > 0 {
+								t.Output = strings.TrimSpace(t.Output) + quality.FormatClaimsSection(issues)
+							}
+						}
+					}
+				}
+				r.fire("agent_end", r.correctorID(), t.ID, "worker self-critique finished", "", truncate(t.Output, 800))
+				mu.Unlock()
+
+				coreOut := stripPostSections(t.Output)
+				incomplete = !multipass.LooksCompleteJSON(coreOut)
+				if !incomplete && !quality.SmokeFailedInOutput(t.Output) &&
+					!quality.StaticFailedInOutput(t.Output) && !quality.ClaimsFailedInOutput(t.Output) &&
+					!quality.AcceptanceFailedInOutput(t.Output) {
+					break
+				}
+			}
+			mu.Lock()
+			r.fire("agent_end", role, t.ID, "worker finished", strings.Join(t.Files, ", "), truncate(t.Output, 1200))
+			t.MoveTo(plan.ColInReview)
+			board.UpdateTask(*t)
+			mu.Unlock()
+		}(&entries[i])
 	}
 	wg.Wait()
 }

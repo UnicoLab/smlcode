@@ -21,7 +21,7 @@ const (
 	DefaultModel    = "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"
 
 	DefaultMaxRetries   = 4
-	DefaultMaxParallel  = 2
+	DefaultMaxParallel  = 4
 	DefaultThinkPasses  = 1
 	DefaultMaxContextKB = 16
 	DefaultTaskTimeout  = 12 * time.Minute

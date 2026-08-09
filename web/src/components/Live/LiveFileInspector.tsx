@@ -94,7 +94,8 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
   for (const event of events) {
     const output = event.output || '';
     try {
-      const m = output.match(/"files_changed"\s*:\s*\[(.*?)\]/);
+      // Match files_changed array across multiple lines
+      const m = output.match(/"files_changed"\s*:\s*\[([\s\S]*?)\]/);
       if (m) {
         const arr = JSON.parse('[' + m[1] + ']');
         for (const f of arr) {

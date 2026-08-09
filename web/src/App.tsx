@@ -11,7 +11,7 @@ import FileInspector from './components/Files/FileInspector';
 import SkillManager from './components/Skills/SkillManager';
 import MarkdownEditorView from './components/Docs/MarkdownEditor';
 import { getHealth, getConfig } from './api/client';
-import type { Config, Health } from './types';
+import type { Config, Health, RunEvent, LatestRunResponse } from './types';
 
 export interface AppContextValue {
   health: Health | null;
@@ -19,6 +19,12 @@ export interface AppContextValue {
   dark: boolean;
   toggleDark: () => void;
   refresh: () => void;
+  liveEvents: RunEvent[];
+  setLiveEvents: (events: RunEvent[] | ((prev: RunEvent[]) => RunEvent[])) => void;
+  liveRunning: boolean;
+  setLiveRunning: (r: boolean) => void;
+  liveResult: LatestRunResponse | null;
+  setLiveResult: (r: LatestRunResponse | null) => void;
 }
 
 export const AppContext = React.createContext<AppContextValue | null>(null);
@@ -31,6 +37,9 @@ export default function App() {
     if (stored) return stored === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
+  const [liveEvents, setLiveEvents] = useState<RunEvent[]>([]);
+  const [liveRunning, setLiveRunning] = useState(false);
+  const [liveResult, setLiveResult] = useState<LatestRunResponse | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -54,7 +63,7 @@ export default function App() {
   }, [refresh]);
 
   return (
-    <AppContext.Provider value={{ health, config, dark, toggleDark, refresh }}>
+    <AppContext.Provider value={{ health, config, dark, toggleDark, refresh, liveEvents, setLiveEvents, liveRunning, setLiveRunning, liveResult, setLiveResult }}>
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<LiveView />} />
@@ -62,7 +71,7 @@ export default function App() {
           <Route path="pipeline" element={<PipelineEditor />} />
           <Route path="agents" element={<AgentManager />} />
           <Route path="blocks" element={<BlockManager />} />
-          <Route path="files" element={<FileInspector events={[]} running={false} />} />
+          <Route path="files" element={<FileInspector events={liveEvents} running={liveRunning} />} />
           <Route path="skills" element={<SkillManager />} />
           <Route path="docs/:docId" element={<MarkdownEditorView />} />
           <Route path="settings" element={<SettingsPanel />} />

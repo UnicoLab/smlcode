@@ -92,9 +92,12 @@ type PhaseState = 'pending' | 'active' | 'completed';
 
 export default function LiveView() {
   const ctx = useContext(AppContext);
-  const [events, setEvents] = useState<RunEvent[]>([]);
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<LatestRunResponse | null>(null);
+  const events = ctx?.liveEvents || [];
+  const setEvents = ctx?.setLiveEvents || (() => {});
+  const running = ctx?.liveRunning || false;
+  const setRunning = ctx?.setLiveRunning || (() => {});
+  const result = ctx?.liveResult || null;
+  const setResult = ctx?.setLiveResult || (() => {});
   const [query, setQuery] = useState('');
   const [sidebarTab, setSidebarTab] = useState<'tasks' | 'result' | 'files'>('tasks');
   const [agents, setAgents] = useState<AgentSpec[]>([]);

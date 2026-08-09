@@ -379,6 +379,26 @@ export default function FileInspector({ events, running }: Props) {
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
   const [fetchedContent, setFetchedContent] = useState<string | null>(null);
+  const [validFiles, setValidFiles] = useState<Set<string>>(new Set());
+
+  // Validate extracted files against workspace (only show files that exist)
+  useEffect(() => {
+    const extracted = extractFiles(events);
+    const filesToCheck = extracted.map(f => f.path);
+    if (filesToCheck.length === 0) return;
+    let cancelled = false;
+    // Check first 20 files (batch)
+    const check = filesToCheck.slice(0, 20);
+    Promise.allSettled(check.map(p => getWorkspaceFile(p))).then(results => {
+      if (cancelled) return;
+      const valid = new Set<string>();
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') valid.add(check[i]);
+      });
+      setValidFiles(valid);
+    });
+    return () => { cancelled = true; };
+  }, [events]);
 
   // Fetch actual file content from workspace when a file is selected
   useEffect(() => {
@@ -393,7 +413,13 @@ export default function FileInspector({ events, running }: Props) {
   }, [selectedFile]);
 
   // ── Derived data ──
-  const files = useMemo(() => extractFiles(events), [events]);
+  const allFiles = useMemo(() => extractFiles(events), [events]);
+  // Only show files that exist in workspace, or all files if none validated yet
+  const files = useMemo(() => {
+    if (validFiles.size > 0) return allFiles.filter(f => validFiles.has(f.path));
+    // Also filter out common false positives (files mentioned in agent instructions)
+    return allFiles.filter(f => !f.path.startsWith('pkg/') && !f.path.startsWith('cmd/') && f.path !== 'AGENTS.md');
+  }, [allFiles, validFiles]);
 
   const selectedFileInfo = useMemo(
     () => files.find((f) => f.path === selectedFile) ?? null,

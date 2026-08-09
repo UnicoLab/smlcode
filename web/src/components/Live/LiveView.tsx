@@ -366,10 +366,9 @@ export default function LiveView() {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* ── NEW: Pipeline Progress Strip ── */}
+      {/* Pipeline Progress Strip — always visible */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {hasActivity && (
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white/50 dark:bg-gray-900/50">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white/50 dark:bg-gray-900/50">
           <div className="flex items-center gap-2 mb-2">
             <Layers size={14} className="text-gray-400" />
             <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
@@ -468,13 +467,11 @@ export default function LiveView() {
             })}
           </div>
         </div>
-      )}
 
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* ── NEW: Stats Dashboard Row ── */}
+      {/* Stats Dashboard Row — always visible */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {hasActivity && (
-        <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 glass-alt">
+      <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 glass-alt">
           <div className="flex items-center gap-4 flex-wrap">
             {/* Phases completed */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
@@ -542,10 +539,9 @@ export default function LiveView() {
             )}
           </div>
         </div>
-      )}
 
       {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* ── NEW: Active Agent Panel ── */}
+      {/* Active Agent Panel */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       {running && activeAgentId && (
         <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-violet-50/40 dark:bg-violet-950/20">

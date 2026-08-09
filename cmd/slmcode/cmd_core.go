@@ -277,15 +277,18 @@ Examples:
 			if err != nil {
 				return err
 			}
+			url := "http://" + addr
 			fmt.Print(cli.Banner())
 			fmt.Println(cli.Success("Studio listening"))
-			cli.KeyVal("url", "http://"+addr)
+			fmt.Printf("  url             \033]8;;%s\033\\%s\033]8;;\033\\\n", url, url)
 			cli.KeyVal("root", h.Config.Root)
 			cli.KeyVal("provider", h.Config.Provider+" / "+h.Config.Model)
 			if portAuto {
 				fmt.Println(cli.Dim("  (--port-auto enabled — will auto-switch on next conflict)"))
 			}
-			fmt.Println(cli.Dim("\n  Edit context & kanban while agents run. Ctrl+C to stop.\n"))
+			// Auto-open browser
+			go openBrowser(url)
+			fmt.Println(cli.Dim("\n  Opening browser… Ctrl+C to stop.\n"))
 			return server.New(h, uiFS).ListenAndServe(addr)
 		},
 	}

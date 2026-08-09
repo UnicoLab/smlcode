@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"time"
@@ -427,5 +428,21 @@ func watchCmd() *cobra.Command {
 				}
 			}
 		},
+	}
+}
+
+// openBrowser tries to open url in the default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch {
+	case runtime.GOOS == "darwin":
+		cmd = exec.Command("open", url)
+	case runtime.GOOS == "linux":
+		cmd = exec.Command("xdg-open", url)
+	case runtime.GOOS == "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	}
+	if cmd != nil {
+		_ = cmd.Run()
 	}
 }

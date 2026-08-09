@@ -160,8 +160,8 @@ func resolveAddr(addr string) (host string, port int) {
 }
 
 // killExistingStudio finds and kills any slmcode process listening on the given
-// address. Returns true if one was found and killed.
-func killExistingStudio(addr string) bool {
+// address. If force is true, uses SIGKILL instead of SIGTERM.
+func killExistingStudio(addr string, force bool) bool {
 	_, port := resolveAddr(addr)
 	if port == 0 {
 		return false
@@ -197,7 +197,11 @@ func killExistingStudio(addr string) bool {
 		if err != nil {
 			continue
 		}
-		if err := proc.Signal(syscall.SIGTERM); err == nil {
+		sig := syscall.SIGTERM
+		if force {
+			sig = syscall.SIGKILL
+		}
+		if err := proc.Signal(sig); err == nil {
 			fmt.Println(cli.Warn(fmt.Sprintf("Killed existing slmcode studio (pid %d) on port %d", pid, port)))
 			killed = true
 		}
@@ -224,7 +228,8 @@ func nextFreeAddr(addr string) string {
 }
 
 func studioCmd() *cobra.Command {
-	var killExisting bool
+	var noKill bool
+	var forceKill bool
 	var portAuto bool
 
 	cmd := &cobra.Command{
@@ -260,17 +265,23 @@ Examples:
 						fmt.Println(cli.Warn(fmt.Sprintf("Port %s in use → auto-switching to %s", addr, newAddr)))
 						addr = newAddr
 					}
-				} else if !killExisting {
+				} else if !noKill {
 					// Default: kill the existing instance.
-					killExistingStudio(addr)
+					forceKill := forceKill
+					killExistingStudio(addr, forceKill)
 					if portIsBound(addr) {
-						// Still bound — maybe a non-slmcode process.
-						fmt.Println(cli.Warn(fmt.Sprintf("Port %s is in use by another process.", addr)))
-						fmt.Println(cli.Dim("  Use --port-auto to auto-switch, or --no-kill to see the original error."))
-						return fmt.Errorf("port %s is in use and could not be freed — try --port-auto", addr)
+						// Still bound — try force kill
+						if !forceKill {
+							killExistingStudio(addr, true)
+						}
+						if portIsBound(addr) {
+							fmt.Println(cli.Warn(fmt.Sprintf("Port %s is in use by another process.", addr)))
+							fmt.Println(cli.Dim("  Use --port-auto to auto-switch, --kill to force-kill, or --no-kill to skip."))
+							return fmt.Errorf("port %s is in use and could not be freed", addr)
+						}
 					}
 				}
-				// If --no-kill (killExisting=true but we skipped above) — let ListenAndServe fail naturally.
+				// If --no-kill — let ListenAndServe fail naturally.
 			}
 
 			uiFS, err := fs.Sub(uiEmbed, "ui")
@@ -293,7 +304,8 @@ Examples:
 		},
 	}
 	cmd.Flags().StringVar(&flagListen, "listen", "", "listen address (default from config)")
-	cmd.Flags().BoolVar(&killExisting, "no-kill", false, "do NOT auto-kill existing studio on the same port")
+	cmd.Flags().BoolVar(&noKill, "no-kill", false, "do NOT auto-kill existing studio on the same port")
+	cmd.Flags().BoolVar(&forceKill, "kill", false, "force-kill existing studio with SIGKILL")
 	cmd.Flags().BoolVar(&portAuto, "port-auto", false, "auto-switch to next free port if the target is in use")
 	return cmd
 }

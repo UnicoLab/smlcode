@@ -1,8 +1,6 @@
 import { useState, useContext, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Play,
-  Square,
   Moon,
   Sun,
   Zap,
@@ -10,7 +8,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { AppContext } from '@/App';
-import { startRun, stopRun, getModels, getAgents, updateConfig } from '@/api/client';
+import { getModels, getAgents, updateConfig } from '@/api/client';
 import type { AgentSpec, AuthStatus, ModelCost } from '@/types';
 import clsx from 'clsx';
 
@@ -18,8 +16,6 @@ export default function TopBar() {
   const ctx = useContext(AppContext);
   const navigate = useNavigate();
 
-  const [query, setQuery] = useState('');
-  const [running, setRunning] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [modelCosts, setModelCosts] = useState<Record<string, ModelCost>>({});
   const [enabledModels, setEnabledModels] = useState<string[]>([]);
@@ -79,31 +75,6 @@ export default function TopBar() {
     await handleModelSelect(next);
   };
 
-  const handleRun = async () => {
-    const q = query.trim();
-    if (!q || running) return;
-    setRunning(true);
-    try {
-      await startRun({
-        query: q,
-        mode: specialist ? 'specialist' : undefined,
-        specialist: specialist || undefined,
-        skills: ctx?.config?.pinned_skills,
-      });
-    } catch (e) {
-      console.error('Run failed:', e);
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const handleStop = async () => {
-    try {
-      await stopRun();
-    } catch { /* ignore */ }
-    setRunning(false);
-  };
-
   const handleModelSelect = async (model: string) => {
     setShowModelMenu(false);
     try {
@@ -138,36 +109,7 @@ export default function TopBar() {
         <span className="text-xs text-gray-400 hidden md:inline">Studio</span>
       </button>
 
-      <div className="flex-1 max-w-2xl mx-auto">
-        <div className="relative">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleRun()}
-            placeholder="What would you like to build? e.g. add JWT auth to the API…"
-            className="w-full h-9 px-4 pr-10 rounded-lg bg-gray-100 dark:bg-gray-800 border border-transparent
-                       focus:border-brand-500 focus:bg-white dark:focus:bg-gray-900 text-sm
-                       placeholder-gray-400 dark:placeholder-gray-500 transition-all duration-150"
-          />
-          <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            {running ? (
-              <button onClick={handleStop} className="btn-ghost p-1.5 rounded-md text-red-500" title="Stop run">
-                <Square size={16} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                onClick={handleRun}
-                disabled={!query.trim()}
-                className="btn-ghost p-1.5 rounded-md text-brand-500 disabled:text-gray-400"
-                title="Run"
-              >
-                <Play size={16} fill="currentColor" />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+      <div className="flex-1" />
 
       {/* Specialist selector */}
       {agents.length > 0 && (

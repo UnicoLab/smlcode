@@ -24,6 +24,9 @@ stack ?= omlx-local
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
 
+# ── Block management ──
+.PHONY: blocks-list blocks-validate blocks-show blocks-apply-go blocks-apply-python blocks-apply-react
+
 help: ## Show this help
 	@echo "SLMCode Makefile — v$(VERSION)"
 	@echo ""
@@ -46,6 +49,14 @@ help: ## Show this help
 	@echo "    make stack-new          name=my-stack    Create new stack from current config"
 	@echo ""
 	@echo "  Available stacks: $(shell ls $(STACKS_DIR)/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml//' | tr '\n' ' ')"
+	@echo ""
+	@echo "  Block commands:"
+	@echo "    make blocks-list                        List all building blocks"
+	@echo "    make blocks-validate                    Validate all block YAML configs"
+	@echo "    make blocks-show      kind=pipeline id=go   Show a block"
+	@echo "    make blocks-apply-go                   Apply Go language pack"
+	@echo "    make blocks-apply-python               Apply Python language pack"
+	@echo "    make blocks-apply-react                Apply React/TS language pack"
 	@echo ""
 	@echo "  Docs:"
 	@echo "    make docs-build      Build MkDocs site"
@@ -120,6 +131,52 @@ stack-new:
 	@cp "$${SLMCODE_CONFIG:-$(pwd)/.slmcode/config.yaml}" "$(STACKS_DIR)/$(name).yaml"
 	@echo "✔ Created stack '$(name)' at stacks/$(name).yaml"
 	@echo "  Edit: make stack-edit stack=$(name)"
+
+# ── Blocks: list all building blocks ──
+blocks-list:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks list; \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks list; \
+	else echo "Run: make build && ./bin/slmcode blocks list"; exit 1; fi
+
+# ── Blocks: validate all YAML configs ──
+blocks-validate:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks validate; \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks validate; \
+	else echo "Run: make build && ./bin/slmcode blocks validate"; exit 1; fi
+
+# ── Blocks: show a specific block ──
+# Usage: make blocks-show kind=pipeline id=go
+kind ?= pipeline
+id ?= go
+blocks-show:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks show $(kind) $(id); \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks show $(kind) $(id); \
+	else echo "Run: make build"; exit 1; fi
+
+# ── Blocks: apply language packs ──
+blocks-apply-go:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks apply go; \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks apply go; \
+	else echo "Run: make build"; exit 1; fi
+
+blocks-apply-python:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks apply python; \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks apply python; \
+	else echo "Run: make build"; exit 1; fi
+
+blocks-apply-react:
+	@if [ -x ./bin/slmcode ]; then ./bin/slmcode blocks apply react; \
+	elif command -v slmcode >/dev/null 2>&1; then slmcode blocks apply react; \
+	else echo "Run: make build"; exit 1; fi
+
+# ── UI: build React Studio and update embedded UI ──
+ui-react: ## Build React/Vite Studio UI and sync to embed directory
+	@echo "Building React Studio UI..."
+	cd web && npm run build
+	@echo "Syncing to embed directory..."
+	rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
+	cp -r web/dist/* cmd/slmcode/ui/
+	@echo "✔ React Studio UI synced to cmd/slmcode/ui/"
 
 tidy: ## Tidy Go modules
 	go mod tidy

@@ -8,6 +8,7 @@ site/
 web/node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
+*.js.map
 .env
 .env.*
 .env.local

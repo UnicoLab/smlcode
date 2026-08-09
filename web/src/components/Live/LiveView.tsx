@@ -262,21 +262,18 @@ export default function LiveView() {
   const stats = useMemo(() => {
     const completed = Object.values(phaseStateMap).filter((s) => s === 'completed').length;
 
-    // Tasks running: count unique task_ids that have started but not finished
-    const taskStarts = new Set<string>();
-    const taskEnds = new Set<string>();
+    // Tasks: count unique task_ids from ALL events (more reliable than kind-matching)
+    const taskIds = new Set<string>();
     for (const e of events) {
-      if (!e.task_id) continue;
-      if (e.kind === 'task_start') taskStarts.add(e.task_id);
-      if (e.kind === 'task_done' || e.kind === 'task_fail') taskEnds.add(e.task_id);
+      if (e.task_id) taskIds.add(e.task_id);
     }
-    const tasksRunning = [...taskStarts].filter((id) => !taskEnds.has(id)).length;
+    const tasksSeen = taskIds.size;
 
     return {
       phasesCompleted: completed,
       totalPhases,
       activeAgent: activeAgentId,
-      tasksRunning,
+      tasksSeen,
       eventsCount: events.length,
     };
   }, [phaseStateMap, totalPhases, activeAgentId, events]);
@@ -508,16 +505,16 @@ export default function LiveView() {
               </div>
             </div>
 
-            {/* Tasks running */}
+            {/* Tasks */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
               <Zap size={14} className="text-amber-500" />
               <div>
                 <span className="text-[10px] text-gray-400 font-medium">Tasks</span>
                 <span className="ml-1.5 text-sm font-bold text-gray-800 dark:text-gray-200 tabular-nums">
-                  {stats.tasksRunning > 0 ? (
-                    <span className="text-amber-600 dark:text-amber-400">{stats.tasksRunning} running</span>
+                  {stats.tasksSeen > 0 ? (
+                    <span className="text-amber-600 dark:text-amber-400">{stats.tasksSeen}</span>
                   ) : (
-                    <span className="text-gray-400">—</span>
+                    <span className="text-gray-400">0</span>
                   )}
                 </span>
               </div>

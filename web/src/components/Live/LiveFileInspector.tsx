@@ -90,35 +90,65 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
   const seen = new Set<string>();
   const results: FileInfo[] = [];
 
+  // 1. Parse files_changed from worker JSON outputs
+  for (const event of events) {
+    const output = event.output || '';
+    try {
+      const m = output.match(/"files_changed"\s*:\s*\[(.*?)\]/);
+      if (m) {
+        const arr = JSON.parse('[' + m[1] + ']');
+        for (const f of arr) {
+          const path = String(f).trim().replace(/^["'`]+|["'`]+$/g, '');
+          if (path && path.length > 1 && !seen.has(path) && !path.includes('node_modules') && !path.includes('.git/')) {
+            seen.add(path);
+            results.push({ path, status: 'changed', events: [], lastEvent: null });
+          }
+        }
+      }
+    } catch {}
+    // Also try simple JSON parse of the whole output
+    try {
+      const obj = JSON.parse(output);
+      if (obj.files_changed && Array.isArray(obj.files_changed)) {
+        for (const f of obj.files_changed) {
+          const path = String(f).trim();
+          if (path && path.length > 1 && !seen.has(path) && !path.includes('node_modules') && !path.includes('.git/')) {
+            seen.add(path);
+            results.push({ path, status: 'changed', events: [], lastEvent: null });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Also extract from event messages/scopes using regex + standalone filenames
   for (const event of events) {
     const texts = [event.scope, event.message, event.output].filter(Boolean) as string[];
 
     for (const text of texts) {
+      // Regex patterns
       for (const pattern of FILE_PATTERNS) {
         pattern.lastIndex = 0;
         let match: RegExpExecArray | null;
         while ((match = pattern.exec(text)) !== null) {
-          let path = match[0]
-            .trim()
-            .replace(/^["'`([{]+/, '')
-            .replace(/["'`)\]:;,!?]+$/, '');
-
-          // skip obviously invalid
-          if (path.length < 4) continue;
+          let path = match[0].trim().replace(/^["'`([{]+/, '').replace(/["'`)\]:;,!?]+$/, '');
+          if (path.length < 2) continue;
           if (path === '/' || path === './' || path === '../') continue;
-
-          // normalize leading ./ or leading /
           path = path.replace(/^\.\//, '');
-
           if (seen.has(path)) continue;
           seen.add(path);
-          results.push({
-            path,
-            status: 'unknown',
-            events: [],
-            lastEvent: null,
-          });
+          results.push({ path, status: 'unknown', events: [], lastEvent: null });
         }
+      }
+      // Standalone filenames with extensions (no directory prefix)
+      const simpleRe = /([\w.-]+\.(?:go|py|tsx?|jsx?|rs|java|rb|css|html|md|yaml|yml|json|toml))/gi;
+      let sm: RegExpExecArray | null;
+      while ((sm = simpleRe.exec(text)) !== null) {
+        const path = sm[1];
+        if (seen.has(path)) continue;
+        if (path.startsWith('.') && path.length < 4) continue;
+        seen.add(path);
+        results.push({ path, status: 'unknown', events: [], lastEvent: null });
       }
     }
   }

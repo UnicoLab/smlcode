@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.1 — LiveView Pipeline Progress, Task Management & Context Injection
+
+### Highlights
+- **Pipeline Progress Strip** — Visual tracker showing 5 groups (Prepare→Design→Build→Verify→Finish)
+  with 16 colored phase dots, active pulse animations, and completed checkmarks.
+- **Stats Dashboard** — Real-time phases completed, active agent, tasks in-flight, events count.
+- **Active Agent Panel** — Current agent with description + recent events during runs.
+- **LiveTaskPanel** — Tabbed right sidebar with full task CRUD (add/edit/delete),
+  context injection (CONTEXT.md editor), and worker precision temperature slider.
+- **Collapsible Event Log** — Toggle to show/hide the streaming event feed.
+- **Tabbed Right Sidebar** — Tasks tab + Results tab for better information organization.
+- All existing functionality preserved: SSE streaming, run/stop, specialist picker,
+  config badges, event scrolling, result summary.
+
+---
+
 ## v0.10.0 — Building Blocks, Language Packs & One-Click Pipeline Switching
 
 ### Highlights

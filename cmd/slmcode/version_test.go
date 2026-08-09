@@ -19,9 +19,13 @@ func TestUIEmbedPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"app.jsx": true, "styles.css": true, "index.html": true}
+	want := map[string]bool{"index.html": true, "assets": true}
 	for _, e := range entries {
-		delete(want, e.Name())
+		if e.IsDir() {
+			delete(want, e.Name())
+		} else {
+			delete(want, e.Name())
+		}
 	}
 	if len(want) > 0 {
 		t.Fatalf("missing ui files: %v", want)

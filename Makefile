@@ -183,10 +183,9 @@ tidy: ## Tidy Go modules
 
 # Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed.
 ui-check: ## Smoke-test the embedded UI files
-	@test -f cmd/slmcode/ui/styles.css && test -f cmd/slmcode/ui/app.jsx && test -f cmd/slmcode/ui/index.html
-	@grep -q 'data-theme' cmd/slmcode/ui/styles.css
-	@grep -q 'slmcode-theme' cmd/slmcode/ui/app.jsx
-	@echo "ui-check: OK (embedded by go:embed all:ui)"
+	@test -f cmd/slmcode/ui/index.html && test -d cmd/slmcode/ui/assets
+	@grep -q 'SLMCode Studio' cmd/slmcode/ui/index.html
+	@echo "ui-check: OK (React Studio embedded by go:embed all:ui)"
 
 lint: ## Go format + vet + UI smoke check
 	@./scripts/lint.sh
@@ -213,11 +212,9 @@ uninstall-system: ## Uninstall system-wide
 
 test: ## Run unit tests
 	go test ./...
-	@if command -v node >/dev/null 2>&1; then node cmd/slmcode/ui/markdown_node_test.js; fi
 
 e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 	go test ./test/e2e/ -count=1 -timeout 30m
-	@if command -v node >/dev/null 2>&1; then node cmd/slmcode/ui/markdown_node_test.js; fi
 	@./scripts/e2e_prime_smoke.sh
 	@if [ "$$RUN_E2E" = "1" ]; then \
 		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \

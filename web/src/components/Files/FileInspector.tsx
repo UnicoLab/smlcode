@@ -439,11 +439,16 @@ export default function FileInspector({ events, running }: Props) {
     // If we haven't validated yet, show all extracted files (filter obvious false positives only)
     return allFiles.filter(f => {
       const name = f.path.toLowerCase();
+      const hasPath = f.path.includes('/');
+      // Only show files that look like real project files (have path context)
+      // Skip bare markdown/docs/system files
+      if (!hasPath && name.includes('.md')) return false;
       return !name.includes('agents.md') &&
         !name.includes('project.md') &&
         !name.includes('memory.md') &&
         !name.includes('context.md') &&
         !name.includes('readme.md') &&
+        !name.endsWith('.md') &&
         !name.startsWith('pkg/') &&
         !name.startsWith('cmd/') &&
         !name.startsWith('.git/') &&
@@ -452,7 +457,9 @@ export default function FileInspector({ events, running }: Props) {
         !name.startsWith('stacks/') &&
         !name.startsWith('skills/') &&
         !name.startsWith('web/') &&
-        !name.startsWith('.slmcode/');
+        !name.startsWith('.slmcode/') &&
+        !name.startsWith('blocks/') &&
+        !name.startsWith('docs/');
     });
   }, [allFiles, validFiles]);
 

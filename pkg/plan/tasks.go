@@ -528,7 +528,10 @@ func ParseTesterJSON(raw string) TesterResult {
 		if r.Passed && len(r.Failures) > 0 {
 			r.Passed = false
 		}
-		if r.Passed && !TesterHasShellEvidence(raw) && !testerDiskPass(extracted+raw+r.Summary) {
+		// Check the non-JSON surrounding text (Observation traces, smoke output, etc.)
+		// — commands[] inside JSON alone does NOT count as execution evidence.
+		nonJSONRaw := strings.TrimSpace(strings.Replace(raw, extracted, "", 1))
+		if r.Passed && !TesterHasShellEvidence(nonJSONRaw) && !testerDiskPass(extracted+nonJSONRaw+r.Summary) {
 			r.Passed = false
 			r.Summary = firstNonEmpty(r.Summary, "tester claimed pass without execution")
 			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}

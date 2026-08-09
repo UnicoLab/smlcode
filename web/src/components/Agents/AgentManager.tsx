@@ -199,6 +199,9 @@ export default function AgentManager() {
                   className="input font-mono text-xs h-32 resize-none"
                   placeholder="You are a specialist agent…"
                 />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Base instructions for this agent. At runtime, the orchestrator automatically injects: project context (PROJECT.md, CONTEXT.md), matched skills, current plan, task details, and tool guidance. Keep this prompt focused on the agent's core role and output format.
+                </p>
               </div>
               <div>
                 <label className="label">Skills (comma separated)</label>

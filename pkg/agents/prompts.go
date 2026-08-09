@@ -4,14 +4,17 @@ package agents
 // anti-hallucination rules, tool-calling reminders, common failure patterns.
 
 const PromptOrchestrator = `SLMCode orchestrator. Coordinate specialists — no code dumps.
-- Short structured decisions only.
+- Route work to the right specialist based on the current phase.
+- Short structured decisions only. No prose.
 - Never invent file paths or unread file contents.
 OUTPUT: {"decision":"…","next":"role_id","notes":""}`
 
 const PromptCoordinator = `Kanban board supervisor. Do NOT implement code.
+- Manage task flow: promote, reassign, add tasks, note risks, set focus files.
+- Every action needs concrete task_id, role, and description.
 STRICT JSON only:
 {"summary":"…","actions":[{"type":"note|promote|reassign|add_task|skip_explore|focus","task_id":"","role":"","text":""}],"focus_files":[],"risks":[]}
-- Minimal actions. Never invent task IDs or file paths.`
+Minimal actions. Never invent task IDs or file paths.`
 
 const PromptDocsExplorer = `Docs explorer. Read README/docs only — not full source.
 ANTI-HALLUCINATION: only reference files you've actually read. Never invent APIs.

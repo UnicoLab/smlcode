@@ -340,6 +340,8 @@ Resolution order: explicit `@skill:name` refs → agent-targeted → global → 
 | `run <query>` | Full pipeline run |
 | `chat` | Interactive REPL |
 | `studio` | Launch Studio UI + API |
+| `studio --kill` | Force-kill existing studio on port |
+| `studio --port-auto` | Auto-switch to next free port |
 | `status` | Query/plan/board snapshot |
 | `board` | Live kanban board |
 | `config show` | Print effective config |
@@ -349,6 +351,10 @@ Resolution order: explicit `@skill:name` refs → agent-targeted → global → 
 | `agent list` | List agents with effective LLM |
 | `agent show <id>` | Show agent detail |
 | `agent edit <id> model=…` | Patch agent fields |
+| `blocks list` | List all building blocks |
+| `blocks show <kind> <id>` | Show block detail |
+| `blocks validate` | Validate all block YAML |
+| `blocks apply <pack-id>` | Apply a language pack |
 | `skills list` | List skills |
 | `skills new <name>` | Create a skill |
 | `doctor` | System health check |
@@ -413,4 +419,102 @@ make build && make test && make install
 5. **New skill**: Create `skills/default/<name>/SKILL.md` or `.slmcode/skills/<name>/SKILL.md`
 6. **New CLI command**: Add Cobra command in `cmd/slmcode/` → register in `root.go`
 7. **New config field**: Add to `config.Config` struct → handle in `ApplyPatch()` → add YAML/JSON tags
+
+---
+
+## 12. Parallel Execution Architecture (v0.12.0+)
+
+slmcode maximizes throughput via 6 parallel execution paths, all bounded by `max_parallel` (default 4):
+
+### 12.1 Parallel Execution Paths
+
+| Path | Location | What Runs in Parallel |
+|------|----------|----------------------|
+| **Worker execution** | `loop/runner.go:runWave` | All tasks in a wave via GoLangGraph `ExecuteSubAgents` |
+| **Post-worker QA** | `loop/runner.go:runPostWorkerQAParallel` | Smoke, acceptance smoke, static quality, claims gate — across all tasks |
+| **Self-critique** | `loop/runner.go:runSelfCritiqueParallel` | Corrector LLM for all weak tasks simultaneously |
+| **Review wave** | `loop/runner.go:reviewWave` | Reviewer+corrector for independent tasks (no shared files) |
+| **Phase parallelism** | `orchestrator/parallel.go:runPhaseParallel` | context+explore in parallel, architect+clarify in parallel |
+| **Speculative races** | `loop/runner.go:speculate` + `orchestrator/speculate.go` | Disk-accept vs reviewer LLM, multiple tester strategies |
+
+### 12.2 Config Fields
+
+```yaml
+# .slmcode/config.yaml
+max_parallel: 4           # Max concurrent tasks per wave (default: 4)
+think_passes: 1           # Multi-pass thinking (2+ enables speculative digs)
+task_timeout: 12m         # Per-task timeout
+max_retries: 4            # Review/correct retries before escalate
+```
+
+### 12.3 Task Independence
+
+Tasks are grouped by shared files for parallel review — tasks without overlapping files run concurrently. The `scheduleReady` function prioritizes:
+1. Explorers/docs first (discovery)
+2. Workers with files (focused)
+3. Testers last (post-implementation)
+
+### 12.4 Wave-Level Fast-Path
+
+When ALL tasks in a wave have clean QA + disk evidence, the entire reviewer LLM phase is skipped — all tasks go directly to Done.
+
+---
+
+## 13. HITL (Human-in-the-Loop) Configuration
+
+### 13.1 HITL Modes
+
+| Setting | Values | Default | Purpose |
+|---------|--------|---------|---------|
+| `plan_approve` | `off` \| `auto` \| `ask` | `ask` | Human must approve plan before execute |
+| `clarify_mode` | `off` \| `auto` \| `ask` | `ask` | Interview agent asks about language/stack |
+| `continue_ask` | `off` \| `auto` \| `ask` | `ask` | Ask when retries/QA exhausted |
+| `escalate_ask` | `off` \| `auto` \| `ask` | `ask` | Ask on max-retry escalate |
+| `auto_approve` | `true` \| `false` | `false` | Global override — skip all HITL gates |
+
+### 13.2 Pack-Level HITL Control
+
+```yaml
+spec:
+  defer_plan_approve: true   # Force plan_approve=ask
+  defer_clarify: true        # Force clarify_mode=ask
+```
+
+### 13.3 HITL Endpoints
+
+The Studio frontend polls these endpoints every 2s:
+- `GET /api/clarify/pending` → `POST /api/clarify/answer`
+- `GET /api/plan/pending` → `POST /api/plan/approve`
+- `GET /api/continue/pending` → `POST /api/continue/answer`
+- `GET /api/escalate/pending` → `POST /api/escalate/answer`
+- `GET /api/shell/pending` → `POST /api/shell/approve`
+
+Each ask has a timeout; on expiry the recommended/default action is applied.
+
+---
+
+## 14. File Browser API
+
+### 14.1 Endpoints
+
+- `GET /api/workspace/tree?path=` — list directory contents (dirs first, no hidden files)
+- `GET /api/workspace/file?path=` — read file content with syntax highlighting
+
+### 14.2 Studio File Browser
+
+The `/files` page shows a full recursive directory tree. Features:
+- Expand/collapse folders with lazy loading
+- Toggle between "All files" and "Modified only" (agent-changed)
+- Per-line inline comments that can be sent as tasks
+- Syntax highlighting for Go, Python, TypeScript, Rust, and more
+
+---
+
+## 15. Version History
+
+| Version | Key Changes |
+|---------|------------|
+| 0.12.0 | Engine-wide parallelization: 6 parallel paths, MaxParallel=4, phase parallelism, parallel QA, parallel self-critique, parallel review, wave fast-path |
+| 0.11.0 | HITL defaults to ask, File Browser (workspace tree API), `--kill` CLI flag, single run input |
+| 0.10.x | SessionStorage state persistence, blocks CLI, Studio LiveView, code review comments, SLM-optimized prompts |
 

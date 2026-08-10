@@ -55,8 +55,8 @@ func TestCheckWithURLNewer(t *testing.T) {
 	if !info.UpdateAvailable {
 		t.Fatalf("expected update available, got %+v", info)
 	}
-	if info.Latest != "v0.13.0" {
-		t.Errorf("Latest = %q, want v0.13.0", info.Latest)
+	if info.Latest != "0.13.0" {
+		t.Errorf("Latest = %q, want 0.13.0", info.Latest)
 	}
 	if info.ReleaseURL == "" {
 		t.Error("ReleaseURL not set")
@@ -77,8 +77,8 @@ func TestCheckWithURLEqual(t *testing.T) {
 	if info.UpdateAvailable {
 		t.Fatalf("expected no update, got %+v", info)
 	}
-	if info.Latest != "v0.12.2" {
-		t.Errorf("Latest = %q, want v0.12.2", info.Latest)
+	if info.Latest != "0.12.2" {
+		t.Errorf("Latest = %q, want 0.12.2", info.Latest)
 	}
 	if info.Error != "" {
 		t.Errorf("unexpected error: %s", info.Error)
@@ -100,8 +100,8 @@ func TestCheckWithURLCacheReuse(t *testing.T) {
 	if second.Error != "" {
 		t.Fatalf("cached check returned error: %s", second.Error)
 	}
-	if !second.UpdateAvailable || second.Latest != "v0.13.0" {
-		t.Errorf("cached check = %+v, want latest v0.13.0 with update", second)
+	if !second.UpdateAvailable || second.Latest != "0.13.0" {
+		t.Errorf("cached check = %+v, want latest 0.13.0 with update", second)
 	}
 	if second.ReleaseURL == "" {
 		t.Error("cached check: ReleaseURL not preserved")

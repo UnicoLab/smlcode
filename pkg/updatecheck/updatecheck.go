@@ -91,6 +91,9 @@ func CheckWithURL(current, apiURL, cachePath string) Info {
 	if latest == "" {
 		return Info{Current: current, Error: "release API returned empty tag_name"}
 	}
+	// Normalize the tag to a plain version so callers can safely render
+	// "v"+latest without doubling the prefix.
+	latest = strings.TrimPrefix(strings.TrimPrefix(latest, "v"), "V")
 
 	writeCache(cachePath, latest, rel.HTMLURL)
 	return Info{
@@ -204,7 +207,9 @@ func readCache(path string) (latest, releaseURL, checkedAt string, ok bool) {
 	if time.Since(t) >= cacheTTL {
 		return "", "", "", false
 	}
-	return e.Latest, e.ReleaseURL, e.CheckedAt, true
+	// Normalize legacy cached tags that may include the "v" prefix.
+	latest = strings.TrimPrefix(strings.TrimPrefix(e.Latest, "v"), "V")
+	return latest, e.ReleaseURL, e.CheckedAt, true
 }
 
 // writeCache persists a successful latest-tag fetch.

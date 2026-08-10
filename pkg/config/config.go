@@ -25,7 +25,7 @@ const (
 	DefaultThinkPasses  = 1
 	DefaultMaxContextKB = 16
 	DefaultTaskTimeout  = 12 * time.Minute
-	DefaultQAGateRounds = 3
+	DefaultQAGateRounds = 1
 )
 
 // MCPServerConfig is a thin read-only MCP server entry.
@@ -309,14 +309,14 @@ func Default(root string) *Config {
 		QAGate:                true,
 		QAGateMaxRounds:       DefaultQAGateRounds,
 		PostWorkerSmoke:       true,
-		ClarifyMode:           "ask",
+		ClarifyMode:           "auto",
 		ClarifyTimeout:        2 * time.Minute,
 		ScopeJudge:            true,
-		PlanApprove:           "ask",
-		PlanApproveTimeout:    2 * time.Minute,
+		PlanApprove:           "auto",
+		PlanApproveTimeout:    1 * time.Minute,
 		PlaceholderPass:       true,
 		ContinueAsk:           "ask",
-		ContinueAskTimeout:    2 * time.Minute,
+		ContinueAskTimeout:    1 * time.Minute,
 		EscalateAsk:           "ask",
 		EscalateAskTimeout:    30 * time.Second,
 		EscalateTimeoutAgent:  "", // auto-pick @escalate

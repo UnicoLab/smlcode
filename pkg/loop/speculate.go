@@ -16,6 +16,7 @@ type SpecSlot struct {
 	Prompt   string
 	Required bool
 	Local    func(ctx context.Context) (string, error)
+	Timeout  time.Duration // per-slot timeout; if zero, falls back to r.Timeout
 }
 
 // SpecResult is the outcome of one speculative slot.
@@ -89,9 +90,13 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 					if r.Executor == nil {
 						err = fmt.Errorf("nil executor")
 					} else {
+						slotTimeout := r.Timeout
+						if j.slot.Timeout > 0 {
+							slotTimeout = j.slot.Timeout
+						}
 						res, e := r.Executor.ExecuteSubAgents(gctx, []ggagent.SubAgentRequest{{
 							AgentID: j.slot.Role, Input: j.slot.Prompt,
-							Timeout: r.Timeout, ShareState: true,
+							Timeout: slotTimeout, ShareState: true,
 						}}, r.Shared)
 						err = e
 						if len(res) > 0 {

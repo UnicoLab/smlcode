@@ -13,6 +13,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/augment"
 	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/compact"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
@@ -774,6 +775,24 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
 			splitPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
 			splitPrompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
+		}
+		// Inject project language so the splitter uses language-appropriate files + acceptances.
+		if lang := detectProjectLang(o.cfg.Root); lang != "" {
+			splitPrompt += fmt.Sprintf("\n\nProject language: %s.", lang)
+			switch lang {
+			case "Go":
+				splitPrompt += " Go modules: main package lives in root (main.go), library packages in subdirs (e.g. pkg/calc/calc.go). Acceptance: go build, go test ./..., go vet. NEVER use pytest/go run for non-main packages."
+			case "Python":
+				splitPrompt += " Python: src/ or flat layout. Acceptance: pytest -q, python -m py_compile, python main.py. NEVER use go test."
+			case "TypeScript", "JavaScript":
+				splitPrompt += " JS/TS: src/ or app/. Acceptance: npm test, npx tsc --noEmit, npm run build. NEVER use pytest or go test."
+			default:
+				splitPrompt += " Use language-appropriate acceptance criteria and real project file paths."
+			}
+			splitPrompt += " Do NOT invent files that don't exist in the workspace inventory."
+		} else {
+			splitPrompt += "\n\nUse language-appropriate acceptance criteria based on the project's actual files. " +
+				"Do NOT invent files that don't exist in the workspace inventory."
 		}
 		splitPrompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
 		if o.cfg.ThinkPasses >= 2 {
@@ -1563,6 +1582,21 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	} else {
 		_ = store.Write(contextstore.DocProject, contextstore.MergeProjectSections(cur, seeded))
 	}
+	// Auto-detect and apply language pack based on project files.
+	reg, err := blocks.Load(root)
+	if err == nil {
+		if q := reg.DetectQuality(root); q != nil {
+			// Find matching pack for this quality block's language
+			for _, p := range reg.Packs {
+				if p.Spec.Quality == q.ID {
+					if _, err := blocks.ApplyPack(cfg, reg, p.ID, blocks.ApplyOptions{MaterializeAgents: true}); err == nil {
+						fmt.Printf("  ✓ auto-applied %s pack (%s)\n", p.Language, p.ID)
+					}
+					break
+				}
+			}
+		}
+	}
 	// Empty board.json so Studio/CLI have a writable board (no seeded tasks).
 	boardPath := filepath.Join(cfg.SlmDir(), "board.json")
 	if _, err := os.Stat(boardPath); os.IsNotExist(err) {
@@ -1853,6 +1887,44 @@ func firstSentence(s string) string {
 		return s[:80]
 	}
 	return s
+}
+
+// detectProjectLang returns a human-readable project language label based on
+// config files found at the project root. Used to steer the splitter away from
+// hallucinating language-inappropriate files and acceptance commands.
+func detectProjectLang(root string) string {
+	if root == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		return "Go"
+	}
+	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
+		return "Python"
+	}
+	if _, err := os.Stat(filepath.Join(root, "setup.py")); err == nil {
+		return "Python"
+	}
+	if _, err := os.Stat(filepath.Join(root, "requirements.txt")); err == nil {
+		return "Python"
+	}
+	if _, err := os.Stat(filepath.Join(root, "package.json")); err == nil {
+		// Check for TypeScript vs JavaScript.
+		if _, err := os.Stat(filepath.Join(root, "tsconfig.json")); err == nil {
+			return "TypeScript"
+		}
+		return "JavaScript"
+	}
+	if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err == nil {
+		return "Rust"
+	}
+	if _, err := os.Stat(filepath.Join(root, "Makefile")); err == nil {
+		return "C/Make"
+	}
+	if _, err := os.Stat(filepath.Join(root, "CMakeLists.txt")); err == nil {
+		return "C++"
+	}
+	return ""
 }
 
 func looksLikeJSONBlob(s string) bool {

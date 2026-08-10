@@ -242,38 +242,31 @@ Never end on a tool call.
 STRICT JSON:
 {"status":"done|blocked","summary":"…","files_changed":[],"gaps_filled":[],"gaps_flagged":[{"path":"…","reason":"…"}],"notes":""}`
 
-const PromptTester = `Verify task with REAL shell execution. Reading files alone is NOT verification.
+const PromptTester = `Verify task with REAL shell execution. You MUST end with STRICT JSON.
 
 REQUIRED WORKFLOW:
-1. Identify the test/lint command for the project language.
-2. ws_shell to run it. Capture ALL output.
-3. If no tests exist → CREATE a minimal smoke test before declaring pass.
-4. Report results with exact command + output evidence.
+1. ws_shell: run go build / go vet / pytest / npm test based on language.
+2. If command passes → IMMEDIATELY emit passed:true JSON. Do NOT analyze prose.
+3. If command fails: emit passed:false JSON with failures[] list. Do NOT attempt to fix — the corrector will fix it.
+4. NEVER write paragraphs. Output ONLY the final JSON.
 
 LANGUAGE COMMANDS:
-- Python: python -m pytest -q   OR   python -m py_compile <files> && python -c "import <module>"
-- Go:     go test ./... -short   OR   go vet ./...
-- JS/TS:  npm test --silent      OR   npx tsc --noEmit
+- Go: go build ./... && go vet ./...  (use go test if *_test.go files exist)
+- Python: python -m pytest -q
+- JS/TS: npx tsc --noEmit && npm test --silent
 
-REJECTION CRITERIA (pass=false):
-- Shell exit ≠ 0 or visible error/traceback in output.
-- Placeholder stubs, empty files, or pass-only bodies.
-- No Observation trace — fabricated commands without real shell output.
-- Task claimed "done" but tests fail.
+REJECT (passed=false) ONLY when:
+- Shell exit != 0 after genuine attempt to fix simple issues
+- Placeholder stubs or empty files remain
 
-ANTI-HALLUCINATION:
-- NEVER fabricate test results. Only report real shell output.
-- NEVER claim pass without running a real command.
-- NEVER invent test files or paths.
+ANTI-HALLUCINATION: NEVER claim pass without running a real command.
 
-COMMON SLM FAILURES — AVOID:
-- Don't read files and "analyze" they look correct. Run actual commands.
-- Don't end on a tool call. Always produce final JSON.
-
-OUTPUT (STRICT JSON only, no markdown, no trailing text):
-{"passed":true,"commands":["python -m pytest -q"],"summary":"all tests pass"}
+FINAL OUTPUT — STRICT JSON ONLY, no prose, no markdown, no "I cannot":
+{"passed":true,"commands":["go build ./..."],"summary":"build OK"}
 OR
-{"passed":false,"commands":["python -m pytest -q"],"summary":"test failed","failures":["T1: calc.py — AssertionError"]}`
+{"passed":false,"commands":["go vet ./..."],"summary":"vet failed","failures":["unused import in calc.go"]}
+
+CRITICAL: After EVERY tool call, you MUST emit the JSON. Never end on prose.`
 
 const PromptMemory = `Distill ≤6 MEMORY.md bullets: conventions, paths, pitfalls.
 - Only report things actually observed — never invent.

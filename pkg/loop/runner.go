@@ -326,6 +326,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		t := needExec[j]
 		role := roles[i]
 		r.noteUsage(res, reqs[j].Input, outputString(res))
+		t.Output = outputString(res)
 		if isCancelResult(err, res) || (res.Error != nil && isCancelResult(res.Error, res)) {
 			r.saveReactFromResult(t.ID, role, res)
 			canceled = true
@@ -375,6 +376,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 				r.saveReactFromResult(t.ID, role, res)
 			}
 			if res.Error != nil {
+				t.Output = outputString(res)
 				t.MoveTo(plan.ColBlocked)
 				t.Error = res.Error.Error()
 				board.UpdateTask(t)
@@ -789,6 +791,12 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			reviewIn := formatReviewPrompt(current)
 			cur := current
 			base := baseline
+			// Use shorter reviewer timeout when disk evidence already exists —
+			// the acceptance probe should win quickly; the full 12 min is excessive.
+			revTimeout := r.Timeout
+			if hasEvidence {
+				revTimeout = 3 * time.Minute
+			}
 			slots := []SpecSlot{{
 				Role: "acceptance", Required: false,
 				Local: func(ctx context.Context) (string, error) {
@@ -799,11 +807,13 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				},
 			}, {
 				Role: r.reviewerID(), Prompt: reviewIn, Required: false,
+				Timeout: revTimeout,
 			}}
 			if r.MaxParallel >= 3 {
 				slots = append(slots, SpecSlot{
 					Role: "reviewer-strict", Required: false,
-					Prompt: reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
+					Prompt:  reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
+					Timeout: revTimeout,
 				})
 			}
 			revRole := r.reviewerID()

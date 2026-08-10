@@ -30,6 +30,41 @@ const (
 	SmokePassedMarker       = "PASSED"
 )
 
+// AutoFixFormatting runs language-appropriate auto-formatters and returns
+// a summary of what was fixed. Does NOT require an LLM.
+func AutoFixFormatting(root string) string {
+	var fixed []string
+	// Go: gofmt
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		cmd := exec.Command("gofmt", "-w", ".")
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err == nil {
+			if strings.TrimSpace(string(out)) != "" {
+				fixed = append(fixed, "gofmt: "+strings.TrimSpace(string(out)))
+			}
+		}
+		// Also run goimports if available
+		if _, err := exec.LookPath("goimports"); err == nil {
+			cmd2 := exec.Command("goimports", "-w", ".")
+			cmd2.Dir = root
+			cmd2.CombinedOutput() // best effort
+		}
+	}
+	// Python: ruff format
+	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
+		if _, err := exec.LookPath("ruff"); err == nil {
+			cmd := exec.Command("ruff", "format", ".")
+			cmd.Dir = root
+			if out, err := cmd.CombinedOutput(); err == nil {
+				fixed = append(fixed, "ruff format: ok")
+			} else {
+				_ = out
+			}
+		}
+	}
+	return strings.Join(fixed, "; ")
+}
+
 // ShouldSmokeTask reports whether a task should get post-worker Go smoke.
 func ShouldSmokeTask(t plan.Task) bool {
 	switch t.Role {
@@ -60,10 +95,28 @@ func RunPostWorkerSmoke(ctx context.Context, root string, t plan.Task, timeout t
 	if root == "" || !ShouldSmokeTask(t) {
 		return SmokeResult{OK: true, Ran: false, Summary: "skipped"}
 	}
+
+	// Detect project language to avoid running wrong-language commands
+	// (e.g. python -m py_compile in a Go-only project).
+	projLang := DetectProjectLanguage(root)
+
 	cmd := DetectPostWorkerCommand(root, t.Files)
 	if cmd == "" {
 		return SmokeResult{OK: true, Ran: false, Summary: "no smoke command"}
 	}
+
+	// Filter: skip if the smoke command language doesn't match the project language.
+	cmdLang := commandLanguage(cmd)
+	if projLang != "" && cmdLang != "" && projLang != cmdLang {
+		return SmokeResult{OK: true, Ran: false, Summary: "smoke skipped: command language mismatch with project"}
+	}
+
+	// Fast-path: Go project with no _test.go files → use go vet instead of go test
+	// (go test on a package with no tests is wasteful; go vet is faster and still catches errors).
+	if projLang == "go" && strings.Contains(cmd, "go test") && !hasGoTestFiles(root) {
+		cmd = strings.Replace(cmd, "go test", "go vet", 1)
+	}
+
 	return RunSmoke(ctx, root, cmd, timeout)
 }
 
@@ -464,6 +517,84 @@ func runCommand(ctx context.Context, root, command string, timeout time.Duration
 		out = out[:20_000] + "\n...[truncated]"
 	}
 	return out, err
+}
+
+// DetectProjectLanguage returns the primary language of a project based on
+// marker files in the root directory. Returns "" when no marker is found.
+func DetectProjectLanguage(root string) string {
+	if root == "" {
+		return ""
+	}
+	if fileExists(filepath.Join(root, "go.mod")) {
+		return "go"
+	}
+	if fileExists(filepath.Join(root, "package.json")) {
+		return "javascript"
+	}
+	if fileExists(filepath.Join(root, "pyproject.toml")) ||
+		fileExists(filepath.Join(root, "setup.py")) ||
+		fileExists(filepath.Join(root, "setup.cfg")) ||
+		fileExists(filepath.Join(root, "requirements.txt")) ||
+		fileExists(filepath.Join(root, "pytest.ini")) ||
+		hasPythonSources(root) {
+		return "python"
+	}
+	if fileExists(filepath.Join(root, "Cargo.toml")) {
+		return "rust"
+	}
+	if fileExists(filepath.Join(root, "Makefile")) {
+		// Makefile is ambiguous; check for secondary markers.
+		if fileExists(filepath.Join(root, "go.mod")) {
+			return "go"
+		}
+		if hasPythonSources(root) {
+			return "python"
+		}
+	}
+	return ""
+}
+
+// commandLanguage returns the language a smoke command targets, or "" if unknown.
+func commandLanguage(cmd string) string {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	if strings.HasPrefix(lower, "go ") {
+		return "go"
+	}
+	if strings.HasPrefix(lower, "python") || strings.HasPrefix(lower, "uv ") || strings.HasPrefix(lower, "pytest") {
+		return "python"
+	}
+	if strings.HasPrefix(lower, "node ") || strings.HasPrefix(lower, "npm ") {
+		return "javascript"
+	}
+	if strings.HasPrefix(lower, "cargo ") {
+		return "rust"
+	}
+	return ""
+}
+
+// hasGoTestFiles reports whether any _test.go files exist under root (recursive).
+func hasGoTestFiles(root string) bool {
+	var found bool
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			if found {
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if d.IsDir() {
+			base := d.Name()
+			if strings.HasPrefix(base, ".") || base == "vendor" || base == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), "_test.go") {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 func fileExists(path string) bool {

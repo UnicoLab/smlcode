@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.13.1 — 2026-08-10
+
+- Automate Homebrew formula checksum sync in the release pipeline
+- Make LiveStore onChange callback synchronous (fixes flaky TempDir cleanup race in CI)
+- Normalize 'v' prefix on update-check latest tag (no double-v in notices)
+- Sync Homebrew formula checksums with v0.13.0 release assets, fix install.ps1 typo in release body
 ## v0.13.0 — Block CRUD, Studio GUI Editing, Language Pinning & Live Feedback
 
 ### Highlights

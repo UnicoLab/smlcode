@@ -229,6 +229,7 @@ type Factory struct {
 	Model      string
 	Provider   string
 	CustomDirs []string
+	FastModel  string // optional faster model for lightweight agents
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
 	ModelProfiles map[string]config.ModelProfile
@@ -243,7 +244,7 @@ func NewFactory(llmManager *llm.ProviderManager, toolReg *tools.ToolRegistry, mo
 	return &Factory{LLM: llmManager, Tools: toolReg, Model: model, Provider: provider}
 }
 
-// EffectiveModel returns the model an agent will use (override or global).
+// EffectiveModel returns the model an agent will use (per-agent override → fast model for light agents → global).
 func (f *Factory) EffectiveModel(spec RoleSpec) string {
 	if strings.TrimSpace(spec.Model) != "" {
 		return strings.TrimSpace(spec.Model)
@@ -251,8 +252,23 @@ func (f *Factory) EffectiveModel(spec RoleSpec) string {
 	if f == nil {
 		return ""
 	}
+	// Use fast model for lightweight agents that don't need deep reasoning
+	if f.FastModel != "" && isLightAgent(spec.ID) {
+		return f.FastModel
+	}
 	return f.Model
 }
+
+// SetFastModel sets the model for lightweight agents.
+func (f *Factory) SetFastModel(m string) { f.FastModel = m }
+
+var lightAgents = map[string]bool{
+	"reviewer": true, "coordinator": true, "splitter": true, "planner": true,
+	"context": true, "architect": true, "clarifier": true, "interviewer": true,
+	"orchestrator": true, "memory": true, "docs": true, "escalate": true,
+}
+
+func isLightAgent(id string) bool { return lightAgents[strings.ToLower(id)] }
 
 // EffectiveProvider returns the friendly provider name (not registry key).
 func (f *Factory) EffectiveProvider(spec RoleSpec) string {

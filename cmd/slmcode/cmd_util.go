@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -224,6 +224,8 @@ func configCmd() *cobra.Command {
 			switch k {
 			case "model":
 				c.Model = v
+			case "fast_model":
+				c.FastModel = v
 			case "provider":
 				next := config.NormalizeProvider(v)
 				if next != config.NormalizeProvider(c.Provider) && flagEndpoint == "" {

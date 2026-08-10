@@ -213,6 +213,10 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		factory.ProfileMaxTurns = prof.MaxTurns
 		factory.ProfileTemp = prof.Temperature
 	}
+	// Use fast model for lightweight agents when configured
+	if cfg.FastModel != "" {
+		factory.SetFastModel(cfg.FastModel)
+	}
 
 	// Auto-register providers for per-agent overrides (custom agents / builtin patches)
 	// so rebuild never leaves an agent pointing at an unregistered provider.

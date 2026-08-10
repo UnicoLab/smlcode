@@ -18,6 +18,8 @@ func Schema() []FieldSchema {
 			Description: "LLM provider id (omlx, openai, ollama, …)"},
 		{Key: "model", Type: "string", Label: "Model", Group: "model", Patchable: true,
 			Description: "Default model id"},
+		{Key: "fast_model", Type: "string", Label: "Fast model", Group: "model", Patchable: true,
+			Description: "Smaller model for lightweight agents (reviewer, planner, etc.). Empty = use main model."},
 		{Key: "endpoint", Type: "string", Label: "Endpoint", Group: "model", Patchable: true,
 			Description: "OpenAI-compatible base URL"},
 		{Key: "enabled_models", Type: "string[]", Label: "Enabled models", Group: "model", Patchable: true,

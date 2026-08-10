@@ -126,6 +126,10 @@ type Config struct {
 	Endpoint string `yaml:"endpoint" json:"endpoint"`
 	APIKey   string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	Model    string `yaml:"model" json:"model"`
+	// FastModel optionally specifies a smaller/faster model for lightweight agents
+	// (reviewer, coordinator, splitter, planner, context, architect, clarifier).
+	// Empty = use the main Model for all agents.
+	FastModel string `yaml:"fast_model" json:"fast_model"`
 
 	Backend string `yaml:"backend" json:"backend"` // slmcode | claude-code
 
@@ -652,6 +656,7 @@ func normalize(c *Config) {
 // Patch is a partial config update. Nil fields are left unchanged.
 type Patch struct {
 	Model                  *string                  `json:"model,omitempty"`
+	FastModel              *string                  `json:"fast_model,omitempty"`
 	Provider               *string                  `json:"provider,omitempty"`
 	Endpoint               *string                  `json:"endpoint,omitempty"`
 	APIKey                 *string                  `json:"api_key,omitempty"`
@@ -725,6 +730,9 @@ type Patch struct {
 func (c *Config) ApplyPatch(p Patch) {
 	if p.Model != nil && *p.Model != "" {
 		c.Model = *p.Model
+	}
+	if p.FastModel != nil {
+		c.FastModel = strings.TrimSpace(*p.FastModel)
 	}
 	prevProvider := NormalizeProvider(c.Provider)
 	prevDefaultEP := DefaultEndpointFor(prevProvider)

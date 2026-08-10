@@ -527,6 +527,7 @@ The `/files` page shows a full recursive directory tree. Features:
 
 | Version | Key Changes |
 |---------|------------|
+| 0.12.2 | e2e test fixes for Vite bundle output, CI builds Studio UI before Go, Homebrew formula sync, docs refresh |
 | 0.12.1 | Vite/React/TypeScript Studio UI (`web/` + `make ui-react`), `fast_model` dual-model routing, smarter QA gate, improved tester |
 | 0.12.0 | Engine-wide parallelization: 6 parallel paths, MaxParallel=4, phase parallelism, parallel QA, parallel self-critique, parallel review, wave fast-path |
 | 0.11.0 | HITL defaults to ask, File Browser (workspace tree API), `--kill` CLI flag, single run input |

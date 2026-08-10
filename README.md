@@ -5,17 +5,16 @@
 <h1 align="center">⚡ SLMCode</h1>
 
 <p align="center">
-  <strong>A coding harness that loves SLMs — and works with any LLM.</strong><br/>
-  Plan → atomic tasks → parallel specialists → self-critic → learn<br/>
+  <strong>SLM-first coding harness — blazingly fast, embarrassingly parallel.</strong><br/>
+  Plan → split → parallel specialists → self-critic → test → learn<br/>
   Powered by <a href="https://github.com/piotrlaczkowski/GoLangGraph">GoLangGraph</a>
-  · defaults to <strong>oMLX</strong> · plug in Ollama, OpenAI, OpenRouter, vLLM, …
+  · defaults to <strong>oMLX</strong> · works with any OpenAI-compatible endpoint
 </p>
 
 <p align="center">
   <a href="https://unicolab.ai"><img alt="UnicoLab" src="https://img.shields.io/badge/Made%20with%20%E2%99%A5%20by-UnicoLab-0f6e8c?style=flat-square" /></a>
-  <a href="https://unicolab.github.io/smlcode/"><img alt="docs" src="https://img.shields.io/badge/docs-MkDocs-0ea5e9?style=flat-square" /></a>
+  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf&label=v0.12.1" /></a>
   <a href="https://github.com/UnicoLab/smlcode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/UnicoLab/smlcode/ci.yml?branch=main&style=flat-square&label=CI" /></a>
-  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf" /></a>
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-2dd4bf?style=flat-square" />
@@ -104,42 +103,145 @@ Deep dive: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**
 
 ---
 
-## 🎯 Why this loop exists
+## 🧬 Pipeline (16 phases · 5 groups)
 
-| 🐘 Large-model habit | 🐭 SLMCode approach |
-|----------------------|---------------------|
-| Stuff the repo into chat | Incremental `.slmcode/*.md` memory |
-| One free-form agent | Plan → atomic tasks → specialists |
-| Re-scan every turn | Reuse CONTEXT/MEMORY; skip deep explore |
-| Hope the model self-corrects | Reviewer ↔ corrector + multipass |
-| Opaque progress | Live CLI + Studio stream |
-| Burn tokens until it sticks | Early-exit streams, lean packs, speculative cancel |
+```text
+┌───────── Prepare ─────────┐  ┌──── Design ────┐  ┌─── Build ───┐  ┌── Verify ──┐  ┌─ Finish ─┐
+│ init → skills → context   │  │ architect       │  │ coord       │  │ polish     │  │ memory   │
+│   → explore → docs        │  │   → clarify     │  │   → execute │  │   → test   │  │   → done │
+│                           │  │     → plan      │  │     → learn │  │            │  │          │
+│  context ∥ explore ⚡     │  │       → split   │  │             │  │            │  │          │
+└───────────────────────────┘  └─────────────────┘  └─────────────┘  └────────────┘  └──────────┘
+```
+
+> ⚡ = parallel phases — `context` + `explore` run concurrently; `architect` + `clarify` run concurrently
 
 ---
 
 ## ✨ Highlights
 
-- 🧭 Planning + atomic split sized for ~30B models (works for larger ones too)
-- 🗂️ Coordinator + live kanban board
-- 🧩 14 specialists (explorer, docs, architect, worker/deep, reviewer, corrector, tester, …)
-- 🔁 Self-critic loop with auto-correct retries
-- 🧠 Evolving CONTEXT / MEMORY / skills flywheel
-- ⚡ Token-stream early-exit + SLM JSON repair
-- 🖥️ Premium TUI + offline Studio GUI (`http://127.0.0.1:7420`)
-- 🔐 Shell permission modes: `allow` | `ask` | `deny`
-- 📦 **Stacks** — `slmcode stack apply omlx-local|deepseek|…` (global + optional per-agent pins)
-- 🔑 **Auth store** — `.slmcode/auth.json` + Studio/TUI `/auth` (keep keys out of config)
-- 🔎 **Model catalog** — `find_models` + Studio costs / enabled models
+### 🚀 Engine
+
+| Feature | Description |
+|---------|-------------|
+| ⚡ **6 parallel paths** | Workers, QA, self-critique, review, phases, and speculative races all run concurrently |
+| 🎯 **Atomic task split** | Plan broken into file-scoped tasks sized for 7-30B SLMs |
+| 🔁 **Review ↔ correct loop** | Reviewer catches issues → corrector fixes → up to N retries → escalate to human |
+| 💨 **Wave fast-path** | When ALL tasks have clean QA + disk evidence, skip reviewer LLM entirely |
+| 🏎️ **`fast_model`** | Dual-model routing — 8B for light agents (reviewer, planner), 30B for heavy (worker, tester) |
+
+### 🧩 Agents (19 specialists)
+
+| Agent | Role | Tools | 
+|-------|------|-------|
+| 🧭 `explorer` | Codebase deep-dive | ✅ |
+| 🏗️ `architect` | Design structure & components | ❌ |
+| 📋 `planner` | High-level execution plan | ❌ |
+| ✂️ `splitter` | Break plan into atomic tasks | ❌ |
+| 🎤 `interviewer` | Ask clarifying questions (HITL) | ❌ |
+| 🛠️ `worker` | Implement scoped changes | ✅ |
+| 🔨 `deep` | Multi-step complex worker | ✅ |
+| 👁️ `reviewer` | Self-critic / approve | ❌ |
+| 🔧 `corrector` | Fix review issues | ✅ |
+| 🧪 `tester` | Verify with real shell commands | ✅ |
+| 🧩 `placeholder` | Fill stubs & flag gaps | ✅ |
+| 📝 `context` | Maintain CONTEXT.md | ❌ |
+| 📚 `docs` | Read documentation | ✅ |
+| 🧠 `memory` | Distill MEMORY.md | ❌ |
+| 🎓 `learner` | Wave lessons for future packs | ❌ |
+| 🗂️ `coordinator` | Manage board & task flow | ❌ |
+| 🎼 `orchestrator` | High-level coordination | ❌ |
+| 🚨 `escalate` | Arbitrate max-retry failures | ❌ |
+
+> Custom agents & per-language specialists (Go, Python, React) via YAML blocks
+
+### 🧱 Building Blocks (marketplace-ready YAML)
+
+| Kind | Purpose | Built-in |
+|------|---------|----------|
+| 📦 **Pack** | Composes pipeline + quality + agents + skills | `go`, `python`, `react` |
+| ⚙️ **Pipeline** | Phase graph with language-specific slots | `go`, `python`, `react` |
+| 🤖 **Agent** | Custom specialist or builtin override | `go-worker`, `python-tester`, … |
+| ✅ **Quality** | Lint/test/build commands per language | `go`, `python`, `react` |
+
+```bash
+slmcode blocks list                    # browse marketplace
+slmcode blocks show pipeline go        # inspect Go pipeline
+slmcode blocks apply go                # apply Go language pack
+slmcode blocks validate                # validate custom blocks
+```
+
+> Auto-detection on `init`: detects `go.mod` / `pyproject.toml` / `package.json` and auto-applies the right pack 🎯
+
+### 🖥️ Studio (Web GUI)
+
+| Page | What it does |
+|------|-------------|
+| 🏠 **Live** | SSE-streaming pipeline progress, event log, task board, HITL popups |
+| 📋 **Board** | Full kanban — add/edit/delete tasks, inject context, set agent hints |
+| ⚙️ **Pipeline** | Edit phase graph, slots, execute loop config |
+| 🤖 **Agents** | Create, edit, delete custom agents with full prompt editor |
+| 🧱 **Blocks** | Browse & apply pipeline/agent/quality/pack blocks |
+| 📁 **Files** | Full workspace tree browser with syntax highlighting & per-line comments |
+| 🧩 **Skills** | Manage SKILL.md skill packs |
+| 📝 **Docs** | Edit CONTEXT.md, PLAN.md, TASKS.md, SCRATCH.md |
+| ⚡ **Settings** | Provider, model, stacks, HITL modes, parallel config |
+
+```
+slmcode studio                    → http://127.0.0.1:7420 (auto-opens browser)
+slmcode studio --kill             → force-kill existing + restart
+slmcode studio --port-auto        → auto-switch if port is busy
+```
+
+### 👤 Human-in-the-Loop (HITL)
+
+| Gate | Default | What it does |
+|------|---------|-------------|
+| 🎤 **Clarify** | `auto` | Interview agent asks about language/stack/framework |
+| ✅ **Plan approve** | `auto` | Human reviews plan before workers execute |
+| 🔄 **Continue** | `ask` | Ask when retries exhausted — another wave or stop? |
+| 🚨 **Escalate** | `ask` | Task hit max retries — retry / re-scope / abort? |
+| 🐚 **Shell** | `allow` | Approve shell commands before execution |
+
+```yaml
+# .slmcode/config.yaml — all configurable per-project
+plan_approve: ask       # off | auto | ask
+clarify_mode: ask       # off | auto | ask
+auto_approve: false     # false = respect per-gate settings
+```
+
+### ⚙️ Config highlights
+
+```yaml
+# Speed & parallelism
+max_parallel: 4           # concurrent tasks per wave
+fast_model: "LFM2.5-8B"   # smaller model for light agents (3-4x faster!)
+think_passes: 1           # 2+ enables speculative digs
+
+# Quality gates
+qa_gate: true             # iterate test/smoke until green
+qa_gate_max_rounds: 1     # rounds before escalate
+post_worker_smoke: true   # go vet / pytest after each worker
+
+# Guardrails
+write_guard: true         # prevent writes outside focus files
+read_before_edit: true    # force ws_read before ws_edit
+claims_gate: true         # reject hallucinated file paths
+static_quality: true      # reject stub/placeholder code
+```
 
 ---
 
-## 🧬 Pipeline
+## 🎯 Why this loop exists
 
-```text
-query → skills → context → explore|reuse → [docs] [architect]
-      → plan → split → coordinator → parallel execute
-      → review/correct → learn → test → memory → evolve skills
-```
+| 🐘 Large-model habit | 🐭 SLMCode approach |
+|----------------------|---------------------|
+| Stuff the repo into chat | Incremental `.slmcode/*.md` memory |
+| One free-form agent | Plan → atomic tasks → 19 specialists |
+| Re-scan every turn | Reuse CONTEXT/MEMORY; skip deep explore |
+| Hope the model self-corrects | Reviewer ↔ corrector + multipass |
+| Opaque progress | Live CLI + Studio SSE stream |
+| Burn tokens until it sticks | Early-exit streams, lean packs, speculative cancel |
 
 ---
 
@@ -147,24 +249,24 @@ query → skills → context → explore|reuse → [docs] [architect]
 
 ```bash
 cd your-project
-slmcode init
+slmcode init                         # auto-detects language & applies pack
 # edit .slmcode/PROJECT.md
 
-slmcode                      # premium TUI
-slmcode run -v "add validation to the login handler"
-slmcode board
-slmcode studio               # http://127.0.0.1:7420
+slmcode                              # premium TUI
+slmcode run -v "add JWT validation"
+slmcode board                        # live kanban
+slmcode studio                       # http://127.0.0.1:7420
 ```
 
 Useful knobs:
 
 ```bash
 slmcode stack list
-slmcode stack apply omlx-local          # or: deepseek, openai, ollama-local, …
-slmcode run --think-passes 2 --parallel 3 --retries 2 "…"
-slmcode run --agent explorer "Where is auth handled?"
-slmcode run --skill atomic-coding "Refactor helpers"
-slmcode config set dry_run false
+slmcode stack apply deepseek         # switch to DeepSeek
+slmcode config set fast_model LFM2.5-8B-A1B-MLX-4bit   # speed boost!
+slmcode run --parallel 6 --think-passes 2 "refactor auth"
+slmcode config set plan_approve ask  # require human plan approval
+slmcode blocks apply python          # apply Python language pack
 ```
 
 ---
@@ -174,15 +276,31 @@ slmcode config set dry_run false
 | Command | Purpose |
 |---------|---------|
 | `init` / `doctor` / `config` | Workspace + provider health |
-| `stack` / `agent` | Apply model stacks; inspect agent pins |
+| `stack list` / `stack apply` | Model presets |
+| `agent list` / `agent show` | Inspect agent specialists |
+| `blocks list` / `blocks apply` | Browse & apply building blocks |
+| `skills list` / `skills new` | Manage skill packs |
 | `run -v` | Full pipeline + live stream |
 | `tui` / bare `slmcode` | Premium interactive TUI |
 | `chat` | Classic REPL |
 | `board` / `watch` | Colored kanban |
-| `studio` | GUI + SSE API |
-| `update` | Refresh install (binary or source) |
+| `studio` / `studio --kill` | Web GUI + SSE API |
+| `diff` / `commit` | Git integration |
+| `update` | Refresh install |
 
 TUI: `/compact`, `/models`, `/mcp`, `/auth`, `/schema`, `/sessions`, `/stats`, `/permission`, `/agents`, `/stop`, `/resume`.
+
+---
+
+## 📊 Performance
+
+| Scenario | Without optimizations | With v0.12.1 |
+|----------|----------------------|-------------|
+| Simple Go calculator | ~8-10 LLM calls × 30B | ~3 heavy + ~6 fast (8B) calls |
+| QA gate | 3 rounds of gofmt→vet→test→build | 1 round, auto-fix gofmt, skip if no tests |
+| Review timeout | 12 min default | 3 min when disk evidence present |
+| Smoke on Go | `go test ./...` (slow) | `go vet` (instant) when no test files |
+| Pack setup | Manual `blocks apply` | Auto-detected on `init` |
 
 ---
 
@@ -196,7 +314,7 @@ TUI: `/compact`, `/models`, `/mcp`, `/auth`, `/schema`, `/sessions`, `/stats`, `
 | 🚀 Getting started | 📦 Install · ⏱️ Quick start · 🧠 Concepts · 🔌 Providers |
 | 📘 Handbook | 🧭 Guide · 🖥️ TUI · 🦋 Skills · 🎨 Studio · 🧩 Agents · 🧪 Recipes |
 | 📚 Reference | ⌨️ CLI · ⚙️ Config · ✅ Testing · ❓ FAQ |
-| 🔧 Internals | 🏗️ Architecture · 🤝 Contributing |
+| 🔧 Internals | 🏗️ Architecture · 🤝 Contributing · 📋 AGENTS.md (for AI agents) |
 
 Local preview: `make docs-serve` → http://127.0.0.1:8000 — bring snacks. 🍿
 
@@ -230,6 +348,8 @@ new specialists, and evals — especially ones that make **small models** more r
 2. `make lint && make test`
 3. Conventional commits (`feat:`, `fix:`, `docs:`, …)
 4. Open a PR
+
+AI agents: read **[AGENTS.md](AGENTS.md)** for complete architecture, conventions, and contribution guide.
 
 ---
 

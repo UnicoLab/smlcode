@@ -153,7 +153,9 @@ func (s *LiveStore) fire() {
 		return
 	}
 	b := cloneBoard(s.board)
-	go s.onChange(&b)
+	// Synchronous: a background goroutine writing PLAN/TASKS docs can race
+	// TempDir cleanup in tests and process shutdown in production.
+	s.onChange(&b)
 }
 
 func cloneBoard(b Board) Board {

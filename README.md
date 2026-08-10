@@ -294,13 +294,14 @@ TUI: `/compact`, `/models`, `/mcp`, `/auth`, `/schema`, `/sessions`, `/stats`, `
 
 ## 📊 Performance
 
-| Scenario | Without optimizations | With v0.12.1 |
-|----------|----------------------|-------------|
-| Simple Go calculator | ~8-10 LLM calls × 30B | ~3 heavy + ~6 fast (8B) calls |
-| QA gate | 3 rounds of gofmt→vet→test→build | 1 round, auto-fix gofmt, skip if no tests |
-| Review timeout | 12 min default | 3 min when disk evidence present |
-| Smoke on Go | `go test ./...` (slow) | `go vet` (instant) when no test files |
-| Pack setup | Manual `blocks apply` | Auto-detected on `init` |
+| Feature | Capability |
+|---------|-----------|
+| ⚡ **Parallel execution** | 6 concurrent paths: workers, QA, critique, review, phases, speculative races |
+| 🏎️ **Dual-model** | `fast_model` routes light agents (reviewer, planner) to smaller/faster LLM |
+| 💨 **Wave fast-path** | Tasks with clean QA + disk evidence skip reviewer LLM entirely |
+| 🔄 **QA gate** | Single-round gate, auto-fixes gofmt/ruff, skips when no test files |
+| 🧪 **Smart smoke** | Uses `go vet` (instant) when no `*_test.go` files exist |
+| 📦 **Auto-pack** | Detects `go.mod` / `pyproject.toml` / `package.json` on `init` |
 
 ---
 

@@ -85,6 +85,29 @@ jobs:
           )
           ls -lah dist
 
+      - name: Sync Homebrew formula checksums
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Apply the formula update on top of the latest main (not the tag
+          # checkout) so the repo stays linear.
+          cp scripts/update-formula.sh /tmp/update-formula.sh
+          git fetch origin main
+          git checkout -B main origin/main
+          bash /tmp/update-formula.sh "$VERSION" "$PWD/dist"
+          if git diff --quiet -- Formula/slmcode.rb; then
+            echo "Formula unchanged — nothing to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Formula/slmcode.rb
+            git commit -m "chore: sync Homebrew formula checksums for v${VERSION} [skip ci]"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push origin main
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

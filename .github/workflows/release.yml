@@ -25,6 +25,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        run: cd web && npm ci
+
       - name: Extract version
         id: ver
         run: |
@@ -35,6 +45,7 @@ jobs:
 
       - name: Lint & test
         run: |
+          make ui-react
           make lint
           make test
 

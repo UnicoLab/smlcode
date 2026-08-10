@@ -141,6 +141,21 @@ LDFLAGS="-s -w -X main.Version=${VERSION} -X main.SourceRoot=${ROOT} -X main.Git
 
 echo "Building SLMCode ${VERSION} (${GIT_COMMIT})…"
 cd "${ROOT}"
+
+# Build Vite/React Studio UI before Go compilation (required by go:embed)
+if [[ -f web/package.json && -f web/package-lock.json ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "→ Building Studio UI (Vite + React)…"
+    cd web && npm ci --silent --no-audit --no-fund && npm run build && cd ..
+    rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
+    cp -r web/dist/* cmd/slmcode/ui/
+  else
+    echo "WARNING: npm required to build Studio UI — install Node.js" >&2
+    echo "  If you cloned the repo for development, run:" >&2
+    echo "    brew install node && make ui-react" >&2
+  fi
+fi
+
 mkdir -p "${ROOT}/bin"
 go build -ldflags "${LDFLAGS}" -o "${ROOT}/bin/${BIN_NAME}" ./cmd/slmcode
 

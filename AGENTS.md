@@ -16,7 +16,7 @@
 | **Blocks** | Marketplace-ready YAML packages: pipelines, agents, quality, packs |
 | **Stacks** | Provider/model presets (omlx-local, deepseek, openai, …) |
 | **Skills** | Claude Code–compatible `SKILL.md` convention packs |
-| **Studio** | Web UI + SSE API server at `http://127.0.0.1:7420` |
+| **Studio** | Vite/React/TypeScript web UI + SSE API server at `http://127.0.0.1:7420` |
 
 ---
 
@@ -24,6 +24,11 @@
 
 ```
 cmd/slmcode/          CLI (cobra), embedded Studio UI (go:embed ui/)
+web/                  Vite + React + TypeScript Studio SPA source
+├── src/              React components, API client, types, styles
+├── dist/             Vite build output (synced to cmd/slmcode/ui/ via make ui-react)
+├── vite.config.ts    Vite configuration
+└── tailwind.config.js Tailwind CSS config
 pkg/
 ├── agents/           Specialist prompts + custom YAML factory
 ├── blocks/           Building block registry + bundled YAML presets
@@ -65,6 +70,8 @@ pkg/
 The dependency graph: `cmd` → `harness` → `orchestrator` → `agents` + `pipeline` + `skills` + `loop` + `quality` → `config`.
 
 External dependency: `github.com/piotrlaczkowski/GoLangGraph` (Go-based LangGraph-style agent framework).
+
+The Studio frontend (`web/`) is a standalone Vite + React + TypeScript SPA. Build with `make ui-react` (runs `npm run build` in `web/`, copies output to `cmd/slmcode/ui/`). The `cmd/slmcode/ui/` directory is embedded into the Go binary via `go:embed all:ui`.
 
 ---
 
@@ -366,13 +373,16 @@ Resolution order: explicit `@skill:name` refs → agent-targeted → global → 
 ## 9. How to Run Tests
 
 ```bash
+# Build UI first (required for e2e tests)
+make ui-react
+
 # Unit tests
 go test ./... -count=1
 
 # Specific packages
 go test ./pkg/pipeline/... ./pkg/agents/... ./pkg/blocks/... ./pkg/stacks/... ./pkg/skills/... -v
 
-# E2E tests (requires live oMLX)
+# E2E tests (requires built UI; live oMLX for live tests)
 RUN_E2E=1 go test ./test/e2e/ -count=1 -timeout 30m
 ```
 
@@ -381,6 +391,9 @@ RUN_E2E=1 go test ./test/e2e/ -count=1 -timeout 30m
 ## 10. How to Build
 
 ```bash
+# Build embedded UI first (Vite + React → cmd/slmcode/ui/)
+make ui-react
+
 # Standard build
 go build -o bin/slmcode ./cmd/slmcode
 
@@ -514,6 +527,7 @@ The `/files` page shows a full recursive directory tree. Features:
 
 | Version | Key Changes |
 |---------|------------|
+| 0.12.1 | Vite/React/TypeScript Studio UI (`web/` + `make ui-react`), `fast_model` dual-model routing, smarter QA gate, improved tester |
 | 0.12.0 | Engine-wide parallelization: 6 parallel paths, MaxParallel=4, phase parallelism, parallel QA, parallel self-critique, parallel review, wave fast-path |
 | 0.11.0 | HITL defaults to ask, File Browser (workspace tree API), `--kill` CLI flag, single run input |
 | 0.10.x | SessionStorage state persistence, blocks CLI, Studio LiveView, code review comments, SLM-optimized prompts |

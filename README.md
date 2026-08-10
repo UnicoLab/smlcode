@@ -325,9 +325,16 @@ Local preview: `make docs-serve` → http://127.0.0.1:8000 — bring snacks. �
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
+make ui-react                # build Vite/React Studio UI first
 make tidy && make lint && make test
 make docs-build              # MkDocs strict build
 make install-system          # build from source onto PATH
+```
+
+The Studio UI is a **Vite + React + TypeScript** SPA in `web/`. Build it with `make ui-react` (runs `npm run build`, syncs to `cmd/slmcode/ui/`). The `cmd/slmcode/ui/` output is embedded via `go:embed` at compile time. For UI development:
+
+```bash
+cd web && npm install && npm run dev    # Vite dev server with HMR
 ```
 
 ```go
@@ -346,7 +353,7 @@ Public baseline on purpose. Bring better prompts, tighter gates, smarter schedul
 new specialists, and evals — especially ones that make **small models** more reliable.
 
 1. Fork & branch
-2. `make lint && make test`
+2. `make ui-react && make lint && make test`
 3. Conventional commits (`feat:`, `fix:`, `docs:`, …)
 4. Open a PR
 

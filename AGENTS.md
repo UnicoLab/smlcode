@@ -532,4 +532,3 @@ The `/files` page shows a full recursive directory tree. Features:
 | 0.12.0 | Engine-wide parallelization: 6 parallel paths, MaxParallel=4, phase parallelism, parallel QA, parallel self-critique, parallel review, wave fast-path |
 | 0.11.0 | HITL defaults to ask, File Browser (workspace tree API), `--kill` CLI flag, single run input |
 | 0.10.x | SessionStorage state persistence, blocks CLI, Studio LiveView, code review comments, SLM-optimized prompts |
-

@@ -337,13 +337,13 @@ func (r *Registry) ResolvePackRefs(pack *PackBlock) error {
 
 // PublicView is the Studio/API catalog payload.
 type PublicView struct {
-	Blocks       []CatalogEntry             `json:"blocks"`
-	Packs        []map[string]any           `json:"packs"`
-	Pipelines    []map[string]any           `json:"pipelines"`
-	Agents       []map[string]any           `json:"agents"`
-	Quality      []map[string]any           `json:"quality"`
-	ActivePack   string                     `json:"active_pack,omitempty"`
-	ActivePipeline string                   `json:"active_pipeline,omitempty"`
+	Blocks         []CatalogEntry   `json:"blocks"`
+	Packs          []map[string]any `json:"packs"`
+	Pipelines      []map[string]any `json:"pipelines"`
+	Agents         []map[string]any `json:"agents"`
+	Quality        []map[string]any `json:"quality"`
+	ActivePack     string           `json:"active_pack,omitempty"`
+	ActivePipeline string           `json:"active_pipeline,omitempty"`
 }
 
 // View builds the discovery API response.
@@ -360,7 +360,7 @@ func (r *Registry) View(activePack, activePipeline string) PublicView {
 			"version": p.Version, "author": p.Author, "language": p.Language,
 			"tags": p.Tags, "icon": p.Icon, "source": p.Source, "path": p.Path,
 			"spec": p.Spec, "builtin": p.Source == SourceBuiltin,
-			"active": activePack != "" && activePack == p.ID,
+			"active":    activePack != "" && activePack == p.ID,
 			"shareable": p.Shareable != nil && *p.Shareable,
 		})
 	}
@@ -370,8 +370,8 @@ func (r *Registry) View(activePack, activePipeline string) PublicView {
 			"id": p.ID, "name": p.Name, "description": p.Description,
 			"version": p.Version, "author": p.Author, "language": p.Language,
 			"tags": p.Tags, "icon": p.Icon, "source": p.Source, "path": p.Path,
-			"builtin": p.Source == SourceBuiltin,
-			"active": activePipeline != "" && activePipeline == p.ID,
+			"builtin":   p.Source == SourceBuiltin,
+			"active":    activePipeline != "" && activePipeline == p.ID,
 			"shareable": p.Shareable != nil && *p.Shareable,
 		})
 	}
@@ -382,7 +382,7 @@ func (r *Registry) View(activePack, activePipeline string) PublicView {
 			"version": a.Version, "author": a.Author, "language": a.Language,
 			"tags": a.Tags, "icon": a.Icon, "source": a.Source, "path": a.Path,
 			"builtin": a.Source == SourceBuiltin,
-			"spec": a.Spec, "shareable": a.Shareable != nil && *a.Shareable,
+			"spec":    a.Spec, "shareable": a.Shareable != nil && *a.Shareable,
 		})
 	}
 	for _, id := range sortedKeys(r.Quality) {
@@ -392,7 +392,7 @@ func (r *Registry) View(activePack, activePipeline string) PublicView {
 			"version": q.Version, "author": q.Author, "language": q.Language,
 			"tags": q.Tags, "icon": q.Icon, "source": q.Source, "path": q.Path,
 			"builtin": q.Source == SourceBuiltin,
-			"spec": q.Spec, "shareable": q.Shareable != nil && *q.Shareable,
+			"spec":    q.Spec, "shareable": q.Shareable != nil && *q.Shareable,
 		})
 	}
 	return v

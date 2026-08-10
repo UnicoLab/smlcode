@@ -18,27 +18,19 @@ echo "==> go vet"
 go vet ./...
 
 echo "==> ui-check"
-# Validate embedded UI files
-if [[ ! -f cmd/slmcode/ui/styles.css ]]; then
-  echo "ERROR: cmd/slmcode/ui/styles.css missing"
-  exit 1
-fi
-if [[ ! -f cmd/slmcode/ui/app.jsx ]]; then
-  echo "ERROR: cmd/slmcode/ui/app.jsx missing"
-  exit 1
-fi
+# Validate embedded Vite/React UI files
 if [[ ! -f cmd/slmcode/ui/index.html ]]; then
-  echo "ERROR: cmd/slmcode/ui/index.html missing"
+  echo "ERROR: cmd/slmcode/ui/index.html missing — run: make ui-react"
+  exit 1
+fi
+if [[ ! -d cmd/slmcode/ui/assets ]]; then
+  echo "ERROR: cmd/slmcode/ui/assets missing — run: make ui-react"
   exit 1
 fi
 
-# CSS validation
-if ! grep -q 'data-theme' cmd/slmcode/ui/styles.css; then
-  echo "ERROR: styles.css missing data-theme selector"
-  exit 1
-fi
-if ! grep -q 'slmcode-theme' cmd/slmcode/ui/app.jsx; then
-  echo "ERROR: app.jsx missing slmcode-theme reference"
+# Validate index.html references SLMCode Studio
+if ! grep -q 'SLMCode Studio' cmd/slmcode/ui/index.html; then
+  echo "ERROR: index.html missing SLMCode Studio reference"
   exit 1
 fi
 

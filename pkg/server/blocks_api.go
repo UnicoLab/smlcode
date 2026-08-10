@@ -105,9 +105,9 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"ok":     true,
-		"result": res,
-		"config": s.h.Config.Public(),
+		"ok":      true,
+		"result":  res,
+		"config":  s.h.Config.Public(),
 		"catalog": reg.View(s.h.Config.ActivePack, s.h.Config.ActivePipeline),
 	})
 }

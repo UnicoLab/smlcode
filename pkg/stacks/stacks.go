@@ -27,17 +27,17 @@ type AgentDefault struct {
 
 // Stack is a named preset: global LLM defaults + optional role defaults + UI meta.
 type Stack struct {
-	ID          string                  `json:"id"`
-	Label       string                  `json:"label"`
-	Description string                  `json:"description,omitempty"`
-	Icon        string                  `json:"icon,omitempty"`
-	Color       string                  `json:"color,omitempty"`
-	EnvKey      string                  `json:"env_key,omitempty"`
-	Path        string                  `json:"path,omitempty"`
-	Provider    string                  `json:"provider"`
-	Endpoint    string                  `json:"endpoint"`
-	Model       string                  `json:"model"`
-	Backend     string                  `json:"backend,omitempty"`
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	Color       string `json:"color,omitempty"`
+	EnvKey      string `json:"env_key,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Provider    string `json:"provider"`
+	Endpoint    string `json:"endpoint"`
+	Model       string `json:"model"`
+	Backend     string `json:"backend,omitempty"`
 	// Agents is optional per-role LLM pins.
 	Agents map[string]AgentDefault `json:"agents,omitempty"`
 	// Pack optionally applies a language/domain building-block pack when the stack is applied.

@@ -101,7 +101,7 @@ jobs:
 
             **Windows (PowerShell)**
             ```powershell
-            iem https://raw.githubusercontent.com/UnicoLab/slmcode/main/scripts/install.ps1 | iex
+            irm https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install.ps1 | iex
             ```
 
             **Homebrew**

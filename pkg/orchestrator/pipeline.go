@@ -76,7 +76,12 @@ func (o *Orchestrator) loadPipelineLocked() {
 
 // phaseAgent resolves which registered agent runs a built-in phase.
 func (o *Orchestrator) phaseAgent(phase, defaultAgent string) string {
-	return o.Pipeline().PhaseAgent(phase, defaultAgent)
+	agent := o.Pipeline().PhaseAgent(phase, defaultAgent)
+	if agent != "" && !o.knownAgent(agent) {
+		o.emit(phase, fmt.Sprintf("agent %s not registered — falling back to %s", agent, defaultAgent), "")
+		return defaultAgent
+	}
+	return agent
 }
 
 // phaseEnabled reports whether a built-in phase should execute.

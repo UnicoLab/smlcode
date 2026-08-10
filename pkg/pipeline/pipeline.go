@@ -272,6 +272,28 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	// Group checks: unique non-empty ids, steps reference known phases, and
+	// no phase assigned to more than one group.
+	seenGroup := map[string]bool{}
+	stepOwner := map[string]string{} // phase id → group id
+	for _, g := range c.Groups {
+		if strings.TrimSpace(g.ID) == "" {
+			return fmt.Errorf("group: empty id")
+		}
+		if seenGroup[g.ID] {
+			return fmt.Errorf("group %q: duplicate group id", g.ID)
+		}
+		seenGroup[g.ID] = true
+		for _, step := range g.Steps {
+			if _, ok := c.Phases[step]; !ok {
+				return fmt.Errorf("group %q: unknown phase %q in steps", g.ID, step)
+			}
+			if owner, ok := stepOwner[step]; ok && owner != g.ID {
+				return fmt.Errorf("phase %q assigned to multiple groups", step)
+			}
+			stepOwner[step] = g.ID
+		}
+	}
 	return nil
 }
 

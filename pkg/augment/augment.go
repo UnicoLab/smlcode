@@ -73,7 +73,7 @@ do not re-read every turn unless the file changed. Absolute precision of old_str
 			Target: "ws_shell", TokenCost: 100,
 			Body: `Run tests/builds/smoke checks. Do NOT use shell redirects (cat >, tee) to write source files —
 those are refused when the file exists. Use ws_edit/ws_patch for code changes.
-Prefer: python -m py_compile PATH · go test ./… -short · pytest.`,
+Prefer the project's real checks for ITS language: go test/vet for Go, pytest/py_compile for Python, npm test/tsc for JS/TS — never mix languages.`,
 		},
 		{
 			Target: "ws_glob", TokenCost: 60,
@@ -219,6 +219,7 @@ type Options struct {
 	KnowledgeBudget int // default 200; <0 disables
 	LastFailedTool  string
 	RecentTools     []string // most-recent first
+	Language        string   // lowercased project language: "go", "python", "javascript"/"typescript", or ""
 }
 
 // SelectToolSkills picks cards: error recovery > recency > intent.
@@ -275,6 +276,50 @@ func SelectToolSkills(prompt string, skills []ToolSkill, opt Options) []ToolSkil
 		tryAdd("ws_edit")
 	}
 	return selected
+}
+
+// filterKnowledgeByLanguage drops language-specific knowledge cards when the
+// project language is known and the prompt does not explicitly mention the
+// other language's world (explicit mention wins over the project default).
+// Language-neutral cards always pass through unchanged.
+func filterKnowledgeByLanguage(entries []KnowledgeEntry, lang, prompt string) []KnowledgeEntry {
+	if lang == "" || len(entries) == 0 {
+		return entries
+	}
+	lower := strings.ToLower(prompt)
+	mentions := func(kws ...string) bool {
+		for _, kw := range kws {
+			if strings.Contains(lower, kw) {
+				return true
+			}
+		}
+		return false
+	}
+	// Python-world trigger keywords (includes LangGraph, which ships Python code).
+	pythonWorld := mentions(
+		"python", "pytest", "pip ", "requirements.txt", "pyproject", "venv",
+		"fastapi", "django", "flask", ".py", "langgraph", "langchain",
+	)
+	// Go-world trigger keywords. Bare "go test" is intentionally NOT a trigger
+	// for non-Go projects: "go" is a common word and a python project adding go
+	// test coverage still wants python guidance, not the Go bar.
+	goWorld := mentions("go mod", "go.mod", "golang", ".go ", "goroutine")
+
+	isGo := lang == "go" || lang == "golang"
+	isPy := lang == "python" || lang == "py"
+	isJS := lang == "javascript" || lang == "typescript"
+
+	out := make([]KnowledgeEntry, 0, len(entries))
+	for _, e := range entries {
+		switch {
+		case (isGo || isJS) && (e.Topic == "Python Project Bar" || e.Topic == "LangGraph Class Agent") && !pythonWorld:
+			continue
+		case (isPy || isJS) && e.Topic == "Go Project Bar" && !goWorld:
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // SelectKnowledge scores entries against the prompt (word=1, phrase=2).
@@ -360,6 +405,7 @@ func InjectForPrompt(prompt string, opt Options) string {
 			kb = 200
 		}
 		knowledge = SelectKnowledge(prompt, DefaultKnowledge(), kb)
+		knowledge = filterKnowledgeByLanguage(knowledge, strings.ToLower(opt.Language), prompt)
 		needed := map[string]bool{}
 		for _, e := range knowledge {
 			for _, t := range e.RequiresTools {

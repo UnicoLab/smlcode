@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { getAgents, getAgent, createAgent, updateAgent, deleteAgent } from '@/api/client';
-import type { AgentSpec } from '@/types';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { getAgents, getAgent, createAgent, updateAgent, deleteAgent, getSkills } from '@/api/client';
+import type { AgentSpec, Skill } from '@/types';
 import {
   Bot,
   Plus,
@@ -37,6 +37,9 @@ export default function AgentManager() {
   const [editing, setEditing] = useState<AgentSpec | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<AgentSpec>(EMPTY_AGENT);
+  const [allSkills, setAllSkills] = useState<Skill[]>([]);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const [skillSearch, setSkillSearch] = useState('');
 
   const fetch = useCallback(async () => {
     try {
@@ -52,6 +55,37 @@ export default function AgentManager() {
   useEffect(() => {
     fetch();
   }, [fetch]);
+
+  // Fetch all skills once for the multi-select picker (fallback to text input on failure/empty)
+  useEffect(() => {
+    getSkills()
+      .then((list) => setAllSkills(list || []))
+      .catch((e) => {
+        console.error('Failed to load skills:', e);
+        setAllSkills([]);
+      })
+      .finally(() => setSkillsLoaded(true));
+  }, []);
+
+  const toggleSkill = useCallback((name: string) => {
+    setForm((f) => {
+      const current = f.skills || [];
+      return {
+        ...f,
+        skills: current.includes(name) ? current.filter((s) => s !== name) : [...current, name],
+      };
+    });
+  }, []);
+
+  // Alphabetically sorted union of known skills + still-selected skills (marked missing if gone)
+  const skillChips = useMemo(() => {
+    const selected = form.skills || [];
+    const union = new Set([...allSkills.map((s) => s.name), ...selected]);
+    const term = skillSearch.trim().toLowerCase();
+    return [...union]
+      .sort((a, b) => a.localeCompare(b))
+      .filter((name) => !term || name.toLowerCase().includes(term));
+  }, [allSkills, form.skills, skillSearch]);
 
   const handleCreate = () => {
     setForm({ ...EMPTY_AGENT, id: `custom-${Date.now()}` });
@@ -132,163 +166,223 @@ export default function AgentManager() {
           </button>
         </div>
 
-        {/* Agent Form */}
+        {/* Agent Form — modal overlay */}
         {showForm && (
-          <div className="card p-6 space-y-4 border-brand-300 dark:border-brand-700 animate-slide-up">
-            <div className="flex items-center justify-between">
-              <h2 className="font-bold text-lg">
-                {creating ? 'Create Agent' : `Edit ${editing?.title}`}
-                {editing?.builtin && (
-                  <span className="badge-neutral ml-2 text-xs align-middle">built-in</span>
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm sm:p-6"
+            onMouseDown={handleCancel}
+          >
+            <div
+              className="card my-4 flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+                <h2 className="font-bold text-lg">
+                  {creating ? 'Create Agent' : `Edit ${editing?.title}`}
+                  {editing?.builtin && (
+                    <span className="badge-neutral ml-2 text-xs align-middle">built-in</span>
+                  )}
+                  {editing?.override && (
+                    <span className="badge-brand ml-2 text-xs align-middle">override</span>
+                  )}
+                </h2>
+                <div className="flex items-center gap-2">
+                  <button onClick={handleCancel} className="btn-ghost text-sm">Cancel</button>
+                  <button onClick={handleSave} className="btn-primary text-sm gap-1.5">
+                    <Check size={14} />
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
+                {detailLoading && (
+                  <div className="flex items-center justify-center py-12 text-gray-400">
+                    <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-3" />
+                    Loading agent detail…
+                  </div>
                 )}
-              </h2>
-              <div className="flex items-center gap-2">
-                <button onClick={handleCancel} className="btn-ghost text-sm">Cancel</button>
-                <button onClick={handleSave} className="btn-primary text-sm gap-1.5">
-                  <Check size={14} />
-                  Save
-                </button>
+
+                {!detailLoading && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Agent ID</label>
+                      <input
+                        type="text"
+                        value={form.id}
+                        onChange={(e) => setForm({ ...form, id: e.target.value })}
+                        className="input-mono"
+                        placeholder="my-agent"
+                        disabled={!!editing}
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Title</label>
+                      <input
+                        type="text"
+                        value={form.title}
+                        onChange={(e) => setForm({ ...form, title: e.target.value })}
+                        className="input"
+                        placeholder="My Agent"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="label">Description</label>
+                      <input
+                        type="text"
+                        value={form.description}
+                        onChange={(e) => setForm({ ...form, description: e.target.value })}
+                        className="input"
+                        placeholder="What this agent does…"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="label">System Prompt</label>
+                      <textarea
+                        value={form.system_prompt || ''}
+                        onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
+                        className="input font-mono text-xs h-48 resize-y"
+                        placeholder="You are a specialist agent…"
+                      />
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        Base instructions for this agent. At runtime, the orchestrator automatically injects: project context (PROJECT.md, CONTEXT.md), matched skills, current plan, task details, and tool guidance. Keep this prompt focused on the agent's core role and output format.
+                      </p>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="label">Skills</label>
+                      {!skillsLoaded ? (
+                        <p className="text-xs text-gray-400">Loading skills…</p>
+                      ) : allSkills.length === 0 ? (
+                        <input
+                          type="text"
+                          value={form.skills?.join(', ') || ''}
+                          onChange={(e) =>
+                            setForm({ ...form, skills: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })
+                          }
+                          className="input"
+                          placeholder="react, typescript, testing"
+                        />
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs text-gray-400">
+                              {(form.skills || []).length} selected
+                            </span>
+                            {allSkills.length >= 10 && (
+                              <input
+                                type="text"
+                                value={skillSearch}
+                                onChange={(e) => setSkillSearch(e.target.value)}
+                                className="input text-xs py-1 w-48"
+                                placeholder="Filter skills…"
+                              />
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {skillChips.map((name) => {
+                              const selected = (form.skills || []).includes(name);
+                              const missing = !allSkills.some((s) => s.name === name);
+                              return (
+                                <button
+                                  key={name}
+                                  type="button"
+                                  onClick={() => toggleSkill(name)}
+                                  title={missing ? `${name} — not found in skill registry` : name}
+                                  className={clsx(
+                                    'px-2 py-1 rounded-full text-[11px] border transition-colors',
+                                    selected
+                                      ? 'bg-brand-500 text-white border-brand-500'
+                                      : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-brand-400',
+                                  )}
+                                >
+                                  {name}
+                                  {missing && <span className="ml-1 text-amber-200">missing</span>}
+                                </button>
+                              );
+                            })}
+                            {skillChips.length === 0 && (
+                              <span className="text-xs text-gray-400">No skills match &quot;{skillSearch}&quot;.</span>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div>
+                      <label className="label">Temperature</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="2"
+                        value={form.temperature}
+                        onChange={(e) => setForm({ ...form, temperature: parseFloat(e.target.value) })}
+                        className="input"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Max Tokens</label>
+                      <input
+                        type="number"
+                        value={form.max_tokens}
+                        onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) })}
+                        className="input"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Max Iterations</label>
+                      <input
+                        type="number"
+                        value={form.max_iter || 8}
+                        onChange={(e) => setForm({ ...form, max_iter: parseInt(e.target.value) })}
+                        className="input"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Model (override)</label>
+                      <input
+                        type="text"
+                        value={form.model || ''}
+                        onChange={(e) => setForm({ ...form, model: e.target.value })}
+                        className="input-mono"
+                        placeholder="empty = inherit stack/global"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Provider (override)</label>
+                      <input
+                        type="text"
+                        value={form.provider || ''}
+                        onChange={(e) => setForm({ ...form, provider: e.target.value })}
+                        className="input-mono"
+                        placeholder="empty = inherit stack/global"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="label">Endpoint (override)</label>
+                      <input
+                        type="text"
+                        value={form.endpoint || ''}
+                        onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
+                        className="input-mono"
+                        placeholder="empty = provider default / global endpoint"
+                      />
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        Resolution: agent override → active stack / global config. Leave blank to inherit.
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={form.tools !== false}
+                        onChange={(e) => setForm({ ...form, tools: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                      />
+                      <span className="text-sm">Enable built-in tools</span>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
-
-            {detailLoading && (
-              <div className="flex items-center justify-center py-12 text-gray-400">
-                <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mr-3" />
-                Loading agent detail…
-              </div>
-            )}
-
-            {!detailLoading && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="label">Agent ID</label>
-                <input
-                  type="text"
-                  value={form.id}
-                  onChange={(e) => setForm({ ...form, id: e.target.value })}
-                  className="input-mono"
-                  placeholder="my-agent"
-                  disabled={!!editing}
-                />
-              </div>
-              <div>
-                <label className="label">Title</label>
-                <input
-                  type="text"
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  className="input"
-                  placeholder="My Agent"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="label">Description</label>
-                <input
-                  type="text"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  className="input"
-                  placeholder="What this agent does…"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="label">System Prompt</label>
-                <textarea
-                  value={form.system_prompt || ''}
-                  onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-                  className="input font-mono text-xs h-48 resize-y"
-                  placeholder="You are a specialist agent…"
-                />
-                <p className="text-[10px] text-gray-400 mt-1">
-                  Base instructions for this agent. At runtime, the orchestrator automatically injects: project context (PROJECT.md, CONTEXT.md), matched skills, current plan, task details, and tool guidance. Keep this prompt focused on the agent's core role and output format.
-                </p>
-              </div>
-              <div>
-                <label className="label">Skills (comma separated)</label>
-                <input
-                  type="text"
-                  value={form.skills?.join(', ') || ''}
-                  onChange={(e) =>
-                    setForm({ ...form, skills: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })
-                  }
-                  className="input"
-                  placeholder="react, typescript, testing"
-                />
-              </div>
-              <div>
-                <label className="label">Temperature</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="2"
-                  value={form.temperature}
-                  onChange={(e) => setForm({ ...form, temperature: parseFloat(e.target.value) })}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">Max Tokens</label>
-                <input
-                  type="number"
-                  value={form.max_tokens}
-                  onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) })}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">Max Iterations</label>
-                <input
-                  type="number"
-                  value={form.max_iter || 8}
-                  onChange={(e) => setForm({ ...form, max_iter: parseInt(e.target.value) })}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">Model (override)</label>
-                <input
-                  type="text"
-                  value={form.model || ''}
-                  onChange={(e) => setForm({ ...form, model: e.target.value })}
-                  className="input-mono"
-                  placeholder="empty = inherit stack/global"
-                />
-              </div>
-              <div>
-                <label className="label">Provider (override)</label>
-                <input
-                  type="text"
-                  value={form.provider || ''}
-                  onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                  className="input-mono"
-                  placeholder="empty = inherit stack/global"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="label">Endpoint (override)</label>
-                <input
-                  type="text"
-                  value={form.endpoint || ''}
-                  onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
-                  className="input-mono"
-                  placeholder="empty = provider default / global endpoint"
-                />
-                <p className="text-[10px] text-gray-400 mt-1">
-                  Resolution: agent override → active stack / global config. Leave blank to inherit.
-                </p>
-              </div>
-              <label className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={form.tools !== false}
-                  onChange={(e) => setForm({ ...form, tools: e.target.checked })}
-                  className="w-4 h-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                />
-                <span className="text-sm">Enable built-in tools</span>
-              </label>
-            </div>
-            )}
           </div>
         )}
 
@@ -342,7 +436,9 @@ export default function AgentManager() {
                 {!agent.custom && <span className="badge-neutral">built-in</span>}
                 {agent.override && <span className="badge-brand">override</span>}
                 {agent.skills && agent.skills.length > 0 && (
-                  <span className="badge-brand">{agent.skills.length} skills</span>
+                  <span className="badge-brand" title={agent.skills.join(', ')}>
+                    {agent.skills.length} skills
+                  </span>
                 )}
                 <span className="badge-neutral flex items-center gap-1" title="Effective LLM after stack inheritance">
                   <Cpu size={10} />

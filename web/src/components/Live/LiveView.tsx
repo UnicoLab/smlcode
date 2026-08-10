@@ -20,6 +20,7 @@ import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
 import LiveFileInspector from './LiveFileInspector';
 import HITLPopup from './HITLPopup';
+import LiveFeedback from './LiveFeedback';
 import clsx from 'clsx';
 
 // ── Pipeline group definitions ──
@@ -347,6 +348,11 @@ export default function LiveView() {
             </button>
           )}
         </div>
+      </div>
+
+      {/* ── Live Feedback — steer running agents in real time ── */}
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+        <LiveFeedback />
       </div>
 
       {/* ── Active pipeline + config indicator ── */}

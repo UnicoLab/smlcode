@@ -229,7 +229,11 @@ type Factory struct {
 	Model      string
 	Provider   string
 	CustomDirs []string
-	FastModel  string // optional faster model for lightweight agents
+	// ExtraCustoms are agent definitions merged after CustomDirs (on-disk files
+	// win on id clashes). Used to register block-defined specialists such as
+	// go-tester / go-worker straight from the blocks registry.
+	ExtraCustoms []CustomSpec
+	FastModel    string // optional faster model for lightweight agents
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
 	ModelProfiles map[string]config.ModelProfile
@@ -294,6 +298,14 @@ func (f *Factory) AllSpecs() []RoleSpec {
 		if i, ok := index[c.ID]; ok {
 			ApplyOverride(&out[i], c, coding)
 			out[i].Override = true
+			continue
+		}
+		out = append(out, c.ToRoleSpec(coding))
+		index[c.ID] = len(out) - 1
+	}
+	// Block-defined agents (e.g. go-tester) — on-disk custom files win on clash.
+	for _, c := range f.ExtraCustoms {
+		if _, ok := index[c.ID]; ok {
 			continue
 		}
 		out = append(out, c.ToRoleSpec(coding))

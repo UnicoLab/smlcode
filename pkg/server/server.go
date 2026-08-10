@@ -18,6 +18,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/authstore"
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/harness"
@@ -30,6 +31,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/stacks"
+	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
@@ -137,6 +139,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/compact", s.handleCompact)
 	s.mux.HandleFunc("GET /api/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
+	s.mux.HandleFunc("GET /api/update", s.handleUpdateCheck)
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/auth", s.handleAuthStatus)
 	s.mux.HandleFunc("PUT /api/auth", s.handlePutAuth)
@@ -156,6 +159,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)
 	s.mux.HandleFunc("GET /api/blocks", s.handleListBlocks)
 	s.mux.HandleFunc("GET /api/blocks/{kind}/{id}", s.handleGetBlock)
+	s.mux.HandleFunc("POST /api/blocks/{kind}", s.handleCreateBlock)
+	s.mux.HandleFunc("PUT /api/blocks/{kind}/{id}", s.handleUpdateBlock)
+	s.mux.HandleFunc("DELETE /api/blocks/{kind}/{id}", s.handleDeleteBlock)
 	s.mux.HandleFunc("POST /api/packs/{id}/apply", s.handleApplyPack)
 	s.mux.HandleFunc("POST /api/pipeline-presets/{id}/apply", s.handleApplyPipelineBlock)
 	s.mux.HandleFunc("GET /api/archives", s.handleListArchives)
@@ -164,6 +170,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/queries/{id}", s.handleGetQuery)
 	s.mux.HandleFunc("GET /api/workspace/file", s.handleWorkspaceFile)
 	s.mux.HandleFunc("GET /api/workspace/tree", s.handleWorkspaceTree)
+	s.mux.HandleFunc("GET /api/feedback", s.handleGetFeedback)
+	s.mux.HandleFunc("POST /api/feedback", s.handleSetFeedback)
+	s.mux.HandleFunc("DELETE /api/feedback", s.handleClearFeedback)
 
 	if s.ui != nil {
 		fileServer := http.FileServer(http.FS(s.ui))
@@ -188,6 +197,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"running":  running,
 		"events":   nEvents,
 	})
+}
+
+// handleUpdateCheck reports whether a newer SLMCode release exists (cached 6h).
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, updatecheck.Check(Version))
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -764,6 +778,37 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleGetFeedback(w http.ResponseWriter, r *http.Request) {
+	text, at := "", ""
+	if s.h != nil && s.h.Orchestrator != nil {
+		text, at = s.h.Orchestrator.LiveFeedbackInfo()
+	}
+	writeJSON(w, map[string]string{"text": text, "set_at": at})
+}
+
+func (s *Server) handleSetFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.h == nil || s.h.Orchestrator == nil {
+		writeJSON(w, map[string]any{"ok": false, "text": ""})
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	text := s.h.Orchestrator.SetLiveFeedback(body.Text)
+	writeJSON(w, map[string]any{"ok": true, "text": text})
+}
+
+func (s *Server) handleClearFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.h != nil && s.h.Orchestrator != nil {
+		s.h.Orchestrator.ClearLiveFeedback()
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	s.h.Orchestrator.Stop()
 	s.mu.Lock()
@@ -959,12 +1004,31 @@ func (s *Server) enrichAgentMaps(list []map[string]interface{}) []map[string]int
 	return agents.EnrichPublicSpecs(list, config.NormalizeProvider(cfg.Provider), cfg.Model, cfg.ActiveStack)
 }
 
-func (s *Server) agentDirs() []string {
-	return append([]string{s.h.Config.AgentsDir()}, agents.GlobalAgentRoots()...)
-}
-
 func (s *Server) loadCustomAgents() []agents.CustomSpec {
-	list, _ := agents.LoadCustomSpecs(s.agentDirs()...)
+	dirs := append([]string{s.h.Config.AgentsDir()}, agents.GlobalAgentRoots()...)
+	if blk := filepath.Join(blocks.ProjectBlocksDir(s.h.Config.Root), "agents"); blk != "" {
+		dirs = append(dirs, blk)
+	}
+	list, _ := agents.LoadCustomSpecs(dirs...)
+	// Merge agent blocks from the full registry (builtin + project + user) so
+	// specialists like go-tester / go-worker are visible in Studio even when
+	// not materialized. On-disk custom files win on id clash.
+	if reg, err := blocks.Load(s.h.Config.Root); err == nil {
+		seen := map[string]bool{}
+		for _, c := range list {
+			seen[c.ID] = true
+		}
+		for _, ab := range reg.Agents {
+			if seen[ab.ID] {
+				continue
+			}
+			spec := ab.Spec
+			spec.Path = ab.Path
+			if err := agents.NormalizeCustom(&spec); err == nil {
+				list = append(list, spec)
+			}
+		}
+	}
 	return list
 }
 
@@ -1130,8 +1194,26 @@ func (s *Server) handlePutAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	// An agent can live in two places: a materialized override in
+	// .slmcode/agents/ and a block definition in .slmcode/blocks/agents/.
+	// Remove whatever exists — succeed if either was deleted.
+	var firstErr error
+	deletedAny := false
 	if err := agents.DeleteCustom(s.h.Config.AgentsDir(), id); err != nil {
-		http.Error(w, err.Error(), 400)
+		firstErr = err
+	} else {
+		deletedAny = true
+	}
+	if found, bErr := blocks.Delete(s.h.Config.Root, blocks.KindAgent, id); bErr != nil {
+		// Prefer the block-level error — it explains builtin protection.
+		if firstErr == nil || strings.Contains(bErr.Error(), "cannot be deleted") {
+			firstErr = bErr
+		}
+	} else if found {
+		deletedAny = true
+	}
+	if !deletedAny {
+		http.Error(w, firstErr.Error(), 400)
 		return
 	}
 	if err := s.rebuildOrchestrator(); err != nil {

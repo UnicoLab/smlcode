@@ -505,3 +505,103 @@ export interface PackApplyResponse {
   config: Config;
   catalog?: BlockView;
 }
+
+// ── Block CRUD (create/edit/delete via Studio) ──
+// A block as authored in YAML: shared meta fields + kind-specific `spec`.
+// Mirrors the backend block schema (Meta inlined with `spec`).
+export interface BlockMeta {
+  api_version?: string;
+  kind: string;
+  id: string;
+  name?: string;
+  description?: string;
+  version?: string;
+  author?: string;
+  license?: string;
+  tags?: string[];
+  language?: string;
+  icon?: string;
+  shareable?: boolean;
+}
+
+// Kind-specific spec payloads (loosely typed — mirrors backend schema).
+export interface AgentBlockSpec {
+  id?: string;
+  title?: string;
+  description?: string;
+  system_prompt?: string;
+  tools?: boolean;
+  max_iter?: number;
+  temperature?: number;
+  max_tokens?: number;
+  model?: string;
+  provider?: string;
+  endpoint?: string;
+  skills?: string[];
+}
+
+export interface QualityCheckCmd {
+  cmd: string;
+  optional?: boolean;
+  label?: string;
+}
+
+export interface QualityBlockSpec {
+  detect?: { files?: string[]; extensions?: string[]; priority?: number };
+  format?: QualityCheckCmd[];
+  lint?: QualityCheckCmd[];
+  typecheck?: QualityCheckCmd[];
+  test?: QualityCheckCmd[];
+  build?: QualityCheckCmd[];
+  smoke?: string;
+  qa_gate?: string;
+  safe_prefixes?: string[];
+  tester_hints?: string;
+}
+
+export interface PackBlockSpec {
+  pipeline?: string;
+  quality?: string;
+  agents?: string[];
+  skills?: string[];
+  pin_skills?: boolean;
+  override_tester?: string;
+  override_worker?: string;
+  defer_plan_approve?: boolean;
+  defer_clarify?: boolean;
+}
+
+export interface BlockPayload extends BlockMeta {
+  spec?: any; // AgentBlockSpec | PipelineConfig | QualityBlockSpec | PackBlockSpec
+}
+
+export interface BlockCrudResponse {
+  ok: boolean;
+  block?: BlockPayload;
+  path?: string;
+  error?: string;
+}
+
+// ── Live Feedback ──
+// GET /api/feedback → current active feedback (injected into the next agent prompt)
+// POST /api/feedback → {text} → {ok, text}
+// DELETE /api/feedback → {ok: "true"}
+export interface FeedbackState {
+  text: string;
+  set_at?: string;
+}
+
+export interface FeedbackResponse {
+  ok: boolean;
+  text?: string;
+}
+
+// ── Version update ──
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  release_url?: string;
+  checked_at?: string;
+  error?: string;
+}

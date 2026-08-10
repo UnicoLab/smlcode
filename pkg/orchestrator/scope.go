@@ -49,6 +49,7 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 		"\n\n## Exploration\n" + truncate(exploreOut, 2000) +
 		"\n\nMode hint: clarify_mode=" + mode +
 		". If mode=auto, still emit recommended options but set needs_user=false." +
+		"\n\n## Project language\n" + o.langHint() +
 		"\nReturn STRICT JSON interview object."
 	clarifyOut, err := o.runRoleTracked(ctx, plan.RolePlanner, "", clarifyPrompt)
 	if err != nil || strings.TrimSpace(clarifyOut) == "" {

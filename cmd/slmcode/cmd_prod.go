@@ -30,6 +30,7 @@ Slash commands:
   /run <query>     full pipeline
   /permission <auto|dry-run|review>
   /model <id>
+  /feedback <text> live steering injected into the next agent call (/feedback clear)
 Any other line runs the full SLM pipeline.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			h, err := openHarness()
@@ -100,7 +101,8 @@ func chatSlash(h *harness.Harness, line string, run func(string) error) (bool, e
 		return true, nil
 	case "/help", "/?":
 		fmt.Println(`  /run <q>   /board   /status   /diff   /skills   /doctor
-  /permission auto|dry-run|review   /model <id>   /quit`)
+  /permission auto|dry-run|review   /model <id>   /quit
+  /feedback <text>   live steering for running agents (/feedback clear)`)
 		return false, nil
 	case "/board":
 		_ = h.Orchestrator.Board().Load()
@@ -124,6 +126,8 @@ func chatSlash(h *harness.Harness, line string, run func(string) error) (bool, e
 			fmt.Printf("  • %s — %s\n", s.Name, s.Description)
 		}
 		return false, nil
+	case "/feedback", "/fb":
+		return false, handleFeedbackCmd(h, arg)
 	case "/blocks":
 		reg, err := blocks.Load(h.Config.Root)
 		if err != nil {

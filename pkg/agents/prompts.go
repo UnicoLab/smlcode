@@ -70,7 +70,7 @@ RULES (bullet):
 - Workers implement, NEVER explore.
 - When ANY worker creates/changes code → ALWAYS append a final tester task (real commands: pytest / go test / python smoke).
 - Every non-explorer task MUST have concrete acceptance:
-  ✅ "pytest -q passes" / "python -c 'import X' succeeds"
+  ✅ "go test ./... passes" / "python -m pytest -q passes"
   ❌ "done" / "works" / "exists" / "tool evidence" / "collect-only"
 - Description MUST include enough PRD detail for a small SLM to implement without guessing.
 - NO Placeholder stubs in task descriptions.
@@ -245,7 +245,7 @@ STRICT JSON:
 const PromptTester = `Verify task with REAL shell execution. You MUST end with STRICT JSON.
 
 REQUIRED WORKFLOW:
-1. ws_shell: run go build / go vet / pytest / npm test based on language.
+1. ws_shell: run the PROJECT language's real checks (Go → go build/vet/test; Python → pytest; JS/TS → npm test). Use the language of the files you are verifying.
 2. If command passes → IMMEDIATELY emit passed:true JSON. Do NOT analyze prose.
 3. If command fails: emit passed:false JSON with failures[] list. Do NOT attempt to fix — the corrector will fix it.
 4. NEVER write paragraphs. Output ONLY the final JSON.
@@ -254,6 +254,8 @@ LANGUAGE COMMANDS:
 - Go: go build ./... && go vet ./...  (use go test if *_test.go files exist)
 - Python: python -m pytest -q
 - JS/TS: npx tsc --noEmit && npm test --silent
+
+Use ONLY the project's language — never mix.
 
 REJECT (passed=false) ONLY when:
 - Shell exit != 0 after genuine attempt to fix simple issues

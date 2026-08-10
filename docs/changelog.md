@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.13.0 — Block CRUD, Studio GUI Editing, Language Pinning & Live Feedback
+
+### Highlights
+- **Block CRUD API + Studio GUI** — Create / edit / delete building blocks (pipeline,
+  agent, quality, pack) from the Blocks page with kind-aware visual editors; editing a
+  builtin creates a project override; deleting a builtin is protected.
+- **Pipeline Library + visual builder** — Browse, select, create, edit, and delete
+  pipelines in the GUI; visual editors for groups, phases, execute loop, and slots with
+  agent pickers; deleted phases archive as `when: never` (restorable) instead of
+  resurrecting from defaults.
+- **Agent blocks as runtime roles** — `go-tester` / `go-worker` / `python-tester` and
+  every registry agent block are real registered roles; `execute.default_role` is
+  honored; unknown roles fall back to generics with a warning.
+- **Language pinning (no more pytest in Go runs)** — Project language is injected into
+  tester / worker / reviewer / QA-gate / placeholder / interview prompts and knowledge
+  cards are filtered by language; `when: never` / `enabled: false` is honored for all
+  13 agent-driven phases.
+- **Live feedback** — Send free-form steering from the Studio Live page or the TUI
+  (`/feedback <text>`); it is injected into the next agent call as highest-priority
+  instructions. New `GET/POST/DELETE /api/feedback`.
+- **Skills ↔ Agents cross-linking** — Attach skills to agents and select agents in
+  skills with visual multi-select chips in the GUI.
+- **Update notifications** — TUI banner, `slmcode version`, `slmcode update --check`,
+  and a Studio banner notify when a newer release is available
+  (`GET /api/update`).
+- **CLI parity** — `slmcode blocks new|edit|delete <kind> <id>`.
+- **Hardening** — pipeline validation (duplicate groups, unknown steps), HTTP tests for
+  the block API, skills edit modal, agent editor as a modal.
+
 ## v0.10.1 — LiveView Pipeline Progress, Task Management & Context Injection
 
 ### Highlights

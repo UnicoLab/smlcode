@@ -99,6 +99,11 @@ type Orchestrator struct {
 	usage TokenUsage
 	// refineRound counts auto-refine passes in the current run.
 	refineRound int
+
+	// liveFeedback is a free-form steering message from the user, injected into
+	// the next agent prompts mid-run (see runRoleTracked).
+	liveFeedback   string
+	liveFeedbackAt string // RFC3339 when liveFeedback was last set
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -206,7 +211,21 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	providerName := config.NormalizeProvider(cfg.Provider)
 	cfg.Provider = providerName
 	factory := agents.NewFactory(llmManager, toolReg, cfg.Model, providerName)
-	factory.CustomDirs = append([]string{cfg.AgentsDir()}, agents.GlobalAgentRoots()...)
+	// Also load agent blocks from the project's .slmcode/blocks/agents dir so
+	// pipeline presets referencing go-tester / go-worker / react-tester etc.
+	// resolve to real registered roles even without explicit materialization.
+	factory.CustomDirs = append([]string{cfg.AgentsDir(),
+		filepath.Join(blocks.ProjectBlocksDir(cfg.Root), "agents")}, agents.GlobalAgentRoots()...)
+	// Register every agent block from the blocks registry (builtin + project +
+	// user + extra) as a factory role — on-disk custom files still win on id
+	// clash because ExtraCustoms are merged last.
+	if reg, regErr := blocks.Load(cfg.Root); regErr == nil {
+		for _, ab := range reg.Agents {
+			spec := ab.Spec
+			_ = agents.NormalizeCustom(&spec)
+			factory.ExtraCustoms = append(factory.ExtraCustoms, spec)
+		}
+	}
 	factory.ModelProfiles = cfg.ModelProfiles
 	if prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model); prof.MaxTokens > 0 || prof.MaxTurns > 0 || prof.Temperature > 0 {
 		factory.ProfileMaxTokens = prof.MaxTokens
@@ -273,10 +292,71 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	return o, nil
 }
 
-func (o *Orchestrator) OnEvent(h EventHandler)       { o.onEvent = h }
-func (o *Orchestrator) Store() *contextstore.Store   { return o.store }
-func (o *Orchestrator) Board() *plan.LiveStore       { return o.boardStore }
-func (o *Orchestrator) Skills() *skills.Loader       { return o.skills }
+func (o *Orchestrator) OnEvent(h EventHandler)     { o.onEvent = h }
+func (o *Orchestrator) Store() *contextstore.Store { return o.store }
+func (o *Orchestrator) Board() *plan.LiveStore     { return o.boardStore }
+func (o *Orchestrator) Skills() *skills.Loader     { return o.skills }
+
+// SetLiveFeedback stores a free-form steering message from the user. The next
+// agent calls pick it up and adjust their work. Returns the stored text
+// ("" when the input was empty, which also clears any previous feedback).
+func (o *Orchestrator) SetLiveFeedback(text string) string {
+	if o == nil {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	o.mu.Lock()
+	o.liveFeedback = text
+	if text == "" {
+		o.liveFeedbackAt = ""
+	} else {
+		o.liveFeedbackAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	o.mu.Unlock()
+	if text == "" {
+		return ""
+	}
+	if o.store != nil {
+		_ = o.store.Append(contextstore.DocScratch, "Live feedback", text)
+	}
+	o.emitFull("execute", stream.KindIntervention, "user", "",
+		"live feedback accepted — injected into next agent prompt", "", text)
+	return text
+}
+
+// ClearLiveFeedback removes any pending live feedback.
+func (o *Orchestrator) ClearLiveFeedback() string {
+	if o == nil {
+		return ""
+	}
+	o.mu.Lock()
+	o.liveFeedback = ""
+	o.liveFeedbackAt = ""
+	o.mu.Unlock()
+	o.emitFull("execute", stream.KindIntervention, "user", "", "live feedback cleared", "", "")
+	return ""
+}
+
+// LiveFeedback returns the current live feedback text ("" when none).
+func (o *Orchestrator) LiveFeedback() string {
+	if o == nil {
+		return ""
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.liveFeedback
+}
+
+// LiveFeedbackInfo returns the current live feedback text and the RFC3339
+// timestamp when it was last set.
+func (o *Orchestrator) LiveFeedbackInfo() (text, at string) {
+	if o == nil {
+		return "", ""
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.liveFeedback, o.liveFeedbackAt
+}
 func (o *Orchestrator) Config() *config.Config       { return o.cfg }
 func (o *Orchestrator) Packer() *contextstore.Packer { return o.packer }
 
@@ -667,6 +747,11 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		},
 		func() phaseResult {
 			// --- 2c Clarify / scope interview ---
+			// pipeline gate: phaseEnabled("clarify") — when=never skips this phase
+			if !o.phaseEnabled("clarify") {
+				o.emit("clarify", "phase disabled — skipping interview", "")
+				return phaseResult{name: "clarify"}
+			}
 			interview = o.runScopeInterview(ctx, query, exploreOut)
 			clarify = interview.ToClarifyResult()
 			prd = interview.PRD
@@ -875,6 +960,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
 	runner.SlmDir = o.cfg.SlmDir()
+	runner.Feedback = o.LiveFeedback
 	runner.TurnID = runID
 	runner.Store = o.boardStore
 	runner.Focus = o.focus
@@ -884,6 +970,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.Timeout = o.cfg.TaskTimeout
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
+	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -950,7 +1037,10 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)
 	execStart := time.Now()
-	if err := runner.RunBoard(ctx, board); err != nil {
+	// pipeline gate: phaseEnabled("execute") — when=never skips this phase
+	if !o.phaseEnabled("execute") {
+		o.emit("execute", "phase disabled — skipping board execution", "")
+	} else if err := runner.RunBoard(ctx, board); err != nil {
 		return o.checkpointInterrupt(board, session.PhaseExecute, err)
 	}
 	o.recordLatency("execute", time.Since(execStart))
@@ -1105,23 +1195,72 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 	}
 }
 
+// resolveExecRole maps an unregistered role (e.g. go-tester from a pipeline
+// preset whose agent blocks never materialized) to a known generic role so
+// the executor never fails with "subagent not found".
+func (o *Orchestrator) resolveExecRole(role string) string {
+	// Without a factory we cannot verify registration — trust the role as-is
+	// (test fakes and nil-safe callers rely on the original role passing through).
+	if o == nil || o.factory == nil {
+		return role
+	}
+	if o.knownAgent(role) {
+		return role
+	}
+	mapped := genericRoleFor(role)
+	if !o.knownAgent(mapped) {
+		if strings.Contains(strings.ToLower(role), "tester") {
+			return plan.RoleTester
+		}
+		return plan.RoleWorker
+	}
+	return mapped
+}
+
+// genericRoleFor strips language/kind affixes from a role id so
+// go-tester → tester, python-worker → worker, react-tester → tester.
+func genericRoleFor(role string) string {
+	r := strings.TrimSpace(strings.ToLower(role))
+	for _, p := range []string{"go-", "python-", "react-", "js-", "ts-"} {
+		if strings.HasPrefix(r, p) {
+			r = strings.TrimPrefix(r, p)
+			break
+		}
+	}
+	for _, s := range []string{"-tester", "-worker", "-deep", "-reviewer", "-corrector", "-explorer", "-planner", "-splitter", "-memory"} {
+		if strings.HasSuffix(r, s) {
+			r = strings.TrimSuffix(r, s)
+			break
+		}
+	}
+	return r
+}
+
 func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input string) (string, error) {
-	o.emitFull(role, stream.KindAgentStart, role, taskID, "started", scopeFromInput(input), "")
+	// Live user steering: highest priority — the next agent call adjusts.
+	if fb := o.LiveFeedback(); fb != "" {
+		input = "\n\n## LIVE FEEDBACK FROM USER (highest priority — adjust your work now)\n" + fb + "\n" + input
+	}
+	execRole := o.resolveExecRole(role)
+	if execRole != role {
+		o.emit(role, fmt.Sprintf("fallback role %s → %s (agent not registered)", role, execRole), "")
+	}
+	o.emitFull(execRole, stream.KindAgentStart, execRole, taskID, "started", scopeFromInput(input), "")
 	start := time.Now()
-	timeout := o.roleTimeout(role)
+	timeout := o.roleTimeout(execRole)
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	results, err := o.executor.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
-		AgentID: role, Input: input, Timeout: timeout, ShareState: true,
+		AgentID: execRole, Input: input, Timeout: timeout, ShareState: true,
 	}}, o.shared)
 	elapsed := time.Since(start)
-	o.recordLatency(role, elapsed)
+	o.recordLatency(execRole, elapsed)
 	if len(results) == 0 {
-		o.emitFull(role, stream.KindAgentEnd, role, taskID, "no result", "", "")
+		o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID, "no result", "", "")
 		if err != nil {
 			return "", err
 		}
-		return "", fmt.Errorf("no result from %s", role)
+		return "", fmt.Errorf("no result from %s", execRole)
 	}
 	out := ""
 	if results[0].Output != nil {
@@ -1129,14 +1268,14 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	}
 	o.recordResultUsage(results[0], input, out)
 	if results[0].Error != nil && out == "" {
-		o.emitFull(role, stream.KindAgentEnd, role, taskID, "error: "+results[0].Error.Error(), "", "")
+		o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID, "error: "+results[0].Error.Error(), "", "")
 		return "", results[0].Error
 	}
-	o.emitFull(role, stream.KindAgentEnd, role, taskID,
+	o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID,
 		fmt.Sprintf("finished (%s)", elapsed.Round(time.Millisecond)),
 		scopeFromInput(input), truncate(out, 1500))
-	o.emitFull(role, stream.KindLatency, role, taskID,
-		fmt.Sprintf("%s %dms", role, elapsed.Milliseconds()), "", "")
+	o.emitFull(execRole, stream.KindLatency, execRole, taskID,
+		fmt.Sprintf("%s %dms", execRole, elapsed.Milliseconds()), "", "")
 	return out, nil
 }
 
@@ -1221,6 +1360,11 @@ func (o *Orchestrator) coordinate(ctx context.Context, query string, board *plan
 	// round-trip that rarely changes a freshly-split board.
 	if o.cfg != nil && o.cfg.ThinkPasses <= 1 && (when == "pre-execute" || when == "after-wave") {
 		o.emitFull("coord", stream.KindCoord, "coordinator", "", "coordinator @"+when+" (skipped — think_passes=1)", "", "")
+		return
+	}
+	// pipeline gate: phaseEnabled("coord") — when=never skips this phase
+	if !o.phaseEnabled("coord") {
+		o.emitFull("coord", stream.KindCoord, "coordinator", "", "coordinator skipped — phase disabled", "", "")
 		return
 	}
 	o.emitFull("coord", stream.KindCoord, "coordinator", "", "coordinator @"+when, "", "")
@@ -1320,6 +1464,10 @@ func (o *Orchestrator) applyCoordinatorActions(board *plan.Board, raw string) {
 // evolveAfterWave updates CONTEXT + MEMORY from wave results and refreshes
 // pending task packs so later specialists see evolving project knowledge.
 func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack string, board *plan.Board, wave []plan.Task) {
+	// pipeline gate: phaseEnabled("learn") — when=never skips this phase
+	if !o.phaseEnabled("learn") {
+		return
+	}
 	o.emit("learn", fmt.Sprintf("evolving context after %d task(s)", len(wave)), "")
 	_ = o.store.Append(contextstore.DocContext, "Wave", learning.ContextDelta(wave))
 
@@ -1732,7 +1880,7 @@ func extractFileRefs(query string) []string {
 }
 
 func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
-	base := formatWorkerPromptFor(t)
+	base := formatWorkerPromptFor(t, o.langHint())
 	if o == nil || o.cfg == nil {
 		return base
 	}
@@ -1749,6 +1897,7 @@ func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
 	}
 	if o.cfg.ToolGuidance || o.cfg.KnowledgeInject {
 		opt := augment.Options{}
+		opt.Language = detectProjectLang(o.cfg.Root)
 		prof := o.resolvedProfileForRole(t.Role)
 		if !o.cfg.ToolGuidance {
 			opt.SkillBudget = -1
@@ -1788,7 +1937,7 @@ func (o *Orchestrator) resolvedProfileForRole(role string) config.ModelProfile {
 	return config.ResolveModelProfile(o.cfg.ModelProfiles, model)
 }
 
-func formatWorkerPromptFor(t plan.Task) string {
+func formatWorkerPromptFor(t plan.Task, langHint string) string {
 	// Keep ephemeral scoped packs (injected by BuildInput); only strip when absent.
 	desc := t.Description
 	if !strings.Contains(desc, "# Scoped context") {
@@ -1797,6 +1946,9 @@ func formatWorkerPromptFor(t plan.Task) string {
 	var b strings.Builder
 	b.WriteString("Atomic task — complete only this:\n\n")
 	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
+	if langHint != "" {
+		b.WriteString("## Project language\n" + langHint + "\n\n")
+	}
 	b.WriteString(desc)
 	b.WriteString("\n")
 	if len(t.Files) > 0 {
@@ -1891,6 +2043,25 @@ func firstSentence(s string) string {
 		return s[:80]
 	}
 	return s
+}
+
+// langHint returns a language-pinned verification hint so tester/worker
+// prompts never drift to pytest/python in Go or JS/TS projects (and vice versa).
+func (o *Orchestrator) langHint() string {
+	root := ""
+	if o != nil && o.cfg != nil {
+		root = o.cfg.Root
+	}
+	switch detectProjectLang(root) {
+	case "Go":
+		return "Project language: Go. Use ONLY: go build ./..., go vet ./..., go test ./... -race -count=1. NEVER run pytest, pip, or python commands."
+	case "Python":
+		return "Project language: Python. Use: python -m pytest -q (or uv run pytest -q), python -m py_compile. NEVER run go test."
+	case "TypeScript", "JavaScript":
+		return "Project language: JS/TS. Use: npm test, npx tsc --noEmit, npm run build. NEVER run pytest or go test."
+	default:
+		return "Use the project's actual language for verification (inspect files first; never assume Python)."
+	}
 }
 
 // detectProjectLang returns a human-readable project language label based on

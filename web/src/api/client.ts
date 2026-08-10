@@ -32,6 +32,9 @@ import type {
   StackApplyResponse,
   StacksResponse,
   AuthStatus,
+  FeedbackState,
+  FeedbackResponse,
+  UpdateInfo,
 } from '@/types';
 
 const BASE = '/api';
@@ -451,6 +454,51 @@ export async function applyPipelinePreset(id: string): Promise<{ ok: boolean; re
   return request(`/pipeline-presets/${encodeURIComponent(id)}/apply`, { method: 'POST' });
 }
 
+// ── Block CRUD (Studio editing of pipelines/agents/quality/packs) ──
+// POST /api/blocks/{kind} → create a custom block in .slmcode/blocks/
+// PUT /api/blocks/{kind}/{id} → update (or create override of a builtin)
+// DELETE /api/blocks/{kind}/{id} → delete a custom block (or reset override)
+import type { BlockPayload, BlockCrudResponse } from '@/types';
+
+export async function createBlock(kind: string, block: BlockPayload): Promise<BlockCrudResponse> {
+  return request<BlockCrudResponse>(`/blocks/${encodeURIComponent(kind)}`, {
+    method: 'POST',
+    body: JSON.stringify(block),
+  });
+}
+
+export async function updateBlock(kind: string, id: string, block: BlockPayload): Promise<BlockCrudResponse> {
+  return request<BlockCrudResponse>(`/blocks/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(block),
+  });
+}
+
+export async function deleteBlock(kind: string, id: string): Promise<{ ok: string }> {
+  return request(`/blocks/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// ── Live Feedback ──
+// GET /api/feedback → {text, set_at} — active feedback injected into the next agent prompt
+// POST /api/feedback → body {text} → {ok, text}
+// DELETE /api/feedback → {ok: "true"}
+export async function getFeedback(): Promise<FeedbackState> {
+  return request<FeedbackState>('/feedback');
+}
+
+export async function postFeedback(text: string): Promise<FeedbackResponse> {
+  return request<FeedbackResponse>('/feedback', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function clearFeedback(): Promise<{ ok: string }> {
+  return request<{ ok: string }>('/feedback', { method: 'DELETE' });
+}
+
 // ── Workspace files ──
 export async function getWorkspaceFile(path: string): Promise<{ path: string; content: string; size: number }> {
   return request(`/workspace/file?path=${encodeURIComponent(path)}`);
@@ -459,4 +507,9 @@ export async function getWorkspaceFile(path: string): Promise<{ path: string; co
 export async function getWorkspaceTree(path?: string): Promise<{ path: string; entries: Array<{ name: string; path: string; is_dir: boolean; size?: number }> }> {
   const params = path ? `?path=${encodeURIComponent(path)}` : '';
   return request(`/workspace/tree${params}`);
+}
+
+// ── Version update ──
+export async function getUpdateInfo(): Promise<UpdateInfo> {
+  return request<UpdateInfo>('/update');
 }

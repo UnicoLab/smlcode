@@ -12,6 +12,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/installmeta"
+	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 )
 
 func updateCmd() *cobra.Command {
@@ -67,6 +68,16 @@ Examples:
 			cli.KeyVal("method", method)
 			if meta != nil && meta.InstalledAt != "" {
 				cli.KeyVal("last_install", meta.InstalledAt)
+			}
+
+			info := updatecheck.Check(Version)
+			if info.Latest != "" {
+				cli.KeyVal("latest", info.Latest)
+			}
+			if info.UpdateAvailable {
+				fmt.Println(cli.Warn("new version v" + info.Latest + " available — run: slmcode update"))
+			} else if info.Latest != "" && info.Error == "" {
+				fmt.Println(cli.Success("up to date"))
 			}
 
 			if method == "binary" {

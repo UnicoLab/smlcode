@@ -2,6 +2,8 @@ module github.com/UnicoLab/slmcode
 
 go 1.23.0
 
+toolchain go1.23.4
+
 require (
 	github.com/piotrlaczkowski/GoLangGraph v0.2.2
 	github.com/sirupsen/logrus v1.9.3

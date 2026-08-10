@@ -53,17 +53,21 @@ type weakTaskEntry struct {
 
 // Runner executes parallel workers → review → correct against a live board.
 type Runner struct {
-	Executor       SubAgentRunner
-	Shared         *ggagent.SharedState
-	Store          *plan.LiveStore // optional — reload mid-run for human edits
-	Root           string          // workspace root for evidence checks
-	SlmDir         string          // optional; defaults to Root/.slmcode
-	TurnID         string          // query turn id for react checkpoints
-	Focus          *workspace.FocusGuard
-	AfterWave      AfterWave
-	OnEvent        AgentEvent
-	OnUsage        UsageEvent
-	BuildInput     BuildInput
+	Executor   SubAgentRunner
+	Shared     *ggagent.SharedState
+	Store      *plan.LiveStore // optional — reload mid-run for human edits
+	Root       string          // workspace root for evidence checks
+	SlmDir     string          // optional; defaults to Root/.slmcode
+	TurnID     string          // query turn id for react checkpoints
+	Focus      *workspace.FocusGuard
+	AfterWave  AfterWave
+	OnEvent    AgentEvent
+	OnUsage    UsageEvent
+	BuildInput BuildInput
+	// Feedback returns live user steering text — always re-invoked so it stays
+	// fresh mid-run; nil means no feedback. Injected into worker + reviewer
+	// prompts (see feedbackSection).
+	Feedback       func() string
 	MaxRetries     int
 	MaxParallel    int
 	Timeout        time.Duration
@@ -107,6 +111,9 @@ type Runner struct {
 	// ReviewerRole / CorrectorRole come from pipeline.execute (defaults reviewer/corrector).
 	ReviewerRole  string
 	CorrectorRole string
+	// DefaultRole comes from pipeline.execute.default_role — the worker agent
+	// used for tasks without an explicit role (e.g. language-specific go-worker).
+	DefaultRole string
 	// ReviewParallel enables parallel review+correct for tasks without shared files.
 	ReviewParallel bool
 	// OnEscalate pauses the task for human decision (nil = leave in to_scope).
@@ -229,10 +236,26 @@ func (r *Runner) persist(board *plan.Board) {
 }
 
 func (r *Runner) taskInput(t plan.Task) string {
+	prompt := ""
 	if r.BuildInput != nil {
-		return r.BuildInput(t)
+		prompt = r.BuildInput(t)
+	} else {
+		prompt = r.formatWorkerPrompt(t)
 	}
-	return formatWorkerPrompt(t)
+	return prompt + r.feedbackSection()
+}
+
+// feedbackSection renders the live user feedback block to append to agent
+// prompts, or "" when no feedback is set.
+func (r *Runner) feedbackSection() string {
+	if r == nil || r.Feedback == nil {
+		return ""
+	}
+	text := strings.TrimSpace(r.Feedback())
+	if text == "" {
+		return ""
+	}
+	return "\n\n## LIVE FEEDBACK FROM USER (highest priority — adjust your work now)\n" + text + "\n"
 }
 
 func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Task) error {
@@ -271,7 +294,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	roles := make([]string, len(wave))
 	var weakTasks []weakTaskEntry
 	for i, t := range wave {
-		role := normalizeExecRole(t.Role)
+		role := r.normalizeExecRole(t.Role)
 		roles[i] = role
 		snapshots[i] = r.snapshotTargets(t)
 		scope := strings.Join(t.Files, ", ")
@@ -300,7 +323,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	reqs := make([]ggagent.SubAgentRequest, 0, len(needExec))
 	for _, t := range needExec {
 		req := ggagent.SubAgentRequest{
-			AgentID:    normalizeExecRole(t.Role),
+			AgentID:    r.normalizeExecRole(t.Role),
 			Input:      r.taskInput(t),
 			Timeout:    r.Timeout,
 			ShareState: true,
@@ -635,8 +658,14 @@ func (r *Runner) correctorID() string {
 	return plan.RoleCorrector
 }
 
-func normalizeExecRole(role string) string {
+// normalizeExecRole maps a task role to the executor agent id. Empty/legacy
+// roles use the pipeline's execute.default_role (a language-specific worker
+// when a preset is active), falling back to the generic worker.
+func (r *Runner) normalizeExecRole(role string) string {
 	if role == "" || role == "implementer" {
+		if r != nil && r.DefaultRole != "" {
+			return r.DefaultRole
+		}
 		return plan.RoleWorker
 	}
 	switch role {
@@ -788,7 +817,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 		} else if r.MaxParallel >= 2 {
 			// Race disk/acceptance probe vs reviewer LLM; acceptance win cancels reviewer.
 			// Optional second reviewer strategy when capacity allows (duplicate paths).
-			reviewIn := formatReviewPrompt(current)
+			reviewIn := r.formatReviewPrompt(current)
 			cur := current
 			base := baseline
 			// Use shorter reviewer timeout when disk evidence already exists —
@@ -876,7 +905,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 			}
 		} else {
 			r.fire("agent_start", r.reviewerID(), current.ID, "self-critic review", strings.Join(current.Files, ", "), "")
-			reviewIn := formatReviewPrompt(current)
+			reviewIn := r.formatReviewPrompt(current)
 			results, err := r.Executor.ExecuteSubAgents(ctx, []ggagent.SubAgentRequest{{
 				AgentID: r.reviewerID(), Input: reviewIn,
 				Timeout: r.Timeout, ShareState: true,
@@ -1090,10 +1119,15 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 	return nil
 }
 
-func formatWorkerPrompt(t plan.Task) string {
+func (r *Runner) formatWorkerPrompt(t plan.Task) string {
 	var b strings.Builder
 	b.WriteString("Atomic task — complete only this:\n\n")
 	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
+	if r != nil {
+		if hint := detectProjectLangHint(r.Root); hint != "" {
+			b.WriteString("## Project language\n" + hint + "\n\n")
+		}
+	}
 	b.WriteString(StripScopedPack(t.Description))
 	b.WriteString("\n")
 	if len(t.Files) > 0 {
@@ -1153,8 +1187,14 @@ func StripScopedPack(desc string) string {
 	return strings.TrimSpace(desc)
 }
 
-func formatReviewPrompt(t plan.Task) string {
-	return fmt.Sprintf(`Review task %s (%s) role=@%s. Reply with JSON only — no tools.
+func (r *Runner) formatReviewPrompt(t plan.Task) string {
+	langHint := ""
+	if r != nil {
+		if h := detectProjectLangHint(r.Root); h != "" {
+			langHint = "\n## Project language\n" + h
+		}
+	}
+	return fmt.Sprintf(`Review task %s (%s) role=@%s. Reply with JSON only — no tools.%s
 
 ## Acceptance
 %s
@@ -1173,7 +1213,29 @@ Rules:
 - @explorer: approve if a real file path was found.
 - @tester: approve ONLY when output JSON has "passed":true AND real shell Observation (not fabricated commands[]). Reject if passed:false, failures listed, or "does not work".
 - Reject only if work is clearly missing or out of scope.
-`, t.ID, t.Title, t.Role, t.Acceptance, truncate(t.Output, 3500))
+`, t.ID, t.Title, t.Role, langHint, t.Acceptance, truncate(t.Output, 3500)) + r.feedbackSection()
+}
+
+// detectProjectLangHint returns a language-pinned verification hint based on
+// marker files at the project root. Mirrors the orchestrator's detectProjectLang
+// without importing it (loop must stay independent of the orchestrator).
+func detectProjectLangHint(root string) string {
+	if root == "" {
+		return ""
+	}
+	has := func(name string) bool {
+		_, err := os.Stat(filepath.Join(root, name))
+		return err == nil
+	}
+	switch {
+	case has("go.mod"):
+		return "Project language: Go. Use ONLY go build ./..., go vet ./..., go test ./... — never pytest/pip/python."
+	case has("pyproject.toml"), has("setup.py"), has("requirements.txt"):
+		return "Project language: Python. Use python -m pytest -q (or uv run pytest -q) — never go test."
+	case has("package.json"):
+		return "Project language: JS/TS. Use npm test / npx tsc --noEmit / npm run build — never pytest or go test."
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

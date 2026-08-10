@@ -19,6 +19,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/server"
+	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 )
 
 func initCmd() *cobra.Command {
@@ -365,6 +366,9 @@ func versionCmd() *cobra.Command {
 				fmt.Println(cli.Dim("source: " + SourceRoot))
 			}
 			fmt.Println(cli.Dim("update: slmcode update"))
+			if info := updatecheck.Check(Version); info.UpdateAvailable {
+				fmt.Println(cli.Warn("new version v" + info.Latest + " available — run: slmcode update"))
+			}
 			fmt.Println(cli.Accent("https://unicolab.ai") + cli.Dim("  —  ") + cli.Bold(cli.Magenta("AI")) + " " + cli.Dim("&") + " " + cli.Bold(cli.Blue("Innovation")) + "  " + cli.Magenta("♥"))
 		},
 	}

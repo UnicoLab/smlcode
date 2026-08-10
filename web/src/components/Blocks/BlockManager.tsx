@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useContext } from 'react';
-import { getBlocks, applyPack, applyPipelinePreset } from '@/api/client';
+import type { ReactNode } from 'react';
+import { getBlocks, applyPack, applyPipelinePreset, deleteBlock } from '@/api/client';
 import { AppContext } from '@/App';
 import type { BlockView, BlockCatalogEntry } from '@/types';
 import {
@@ -11,10 +12,14 @@ import {
   CheckCircle2,
   XCircle,
   ExternalLink,
+  Plus,
+  Edit3,
+  Trash2,
 } from 'lucide-react';
 import clsx from 'clsx';
+import BlockEditor from './BlockEditor';
 
-const KIND_ICONS: Record<string, React.ReactNode> = {
+const KIND_ICONS: Record<string, ReactNode> = {
   pack: <Package size={20} />,
   pipeline: <Workflow size={20} />,
   agent: <Bot size={20} />,
@@ -35,6 +40,13 @@ const KIND_BADGE: Record<string, string> = {
   quality: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
 };
 
+const KIND_TITLES: Record<string, string> = {
+  pack: 'Pack',
+  pipeline: 'Pipeline',
+  agent: 'Agent',
+  quality: 'Quality',
+};
+
 const TABS = [
   { id: '', label: 'All' },
   { id: 'pack', label: 'Packs' },
@@ -42,6 +54,12 @@ const TABS = [
   { id: 'agent', label: 'Agents' },
   { id: 'quality', label: 'Quality' },
 ];
+
+interface EditorState {
+  kind: string;
+  mode: 'create' | 'edit';
+  block: BlockCatalogEntry | null;
+}
 
 export default function BlockManager() {
   const ctx = useContext(AppContext);
@@ -51,6 +69,7 @@ export default function BlockManager() {
   const [activeTab, setActiveTab] = useState('');
   const [applying, setApplying] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
 
   const fetch = useCallback(async () => {
     try {
@@ -100,6 +119,35 @@ export default function BlockManager() {
     }
   };
 
+  // Builtins without a project/user override must not be deleted — deleting
+  // requires a custom source or a real file path (override) to remove.
+  const canDelete = (block: BlockCatalogEntry) => block.custom || !!block.path;
+
+  const handleDelete = async (block: BlockCatalogEntry) => {
+    const title = KIND_TITLES[block.kind] || block.kind;
+    const message = block.custom
+      ? `Delete ${title.toLowerCase()} "${block.name || block.id}"?`
+      : `Delete ${title.toLowerCase()} "${block.name || block.id}"? This removes the override of the builtin block.`;
+    if (!confirm(message)) return;
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteBlock(block.kind, block.id);
+      setNotice(`Deleted ${title.toLowerCase()} "${block.id}"`);
+      fetch();
+      ctx?.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete block');
+    }
+  };
+
+  const handleSaved = (kind: string, id: string, created: boolean) => {
+    setEditor(null);
+    setNotice(`${KIND_TITLES[kind] || kind} "${id}" ${created ? 'created' : 'updated'}`);
+    fetch();
+    ctx?.refresh();
+  };
+
   const getBlocksForTab = (): BlockCatalogEntry[] => {
     if (!view) return [];
     if (activeTab === '') return view.blocks;
@@ -110,19 +158,30 @@ export default function BlockManager() {
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Building Blocks</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Marketplace-ready YAML presets: language packs, pipelines, agents, and quality checks
           </p>
         </div>
-        {view?.active_pack && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 text-sm font-medium">
-            <CheckCircle2 size={16} />
-            Active: {view.active_pack}
-          </div>
-        )}
+        <div className="flex items-center gap-3 shrink-0">
+          {activeTab && (
+            <button
+              onClick={() => setEditor({ kind: activeTab, mode: 'create', block: null })}
+              className="btn-primary gap-1.5 text-sm"
+            >
+              <Plus size={15} />
+              New {KIND_TITLES[activeTab]}
+            </button>
+          )}
+          {view?.active_pack && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 text-sm font-medium">
+              <CheckCircle2 size={16} />
+              Active: {view.active_pack}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -171,7 +230,11 @@ export default function BlockManager() {
         <div className="text-center py-20 text-gray-400 dark:text-gray-500">
           <Package size={48} className="mx-auto mb-4 opacity-50" />
           <p className="text-lg font-medium">No blocks found</p>
-          <p className="text-sm mt-1">Add YAML blocks to .slmcode/blocks/ or ~/.slmcode/blocks/</p>
+          <p className="text-sm mt-1">
+            {activeTab
+              ? `Add YAML blocks to .slmcode/blocks/ or click "New ${KIND_TITLES[activeTab]}" above`
+              : 'Add YAML blocks to .slmcode/blocks/ or ~/.slmcode/blocks/'}
+          </p>
         </div>
       )}
 
@@ -181,10 +244,43 @@ export default function BlockManager() {
             <div
               key={`${block.kind}-${block.id}`}
               className={clsx(
-                'rounded-xl border p-5 transition-all duration-150 hover:shadow-md',
+                'group relative rounded-xl border p-5 transition-all duration-150 hover:shadow-md',
                 KIND_COLORS[block.kind] || 'border-gray-200 dark:border-gray-700',
               )}
             >
+              {/* Hover actions */}
+              <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  onClick={() => setEditor({ kind: block.kind, mode: 'edit', block })}
+                  className="btn-ghost rounded-lg p-1.5"
+                  title="Edit"
+                >
+                  <Edit3 size={14} />
+                </button>
+                {canDelete(block) ? (
+                  <button
+                    onClick={() => handleDelete(block)}
+                    className="btn-ghost rounded-lg p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                    title="Delete"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ) : (
+                  <span className="relative inline-flex group/trash">
+                    <button
+                      disabled
+                      className="btn-ghost cursor-not-allowed rounded-lg p-1.5 text-gray-300 dark:text-gray-600"
+                      title="Builtin — edit to create override"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                    <span className="pointer-events-none absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded-md bg-gray-900 px-2.5 py-1 text-[10px] text-white opacity-0 shadow-lg transition-opacity group-hover/trash:opacity-100 dark:bg-gray-100 dark:text-gray-900">
+                      builtin — edit to create override
+                    </span>
+                  </span>
+                )}
+              </div>
+
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 text-gray-400 dark:text-gray-500">
                   {KIND_ICONS[block.kind] || <Package size={20} />}
@@ -286,6 +382,18 @@ export default function BlockManager() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Create/Edit modal */}
+      {editor && (
+        <BlockEditor
+          open
+          kind={editor.kind}
+          mode={editor.mode}
+          block={editor.block}
+          onClose={() => setEditor(null)}
+          onSaved={handleSaved}
+        />
       )}
     </div>
   );

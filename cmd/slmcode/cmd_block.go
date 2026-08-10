@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 )
@@ -14,11 +17,17 @@ import (
 func blockCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "blocks",
-		Short: "List / show / apply / validate building blocks (pipelines, agents, quality, packs)",
+		Short: "Create / edit / delete / list / show / apply / validate building blocks (pipelines, agents, quality, packs)",
 		Long: cli.Dim(`Building blocks are reusable YAML presets: pipelines, specialist agents,
 quality-check packs, and language packs that compose them.
 
-Examples:
+Create / edit / delete project blocks (saved to .slmcode/blocks/):
+  slmcode blocks new agent my-agent --file agent.yaml
+  slmcode blocks new agent my-agent --name "My Agent"
+  slmcode blocks edit agent my-agent --file agent.yaml
+  slmcode blocks delete agent my-agent
+
+Inspect and apply:
   slmcode blocks list
   slmcode blocks show pipeline go
   slmcode blocks show agent go-worker
@@ -42,6 +51,42 @@ Examples:
 				return blockShow(args[0], args[1])
 			},
 		},
+	)
+
+	var newFile, newName string
+	newCmd := &cobra.Command{
+		Use:     "new <kind> <id>",
+		Aliases: []string{"create", "add"},
+		Short:   "Create a new project block from a YAML file (--name scaffolds a minimal agent)",
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return blockNew(args[0], args[1], newFile, newName)
+		},
+	}
+	newCmd.Flags().StringVar(&newFile, "file", "", "path to the block YAML to save")
+	newCmd.Flags().StringVar(&newName, "name", "", "display name for a --file-less agent scaffold")
+
+	var editFile string
+	editCmd := &cobra.Command{
+		Use:   "edit <kind> <id>",
+		Short: "Update a project block from a YAML file (creates an override for builtins)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return blockEdit(args[0], args[1], editFile)
+		},
+	}
+	editCmd.Flags().StringVar(&editFile, "file", "", "path to the block YAML to save")
+
+	delCmd := &cobra.Command{
+		Use:   "delete <kind> <id>",
+		Short: "Delete a project block (builtin blocks are protected)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return blockDelete(args[0], args[1])
+		},
+	}
+	cmd.AddCommand(newCmd, editCmd, delCmd)
+	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "validate",
 			Short: "Load and validate all block YAML configs",
@@ -115,8 +160,11 @@ func blockList(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Println(cli.Dim("  Show:   slmcode blocks show <pipeline|agent|quality|pack> <id>"))
-	fmt.Println(cli.Dim("  Apply:  slmcode blocks apply <pack-id>"))
+	fmt.Println(cli.Dim("  New:     slmcode blocks new <kind> <id> --file <path.yaml>"))
+	fmt.Println(cli.Dim("  Edit:    slmcode blocks edit <kind> <id> --file <path.yaml>"))
+	fmt.Println(cli.Dim("  Delete:  slmcode blocks delete <kind> <id>"))
+	fmt.Println(cli.Dim("  Show:    slmcode blocks show <pipeline|agent|quality|pack> <id>"))
+	fmt.Println(cli.Dim("  Apply:   slmcode blocks apply <pack-id>"))
 	fmt.Println(cli.Dim("  Validate: slmcode blocks validate"))
 	return nil
 }
@@ -368,4 +416,230 @@ func blockValidate() error {
 	fmt.Println()
 	fmt.Println(cli.Success("all blocks pass validation"))
 	return nil
+}
+
+// blockNew creates a project-level block from a YAML file (any kind) or a
+// --name scaffold (agents only). Mirrors the Studio POST /api/blocks/{kind}.
+func blockNew(kind, id, filePath, name string) error {
+	kind = blocks.NormalizeKind(kind)
+	if kind == "" {
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	if filePath == "" && name == "" {
+		return fmt.Errorf("blocks new requires --file <path.yaml> or --name (agent scaffold)")
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+
+	var block any
+	if filePath != "" {
+		block, id, err = readBlockFile(kind, id, filePath)
+		if err != nil {
+			return err
+		}
+	} else {
+		if kind != blocks.KindAgent {
+			return fmt.Errorf("scaffolding without --file is only supported for agent blocks — pass --file <path.yaml> for %s blocks", kind)
+		}
+		block = scaffoldAgentBlock(id, name)
+	}
+
+	reg, err := blocks.Load(root)
+	if err != nil {
+		return err
+	}
+	if projectBlockExists(reg, kind, id) {
+		return fmt.Errorf("%s block %q already exists in the project — use 'slmcode blocks edit' instead", kind, id)
+	}
+
+	path, err := blocks.Save(root, block)
+	if err != nil {
+		return err
+	}
+	fmt.Println(cli.Success(fmt.Sprintf("%s block %q saved", kind, id)))
+	cli.KeyVal("path", path)
+	return nil
+}
+
+// blockEdit overwrites a project block from a YAML file (creating an override
+// for builtins) and materializes agent specs so the runtime picks them up
+// immediately. Mirrors the Studio PUT /api/blocks/{kind}/{id}.
+func blockEdit(kind, id, filePath string) error {
+	kind = blocks.NormalizeKind(kind)
+	if kind == "" {
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	if filePath == "" {
+		return fmt.Errorf("blocks edit requires --file <path.yaml>")
+	}
+
+	block, fileID, err := readBlockFile(kind, id, filePath)
+	if err != nil {
+		return err
+	}
+	if fileID != id {
+		return fmt.Errorf("block id %q in %s does not match %q", fileID, filePath, id)
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+	path, err := blocks.Save(root, block)
+	if err != nil {
+		return err
+	}
+
+	// Mirrors the GUI: write the spec to .slmcode/agents/ so the override is live.
+	agentPath := ""
+	if kind == blocks.KindAgent {
+		ws, err := openWorkspace()
+		if err != nil {
+			return fmt.Errorf("block saved but agent materialization failed: %w", err)
+		}
+		agentPath, err = agents.WriteCustom(ws.Config.AgentsDir(), block.(*blocks.AgentBlock).Spec)
+		if err != nil {
+			return fmt.Errorf("block saved but agent materialization failed: %w", err)
+		}
+	}
+
+	fmt.Println(cli.Success(fmt.Sprintf("%s block %q saved", kind, id)))
+	cli.KeyVal("path", path)
+	if agentPath != "" {
+		cli.KeyVal("agent_override", agentPath)
+	}
+	return nil
+}
+
+// blockDelete removes a project block and any materialized agent override.
+// Mirrors the Studio DELETE /api/blocks/{kind}/{id}.
+func blockDelete(kind, id string) error {
+	kind = blocks.NormalizeKind(kind)
+	if kind == "" {
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+	found, err := blocks.Delete(root, kind, id)
+	if err != nil {
+		return err
+	}
+
+	// Best-effort: drop the materialized agent override too (.yaml or .yml).
+	if kind == blocks.KindAgent {
+		agentsDir := filepath.Join(root, ".slmcode", "agents")
+		for _, ext := range []string{".yaml", ".yml"} {
+			p := filepath.Join(agentsDir, id+ext)
+			if _, statErr := os.Stat(p); statErr != nil {
+				if !os.IsNotExist(statErr) {
+					fmt.Println(cli.Warn(fmt.Sprintf("cannot inspect agent file %s: %v", p, statErr)))
+				}
+				continue
+			}
+			if rmErr := agents.DeleteCustom(agentsDir, id); rmErr != nil {
+				fmt.Println(cli.Warn(fmt.Sprintf("cannot remove agent file %s: %v", p, rmErr)))
+			}
+			break
+		}
+	}
+
+	fmt.Println(cli.Success(fmt.Sprintf("%s block %q deleted", kind, id)))
+	if !found {
+		fmt.Println(cli.Dim("  (no project file existed)"))
+	}
+	return nil
+}
+
+// readBlockFile reads a block YAML, checks its kind against the CLI arg, and
+// parses + validates it. The file's own id wins over the CLI arg (a missing
+// id falls back to the arg). Returns the typed block and its canonical id.
+func readBlockFile(kind, argID, filePath string) (any, string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, "", err
+	}
+	var meta blocks.Meta
+	if err := yaml.Unmarshal(data, &meta); err != nil {
+		return nil, "", fmt.Errorf("%s: %w", filePath, err)
+	}
+	if fileKind := blocks.NormalizeKind(meta.Kind); fileKind != "" && fileKind != kind {
+		return nil, "", fmt.Errorf("%s: kind %q does not match %q", filePath, meta.Kind, kind)
+	}
+	if strings.TrimSpace(meta.ID) == "" {
+		// No id in the file — inject the CLI id so validation sees a complete block.
+		var doc map[string]any
+		if err := yaml.Unmarshal(data, &doc); err == nil {
+			doc["id"] = argID
+			if out, err := yaml.Marshal(doc); err == nil {
+				data = out
+			}
+		}
+	}
+	block, err := blocks.ParseAndValidateBlock(kind, data)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", filePath, err)
+	}
+	return block, blockMetaOf(block).ID, nil
+}
+
+// blockMetaOf returns the shared Meta of any typed block pointer.
+func blockMetaOf(block any) *blocks.Meta {
+	switch b := block.(type) {
+	case *blocks.PipelineBlock:
+		return &b.Meta
+	case *blocks.AgentBlock:
+		return &b.Meta
+	case *blocks.QualityBlock:
+		return &b.Meta
+	case *blocks.PackBlock:
+		return &b.Meta
+	default:
+		return nil
+	}
+}
+
+// scaffoldAgentBlock builds a minimal working custom agent. Normalization
+// fills the remaining defaults (generic system prompt, tools on, max_iter 10,
+// temperature 0.2, max_tokens 2048).
+func scaffoldAgentBlock(id, name string) *blocks.AgentBlock {
+	b := &blocks.AgentBlock{}
+	b.Kind = blocks.KindAgent
+	b.ID = id
+	b.Spec.ID = id
+	if strings.TrimSpace(name) != "" {
+		b.Name = name
+		b.Spec.Title = name
+	}
+	return b
+}
+
+// projectBlockExists reports whether a project-level block with the id already
+// exists in .slmcode/blocks. Builtins and user/extra blocks may be overridden
+// with 'blocks new' / 'blocks edit', so only project blocks block creation.
+func projectBlockExists(reg *blocks.Registry, kind, id string) bool {
+	switch kind {
+	case blocks.KindPipeline:
+		b, ok := reg.GetPipeline(id)
+		return ok && b.Source == blocks.SourceProject
+	case blocks.KindAgent:
+		b, ok := reg.GetAgent(id)
+		return ok && b.Source == blocks.SourceProject
+	case blocks.KindQuality:
+		b, ok := reg.GetQuality(id)
+		return ok && b.Source == blocks.SourceProject
+	case blocks.KindPack:
+		b, ok := reg.GetPack(id)
+		return ok && b.Source == blocks.SourceProject
+	default:
+		return false
+	}
 }

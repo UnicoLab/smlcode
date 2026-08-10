@@ -112,7 +112,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 			o.skillPackFor("tester", query))
 		diag, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
 			"\n## QA gate failure\nCommand: "+cmd+"\n\n"+truncate(failText, 6000)+
-			"\n\nDiagnose with ws_shell if helpful. List concrete file edits needed. "+
+			"\n\n"+o.langHint()+"\n\nDiagnose with ws_shell if helpful. List concrete file edits needed. "+
 			"Return JSON with status and issues.")
 		if strings.TrimSpace(diag) != "" {
 			o.emitFull("test", stream.KindOutput, plan.RoleTester, "", "qa diagnose", "",
@@ -123,7 +123,8 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		fixPack, _ := o.packer.Build("corrector", query, contextstore.DefaultDocsForRole("corrector"), nil,
 			o.skillPackFor("corrector", query))
 		fixPrompt := fixPack.Render() +
-			"\n## Goal\nMake this command pass: `" + cmd + "`\n\n## Failure output\n" +
+			"\n## Goal\nMake this command pass: `" + cmd + "`\n\n" +
+			o.langHint() + "\n\n## Failure output\n" +
 			truncate(failText, 5000) +
 			"\n\n## Diagnosis\n" + truncate(diag, 3000) +
 			"\n\nUse ws_edit / ws_patch / ws_write for SMALL fixes. Then return STRICT JSON status."

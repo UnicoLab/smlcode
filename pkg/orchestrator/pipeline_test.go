@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"testing"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 )
@@ -13,7 +14,10 @@ func TestPipelineLoadAndPhaseAgent(t *testing.T) {
 	if err := pipeline.EnsureFile(cfg.SlmDir()); err != nil {
 		t.Fatal(err)
 	}
-	o := &Orchestrator{cfg: cfg}
+	// factory is required so phaseAgent's knownAgent check can resolve builtin roles
+	// (phaseAgent now falls back to the default agent when a configured phase agent
+	// is not registered).
+	o := &Orchestrator{cfg: cfg, factory: agents.NewFactory(nil, nil, "", "")}
 	o.loadPipelineLocked()
 	if o.phaseAgent("plan", "planner") != "planner" {
 		t.Fatal(o.phaseAgent("plan", "planner"))

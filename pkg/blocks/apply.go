@@ -100,24 +100,11 @@ func ApplyPack(cfg *config.Config, reg *Registry, packID string, opts ApplyOptio
 	}
 
 	if opts.MaterializeAgents {
-		agentsDir := cfg.AgentsDir()
-		for _, aid := range pack.Spec.Agents {
-			ab, ok := reg.GetAgent(aid)
-			if !ok {
-				continue
-			}
-			dest := filepath.Join(agentsDir, ab.Spec.ID+".yaml")
-			if !opts.ForceAgents {
-				if _, err := os.Stat(dest); err == nil {
-					continue
-				}
-			}
-			spec := ab.Spec
-			if _, err := agents.WriteCustom(agentsDir, spec); err != nil {
-				return res, fmt.Errorf("agent %s: %w", aid, err)
-			}
-			res.AgentsWritten = append(res.AgentsWritten, ab.Spec.ID)
+		written, err := materializeAgents(cfg, reg, pack.Spec.Agents, opts.ForceAgents)
+		if err != nil {
+			return res, err
 		}
+		res.AgentsWritten = append(res.AgentsWritten, written...)
 		sort.Strings(res.AgentsWritten)
 	}
 
@@ -151,10 +138,77 @@ func ApplyPipelinePreset(cfg *config.Config, reg *Registry, pipelineID string) (
 		return nil, err
 	}
 	cfg.ActivePipeline = pipe.ID
-	return &ApplyResult{
+	res := &ApplyResult{
 		PipelineID:   pipe.ID,
 		PipelinePath: pipeline.Path(cfg.SlmDir()),
-	}, nil
+	}
+	// Materialize agents referenced by the pipeline spec so the runtime picks
+	// them up immediately. Existing .slmcode/agents files are left untouched.
+	written, err := materializeAgents(cfg, reg, referencedAgentIDs(&spec), false)
+	if err != nil {
+		return res, err
+	}
+	res.AgentsWritten = written
+	return res, nil
+}
+
+// referencedAgentIDs collects every agent id referenced by a pipeline config:
+// phase agents, execute loop roles, and slot agents.
+func referencedAgentIDs(cfg *pipeline.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(id string) {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, ps := range cfg.Phases {
+		add(ps.Agent)
+	}
+	add(cfg.Execute.DefaultRole)
+	add(cfg.Execute.Reviewer)
+	add(cfg.Execute.Corrector)
+	for _, sl := range cfg.Slots {
+		add(sl.Agent)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// materializeAgents writes the given agent block ids into .slmcode/agents/.
+// When force is false, existing files are skipped. Returns the sorted list of
+// agent ids written.
+func materializeAgents(cfg *config.Config, reg *Registry, ids []string, force bool) ([]string, error) {
+	if cfg == nil || reg == nil {
+		return nil, fmt.Errorf("config and registry required")
+	}
+	var written []string
+	agentsDir := cfg.AgentsDir()
+	for _, aid := range ids {
+		ab, ok := reg.GetAgent(aid)
+		if !ok {
+			continue
+		}
+		dest := filepath.Join(agentsDir, ab.Spec.ID+".yaml")
+		if !force {
+			if _, err := os.Stat(dest); err == nil {
+				continue
+			}
+		}
+		spec := ab.Spec
+		if _, err := agents.WriteCustom(agentsDir, spec); err != nil {
+			return written, fmt.Errorf("agent %s: %w", aid, err)
+		}
+		written = append(written, ab.Spec.ID)
+	}
+	sort.Strings(written)
+	return written, nil
 }
 
 func mergeUnique(base, extra []string) []string {

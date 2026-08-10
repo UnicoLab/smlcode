@@ -112,6 +112,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner := loop.NewRunner(o.executor, o.shared)
 	runner.Root = o.cfg.Root
 	runner.SlmDir = o.cfg.SlmDir()
+	runner.Feedback = o.LiveFeedback
 	runner.TurnID = runID
 	runner.Store = o.boardStore
 	runner.Focus = o.focus
@@ -121,6 +122,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.Timeout = o.cfg.TaskTimeout
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
+	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -179,7 +181,10 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 		o.emit("execute", fmt.Sprintf("resume execute · %d tasks", len(board.Tasks)), "")
 	}
 	execStart := time.Now()
-	if err := runner.RunBoard(ctx, board); err != nil {
+	// pipeline gate: phaseEnabled("execute") — when=never skips this phase
+	if !o.phaseEnabled("execute") {
+		o.emit("execute", "phase disabled — skipping board execution", "")
+	} else if err := runner.RunBoard(ctx, board); err != nil {
 		return o.checkpointInterrupt(board, session.PhaseExecute, err)
 	}
 	if runner.ResumedReact {
@@ -243,8 +248,10 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 	testPack, _ := o.packer.Build(testAgent, query, contextstore.DefaultDocsForRole("tester"), nil, o.skillPackFor(testAgent, query))
 	testPrompt := testPack.Render() + "\nTasks:\n" + truncate(tasksMD, 4000) +
 		"\n\nVerify THIS query's work with REAL execution.\n" +
-		"You MUST call ws_shell at least once (install deps if needed, then pytest/go test/python smoke).\n" +
-		"Reading files alone is not enough. Return STRICT JSON: " +
+		"You MUST call ws_shell at least once (install deps if needed, then run the project's real test/smoke commands).\n" +
+		"Reading files alone is not enough.\n\n" +
+		o.langHint() + "\n" +
+		"Return STRICT JSON: " +
 		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
 		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
 	if preSmokeFail != "" {
@@ -345,7 +352,7 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 				_, tasksMD2 := board.ToMarkdown()
 				testOut2, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
 					"\nTasks:\n"+truncate(tasksMD2, 4000)+
-					"\n\nRe-verify after fixes. STRICT JSON with passed true/false.")
+					"\n\nRe-verify after fixes.\n\n"+o.langHint()+"\nSTRICT JSON with passed true/false.")
 				if strings.TrimSpace(testOut2) == "" {
 					testOut2 = `{"passed":false,"summary":"empty tester finalize on retry","failures":["empty tester JSON after corrective wave"]}`
 				}
@@ -383,9 +390,15 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 	}
 
 	// Polish: detect/fill placeholders before QA promotion (additional quality step).
-	gaps := o.runPlaceholderPass(ctx, query, board, runner)
-	if len(gaps) > 0 {
-		testerRejected = true
+	// pipeline gate: phaseEnabled("polish") — when=never skips this phase
+	var gaps []quality.PreciseGap
+	if o.phaseEnabled("polish") {
+		gaps = o.runPlaceholderPass(ctx, query, board, runner)
+		if len(gaps) > 0 {
+			testerRejected = true
+		}
+	} else {
+		o.emit("polish", "phase disabled — skipping placeholder pass", "")
 	}
 
 	// Reference-bar completeness: catch TestSLMs-style "success" with empty
@@ -492,21 +505,27 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, qaCmd string, start time.Time) (*Result, error) {
 	_ = skillPack
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseMemory)
-	o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
-	var allLessons []learning.Lesson
-	for _, t := range board.Tasks {
-		allLessons = append(allLessons, learning.Extract(t)...)
-	}
-	lessonsMD := learning.RenderMarkdown(allLessons)
-	if lessonsMD != "" {
-		_ = o.store.Append(contextstore.DocMemory, "Auto-lessons", lessonsMD)
-	}
-	memPack, _ := o.packer.Build("memory", query, contextstore.DefaultDocsForRole("memory"), nil, o.skillPackFor("memory", query))
-	memOut, _ := o.runRoleMultipassTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
-		"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", board.FailedCount()))
-	if strings.TrimSpace(memOut) != "" {
-		_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
-		lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
+	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
+	var lessonsMD string
+	if o.phaseEnabled("memory") {
+		o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
+		var allLessons []learning.Lesson
+		for _, t := range board.Tasks {
+			allLessons = append(allLessons, learning.Extract(t)...)
+		}
+		lessonsMD = learning.RenderMarkdown(allLessons)
+		if lessonsMD != "" {
+			_ = o.store.Append(contextstore.DocMemory, "Auto-lessons", lessonsMD)
+		}
+		memPack, _ := o.packer.Build("memory", query, contextstore.DefaultDocsForRole("memory"), nil, o.skillPackFor("memory", query))
+		memOut, _ := o.runRoleMultipassTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
+			"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", board.FailedCount()))
+		if strings.TrimSpace(memOut) != "" {
+			_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
+			lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
+		}
+	} else {
+		o.emit("memory", "phase disabled — skipping memory distillation", "")
 	}
 
 	o.emit("skills", "evolving SKILLS.md + learned skill", "")

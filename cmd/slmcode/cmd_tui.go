@@ -23,6 +23,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
+	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 )
 
 func tuiCmd() *cobra.Command {
@@ -355,6 +356,8 @@ func runPremiumTUI() error {
 				fmt.Printf("  • %s — %s\n", sk.Name, sk.Description)
 			}
 			return false, nil
+		case "/feedback", "/fb":
+			return false, handleFeedbackCmd(h, arg)
 		case "/studio":
 			addr := h.Config.Listen
 			if addr == "" {
@@ -477,8 +480,47 @@ func runPremiumTUI() error {
 		}
 	})
 
+	// Async update notice: fetch once after the TUI paints so a slow network
+	// never blocks startup, and delay so it lands after the first dashboard.
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		info := updatecheck.Check(Version)
+		if info.UpdateAvailable {
+			fmt.Println(cli.Warn("new version v" + info.Latest + " available — run: slmcode update"))
+		}
+	}()
+
 	fmt.Print(cli.Banner())
 	return sess.RunInteractive()
+}
+
+// handleFeedbackCmd steers running agents via live feedback injected into the
+// next agent prompt. Shared by the premium TUI and the chat REPL.
+func handleFeedbackCmd(h *harness.Harness, args string) error {
+	args = strings.TrimSpace(args)
+	if h == nil || h.Orchestrator == nil {
+		fmt.Println(cli.Error("live feedback unavailable — no active orchestrator (start a run first)"))
+		return nil
+	}
+	if args == "" {
+		cur := h.Orchestrator.LiveFeedback()
+		if cur == "" {
+			fmt.Println(cli.Dim("no active live feedback — send e.g. /feedback focus on pkg/loop, add tests"))
+		} else {
+			fmt.Println(cli.Cyan("live feedback: " + cur))
+			fmt.Println(cli.Dim("clear it with /feedback clear"))
+		}
+		return nil
+	}
+	if args == "clear" || args == "c" {
+		h.Orchestrator.ClearLiveFeedback()
+		fmt.Println(cli.Success("live feedback cleared"))
+		return nil
+	}
+	h.Orchestrator.SetLiveFeedback(args)
+	fmt.Println(cli.Success("live feedback set — injected into the next agent call"))
+	fmt.Println(cli.Cyan(args))
+	return nil
 }
 
 func handleTUIAgentCmd(h *harness.Harness, sess *cli.LiveSession, line string) error {

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { getModels, getAgents, updateConfig } from '@/api/client';
+import UpdateBanner from './UpdateBanner';
 import type { AgentSpec, AuthStatus, ModelCost } from '@/types';
 import clsx from 'clsx';
 
@@ -98,7 +99,9 @@ export default function TopBar() {
   const stackLabel = ctx?.config?.active_stack;
 
   return (
-    <header className="h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10">
+    <>
+      <UpdateBanner />
+      <header className="h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10">
       <button onClick={() => navigate('/')} className="flex items-center gap-2 shrink-0">
         <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
           <Zap size={14} className="text-white" />
@@ -275,6 +278,7 @@ export default function TopBar() {
           {stackLabel ? ` · ${stackLabel}` : ''}
         </span>
       )}
-    </header>
+      </header>
+    </>
   );
 }

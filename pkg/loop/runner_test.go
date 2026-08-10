@@ -19,6 +19,53 @@ func TestStripScopedPack(t *testing.T) {
 	}
 }
 
+func TestFeedbackSection(t *testing.T) {
+	r := &Runner{}
+	if got := r.feedbackSection(); got != "" {
+		t.Fatalf("no-feedback section = %q", got)
+	}
+	r.Feedback = func() string { return "  prefer smaller diffs  " }
+	section := r.feedbackSection()
+	if !strings.Contains(section, "## LIVE FEEDBACK FROM USER") {
+		t.Fatalf("missing header in %q", section)
+	}
+	if !strings.Contains(section, "prefer smaller diffs") {
+		t.Fatalf("missing text in %q", section)
+	}
+	r.Feedback = func() string { return "   " }
+	if got := r.feedbackSection(); got != "" {
+		t.Fatalf("blank feedback section = %q", got)
+	}
+}
+
+func TestTaskInputAppendsFeedback(t *testing.T) {
+	r := NewRunner(nil, nil)
+	task := plan.Task{ID: "T1", Title: "x", Role: plan.RoleWorker, Description: "do it", Acceptance: "done"}
+	base := r.taskInput(task)
+	r.Feedback = func() string { return "use log/slog" }
+	got := r.taskInput(task)
+	if !strings.HasPrefix(got, base) {
+		t.Fatalf("base prompt changed: base=%q got=%q", base, got)
+	}
+	if !strings.HasSuffix(got, "use log/slog\n") {
+		t.Fatalf("feedback not appended: %q", got)
+	}
+}
+
+func TestFormatReviewPromptAppendsFeedback(t *testing.T) {
+	r := NewRunner(nil, nil)
+	task := plan.Task{ID: "T1", Title: "x", Role: plan.RoleWorker, Acceptance: "a", Output: "out"}
+	base := r.formatReviewPrompt(task)
+	r.Feedback = func() string { return "check edge cases" }
+	got := r.formatReviewPrompt(task)
+	if !strings.HasPrefix(got, base) {
+		t.Fatalf("review prompt changed: base=%q got=%q", base, got)
+	}
+	if !strings.Contains(got, "check edge cases") {
+		t.Fatalf("feedback missing from review prompt: %q", got)
+	}
+}
+
 func TestHasToolWriteEvidence(t *testing.T) {
 	if !hasToolWriteEvidence("Observation: ws_edit updated pkg/loop/runner.go") {
 		t.Fatal("expected tool evidence")

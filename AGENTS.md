@@ -95,6 +95,8 @@ Blocks are YAML-configurable, marketplace-ready units. Four kinds:
 3. **Extra** — `$SLMCODE_BLOCKS` env var, walk-up `blocks/` dirs
 4. **Builtin** — embedded in `pkg/blocks/bundled/` (compiled into binary via `go:embed`)
 
+All registry agent blocks (bundled + project/user) are also registered as **runtime agent roles** via `agents.Factory.ExtraCustoms`; on-disk `.slmcode/agents/{id}.yaml` files win on id clash.
+
 ### 3.3 Common Schema (`Meta`)
 
 Every block YAML shares this header:
@@ -229,8 +231,29 @@ spec:
 - `reg.View(activePack, activePipeline)` — Studio/API response
 - `reg.DetectQuality(workspaceRoot)` — auto-detect quality pack
 - `blocks.ApplyPack(cfg, reg, packID, opts)` — materialize pack
-- `blocks.ApplyPipelinePreset(cfg, reg, pipelineID)` — apply pipeline
+- `blocks.ApplyPipelinePreset(cfg, reg, pipelineID)` — apply pipeline (writes referenced agents to `.slmcode/agents/`, returns `agents_written`)
 - `blocks.ResolveQAGateCommand(projectRoot, workspaceRoot, activePack)` — get QA gate
+- `blocks.Save(reg, kind, id, yaml)` — create/edit a block (builtin edit → project override)
+- `blocks.Delete(reg, kind, id)` — delete a project block (builtin without override rejected)
+- `blocks.ParseAndValidateBlock(yaml)` — parse + validate YAML before saving
+
+### 3.9 Block CRUD (Studio + CLI)
+
+Blocks are editable at runtime through the Studio GUI and CLI. Writes go to `.slmcode/blocks/{pipelines|agents|quality|packs}/{id}.yaml` via `pkg/blocks/crud.go`.
+
+**REST endpoints** (backing the Studio Blocks/Pipeline/Agents/Skills pages):
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `POST` | `/api/blocks/{kind}` | Create block (kind: `pipeline`\|`agent`\|`quality`\|`pack`) |
+| `PUT` | `/api/blocks/{kind}/{id}` | Edit block; editing a builtin creates a project override |
+| `DELETE` | `/api/blocks/{kind}/{id}` | Delete project block; deleting a builtin without an override is rejected |
+
+**Override semantics**: editing a builtin writes `.slmcode/blocks/{kind}/{id}.yaml` that shadows the embedded preset (first ID wins per kind, see §3.2). Every write is parsed with `blocks.ParseAndValidateBlock` + `Normalize`/`Validate` before persisting.
+
+**Studio GUI**: Blocks page has full CRUD with kind-aware visual editors (`BlockManager.tsx`/`BlockEditor.tsx`); Pipeline page adds a Pipeline Library (select/edit/delete/new custom pipelines) + visual builder (groups, phases, execute loop, slots); Agents page editor is a modal listing all block-defined agents; Skills page supports editing.
+
+**CLI**: `blocks new/edit/delete` (see §8) expose the same operations from the terminal.
 
 ---
 
@@ -362,6 +385,9 @@ Resolution order: explicit `@skill:name` refs → agent-targeted → global → 
 | `blocks show <kind> <id>` | Show block detail |
 | `blocks validate` | Validate all block YAML |
 | `blocks apply <pack-id>` | Apply a language pack |
+| `blocks new\|create\|add <kind> <id> [--file path.yaml] [--name "…"]` | Create a block |
+| `blocks edit <kind> <id> --file path.yaml` | Update a block (agent edit also writes `.slmcode/agents/{id}.yaml`) |
+| `blocks delete <kind> <id>` | Delete a project block |
 | `skills list` | List skills |
 | `skills new <name>` | Create a skill |
 | `doctor` | System health check |
@@ -420,6 +446,16 @@ make build && make test && make install
 - **Block IDs**: Lowercase kebab-case, validated against `^[a-z][a-z0-9_-]{1,63}$`.
 - **Never end on a tool call**: Core agent invariant — must produce final JSON after tool use.
 - **HARD SCOPE**: Workers and correctors must stay within focus files / same package.
+
+### 11.1 Runtime Roles & Phase Gating (v0.13.0+)
+
+- **Agent blocks are runtime roles**: `agents.Factory.ExtraCustoms` registers every registry agent block (bundled go-tester/go-worker/python-tester … + project/user) as a real role; `.slmcode/agents/` files win on id clash; `GET /api/agents` merges registry agent blocks too.
+- **`execute.default_role` is consumed**: tasks with an empty/`implementer` role use the pipeline's `execute.default_role` (e.g. `go-worker`).
+- **Role fallbacks**: a phase agent missing from the registry falls back to the default agent (with warning); unknown task roles map to generics (`go-tester`→`tester`, `python-worker`→`worker`, …).
+- **Phase gating**: `when: never` / `enabled: false` is honored for the 13 agent-driven phases (context, explore, docs, architect, clarify, plan, split, coord, execute, learn, polish, test, memory). `init`/`skills`/`done` are engine-structural and always run.
+- **Archived phases**: GUI pipeline editors "delete" phases by persisting `when: never, enabled: false` + removing them from groups/order (restorable) — hard deletes would resurrect since `pipeline.Config.Normalize()` merges missing default phase keys back in.
+- **Validation**: `pipeline.Config.Validate()` rejects empty/duplicate group ids, group steps referencing unknown phases, and phases assigned to multiple groups.
+- **Language pinning**: `orchestrator.langHint()` / `loop.detectProjectLangHint` inject the detected project language into tester/worker/review/QA-gate prompts ("Project language: Go — NEVER run pytest…"); `PromptTester`/`PromptTaskSplitter` are language-neutral.
 
 ---
 
@@ -527,6 +563,7 @@ The `/files` page shows a full recursive directory tree. Features:
 
 | Version | Key Changes |
 |---------|------------|
+| 0.13.0 | Block CRUD API + Studio GUI editing (blocks/pipelines/agents/skills), agent blocks as runtime roles, default_role honored, phase gating + archived phases, language-pinned prompts (no pytest in Go runs), pipeline validation hardening, blocks new/edit/delete CLI, HTTP tests for block API, live user feedback (GUI + TUI `/feedback`, injected into next agent call), skills↔agents cross-linking in Studio, update-available notifications (TUI banner, `update --check`, `version`, `GET /api/update`, Studio banner) |
 | 0.12.2 | e2e test fixes for Vite bundle output, CI builds Studio UI before Go, Homebrew formula sync, docs refresh |
 | 0.12.1 | Vite/React/TypeScript Studio UI (`web/` + `make ui-react`), `fast_model` dual-model routing, smarter QA gate, improved tester |
 | 0.12.0 | Engine-wide parallelization: 6 parallel paths, MaxParallel=4, phase parallelism, parallel QA, parallel self-critique, parallel review, wave fast-path |

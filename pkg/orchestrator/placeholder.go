@@ -36,8 +36,9 @@ func (o *Orchestrator) runPlaceholderPass(ctx context.Context, query string, boa
 		contextstore.DefaultDocsForRole(plan.RolePlaceholder), nil,
 		o.skillPackFor(plan.RolePlaceholder, query))
 	prompt := pack.Render() + "\n" + report +
-		"\n\n## Goal\nFill EVERY listed gap with real working code using ws_edit/ws_patch. " +
-		"Re-smoke touched files. Return STRICT JSON status.\n" +
+		"\n\n## Goal\nFill EVERY listed gap with real working code using ws_edit/ws_patch.\n" +
+		"## Project language\n" + o.langHint() +
+		"\n\nRe-smoke touched files. Return STRICT JSON status.\n" +
 		"Query: " + truncate(query, 800)
 	out, err := o.runRoleTracked(ctx, plan.RolePlaceholder, "", prompt)
 	if strings.TrimSpace(out) != "" {

@@ -2,9 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 )
@@ -65,6 +68,230 @@ func (s *Server) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, b)
 	default:
 		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
+	}
+}
+
+func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
+	kind := blocks.NormalizeKind(r.PathValue("kind"))
+	if kind == "" {
+		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
+		return
+	}
+	block, err := decodeBlockJSON(kind, r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	id := blockMetaID(block)
+	if id == "" {
+		http.Error(w, "block id is required", 400)
+		return
+	}
+	reg, err := blocks.Load(s.h.Config.Root)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if blockExists(reg, kind, id) {
+		http.Error(w, fmt.Sprintf("block %q already exists (edit it instead)", id), 409)
+		return
+	}
+	path, err := blocks.Save(s.h.Config.Root, block)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	s.writeBlockSaved(w, block, path)
+}
+
+func (s *Server) handleUpdateBlock(w http.ResponseWriter, r *http.Request) {
+	kind := blocks.NormalizeKind(r.PathValue("kind"))
+	if kind == "" {
+		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
+		return
+	}
+	pathID := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	block, err := decodeBlockJSON(kind, r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	id := blockMetaID(block)
+	if id == "" {
+		http.Error(w, "block id is required", 400)
+		return
+	}
+	if id != pathID {
+		http.Error(w, fmt.Sprintf("body id %q does not match path id %q", id, pathID), 400)
+		return
+	}
+	path, err := blocks.Save(s.h.Config.Root, block)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	// Mirrors ApplyPack materialization: write the agent spec so the runtime
+	// picks the override up immediately.
+	if kind == blocks.KindAgent {
+		if _, err := agents.WriteCustom(s.h.Config.AgentsDir(), block.(*blocks.AgentBlock).Spec); err != nil {
+			http.Error(w, "block saved but agent materialization failed: "+err.Error(), 500)
+			return
+		}
+	}
+	s.writeBlockSaved(w, block, path)
+}
+
+func (s *Server) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
+	kind := blocks.NormalizeKind(r.PathValue("kind"))
+	if kind == "" {
+		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
+		return
+	}
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	found, err := blocks.Delete(s.h.Config.Root, kind, id)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	// Drop the materialized agent too (yaml and yml variants).
+	if kind == blocks.KindAgent {
+		_ = agents.DeleteCustom(s.h.Config.AgentsDir(), id)
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, "deleted but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "found": found})
+}
+
+// writeBlockSaved responds to successful create/update with the saved block,
+// its path, and the reloaded catalog (mirrors handleApplyPack).
+func (s *Server) writeBlockSaved(w http.ResponseWriter, block any, path string) {
+	catalog, err := s.reloadBlocksCatalog()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := s.rebuildOrchestrator(); err != nil {
+		http.Error(w, "saved but rebuild failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":      true,
+		"block":   block,
+		"path":    path,
+		"config":  s.h.Config.Public(),
+		"catalog": catalog,
+	})
+}
+
+// reloadBlocksCatalog rebuilds the registry and returns the public catalog
+// view used by the Studio sidebar.
+func (s *Server) reloadBlocksCatalog() (any, error) {
+	reg, err := blocks.Load(s.h.Config.Root)
+	if err != nil {
+		return nil, err
+	}
+	return reg.View(s.h.Config.ActivePack, s.h.Config.ActivePipeline), nil
+}
+
+// decodeBlockJSON decodes a JSON request body into a typed block of the given
+// kind, normalizes + validates it, and returns the typed pointer. A body kind
+// that mismatches the path kind is rejected.
+func decodeBlockJSON(kind string, r io.Reader) (any, error) {
+	var block any
+	switch kind {
+	case blocks.KindPipeline:
+		var b blocks.PipelineBlock
+		if err := json.NewDecoder(r).Decode(&b); err != nil {
+			return nil, fmt.Errorf("invalid JSON body: %w", err)
+		}
+		block = &b
+	case blocks.KindAgent:
+		var b blocks.AgentBlock
+		if err := json.NewDecoder(r).Decode(&b); err != nil {
+			return nil, fmt.Errorf("invalid JSON body: %w", err)
+		}
+		block = &b
+	case blocks.KindQuality:
+		var b blocks.QualityBlock
+		if err := json.NewDecoder(r).Decode(&b); err != nil {
+			return nil, fmt.Errorf("invalid JSON body: %w", err)
+		}
+		block = &b
+	case blocks.KindPack:
+		var b blocks.PackBlock
+		if err := json.NewDecoder(r).Decode(&b); err != nil {
+			return nil, fmt.Errorf("invalid JSON body: %w", err)
+		}
+		block = &b
+	default:
+		return nil, fmt.Errorf("unknown kind %q", kind)
+	}
+	meta := blockMeta(block)
+	if meta.Kind != "" && blocks.NormalizeKind(meta.Kind) != kind {
+		return nil, fmt.Errorf("body kind %q does not match path kind %q", meta.Kind, kind)
+	}
+	meta.Kind = kind
+	if err := blockValidate(block); err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+func blockMeta(block any) *blocks.Meta {
+	switch b := block.(type) {
+	case *blocks.PipelineBlock:
+		return &b.Meta
+	case *blocks.AgentBlock:
+		return &b.Meta
+	case *blocks.QualityBlock:
+		return &b.Meta
+	case *blocks.PackBlock:
+		return &b.Meta
+	default:
+		return nil
+	}
+}
+
+func blockMetaID(block any) string {
+	if m := blockMeta(block); m != nil {
+		return strings.ToLower(strings.TrimSpace(m.ID))
+	}
+	return ""
+}
+
+func blockValidate(block any) error {
+	switch b := block.(type) {
+	case *blocks.PipelineBlock:
+		return b.Validate()
+	case *blocks.AgentBlock:
+		return b.Validate()
+	case *blocks.QualityBlock:
+		return b.Validate()
+	case *blocks.PackBlock:
+		return b.Validate()
+	default:
+		return fmt.Errorf("unsupported block type %T", block)
+	}
+}
+
+func blockExists(reg *blocks.Registry, kind, id string) bool {
+	switch kind {
+	case blocks.KindPipeline:
+		_, ok := reg.GetPipeline(id)
+		return ok
+	case blocks.KindAgent:
+		_, ok := reg.GetAgent(id)
+		return ok
+	case blocks.KindQuality:
+		_, ok := reg.GetQuality(id)
+		return ok
+	case blocks.KindPack:
+		_, ok := reg.GetPack(id)
+		return ok
+	default:
+		return false
 	}
 }
 

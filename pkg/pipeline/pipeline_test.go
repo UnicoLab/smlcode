@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,4 +85,61 @@ func TestView(t *testing.T) {
 	if len(v.Anchors) == 0 || v.Defaults["plan"] == "" {
 		t.Fatalf("%+v", v)
 	}
+}
+
+// TestValidateGroupRules covers the structural group checks: unique non-empty
+// ids, steps referencing known phases, and no phase in multiple groups.
+func TestValidateGroupRules(t *testing.T) {
+	base := func() Config {
+		cfg := Default()
+		cfg.Groups = []GroupMeta{
+			{ID: "g1", Label: "G1", Steps: []string{"init", "skills"}},
+			{ID: "g2", Label: "G2", Steps: []string{"plan", "split"}},
+		}
+		cfg.Normalize()
+		return cfg
+	}
+
+	t.Run("valid groups pass", func(t *testing.T) {
+		cfg := base()
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("duplicate group id", func(t *testing.T) {
+		cfg := base()
+		cfg.Groups[1].ID = "g1"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), `group "g1": duplicate group id`) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("empty group id", func(t *testing.T) {
+		cfg := base()
+		cfg.Groups[0].ID = "   "
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "group: empty id") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("unknown phase in steps", func(t *testing.T) {
+		cfg := base()
+		cfg.Groups[0].Steps = []string{"init", "nope"}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), `group "g1": unknown phase "nope" in steps`) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("phase in multiple groups", func(t *testing.T) {
+		cfg := base()
+		cfg.Groups[1].Steps = []string{"init", "split"} // init already in g1
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), `phase "init" assigned to multiple groups`) {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }

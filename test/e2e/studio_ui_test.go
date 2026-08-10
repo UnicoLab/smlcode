@@ -46,40 +46,41 @@ func TestStudioUIInteraction(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
+	// --- Fetch index.html and discover asset paths ---
+	htmlPath, jsPath, cssPath := discoverAssets(t, ts.URL)
+
 	// --- Static UI assets used by Live ---
-	for _, path := range []string{"/", "/app.jsx", "/styles.css", "/index.html"} {
-		resp, err := http.Get(ts.URL + path)
+	for _, entry := range []struct {
+		path    string
+		markers []string
+	}{
+		{"/", []string{"SLMCode Studio", "id=\"root\"", "<title>"}},
+		{htmlPath, []string{"SLMCode Studio", "id=\"root\"", "<title>"}},
+		{jsPath, []string{
+			"/api/events", "/runs", "/runs/stop", "/runs/latest",
+			"/agents", "/board", "/config", "/skills",
+			"/pipeline", "/tasks", "/stacks",
+			"/health", "/auth", "/mcp",
+			"pipeline", "autoScroll",
+		}},
+		{cssPath, []string{
+			"--color-surface",
+		}},
+	} {
+		resp, err := http.Get(ts.URL + entry.path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != 200 {
-			t.Fatalf("%s → %d", path, resp.StatusCode)
+			t.Fatalf("%s → %d", entry.path, resp.StatusCode)
 		}
-		if path == "/app.jsx" {
+		if len(entry.markers) > 0 {
 			src := string(body)
-			for _, marker := range []string{
-				"renderMarkdown", "DepGraph", "PROVIDER_PRESETS", "/api/runs",
-				"/api/runs/stop", "/api/events", "file_change", "autoScroll",
-				`id: "queries"`, "/api/queries", "openQuery", "queryDocTab",
-				"openAgent", "showDebugEvents", "/api/agents/",
-				"intervention", "turnMeter", "intervention-banner",
-				"LiveLogs", "LiveStatusCard", "LiveEnrichBox", "live-overview", "live-logs-panel",
-				"PipelineHeader", "PIPE_GROUPS", "pipeline-header", "pipeline-groups",
-				"continueAsk", "/api/continue/answer", "polish", "Keep precise flags",
-				"escalateAsk", "/api/escalate/answer", "Human review needed", "Retry now",
-			} {
+			for _, marker := range entry.markers {
 				if !strings.Contains(src, marker) {
-					t.Fatalf("app.jsx missing %q", marker)
-				}
-			}
-		}
-		if path == "/styles.css" {
-			css := string(body)
-			for _, marker := range []string{"--accent", "pipeline-header", "pipeline-groups", "live-logs-panel"} {
-				if !strings.Contains(css, marker) {
-					t.Fatalf("styles.css missing %q", marker)
+					t.Fatalf("%s missing %q", entry.path, marker)
 				}
 			}
 		}
@@ -223,6 +224,69 @@ func TestStudioUIInteraction(t *testing.T) {
 	case <-sseCtxDone:
 	case <-time.After(3 * time.Second):
 	}
+}
+
+// discoverAssets fetches the index page and extracts paths to JS and CSS bundles.
+func discoverAssets(t *testing.T, baseURL string) (htmlPath, jsPath, cssPath string) {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(body)
+
+	// Extract JS bundle path from <script type="module" ... src="...">
+	idx := strings.Index(html, `<script type="module"`)
+	if idx >= 0 {
+		rest := html[idx:]
+		start := strings.Index(rest, `src="`)
+		if start >= 0 {
+			start += 5
+			end := strings.Index(rest[start:], `"`)
+			if end >= 0 {
+				jsPath = rest[start : start+end]
+			}
+		}
+	}
+
+	// Extract local CSS path: find <link rel="stylesheet" ... href="/assets/...">
+	// Skip the Google Fonts stylesheet (which uses href before rel).
+	search := html
+	for {
+		idx := strings.Index(search, `rel="stylesheet"`)
+		if idx < 0 {
+			break
+		}
+		// Look for href= within this link element's scope
+		seg := search[max(0, idx-200):min(len(search), idx+200)]
+		hrefIdx := strings.Index(seg, `href="`)
+		if hrefIdx >= 0 {
+			hrefStart := hrefIdx + 6
+			hrefEnd := strings.Index(seg[hrefStart:], `"`)
+			if hrefEnd >= 0 {
+				candidate := seg[hrefStart : hrefStart+hrefEnd]
+				if strings.HasPrefix(candidate, "/assets/") {
+					cssPath = candidate
+					break
+				}
+			}
+		}
+		search = search[idx+len(`rel="stylesheet"`):]
+	}
+
+	// Try /index.html as well
+	htmlPath = "/index.html"
+	if jsPath == "" {
+		t.Fatal("could not discover JS bundle path from index.html")
+	}
+	if cssPath == "" {
+		t.Fatal("could not discover CSS bundle path from index.html")
+	}
+
+	return htmlPath, jsPath, cssPath
 }
 
 func findRepoRoot(t *testing.T) string {

@@ -266,13 +266,13 @@ func TestMultiTurnQueryScopedPlanTasksSummary(t *testing.T) {
 		t.Fatal("detail missing tasks_md")
 	}
 
-	// UI embedding smoke: app.jsx must expose Queries nav wired to /api/queries
-	uiApp := filepath.Join("..", "..", "cmd", "slmcode", "ui", "app.jsx")
-	if data, err := os.ReadFile(uiApp); err == nil {
+	// UI embedding smoke: API client must wire queries to /api/queries
+	uiClient := filepath.Join("..", "..", "web", "src", "api", "client.ts")
+	if data, err := os.ReadFile(uiClient); err == nil {
 		s := string(data)
-		for _, needle := range []string{`id: "queries"`, `/api/queries`, `openQuery`} {
+		for _, needle := range []string{`/queries`, `getQueries`, `getQuery`, `QuerySession`, `QueryView`} {
 			if !strings.Contains(s, needle) {
-				t.Fatalf("Studio UI missing Queries wiring: %s", needle)
+				t.Fatalf("Studio UI API client missing Queries wiring: %s", needle)
 			}
 		}
 	}

@@ -47,10 +47,11 @@ func Specs() []RoleSpec {
 		{ID: "deep", Title: "Deep multi-step worker", Description: "Handles deeper multi-step implementation within scope.", SystemPrompt: PromptDeepWorker, Tools: coding, MaxIter: 20, Temperature: 0.12, MaxTokens: 3072},
 		{ID: plan.RoleReviewer, Title: "Self-critic / approve", Description: "Approves or rejects one task from disk evidence.", SystemPrompt: PromptReviewer, Tools: nil, MaxIter: 2, Temperature: 0.05, MaxTokens: 768},
 		{ID: plan.RoleCorrector, Title: "Fix review issues", Description: "Patches reviewer issues inside HARD SCOPE.", SystemPrompt: PromptCorrector, Tools: coding, MaxIter: 12, Temperature: 0.12, MaxTokens: 3072},
-		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks (pytest/go test/smoke) before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 12, Temperature: 0.08, MaxTokens: 2048},
+		{ID: plan.RoleTester, Title: "Verify / run tests", Description: "Runs real shell checks in the project's language before pass.", SystemPrompt: PromptTester, Tools: coding, MaxIter: 12, Temperature: 0.08, MaxTokens: 2048},
 		{ID: plan.RolePlaceholder, Title: "Fill placeholders / flag gaps", Description: "Detects stub code, fills real implementations, or flags precise gaps for HITL.", SystemPrompt: PromptPlaceholder, Tools: coding, MaxIter: 14, Temperature: 0.1, MaxTokens: 3072},
 		{ID: plan.RoleEscalate, Title: "Escalate arbitrator", Description: "Decides retry/re-scope/abort/mark_done when human escalate HITL times out.", SystemPrompt: PromptEscalate, Tools: nil, MaxIter: 1, Temperature: 0.1, MaxTokens: 384},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
+		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048},
 	}
 }
 
@@ -270,6 +271,7 @@ var lightAgents = map[string]bool{
 	"reviewer": true, "coordinator": true, "splitter": true, "planner": true,
 	"context": true, "architect": true, "clarifier": true, "interviewer": true,
 	"orchestrator": true, "memory": true, "docs": true, "escalate": true,
+	"composer": true,
 }
 
 func isLightAgent(id string) bool { return lightAgents[strings.ToLower(id)] }

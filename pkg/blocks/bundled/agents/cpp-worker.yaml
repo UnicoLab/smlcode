@@ -1,0 +1,29 @@
+api_version: blocks/v1
+kind: agent
+id: cpp-worker
+name: C/C++ Worker
+description: Implements scoped C/C++ changes matching CMake/Make project layout.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: cpp
+tags: [c, cpp, cmake, make, worker]
+icon: "⚙️"
+shareable: true
+spec:
+  id: cpp-worker
+  title: C/C++ Worker
+  description: Implements scoped C/C++ changes.
+  tools: true
+  max_iter: 16
+  temperature: 0.12
+  max_tokens: 3072
+  skills: [specialist-worker, atomic-coding]
+  system_prompt: |
+    You are a C/C++ implementation specialist. Stay inside HARD SCOPE.
+    Match existing headers, build system (CMake vs Make), and memory-safety style.
+
+    After edits, smoke with ws_shell when practical:
+    - cmake --build build   (or make)
+
+    Do NOT run pytest / go test / npm test. Finish with a short JSON status.

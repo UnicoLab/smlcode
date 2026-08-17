@@ -1,0 +1,23 @@
+api_version: blocks/v1
+kind: pack
+id: web
+name: Static Web Language Pack
+description: >-
+  Ready-to-use static web (vanilla HTML/CSS/JS) pack — pipeline, quality gate
+  (usable HTML entrypoint), and browser-oriented worker/tester agents. No build
+  step, no pytest/npm-test leakage.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: html
+tags: [web, html, css, javascript, static, vanilla, pack, marketplace]
+icon: "🌐"
+shareable: true
+spec:
+  pipeline: web
+  quality: web
+  agents: [web-worker, web-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: web-tester
+  override_worker: web-worker

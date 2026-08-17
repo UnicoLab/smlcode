@@ -1,0 +1,37 @@
+api_version: blocks/v1
+kind: quality
+id: java
+name: Java Quality Pack
+description: >-
+  Production Java verify pack — Maven (or Gradle) test, build, and format checks.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: java
+tags: [java, maven, gradle, junit, test]
+icon: "☕"
+shareable: true
+spec:
+  detect:
+    files: [pom.xml, build.gradle, build.gradle.kts]
+    extensions: [.java]
+    priority: 15
+  test:
+    - cmd: mvn -q test
+      label: mvn test
+  build:
+    - cmd: mvn -q -DskipTests package
+      label: mvn package
+      optional: true
+  smoke: mvn -q -DskipTests compile
+  qa_gate: mvn -q test
+  safe_prefixes:
+    - mvn
+    - ./mvnw
+    - ./gradlew
+    - gradle
+    - javac
+  tester_hints: |
+    Prefer: mvn -q test (or ./mvnw -q test). For Gradle projects use ./gradlew test.
+    Compile check: mvn -q -DskipTests compile (or ./gradlew compileJava).
+    Do NOT run pytest / go test / npm test.

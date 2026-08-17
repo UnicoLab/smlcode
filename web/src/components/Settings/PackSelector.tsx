@@ -12,6 +12,10 @@ const PACK_ICONS: Record<string, string> = {
   go: '🐹',
   python: '🐍',
   react: '⚛️',
+  web: '🌐',
+  rust: '🦀',
+  java: '☕',
+  cpp: '⚙️',
 };
 
 export default function PackSelector({ currentPack, currentPipeline, onApplied }: PackSelectorProps) {

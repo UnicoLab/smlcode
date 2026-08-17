@@ -175,3 +175,74 @@ func TestEnsureGreenfieldHarnessLangGraphTemplateSetup(t *testing.T) {
 		t.Fatalf("expected req+main+test harness, got %+v", out)
 	}
 }
+
+func TestEnsureHTMLEntrypointInjectsIndexHTML(t *testing.T) {
+	// Regression: a static-web query split into .js files must gain an HTML page.
+	tasks := []Task{
+		{ID: "T1", Title: "Create game logic", Role: RoleWorker, Files: []string{"game.js"}},
+		{ID: "T2", Title: "Create board renderer", Role: RoleWorker, Files: []string{"board.js"}},
+	}
+	out := ensureHTMLEntrypoint(tasks, "Generate an HTML + JavaScript battleship game")
+	found := false
+	for _, t := range out {
+		for _, f := range t.Files {
+			if f == "index.html" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected index.html injected, got %+v", out)
+	}
+}
+
+func TestEnsureHTMLEntrypointNoopWhenHTMLPresent(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Title: "Create page", Role: RoleWorker, Files: []string{"index.html", "style.css", "game.js"}},
+	}
+	out := ensureHTMLEntrypoint(tasks, "Generate an HTML game")
+	// No duplicate injection; the first worker keeps its existing files.
+	if len(out[0].Files) != 3 {
+		t.Fatalf("expected no injection when index.html present, got %+v", out[0].Files)
+	}
+}
+
+func TestEnsureHTMLEntrypointNoopForNonWeb(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Title: "Create lib", Role: RoleWorker, Files: []string{"main.go"}},
+	}
+	out := ensureHTMLEntrypoint(tasks, "Add a doc comment to Hello() in Go")
+	for _, tsk := range out {
+		for _, f := range tsk.Files {
+			if f == "index.html" {
+				t.Fatalf("must not inject index.html for non-web query: %+v", out)
+			}
+		}
+	}
+}
+
+func TestShouldCollapseSameFile(t *testing.T) {
+	// The pathological shape: many workers editing one self-contained file.
+	same := []Task{
+		{ID: "T1", Title: "HTML structure", Role: RoleWorker, Files: []string{"index.html"}},
+		{ID: "T2", Title: "CSS styling", Role: RoleWorker, Files: []string{"index.html"}},
+		{ID: "T3", Title: "JS logic", Role: RoleWorker, Files: []string{"index.html"}},
+	}
+	if !shouldCollapseSameFile(same) {
+		t.Fatal("same-file workers must collapse")
+	}
+
+	// Different files per task must NOT collapse.
+	diff := []Task{
+		{ID: "T1", Title: "main.py", Role: RoleWorker, Files: []string{"main.py"}},
+		{ID: "T2", Title: "requirements.txt", Role: RoleWorker, Files: []string{"requirements.txt"}},
+	}
+	if shouldCollapseSameFile(diff) {
+		t.Fatal("different-file workers must not collapse")
+	}
+
+	// A single worker must not collapse.
+	if shouldCollapseSameFile([]Task{{ID: "T1", Role: RoleWorker, Files: []string{"index.html"}}}) {
+		t.Fatal("single worker must not collapse")
+	}
+}

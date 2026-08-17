@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,5 +99,54 @@ func TestShouldSmokeTask(t *testing.T) {
 	}
 	if ShouldSmokeTask(plan.Task{Role: plan.RoleTester, Files: []string{"a.py"}}) {
 		t.Fatal("tester skip")
+	}
+}
+
+func TestDetectPostWorkerCommandGoNoModuleUsesGofmt(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+	cmd := DetectPostWorkerCommand(root, []string{"hello.go"})
+	if cmd != "gofmt -e hello.go" {
+		t.Fatalf("no-module Go should use gofmt -e, got %q", cmd)
+	}
+}
+
+func TestDetectPostWorkerCommandGoModuleUsesGoTest(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+	cmd := DetectPostWorkerCommand(root, []string{"hello.go"})
+	if cmd != "go test . -short" {
+		t.Fatalf("module Go should use go test, got %q", cmd)
+	}
+}
+
+func TestDetectProjectLanguageHTMLAndGoScript(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "index.html"), []byte("<html></html>"), 0o644)
+	if got := DetectProjectLanguage(root); got != "html" {
+		t.Fatalf("html workspace got %q", got)
+	}
+
+	rootGo := t.TempDir()
+	_ = os.WriteFile(filepath.Join(rootGo, "main.go"), []byte("package main\n"), 0o644)
+	if got := DetectProjectLanguage(rootGo); got != "go" {
+		t.Fatalf("lone .go file got %q, want go", got)
+	}
+}
+
+func TestRunPostWorkerSmokeGoVetStripsTestFlags(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n\ngo 1.22\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package hello\n\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+	sr := RunPostWorkerSmoke(context.Background(), root, plan.Task{
+		Role: plan.RoleWorker, Files: []string{"hello.go"},
+	}, time.Minute)
+	if strings.Contains(sr.Command, "-short") || strings.Contains(sr.Command, "-race") ||
+		strings.Contains(sr.Command, "-count") {
+		t.Fatalf("go vet command must not carry test flags: %q", sr.Command)
+	}
+	if !strings.HasPrefix(sr.Command, "go vet ") {
+		t.Fatalf("expected go vet smoke, got %q", sr.Command)
 	}
 }

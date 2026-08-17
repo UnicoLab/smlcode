@@ -1,0 +1,86 @@
+api_version: blocks/v1
+kind: pipeline
+id: cpp
+name: C/C++ Engineering Pipeline
+description: >-
+  SLMCode pipeline tuned for C/C++ (CMake/Make) — build/CTest gates with a
+  C/C++-aware tester and worker.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: cpp
+tags: [c, cpp, cmake, make, pipeline]
+icon: "⚙️"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - architect
+    - clarify
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Prepare
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: Design
+      steps: [architect, clarify, plan, split]
+    - id: build
+      label: Build
+      steps: [coord, execute, learn]
+    - id: verify
+      label: Verify
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load skills & knowledge packs, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: explorer, when: auto, label: Explore, tip: Discover headers & build files, group: prepare}
+    docs: {agent: docs, when: auto, label: Docs, tip: Read README & build conventions, group: prepare}
+    architect: {agent: architect, when: auto, label: Architect, tip: Shape modules & headers, group: design}
+    clarify: {agent: "", when: auto, label: Clarify, tip: Lock PRD / ask decisions, group: design}
+    plan: {agent: planner, when: always, label: Plan, tip: Write the execution plan, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: cpp-worker, when: always, label: Execute, tip: Workers implement + review, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture lessons mid-run, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Fill placeholders / flag gaps, group: verify}
+    test: {agent: cpp-tester, when: always, label: Test, tip: cmake build + ctest, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: cpp-worker
+    reviewer: reviewer
+    corrector: corrector
+    max_waves: 2
+  slots:
+    - id: cpp-quality-gate
+      agent: cpp-tester
+      title: C/C++ quality reminder
+      before: execute
+      when: always
+      persist_to: scratch
+      fail_mode: continue
+      input: |
+        Before implementing, remember the C/C++ quality bar:
+        - cmake --build build (or make)
+        - ctest --test-dir build (when present)
+        Do NOT run pytest / go test / npm test.
+        Query:
+        {{query}}

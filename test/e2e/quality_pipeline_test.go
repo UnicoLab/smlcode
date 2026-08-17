@@ -81,6 +81,9 @@ func TestLiveQualityGreenfieldPython(t *testing.T) {
 	cfg.MaxRetries = 2
 	cfg.TaskTimeout = 18 * time.Minute
 	cfg.CompactMode = true
+	cfg.EscalateAsk = "auto" // don't block on HITL in CI
+	cfg.ContinueAsk = "auto" // don't block on HITL in CI
+	cfg.AutoApprove = true   // skip plan/shell/clarify waits
 	cfg.ResolveAPIKey()
 	if cfg.APIKey == "" {
 		t.Fatal("oMLX api key not resolved from ~/.omlx/settings.json")

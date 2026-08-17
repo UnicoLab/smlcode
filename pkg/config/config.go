@@ -137,6 +137,9 @@ type Config struct {
 	Mode string `yaml:"mode" json:"mode"`
 	// Specialist role id when Mode=specialist (worker, explorer, …)
 	Specialist string `yaml:"specialist" json:"specialist"`
+	// DynamicPipeline runs the composer specialist first to assemble a
+	// task-specific pipeline (phases, team, tools, skills) before executing.
+	DynamicPipeline bool `yaml:"dynamic_pipeline" json:"dynamic_pipeline"`
 	// PinnedSkills are always loaded (in addition to @skill: refs / matching).
 	PinnedSkills []string `yaml:"pinned_skills" json:"pinned_skills"`
 
@@ -291,12 +294,16 @@ func Default(root string) *Config {
 		root, _ = os.Getwd()
 	}
 	return &Config{
-		Root:                  root,
-		Provider:              DefaultProvider,
-		Endpoint:              DefaultEndpoint,
-		Model:                 DefaultModel,
-		Backend:               BackendSLMCode,
-		Mode:                  ModeFull,
+		Root:     root,
+		Provider: DefaultProvider,
+		Endpoint: DefaultEndpoint,
+		Model:    DefaultModel,
+		Backend:  BackendSLMCode,
+		Mode:     ModeFull,
+		// Dynamic pipeline is on by default: the composer assembles a
+		// task-specific pipeline (phases, team, tools, skills) per run. Disable
+		// via config `dynamic_pipeline: false` or `slmcode run --no-dynamic`.
+		DynamicPipeline:       true,
 		Temperature:           0.2,
 		MaxTokens:             4096,
 		MaxRetries:            DefaultMaxRetries,
@@ -663,6 +670,7 @@ type Patch struct {
 	Backend                *string                  `json:"backend,omitempty"`
 	Mode                   *string                  `json:"mode,omitempty"`
 	Specialist             *string                  `json:"specialist,omitempty"`
+	DynamicPipeline        *bool                    `json:"dynamic_pipeline,omitempty"`
 	PinnedSkills           *[]string                `json:"pinned_skills,omitempty"`
 	Temperature            *float64                 `json:"temperature,omitempty"`
 	MaxTokens              *int                     `json:"max_tokens,omitempty"`
@@ -771,6 +779,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.Specialist != nil {
 		c.Specialist = strings.TrimSpace(*p.Specialist)
+	}
+	if p.DynamicPipeline != nil {
+		c.DynamicPipeline = *p.DynamicPipeline
 	}
 	if p.PinnedSkills != nil {
 		c.PinnedSkills = append([]string{}, (*p.PinnedSkills)...)

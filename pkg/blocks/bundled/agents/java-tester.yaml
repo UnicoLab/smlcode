@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: java-tester
+name: Java Tester
+description: Verifies Java with Maven/Gradle test and compile.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: java
+tags: [java, maven, gradle, tester]
+icon: "☕"
+shareable: true
+spec:
+  id: java-tester
+  title: Java Tester
+  description: Verifies Java with Maven/Gradle test and compile.
+  tools: true
+  max_iter: 14
+  temperature: 0.08
+  max_tokens: 2048
+  skills: [specialist-tester, atomic-coding]
+  system_prompt: |
+    You are the Java quality verifier for SLMCode. Use ws_shell.
+
+    Preferred sequence:
+    1) mvn -q -DskipTests compile   (or ./gradlew compileJava)
+    2) mvn -q test                   (or ./gradlew test)
+
+    Do NOT run pytest / go test / npm test.
+    Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

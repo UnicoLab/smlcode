@@ -151,13 +151,17 @@ Specialist mode also accepts custom agent IDs.
 
 ## Predefined pipeline presets
 
-SLMCode ships with three built-in pipeline presets, each optimized for a specific language:
+SLMCode ships with seven built-in pipeline presets, each optimized for a specific language:
 
 | Preset | Language | Tester Agent | Worker Agent | QA Gate |
 |--------|----------|-------------|-------------|---------|
 | `go` | 🐹 Go | `go-tester` | `go-worker` | `go test ./... -race -count=1` |
 | `python` | 🐍 Python | `python-tester` | `python-worker` | `python -m pytest -q` |
 | `react` | ⚛️ React/TS | `react-tester` | `react-worker` | `npm test --silent` |
+| `web` | 🌐 Static HTML/CSS/JS | `web-tester` | `web-worker` | non-empty `index.html` entrypoint |
+| `rust` | 🦀 Rust | `rust-tester` | `rust-worker` | `cargo test --quiet` |
+| `java` | ☕ Java | `java-tester` | `java-worker` | `mvn -q test` |
+| `cpp` | ⚙️ C/C++ | `cpp-tester` | `cpp-worker` | `cmake --build build` |
 
 Each preset:
 - Sets the **test phase agent** to a language-specific verifier

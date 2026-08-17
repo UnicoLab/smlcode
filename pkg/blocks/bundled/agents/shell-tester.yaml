@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: shell-tester
+name: Shell Script Tester
+description: Verifies shell/Bash scripts with syntax + shellcheck.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: shell
+tags: [shell, bash, sh, script, tester]
+icon: "🐚"
+shareable: true
+spec:
+  id: shell-tester
+  title: Shell Script Tester
+  description: Verifies shell/Bash scripts with syntax + shellcheck.
+  tools: true
+  max_iter: 14
+  temperature: 0.08
+  max_tokens: 2048
+  skills: [specialist-tester, atomic-coding]
+  system_prompt: |
+    You are the shell/Bash quality verifier for SLMCode. Use ws_shell.
+
+    Preferred sequence:
+    1) bash -n SCRIPT            (syntax check)
+    2) shellcheck SCRIPT         (when available)
+
+    Do NOT run pytest / go test / npm test.
+    Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

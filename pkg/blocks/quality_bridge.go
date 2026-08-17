@@ -6,51 +6,42 @@ import (
 	"strings"
 )
 
-// ResolveQAGateCommand returns the QA gate from the active pack or auto-detect.
-// Falls back to empty when no quality block matches (caller uses legacy detect).
-func ResolveQAGateCommand(projectRoot, workspaceRoot, activePack string) string {
+// resolveQualityBlock returns the quality block that should drive this
+// workspace. It prefers the active pack's quality block ONLY when that block
+// still detects in the workspace — otherwise it falls back to auto-detection so
+// a stale active_pack (e.g. "python" left over from a prior run) never forces a
+// mismatched gate (pytest on a Go/JS/HTML project) onto the current task.
+func resolveQualityBlock(projectRoot, workspaceRoot, activePack string) *QualityBlock {
 	reg, err := Load(projectRoot)
 	if err != nil || reg == nil {
-		return ""
+		return nil
 	}
 	if activePack != "" {
 		if pack, ok := reg.GetPack(activePack); ok && pack.Spec.Quality != "" {
-			if q, ok := reg.GetQuality(pack.Spec.Quality); ok {
-				if gate := q.PrimaryQAGate(); gate != "" {
-					return adaptPythonQAGate(workspaceRoot, gate)
-				}
+			if q, ok := reg.GetQuality(pack.Spec.Quality); ok && q.DetectsIn(workspaceRoot) {
+				return q
 			}
 		}
-		if q, ok := reg.GetQuality(activePack); ok {
-			if gate := q.PrimaryQAGate(); gate != "" {
-				return adaptPythonQAGate(workspaceRoot, gate)
-			}
+		if q, ok := reg.GetQuality(activePack); ok && q.DetectsIn(workspaceRoot) {
+			return q
 		}
 	}
-	if q := reg.DetectQuality(workspaceRoot); q != nil {
-		return adaptPythonQAGate(workspaceRoot, q.PrimaryQAGate())
+	return reg.DetectQuality(workspaceRoot)
+}
+
+// ResolveQAGateCommand returns the QA gate from the active pack or auto-detect.
+// Falls back to empty when no quality block matches (caller uses legacy detect).
+func ResolveQAGateCommand(projectRoot, workspaceRoot, activePack string) string {
+	q := resolveQualityBlock(projectRoot, workspaceRoot, activePack)
+	if q == nil {
+		return ""
 	}
-	return ""
+	return adaptPythonQAGate(workspaceRoot, q.PrimaryQAGate())
 }
 
 // ResolveSmokeCommand returns the post-worker / project smoke from quality packs.
 func ResolveSmokeCommand(projectRoot, workspaceRoot, activePack string) string {
-	reg, err := Load(projectRoot)
-	if err != nil || reg == nil {
-		return ""
-	}
-	var q *QualityBlock
-	if activePack != "" {
-		if pack, ok := reg.GetPack(activePack); ok && pack.Spec.Quality != "" {
-			q, _ = reg.GetQuality(pack.Spec.Quality)
-		}
-		if q == nil {
-			q, _ = reg.GetQuality(activePack)
-		}
-	}
-	if q == nil {
-		q = reg.DetectQuality(workspaceRoot)
-	}
+	q := resolveQualityBlock(projectRoot, workspaceRoot, activePack)
 	if q == nil {
 		return ""
 	}

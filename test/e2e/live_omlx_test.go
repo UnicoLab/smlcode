@@ -22,7 +22,8 @@ func TestLiveOMLXPipeline(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\n\nfunc Hello() string { return \"hi\" }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module hello\n\ngo 1.22\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package hello\n\nfunc Hello() string { return \"hi\" }\n"), 0o644)
 
 	cfg := config.Default(root)
 	cfg.Verbose = true
@@ -31,6 +32,9 @@ func TestLiveOMLXPipeline(t *testing.T) {
 	cfg.MaxParallel = 2
 	cfg.MaxRetries = 2
 	cfg.TaskTimeout = 10 * time.Minute
+	cfg.EscalateAsk = "auto" // don't block on HITL in CI
+	cfg.ContinueAsk = "auto" // don't block on HITL in CI
+	cfg.AutoApprove = true   // skip plan/shell/clarify waits
 	if m := os.Getenv("SLMCODE_MODEL"); m != "" {
 		cfg.Model = m
 	}

@@ -59,6 +59,7 @@ export interface Config {
   backend: string;
   mode: string;
   specialist: string;
+  dynamic_pipeline: boolean;
   pinned_skills: string[];
   temperature: number;
   max_tokens: number;
@@ -192,6 +193,7 @@ export interface MCPStatus {
 export interface RunEvent {
   phase: string;
   kind: string;
+  level?: 'info' | 'warning' | 'error' | 'success' | 'problem' | string;
   message: string;
   task_id?: string;
   agent?: string;

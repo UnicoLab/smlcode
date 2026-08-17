@@ -195,6 +195,7 @@ func configCmd() *cobra.Command {
 			cli.KeyVal("backend", c.Backend)
 			cli.KeyVal("mode", c.Mode)
 			cli.KeyVal("specialist", c.Specialist)
+			cli.KeyVal("dynamic_pipeline", fmt.Sprintf("%v", c.DynamicPipeline))
 			cli.KeyVal("pinned_skills", strings.Join(c.PinnedSkills, ", "))
 			cli.KeyVal("think_passes", fmt.Sprintf("%d", c.ThinkPasses))
 			cli.KeyVal("max_parallel", fmt.Sprintf("%d", c.MaxParallel))
@@ -243,6 +244,8 @@ func configCmd() *cobra.Command {
 				if v != "" {
 					c.Mode = config.ModeSpecialist
 				}
+			case "dynamic_pipeline", "dynamic", "composer":
+				c.DynamicPipeline = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || strings.EqualFold(v, "on")
 			case "pinned_skills", "skills":
 				if v == "" || v == "-" {
 					c.PinnedSkills = nil

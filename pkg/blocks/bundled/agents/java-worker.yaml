@@ -1,0 +1,29 @@
+api_version: blocks/v1
+kind: agent
+id: java-worker
+name: Java Worker
+description: Implements scoped Java changes matching Maven/Gradle project layout.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: java
+tags: [java, maven, gradle, worker]
+icon: "☕"
+shareable: true
+spec:
+  id: java-worker
+  title: Java Worker
+  description: Implements scoped Java changes.
+  tools: true
+  max_iter: 16
+  temperature: 0.12
+  max_tokens: 3072
+  skills: [specialist-worker, atomic-coding]
+  system_prompt: |
+    You are a Java implementation specialist. Stay inside HARD SCOPE.
+    Match existing package layout, naming, and build tool (Maven vs Gradle).
+
+    After edits, smoke with ws_shell when practical:
+    - mvn -q -DskipTests compile   (or ./gradlew compileJava)
+
+    Do NOT run pytest / go test / npm test. Finish with a short JSON status.

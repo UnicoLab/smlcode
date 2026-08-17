@@ -86,6 +86,10 @@ type Orchestrator struct {
 	waveCounter int
 	pipe        *pipeline.Config // config-driven phases / slots / loop agents
 
+	// dynamicSkills maps specialist roles → composer-selected skills for the
+	// in-flight dynamic-pipeline run. Guarded by mu.
+	dynamicSkills map[string][]string
+
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
@@ -457,9 +461,16 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	return o.runSLM(ctx, runID, query, skillPack, start)
 }
 
-// skillPackFor builds a role-targeted skill pack (pins + @skill + agent defaults).
+// skillPackFor builds a role-targeted skill pack (pins + @skill + agent defaults
+// + composer-selected skills for this role).
 func (o *Orchestrator) skillPackFor(role, query string) string {
-	list := o.skills.ResolveForRun(query, role, o.cfg.PinnedSkills, 4)
+	pins := append([]string{}, o.cfg.PinnedSkills...)
+	if o != nil {
+		o.mu.Lock()
+		pins = append(pins, o.dynamicSkills[strings.ToLower(strings.TrimSpace(role))]...)
+		o.mu.Unlock()
+	}
+	list := o.skills.ResolveForRun(query, role, pins, 4)
 	return skills.RenderPack(list, 1600)
 }
 
@@ -709,6 +720,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		return nil, r.err
 	}
 
+	// 2a Dynamic pipeline composition (optional): the composer specialist assembles
+	// a task-specific pipeline (phases, team, tools, skills) before design/plan.
+	if o.cfg.DynamicPipeline {
+		o.composeDynamicPipeline(ctx, query, inventory, exploreOut, archOut)
+	}
+
 	// 2b+2c Architect + Clarify run in parallel after explore.
 	// Both depend on explore output but not on each other.
 	var interview plan.ScopeInterview
@@ -875,6 +892,14 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 				splitPrompt += " Python: src/ or flat layout. Acceptance: pytest -q, python -m py_compile, python main.py. NEVER use go test."
 			case "TypeScript", "JavaScript":
 				splitPrompt += " JS/TS: src/ or app/. Acceptance: npm test, npx tsc --noEmit, npm run build. NEVER use pytest or go test."
+			case "Rust":
+				splitPrompt += " Rust: src/ + Cargo.toml. Acceptance: cargo build --quiet, cargo test --quiet. NEVER use pytest/go test/npm test."
+			case "Java":
+				splitPrompt += " Java: src/main/java + pom.xml (or build.gradle). Acceptance: mvn -q test / ./gradlew test, mvn -q -DskipTests compile. NEVER use pytest/go test/npm test."
+			case "C++", "C/Make":
+				splitPrompt += " C/C++: CMakeLists.txt (or Makefile). Acceptance: cmake --build build / make, ctest when present. NEVER use pytest/go test/npm test."
+			case "HTML":
+				splitPrompt += " Static web (vanilla HTML/CSS/JS): produce an index.html entrypoint plus style.css/script.js (or one self-contained index.html). Acceptance: index.html exists & is usable in a browser; asset refs resolve; node --check each .js. NEVER use pytest, go test, or npm test (no package.json)."
 			default:
 				splitPrompt += " Use language-appropriate acceptance criteria and real project file paths."
 			}
@@ -1221,7 +1246,7 @@ func (o *Orchestrator) resolveExecRole(role string) string {
 // go-tester → tester, python-worker → worker, react-tester → tester.
 func genericRoleFor(role string) string {
 	r := strings.TrimSpace(strings.ToLower(role))
-	for _, p := range []string{"go-", "python-", "react-", "js-", "ts-"} {
+	for _, p := range []string{"go-", "python-", "react-", "js-", "ts-", "rust-", "java-", "cpp-", "c-", "web-", "shell-", "bash-", "node-"} {
 		if strings.HasPrefix(r, p) {
 			r = strings.TrimPrefix(r, p)
 			break
@@ -1615,8 +1640,33 @@ func (o *Orchestrator) emitAgent(phase, agent, taskID, msg, scope, output string
 }
 
 func (o *Orchestrator) emitFull(phase, kind, agent, taskID, msg, scope, output string) {
+	o.emitFullL(phase, kind, agent, taskID, msg, scope, output, stream.LevelInfo)
+}
+
+// emitWarn/emitError/emitSuccess/emitProblem surface severity-tagged events so
+// the Studio live log can render problems/warnings distinctly from progress.
+func (o *Orchestrator) emitWarn(phase, msg, taskID string) {
+	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelWarn)
+}
+
+func (o *Orchestrator) emitError(phase, msg, taskID string) {
+	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelError)
+}
+
+func (o *Orchestrator) emitSuccess(phase, msg, taskID string) {
+	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelSuccess)
+}
+
+func (o *Orchestrator) emitProblem(phase, msg, taskID string) {
+	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelProblem)
+}
+
+func (o *Orchestrator) emitFullL(phase, kind, agent, taskID, msg, scope, output, level string) {
 	if kind == "" {
 		kind = stream.KindPhase
+	}
+	if level == "" {
+		level = stream.LevelInfo
 	}
 	if o.cfg.Verbose {
 		prefix := phase
@@ -1634,7 +1684,7 @@ func (o *Orchestrator) emitFull(phase, kind, agent, taskID, msg, scope, output s
 	}
 	if o.onEvent != nil {
 		o.onEvent(Event{
-			Phase: phase, Kind: kind, Message: msg, TaskID: taskID,
+			Phase: phase, Kind: kind, Level: level, Message: msg, TaskID: taskID,
 			Agent: agent, Scope: scope, Output: stream.Truncate(output, 2000),
 			Time: time.Now(),
 		})
@@ -2054,11 +2104,22 @@ func (o *Orchestrator) langHint() string {
 	}
 	switch detectProjectLang(root) {
 	case "Go":
-		return "Project language: Go. Use ONLY: go build ./..., go vet ./..., go test ./... -race -count=1. NEVER run pytest, pip, or python commands."
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			return "Project language: Go. Use ONLY: go build ./..., go vet ./..., go test ./... -race -count=1. NEVER run pytest, pip, or python commands."
+		}
+		return "Project language: Go (single-file, no go.mod). Use gofmt -e FILE for syntax; do NOT run go build/go test without a go.mod."
 	case "Python":
 		return "Project language: Python. Use: python -m pytest -q (or uv run pytest -q), python -m py_compile. NEVER run go test."
 	case "TypeScript", "JavaScript":
 		return "Project language: JS/TS. Use: npm test, npx tsc --noEmit, npm run build. NEVER run pytest or go test."
+	case "Rust":
+		return "Project language: Rust. Use: cargo build --quiet, cargo test --quiet, cargo clippy. NEVER run pytest, go test, or npm test."
+	case "Java":
+		return "Project language: Java. Use: mvn -q test (or ./gradlew test), mvn -q -DskipTests compile. NEVER run pytest, go test, or npm test."
+	case "C++", "C/Make":
+		return "Project language: C/C++. Use: cmake --build build (or make), ctest (when present). NEVER run pytest, go test, or npm test."
+	case "HTML":
+		return "Project language: static web (HTML/CSS/JS, no build step). Verify: a usable index.html exists, asset refs resolve, node --check each .js. NEVER run pytest, go test, or npm test unless package.json exists."
 	default:
 		return "Use the project's actual language for verification (inspect files first; never assume Python)."
 	}
@@ -2073,6 +2134,14 @@ func detectProjectLang(root string) string {
 	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
 		return "Go"
+	}
+	// Lone .go files (single-file/script) still indicate Go.
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+				return "Go"
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
 		return "Python"
@@ -2093,11 +2162,32 @@ func detectProjectLang(root string) string {
 	if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err == nil {
 		return "Rust"
 	}
+	if _, err := os.Stat(filepath.Join(root, "pom.xml")); err == nil {
+		return "Java"
+	}
+	if _, err := os.Stat(filepath.Join(root, "build.gradle")); err == nil {
+		return "Java"
+	}
+	if _, err := os.Stat(filepath.Join(root, "build.gradle.kts")); err == nil {
+		return "Java"
+	}
 	if _, err := os.Stat(filepath.Join(root, "Makefile")); err == nil {
 		return "C/Make"
 	}
 	if _, err := os.Stat(filepath.Join(root, "CMakeLists.txt")); err == nil {
 		return "C++"
+	}
+	// Static browser project (HTML entrypoint, no build marker files).
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm") {
+				return "HTML"
+			}
+		}
 	}
 	return ""
 }

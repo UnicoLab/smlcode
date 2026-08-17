@@ -95,6 +95,52 @@ Pipeline: react  | Agents: react-worker, react-tester   | Quality: react
 - **Tester**: `npm run lint` → `tsc --noEmit` → `npm test` → `npm run build`
 - **QA Gate**: `npm test --silent`
 
+### 🌐 Static Web (HTML/CSS/JS)
+
+```
+Pipeline: web  | Agents: web-worker, web-tester   | Quality: web
+```
+
+- **Pipeline**: Static-browser-aware with `web-tester` agent
+- **Worker**: Always produces a usable `index.html` entrypoint + referenced assets
+- **Tester**: Verifies a non-empty HTML entrypoint, resolved asset refs, `node --check` each `.js`
+- **QA Gate**: non-empty `.html` entrypoint exists (no pytest / npm test forced)
+
+### 🦀 Rust
+
+```
+Pipeline: rust  | Agents: rust-worker, rust-tester   | Quality: rust
+```
+
+- **Worker**: cargo module-aware, smokes with `cargo build --quiet`
+- **Tester**: `cargo build` → `cargo test` → `cargo clippy` (optional)
+- **QA Gate**: `cargo test --quiet`
+
+### ☕ Java
+
+```
+Pipeline: java  | Agents: java-worker, java-tester   | Quality: java
+```
+
+- **Worker**: Maven/Gradle-aware, smokes with `mvn -q -DskipTests compile`
+- **Tester**: `mvn -q test` (or `./gradlew test`)
+- **QA Gate**: `mvn -q test`
+
+### ⚙️ C/C++
+
+```
+Pipeline: cpp  | Agents: cpp-worker, cpp-tester   | Quality: cpp
+```
+
+- **Worker**: CMake/Make-aware, smokes with `cmake --build build`
+- **Tester**: `cmake --build build` → `ctest` (when present)
+- **QA Gate**: `cmake --build build`
+
+### 🐚 Shell (agents only)
+
+`shell-worker` / `shell-tester` — for Bash/shell scripts (`bash -n` + `shellcheck`).
+No standalone pack; the generic pipeline selects them when the workspace is shell.
+
 ---
 
 ## CLI Commands

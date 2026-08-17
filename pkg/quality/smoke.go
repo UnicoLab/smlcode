@@ -115,6 +115,12 @@ func RunPostWorkerSmoke(ctx context.Context, root string, t plan.Task, timeout t
 	// (go test on a package with no tests is wasteful; go vet is faster and still catches errors).
 	if projLang == "go" && strings.Contains(cmd, "go test") && !hasGoTestFiles(root) {
 		cmd = strings.Replace(cmd, "go test", "go vet", 1)
+		// go vet has no -short/-race/-count flags — strip test-only flags so the
+		// rewritten command stays valid ("go vet . -short" is a hard error).
+		cmd = strings.ReplaceAll(cmd, " -short", "")
+		cmd = strings.ReplaceAll(cmd, " -race", "")
+		cmd = strings.ReplaceAll(cmd, " -count=1", "")
+		cmd = strings.TrimSpace(cmd)
 	}
 
 	return RunSmoke(ctx, root, cmd, timeout)
@@ -151,6 +157,16 @@ func DetectPostWorkerCommand(root string, files []string) string {
 		return "python -m py_compile " + strings.Join(quoted, " ")
 	}
 	if len(goFiles) > 0 {
+		// No go.mod → a single-file/script Go layout. `go test`/`go vet` need a
+		// module and would false-fail ("go.mod file not found"), so use a
+		// module-free syntax check instead (gofmt -e exits 2 on parse errors).
+		if !fileExists(filepath.Join(root, "go.mod")) {
+			quoted := make([]string, 0, len(goFiles))
+			for _, g := range goFiles {
+				quoted = append(quoted, shellQuote(g))
+			}
+			return "gofmt -e " + strings.Join(quoted, " ")
+		}
 		pkgs := map[string]bool{}
 		for _, g := range goFiles {
 			dir := filepath.Dir(g)
@@ -220,11 +236,25 @@ func DetectProjectCommand(root string) string {
 	if fileExists(filepath.Join(root, "Cargo.toml")) {
 		return "cargo test --quiet"
 	}
+	if fileExists(filepath.Join(root, "pom.xml")) {
+		return "mvn -q test"
+	}
+	if fileExists(filepath.Join(root, "build.gradle")) || fileExists(filepath.Join(root, "build.gradle.kts")) {
+		return "./gradlew test"
+	}
+	if fileExists(filepath.Join(root, "CMakeLists.txt")) {
+		return "cmake --build build"
+	}
 	if fileExists(filepath.Join(root, "Makefile")) {
 		data, _ := os.ReadFile(filepath.Join(root, "Makefile"))
 		if bytes.Contains(data, []byte("\ntest:")) || bytes.Contains(data, []byte("\ntest :")) {
 			return "make test"
 		}
+	}
+	if hasHTMLSources(root) {
+		// Static browser project: gate on a usable, non-empty HTML entrypoint
+		// (no pytest / npm test / go test for plain HTML/CSS/JS).
+		return `test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"`
 	}
 	return ""
 }
@@ -528,6 +558,10 @@ func DetectProjectLanguage(root string) string {
 	if fileExists(filepath.Join(root, "go.mod")) {
 		return "go"
 	}
+	// A lone .go file without a go.mod is still Go (single-file/script layout).
+	if hasGoSources(root) {
+		return "go"
+	}
 	if fileExists(filepath.Join(root, "package.json")) {
 		return "javascript"
 	}
@@ -542,6 +576,14 @@ func DetectProjectLanguage(root string) string {
 	if fileExists(filepath.Join(root, "Cargo.toml")) {
 		return "rust"
 	}
+	if fileExists(filepath.Join(root, "pom.xml")) ||
+		fileExists(filepath.Join(root, "build.gradle")) ||
+		fileExists(filepath.Join(root, "build.gradle.kts")) {
+		return "java"
+	}
+	if fileExists(filepath.Join(root, "CMakeLists.txt")) {
+		return "cpp"
+	}
 	if fileExists(filepath.Join(root, "Makefile")) {
 		// Makefile is ambiguous; check for secondary markers.
 		if fileExists(filepath.Join(root, "go.mod")) {
@@ -550,6 +592,9 @@ func DetectProjectLanguage(root string) string {
 		if hasPythonSources(root) {
 			return "python"
 		}
+	}
+	if hasHTMLSources(root) {
+		return "html"
 	}
 	return ""
 }
@@ -638,6 +683,43 @@ func hasPythonSources(root string) bool {
 			continue
 		}
 		if !e.IsDir() && strings.HasSuffix(name, ".py") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHTMLSources(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || name == "node_modules" {
+			continue
+		}
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGoSources(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" {
+			continue
+		}
+		if !e.IsDir() && strings.HasSuffix(name, ".go") {
 			return true
 		}
 	}

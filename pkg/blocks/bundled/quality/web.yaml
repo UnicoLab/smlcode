@@ -1,0 +1,35 @@
+api_version: blocks/v1
+kind: quality
+id: web
+name: Static Web (HTML/CSS/JS) Quality Pack
+description: >-
+  Verify pack for static browser projects (vanilla HTML/CSS/JS, no build step).
+  Detects .html/.htm/.css/.js files and gates on a usable, non-empty HTML
+  entrypoint rather than a test runner — so a plain "build an HTML game" request
+  never gets pytest or npm test forced on it.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: html
+tags: [web, html, css, javascript, static, vanilla, pack]
+icon: "🌐"
+shareable: true
+spec:
+  detect:
+    files: [index.html, index.htm]
+    extensions: [.html, .htm, .css, .js]
+    priority: 25
+  test:
+    - cmd: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
+      label: html-entrypoint-present
+  smoke: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
+  qa_gate: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
+  safe_prefixes:
+    - node --check
+    - node
+  tester_hints: |
+    Static browser project. Verify with:
+    - An index.html (or other .html) entrypoint exists and is non-empty.
+    - Every <script src> / <link rel=stylesheet> reference resolves on disk.
+    - node --check on each .js file (skip ESM false failures: import/export).
+    Do NOT run pytest / go test / npm test unless package.json exists.

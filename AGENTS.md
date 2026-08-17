@@ -292,7 +292,7 @@ Slots are user-inserted agent calls around phase anchors:
 
 ---
 
-## 5. Built-in Specialists (15 total)
+## 5. Built-in Specialists (16 total)
 
 Defined in `pkg/agents/prompts.go` + `pkg/agents/factory.go`:
 
@@ -314,8 +314,37 @@ Defined in `pkg/agents/prompts.go` + `pkg/agents/factory.go`:
 | `placeholder` | Fill placeholders / flag gaps | Yes | 14 |
 | `escalate` | Escalate arbitrator | No | 1 |
 | `memory` | Distill MEMORY.md | No | 2 |
+| `composer` | Assemble a task-specific dynamic pipeline | No | 3 |
 
 Custom agents can override any built-in by placing same-id YAML in `.slmcode/agents/`.
+
+### 5.1 Dynamic Pipeline Composition (`composer`)
+
+The **composer** specialist turns the static pipeline into a per-task pipeline.
+When `dynamic_pipeline` is enabled, the composer runs right after context/explore
+and emits a structured `Composition` that the engine applies before plan/split:
+
+- **Phases** — which of the 16 phases run for this task (disabled phases become
+  `when: never`, `enabled: false`; `init`/`skills`/`done` stay structural).
+- **Team** — which specialist is bound to each phase (coding roles have tools,
+  planning roles don't), plus per-role skills.
+- **Execute loop** — `default_role`, `reviewer`, `corrector`, `max_waves`.
+- **Slots** — extra insertable specialists around phase anchors.
+
+The composed pipeline is saved to `.slmcode/pipeline.dynamic.yaml` (inspection
+only — `pipeline.yaml` is never touched) and reported live via the `compose`
+phase. A weak/unparsable composition is non-fatal: the run falls back to the
+static pipeline.
+
+Enable via config, CLI, or Studio schema:
+
+```bash
+slmcode config set dynamic_pipeline true
+slmcode run --dynamic "add JWT auth"
+```
+
+Model lives in `pkg/composer` (`Composition`, `Parse`, `Apply`); the composer
+prompt is `PromptComposer` in `pkg/agents/prompts.go`.
 
 ---
 
@@ -563,6 +592,7 @@ The `/files` page shows a full recursive directory tree. Features:
 
 | Version | Key Changes |
 |---------|------------|
+| 0.14.0 | **Dynamic pipeline composition** — new `composer` specialist assembles a task-specific pipeline (phases, team, tools, skills, execute loop, slots) via `dynamic_pipeline` config / `--dynamic` CLI / Studio schema; composed pipeline saved to `.slmcode/pipeline.dynamic.yaml`; `pkg/composer` (`Composition`/`Parse`/`Apply`); non-fatal fallback to static pipeline on weak/unparsable composition |
 | 0.13.0 | Block CRUD API + Studio GUI editing (blocks/pipelines/agents/skills), agent blocks as runtime roles, default_role honored, phase gating + archived phases, language-pinned prompts (no pytest in Go runs), pipeline validation hardening, blocks new/edit/delete CLI, HTTP tests for block API, live user feedback (GUI + TUI `/feedback`, injected into next agent call), skills↔agents cross-linking in Studio, update-available notifications (TUI banner, `update --check`, `version`, `GET /api/update`, Studio banner) |
 | 0.12.2 | e2e test fixes for Vite bundle output, CI builds Studio UI before Go, Homebrew formula sync, docs refresh |
 | 0.12.1 | Vite/React/TypeScript Studio UI (`web/` + `make ui-react`), `fast_model` dual-model routing, smarter QA gate, improved tester |

@@ -17,6 +17,11 @@ import (
 
 const FileName = "pipeline.yaml"
 
+// DynamicFileName is the on-disk destination for a composer-assembled pipeline.
+// Kept separate from pipeline.yaml so dynamic composition never clobbers the
+// user's chosen static pipeline.
+const DynamicFileName = "pipeline.dynamic.yaml"
+
 // When constants for phase/slot activation.
 const (
 	WhenAlways = "always"
@@ -117,6 +122,11 @@ func Path(slmDir string) string {
 	return filepath.Join(slmDir, FileName)
 }
 
+// PathDynamic returns <slmDir>/pipeline.dynamic.yaml.
+func PathDynamic(slmDir string) string {
+	return filepath.Join(slmDir, DynamicFileName)
+}
+
 // Load reads pipeline.yaml or returns Default() when missing.
 func Load(slmDir string) (*Config, error) {
 	path := Path(slmDir)
@@ -141,6 +151,19 @@ func Load(slmDir string) (*Config, error) {
 
 // Save writes pipeline.yaml (creates parent dirs).
 func Save(slmDir string, cfg *Config) error {
+	return saveFile(slmDir, FileName, cfg,
+		"# SLMCode pipeline — phases, loop agents, and insertable slots.\n"+
+			"# Edit via Studio → Pipeline or PUT /api/pipeline\n\n")
+}
+
+// SaveDynamic writes a composer-assembled pipeline to pipeline.dynamic.yaml.
+func SaveDynamic(slmDir string, cfg *Config) error {
+	return saveFile(slmDir, DynamicFileName, cfg,
+		"# SLMCode dynamic pipeline — assembled by the composer specialist for this task.\n"+
+			"# Inspect-only: reruns regenerate it. Your pipeline.yaml is unchanged.\n\n")
+}
+
+func saveFile(slmDir, fileName string, cfg *Config, header string) error {
 	if cfg == nil {
 		return fmt.Errorf("nil pipeline config")
 	}
@@ -155,9 +178,7 @@ func Save(slmDir string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	header := "# SLMCode pipeline — phases, loop agents, and insertable slots.\n" +
-		"# Edit via Studio → Pipeline or PUT /api/pipeline\n\n"
-	return os.WriteFile(Path(slmDir), append([]byte(header), data...), 0o644)
+	return os.WriteFile(filepath.Join(slmDir, fileName), append([]byte(header), data...), 0o644)
 }
 
 // Normalize fills defaults and cleans fields.

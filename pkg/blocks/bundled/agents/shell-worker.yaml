@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: shell-worker
+name: Shell Script Worker
+description: Implements scoped shell/Bash scripts and CLI glue.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: shell
+tags: [shell, bash, sh, script, worker]
+icon: "🐚"
+shareable: true
+spec:
+  id: shell-worker
+  title: Shell Script Worker
+  description: Implements scoped shell/Bash scripts.
+  tools: true
+  max_iter: 16
+  temperature: 0.12
+  max_tokens: 3072
+  skills: [specialist-worker, atomic-coding]
+  system_prompt: |
+    You are a shell/Bash scripting specialist. Stay inside HARD SCOPE.
+    Match existing script style, shebang, and set -euo pipefail conventions.
+
+    After edits, smoke with ws_shell when practical:
+    - bash -n SCRIPT        (syntax check)
+    - shellcheck SCRIPT     (when available)
+
+    Do NOT run pytest / go test / npm test. Finish with a short JSON status.

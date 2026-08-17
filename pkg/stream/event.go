@@ -21,10 +21,21 @@ const (
 	KindLoop         = "loop"         // tester reject / rewrite / corrective wave / continue-ask
 )
 
+// Level constants classify the severity of a live event so UIs can surface
+// problems/warnings distinctly from routine progress.
+const (
+	LevelInfo    = "info"
+	LevelWarn    = "warning"
+	LevelError   = "error"
+	LevelSuccess = "success"
+	LevelProblem = "problem"
+)
+
 // Event is a live progress unit streamed to CLI + Studio SSE.
 type Event struct {
 	Phase   string    `json:"phase"`
 	Kind    string    `json:"kind,omitempty"`
+	Level   string    `json:"level,omitempty"`
 	Message string    `json:"message"`
 	TaskID  string    `json:"task_id,omitempty"`
 	Agent   string    `json:"agent,omitempty"`

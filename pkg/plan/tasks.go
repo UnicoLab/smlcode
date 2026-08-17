@@ -518,6 +518,13 @@ func ParseTesterJSON(raw string) TesterResult {
 		}
 		eTrue := hasPassedTrue(extracted)
 		eFalse := hasPassedFalse(extracted)
+		// Trust an explicit passed:true anywhere in the finalize (SLMs often wrap
+		// the JSON in prose or emit it just outside the parsed object), as long as
+		// the object did not carry an explicit passed:false.
+		if !r.Passed && !eFalse && hasPassedTrue(raw) {
+			r.Passed = true
+			r.Failures = nil
+		}
 		if !r.Passed && len(r.Failures) == 0 && eFalse {
 			if s := firstLine(r.Summary); s != "" {
 				r.Failures = []string{s}

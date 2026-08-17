@@ -76,6 +76,17 @@ func RealQueries() []RealQuery {
 			ExpectFiles: []string{"main.py"},
 			Timeout:     10 * time.Minute,
 		},
+		{
+			ID:          "static-web-battleship",
+			Query:       "Generate an HTML + JavaScript battleship game that works in the browser.",
+			Description: "Playable vanilla HTML/CSS/JS game with an index.html entrypoint.",
+			// The harness must inject an index.html entrypoint even when a weak
+			// splitter only emitted .js assets (regression: "pile of .js, no HTML").
+			HarnessMustContain: []string{"index.html"},
+			ExpectFiles:        []string{"index.html"},
+			ExpectSubstr:       map[string]string{"index.html": "<html"},
+			Timeout:            12 * time.Minute,
+		},
 	}
 }
 
@@ -222,6 +233,18 @@ func weakSplitterTasks(rq RealQuery) []plan.Task {
 				Description: "Create main.py with FastAPI app",
 				Files:       []string{"main.py"},
 				Acceptance:  "main.py exists"},
+		}
+	case "static-web-battleship":
+		// The exact failure mode: a splitter that emitted .js files but no HTML.
+		return []plan.Task{
+			{ID: "T1", Title: "Create game logic", Role: plan.RoleWorker,
+				Description: "Create the game logic",
+				Files:       []string{"game.js"},
+				Acceptance:  "game.js exists"},
+			{ID: "T2", Title: "Create board renderer", Role: plan.RoleWorker,
+				Description: "Create the board renderer",
+				Files:       []string{"board.js"},
+				Acceptance:  "board.js exists"},
 		}
 	default:
 		return []plan.Task{

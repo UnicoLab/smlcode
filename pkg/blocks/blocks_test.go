@@ -3,6 +3,7 @@ package blocks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -381,6 +382,51 @@ func TestResolveQAGateCommand(t *testing.T) {
 	)
 	if gateMissing == "" {
 		t.Log("note: builtins resolved even from missing root")
+	}
+}
+
+func TestResolveQAGateCommandStaleActivePackDoesNotForcePython(t *testing.T) {
+	// A stale active_pack (e.g. "python" left over from a prior run) must not
+	// force pytest onto a static-HTML workspace.
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "index.html"),
+		[]byte("<!doctype html><html><body>hi</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gate := ResolveQAGateCommand(tmp, tmp, "python")
+	if gate == "" {
+		t.Fatal("expected a QA gate for HTML workspace")
+	}
+	if strings.Contains(gate, "pytest") || strings.Contains(gate, "python") {
+		t.Fatalf("stale python active_pack leaked pytest onto HTML workspace: %q", gate)
+	}
+}
+
+func TestDetectQualitySkipsVenvAndPicksWeb(t *testing.T) {
+	reg, err := Load(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "index.html"),
+		[]byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A venv full of Python files must not make the workspace look like Python.
+	venv := filepath.Join(tmp, ".venv")
+	if err := os.MkdirAll(venv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "site.py"),
+		[]byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := reg.DetectQuality(tmp)
+	if q == nil {
+		t.Fatal("expected web quality detected")
+	}
+	if q.ID != "web" {
+		t.Fatalf("detected quality = %q, want web (venv must not force python)", q.ID)
 	}
 }
 

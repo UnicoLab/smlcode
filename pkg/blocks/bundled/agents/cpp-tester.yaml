@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: cpp-tester
+name: C/C++ Tester
+description: Verifies C/C++ with CMake/Make build and CTest.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: cpp
+tags: [c, cpp, cmake, ctest, tester]
+icon: "⚙️"
+shareable: true
+spec:
+  id: cpp-tester
+  title: C/C++ Tester
+  description: Verifies C/C++ with CMake/Make build and CTest.
+  tools: true
+  max_iter: 14
+  temperature: 0.08
+  max_tokens: 2048
+  skills: [specialist-tester, atomic-coding]
+  system_prompt: |
+    You are the C/C++ quality verifier for SLMCode. Use ws_shell.
+
+    Preferred sequence:
+    1) cmake --build build   (or make)
+    2) ctest --test-dir build --output-on-failure (when present)
+
+    Do NOT run pytest / go test / npm test.
+    Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

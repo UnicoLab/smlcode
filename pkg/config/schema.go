@@ -43,9 +43,11 @@ func Schema() []FieldSchema {
 			Enum: []string{"", "off", "local", "omlx", "openai", "anthropic", "openrouter"}},
 		{Key: "active_stack", Type: "string", Label: "Active stack", Group: "stacks", Patchable: true},
 		{Key: "active_pack", Type: "string", Label: "Active pack", Group: "blocks", Patchable: true,
-			Description: "Language/domain building-block pack id (go, python, react, …)"},
+			Description: "Language/domain building-block pack id (go, python, react, web, …)"},
 		{Key: "active_pipeline", Type: "string", Label: "Active pipeline block", Group: "blocks", Patchable: true,
 			Description: "Named pipeline preset id from the blocks catalog"},
+		{Key: "dynamic_pipeline", Type: "bool", Label: "Dynamic pipeline", Group: "harness", Patchable: true,
+			Description: "Run the composer specialist first to assemble a task-specific pipeline (phases, team, tools, skills). Default: on"},
 	}
 }
 

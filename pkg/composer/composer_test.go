@@ -1,0 +1,152 @@
+package composer
+
+import (
+	"testing"
+
+	"github.com/UnicoLab/slmcode/pkg/pipeline"
+)
+
+func TestParseNormalizes(t *testing.T) {
+	raw := `{
+		"summary": "  Build the thing ",
+		"strategy": "keep it small",
+		"phases": [
+			{"id": "EXPLORE", "enabled": true},
+			{"id": "plan", "agent": "PLANNER", "enabled": true},
+			{"id": "plan", "agent": "planner", "enabled": true}
+		],
+		"execute": {"default_role": "WORKER", "max_waves": -1},
+		"team": [
+			{"role": "WORKER", "skills": [" Atomic-Coding ", "atomic-coding"]},
+			{"role": "worker", "skills": ["other"]}
+		]
+	}`
+	c, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Summary != "Build the thing" {
+		t.Fatalf("summary=%q", c.Summary)
+	}
+	if c.Execute.DefaultRole != "worker" {
+		t.Fatalf("default_role=%q", c.Execute.DefaultRole)
+	}
+	if c.Execute.MaxWaves != 0 {
+		t.Fatalf("max_waves=%d", c.Execute.MaxWaves)
+	}
+	if len(c.Phases) != 2 {
+		t.Fatalf("phases=%d (expected dedupe to 2)", len(c.Phases))
+	}
+	if len(c.Team) != 1 || len(c.Team[0].Skills) != 1 {
+		t.Fatalf("team=%+v", c.Team)
+	}
+}
+
+func TestParseInvalid(t *testing.T) {
+	if _, err := Parse("not json at all"); err == nil {
+		t.Fatal("expected error for non-JSON")
+	}
+}
+
+func TestApplyDisablesOmittedPhases(t *testing.T) {
+	comp := Composition{
+		Summary: "tiny edit",
+		Phases: []PhaseChoice{
+			{ID: "context", Enabled: true},
+			{ID: "plan", Agent: "planner", Enabled: true},
+			{ID: "split", Agent: "splitter", Enabled: true},
+			{ID: "execute", Agent: "worker", Enabled: true},
+			{ID: "test", Agent: "tester", Enabled: true},
+		},
+		Execute: ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector", MaxWaves: 1},
+	}
+	cfg, err := Apply(comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Omitted non-structural phase must be disabled.
+	ps := cfg.Phases["explore"]
+	if ps.EnabledOrDefault() || ps.When != pipeline.WhenNever {
+		t.Fatalf("explore should be disabled, got when=%q enabled=%v", ps.When, ps.Enabled)
+	}
+	if cfg.PhaseEnabled("explore") {
+		t.Fatal("explore should be disabled")
+	}
+
+	// Enabled phase keeps its default heuristic unless forced.
+	if !cfg.PhaseEnabled("plan") || cfg.Phases["plan"].Agent != "planner" {
+		t.Fatalf("plan binding wrong: %+v", cfg.Phases["plan"])
+	}
+
+	if cfg.Execute.DefaultRole != "worker" || cfg.Execute.Reviewer != "reviewer" || cfg.Execute.Corrector != "corrector" {
+		t.Fatalf("execute loop not applied: %+v", cfg.Execute)
+	}
+	if cfg.Execute.MaxWaves != 1 {
+		t.Fatalf("max_waves=%d", cfg.Execute.MaxWaves)
+	}
+}
+
+func TestApplyPreservesStructuralPhases(t *testing.T) {
+	comp := Composition{Summary: "x", Phases: []PhaseChoice{{ID: "execute", Agent: "worker", Enabled: true}}}
+	cfg, err := Apply(comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"init", "skills", "done"} {
+		if !cfg.PhaseEnabled(id) {
+			t.Fatalf("structural phase %s must stay enabled", id)
+		}
+	}
+}
+
+func TestApplyForcedWhenAndSlots(t *testing.T) {
+	comp := Composition{
+		Summary: "force explore",
+		Phases: []PhaseChoice{
+			{ID: "explore", Enabled: true, When: pipeline.WhenAlways},
+			{ID: "execute", Agent: "go-worker", Enabled: true},
+		},
+		Slots: []pipeline.Slot{
+			{ID: "extra-check", Agent: "tester", After: "execute", Title: "extra check"},
+		},
+	}
+	cfg, err := Apply(comp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PhaseWhen("explore") != pipeline.WhenAlways {
+		t.Fatalf("explore when=%q", cfg.PhaseWhen("explore"))
+	}
+	if cfg.Phases["execute"].Agent != "go-worker" {
+		t.Fatalf("execute agent=%q", cfg.Phases["execute"].Agent)
+	}
+	if len(cfg.Slots) != 1 {
+		t.Fatalf("slots=%d", len(cfg.Slots))
+	}
+	if got := cfg.SlotsAt("execute", "after"); len(got) != 1 {
+		t.Fatalf("after slots=%d", len(got))
+	}
+}
+
+func TestSkillsByRoleAndAgentSet(t *testing.T) {
+	comp := Composition{
+		Phases:  []PhaseChoice{{ID: "execute", Agent: "worker", Enabled: true}, {ID: "test", Agent: "tester", Enabled: true}},
+		Execute: ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector"},
+		Team: []TeamMember{
+			{Role: "worker", Skills: []string{"atomic-coding", "go-modules"}},
+			{Role: "tester", Skills: []string{"atomic-coding"}},
+		},
+		Slots: []pipeline.Slot{{ID: "lint", Agent: "go-tester", After: "test"}},
+	}
+	byRole := comp.SkillsByRole()
+	if len(byRole["worker"]) != 2 || byRole["worker"][0] != "atomic-coding" {
+		t.Fatalf("skills=%+v", byRole)
+	}
+	agents := comp.AgentSet()
+	for _, want := range []string{"worker", "tester", "reviewer", "corrector", "go-tester"} {
+		if !agents[want] {
+			t.Fatalf("missing agent %q in %v", want, agents)
+		}
+	}
+}

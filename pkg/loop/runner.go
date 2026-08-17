@@ -960,13 +960,13 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 				review.Issues = []string{"stub/placeholder code detected — replace with real implementation"}
 			case acceptFail:
 				review.Summary = "rejected: acceptance smoke failed"
-				review.Issues = []string{"whitelisted acceptance command failed — make pytest/go test/main.py exit 0"}
+				review.Issues = []string{"whitelisted acceptance command failed — make the acceptance command exit 0"}
 			case smokeFail:
 				review.Summary = "rejected: deterministic smoke failed"
-				review.Issues = []string{"Go ran py_compile/go test on focus files and it failed — corrector must fix"}
+				review.Issues = []string{"deterministic smoke command failed — corrector must fix"}
 			case smokeMissing:
 				review.Summary = "rejected: coding task missing deterministic smoke pass"
-				review.Issues = []string{"run py_compile / go test / node --check via tools before claiming done"}
+				review.Issues = []string{"run the project's language smoke (py_compile / go test / node --check) before claiming done"}
 			default:
 				review.Summary = "rejected: ws_shell failure evidence in worker output"
 				review.Issues = []string{"worker ran a command that failed — fix before approve"}
@@ -1234,6 +1234,34 @@ func detectProjectLangHint(root string) string {
 		return "Project language: Python. Use python -m pytest -q (or uv run pytest -q) — never go test."
 	case has("package.json"):
 		return "Project language: JS/TS. Use npm test / npx tsc --noEmit / npm run build — never pytest or go test."
+	case has("Cargo.toml"):
+		return "Project language: Rust. Use cargo build --quiet / cargo test --quiet — never pytest/go test/npm test."
+	case has("pom.xml"), has("build.gradle"), has("build.gradle.kts"):
+		return "Project language: Java. Use mvn -q test (or ./gradlew test) — never pytest/go test/npm test."
+	case has("CMakeLists.txt"):
+		return "Project language: C/C++. Use cmake --build build (or make) and ctest — never pytest/go test/npm test."
+	}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, ".go") {
+				return "Project language: Go (single-file, no go.mod). Use gofmt -e FILE for syntax; never pytest/go test without a go.mod."
+			}
+		}
+	}
+	if entries, err := os.ReadDir(root); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm") {
+				return "Project language: static web (HTML/CSS/JS, no build step). Verify a usable index.html exists and asset refs resolve; node --check each .js. Never run pytest/go test/npm test (no package.json)."
+			}
+		}
 	}
 	return ""
 }

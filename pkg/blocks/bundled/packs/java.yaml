@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: java
+name: Java Language Pack
+description: >-
+  Ready-to-use Java pack — pipeline, quality (Maven/Gradle compile + test), and
+  Java-aware worker/tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: java
+tags: [java, maven, gradle, pack, marketplace]
+icon: "☕"
+shareable: true
+spec:
+  pipeline: java
+  quality: java
+  agents: [java-worker, java-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: java-tester
+  override_worker: java-worker

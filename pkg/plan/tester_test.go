@@ -80,3 +80,20 @@ func TestParseTesterJSONEmptyForcesFailure(t *testing.T) {
 		t.Fatalf("malformed must fail: %+v", r3)
 	}
 }
+
+func TestParseTesterJSONProsePassedTrueOutsideJSON(t *testing.T) {
+	// An SLM may emit a valid non-tester JSON object but state passed:true in prose.
+	r := ParseTesterJSON("Observation: python main.py --help\nusage: main.py\n" +
+		`{"status":"done","summary":"ok"} passed: true`)
+	if !r.Passed {
+		t.Fatalf("prose passed:true should pass with shell evidence: %+v", r)
+	}
+}
+
+func TestParseTesterJSONProsePassedFalseStillFails(t *testing.T) {
+	// Explicit passed:false in the JSON must not be overridden by stray prose.
+	r := ParseTesterJSON(`{"passed":false,"summary":"nope"} passed: true`)
+	if r.Passed {
+		t.Fatalf("explicit passed:false must win over prose: %+v", r)
+	}
+}

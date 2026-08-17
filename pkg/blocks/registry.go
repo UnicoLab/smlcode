@@ -237,6 +237,19 @@ func (r *Registry) GetAgent(id string) (*AgentBlock, bool) {
 	return b, ok
 }
 
+// DetectsIn reports whether a quality block's detect spec matches the workspace.
+// Used to avoid applying a stale active_pack (e.g. "python" from a previous run)
+// onto a workspace whose files no longer match that language.
+func (b *QualityBlock) DetectsIn(workspaceRoot string) bool {
+	if b == nil || workspaceRoot == "" {
+		return false
+	}
+	if b.Spec.Detect.Priority < 0 {
+		return false
+	}
+	return scoreDetect(workspaceRoot, b.Spec.Detect) > 0
+}
+
 // DetectQuality picks the best quality pack for a workspace root.
 func (r *Registry) DetectQuality(workspaceRoot string) *QualityBlock {
 	if r == nil || workspaceRoot == "" {
@@ -294,7 +307,12 @@ func scoreDetect(root string, d DetectSpec) int {
 			if de != nil {
 				name = de.Name()
 			}
-			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".slmcode" {
+			// Skip dependency/cache dirs so a stray .venv or node_modules never
+			// causes a mismatched quality pack (e.g. python) to be auto-selected.
+			switch {
+			case name == ".git", name == "node_modules", name == "vendor", name == ".slmcode",
+				name == "__pycache__", name == ".tox", name == ".mypy_cache", name == ".pytest_cache",
+				name == ".venv", name == "venv", strings.HasPrefix(name, ".venv-"):
 				return filepath.SkipDir
 			}
 			return nil

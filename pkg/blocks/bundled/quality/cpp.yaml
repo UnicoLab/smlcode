@@ -1,0 +1,37 @@
+api_version: blocks/v1
+kind: quality
+id: cpp
+name: C/C++ Quality Pack
+description: >-
+  C/C++ verify pack — CMake/Make build + test (CTest), no pytest/go/npm leakage.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: cpp
+tags: [c, cpp, cmake, make, ctest, test]
+icon: "⚙️"
+shareable: true
+spec:
+  detect:
+    files: [CMakeLists.txt, Makefile]
+    extensions: [.c, .cpp, .cc, .cxx, .h, .hpp]
+    priority: 14
+  build:
+    - cmd: cmake --build build
+      label: cmake build
+  test:
+    - cmd: ctest --test-dir build --output-on-failure
+      label: ctest
+  smoke: cmake --build build
+  qa_gate: cmake --build build
+  safe_prefixes:
+    - cmake
+    - ctest
+    - make
+    - gcc
+    - g++
+    - clang
+  tester_hints: |
+    Prefer: cmake --build build, then ctest --test-dir build (when present).
+    Plain Makefile projects: make (and make test when a test target exists).
+    Do NOT run pytest / go test / npm test.

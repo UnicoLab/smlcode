@@ -1,0 +1,44 @@
+api_version: blocks/v1
+kind: quality
+id: rust
+name: Rust Quality Pack
+description: >-
+  Production Rust verify pack — cargo fmt/clippy, cargo test, cargo build.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: rust
+tags: [rust, cargo, clippy, test, lint]
+icon: "🦀"
+shareable: true
+spec:
+  detect:
+    files: [Cargo.toml]
+    extensions: [.rs]
+    priority: 16
+  format:
+    - cmd: cargo fmt --check
+      label: cargo fmt
+      optional: true
+  lint:
+    - cmd: cargo clippy -- -D warnings
+      label: clippy
+      optional: true
+  test:
+    - cmd: cargo test --quiet
+      label: cargo test
+  build:
+    - cmd: cargo build --quiet
+      label: cargo build
+  smoke: cargo build --quiet
+  qa_gate: cargo test --quiet
+  safe_prefixes:
+    - cargo test
+    - cargo build
+    - cargo run
+    - cargo clippy
+    - cargo fmt
+  tester_hints: |
+    Prefer: cargo test --quiet, then cargo build --quiet.
+    Lint: cargo clippy -- -D warnings when available.
+    Do NOT run pytest / go test / npm test.

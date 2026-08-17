@@ -629,24 +629,20 @@ func TestBlocksResolveQAGateCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// From pack.
-	gate := blocks.ResolveQAGateCommand(root, root, "go")
-	if gate == "" {
-		t.Fatal("ResolveQAGateCommand(go) returned empty")
+	// An empty workspace must NOT have a language gate forced by a stale
+	// active_pack (regression: "python" active_pack forced pytest onto non-Python
+	// workspaces, and "go" forced go test onto JS/HTML workspaces).
+	if g := blocks.ResolveQAGateCommand(root, root, "go"); g != "" {
+		t.Errorf("empty workspace + go active_pack = %q, want empty (no forced gate)", g)
+	}
+	if g := blocks.ResolveQAGateCommand(root, root, "python"); g != "" {
+		t.Errorf("empty workspace + python active_pack = %q, want empty (no forced pytest)", g)
+	}
+	if g := blocks.ResolveQAGateCommand(root, root, "react"); g != "" {
+		t.Errorf("empty workspace + react active_pack = %q, want empty (no forced gate)", g)
 	}
 
-	gatePy := blocks.ResolveQAGateCommand(root, root, "python")
-	if gatePy == "" {
-		t.Fatal("ResolveQAGateCommand(python) returned empty")
-	}
-
-	gateReact := blocks.ResolveQAGateCommand(root, root, "react")
-	if gateReact == "" {
-		t.Fatal("ResolveQAGateCommand(react) returned empty")
-	}
-
-	// From auto-detect (no active pack).
-	// Create a go workspace.
+	// A workspace that actually matches a pack resolves its gate.
 	tmpGo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpGo, "go.mod"), []byte("module example\n\ngo 1.23\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -654,6 +650,17 @@ func TestBlocksResolveQAGateCommand(t *testing.T) {
 	gateDetect := blocks.ResolveQAGateCommand(tmpGo, tmpGo, "")
 	if gateDetect == "" {
 		t.Fatal("ResolveQAGateCommand(detect go) returned empty")
+	}
+	if g := blocks.ResolveQAGateCommand(tmpGo, tmpGo, "python"); strings.Contains(g, "pytest") {
+		t.Fatalf("python active_pack forced pytest onto Go workspace: %q", g)
+	}
+
+	tmpPy := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpPy, "main.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if g := blocks.ResolveQAGateCommand(tmpPy, tmpPy, "python"); !strings.Contains(g, "pytest") {
+		t.Fatalf("python workspace gate = %q, want pytest", g)
 	}
 
 	// Unknown pack.
@@ -668,14 +675,13 @@ func TestBlocksResolveQAGateCommand(t *testing.T) {
 		t.Log("note: builtins resolved even from missing root")
 	}
 
-	// Smoke command.
-	smoke := blocks.ResolveSmokeCommand(root, root, "go")
+	// Smoke command: a matching workspace resolves; an empty/mismatched one does not.
+	smoke := blocks.ResolveSmokeCommand(tmpGo, tmpGo, "go")
 	if smoke == "" {
-		t.Fatal("ResolveSmokeCommand(go) returned empty")
+		t.Fatal("ResolveSmokeCommand(go) returned empty for Go workspace")
 	}
-	smokePy := blocks.ResolveSmokeCommand(root, root, "python")
-	if smokePy == "" {
-		t.Fatal("ResolveSmokeCommand(python) returned empty")
+	if s := blocks.ResolveSmokeCommand(root, root, "python"); s != "" {
+		t.Errorf("empty workspace + python smoke = %q, want empty", s)
 	}
 
 	// Safe prefixes.

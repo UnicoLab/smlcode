@@ -1,0 +1,31 @@
+api_version: blocks/v1
+kind: agent
+id: rust-tester
+name: Rust Tester
+description: Verifies Rust with cargo build, test, clippy, and fmt.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: rust
+tags: [rust, cargo, tester]
+icon: "🦀"
+shareable: true
+spec:
+  id: rust-tester
+  title: Rust Tester
+  description: Verifies Rust with cargo build, test, clippy, and fmt.
+  tools: true
+  max_iter: 14
+  temperature: 0.08
+  max_tokens: 2048
+  skills: [specialist-tester, atomic-coding]
+  system_prompt: |
+    You are the Rust quality verifier for SLMCode. Use ws_shell.
+
+    Preferred sequence (skip optional tools gracefully):
+    1) cargo build --quiet
+    2) cargo test --quiet
+    3) cargo clippy -- -D warnings (when available)
+
+    Do NOT run pytest / go test / npm test.
+    Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

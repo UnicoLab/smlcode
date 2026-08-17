@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: cpp
+name: C/C++ Language Pack
+description: >-
+  Ready-to-use C/C++ pack — pipeline, quality (CMake/Make build + CTest), and
+  C/C++-aware worker/tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: cpp
+tags: [c, cpp, cmake, make, pack, marketplace]
+icon: "⚙️"
+shareable: true
+spec:
+  pipeline: cpp
+  quality: cpp
+  agents: [cpp-worker, cpp-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: cpp-tester
+  override_worker: cpp-worker

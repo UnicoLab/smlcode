@@ -30,7 +30,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		}
 	}
 	if cmd == "" {
-		o.emit("test", "qa_gate: no auto test/smoke command — set qa_gate_command", "")
+		o.emitWarn("test", "qa_gate: no auto test/smoke command — set qa_gate_command", "")
 		return false
 	}
 	max := o.cfg.QAGateMaxRounds
@@ -44,8 +44,8 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		_ = o.store.Append(contextstore.DocScratch, "QA bootstrap",
 			fmt.Sprintf("cmd: %s\nok=%v\n\n%s", prep, sr.OK, truncate(sr.Output, 2000)))
 		if !sr.OK {
-			o.emitFull("test", stream.KindOutput, "qa", "", "qa_gate bootstrap warning", "",
-				truncate(sr.Output, 800))
+			o.emitFullL("test", stream.KindOutput, "qa", "", "qa_gate bootstrap warning", "",
+				truncate(sr.Output, 800), stream.LevelWarn)
 		}
 	}
 
@@ -64,7 +64,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 				br := quality.RunSmoke(ctx, o.cfg.Root, buildCmd, 30*time.Second)
 				if !br.OK {
 					// Build failed — this is a real issue, report it
-					o.emit("test", "qa_gate: build failed — "+truncate(br.Output, 300), "")
+					o.emitWarn("test", "qa_gate: build failed — "+truncate(br.Output, 300), "")
 				} else {
 					o.emit("test", "qa_gate: build OK, running full tests", "")
 				}
@@ -76,24 +76,24 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		// Check if failure is just "no test files" — skip gracefully
 		if !sr.OK && round == 1 && (strings.Contains(sr.Output, "no test files") ||
 			strings.Contains(sr.Output, "no Go files") || strings.Contains(sr.Output, "?\t")) {
-			o.emit("test", "qa_gate: no test files found — skipping gate (code compiles)", "")
+			o.emitWarn("test", "qa_gate: no test files found — skipping gate (code compiles)", "")
 			return false
 		}
 		if sr.OK {
 			_ = o.store.Append(contextstore.DocScratch, "QA gate",
 				fmt.Sprintf("GREEN round %d\n\n%s", round, truncate(sr.Output, 2000)))
-			o.emitFull("test", stream.KindAgentEnd, "qa", "", "qa_gate green", "", truncate(sr.Output, 800))
+			o.emitFullL("test", stream.KindAgentEnd, "qa", "", "qa_gate green", "", truncate(sr.Output, 800), stream.LevelSuccess)
 			return false
 		}
 		failText := strings.TrimSpace(sr.Output + "\n" + sr.Summary)
 		_ = o.store.Append(contextstore.DocScratch, "QA gate failure",
 			fmt.Sprintf("round %d/%d\ncmd: %s\n\n%s", round, max, cmd, truncate(failText, 4000)))
-		o.emitFull("test", stream.KindOutput, "qa", "",
-			fmt.Sprintf("qa_gate failed round %d/%d", round, max), "", truncate(failText, 1500))
+		o.emitFullL("test", stream.KindOutput, "qa", "",
+			fmt.Sprintf("qa_gate failed round %d/%d", round, max), "", truncate(failText, 1500), stream.LevelError)
 
 		if round == max {
-			o.emitFull("test", stream.KindAgentEnd, "qa", "",
-				fmt.Sprintf("qa_gate still red after %d rounds", max), "", "")
+			o.emitFullL("test", stream.KindAgentEnd, "qa", "",
+				fmt.Sprintf("qa_gate still red after %d rounds", max), "", "", stream.LevelError)
 			if board != nil {
 				for i := range board.Tasks {
 					if board.Tasks[i].Column == plan.ColDone {

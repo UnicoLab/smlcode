@@ -65,8 +65,15 @@ func runCmd() *cobra.Command {
 			mode, _ := cmd.Flags().GetString("mode")
 			agent, _ := cmd.Flags().GetString("agent")
 			pinSkills, _ := cmd.Flags().GetStringSlice("skill")
+			dynamic, _ := cmd.Flags().GetBool("dynamic")
+			noDynamic, _ := cmd.Flags().GetBool("no-dynamic")
 			if mode != "" {
 				h.Config.Mode = mode
+			}
+			if dynamic {
+				h.Config.DynamicPipeline = true
+			} else if noDynamic {
+				h.Config.DynamicPipeline = false
 			}
 			if agent != "" {
 				h.Config.Specialist = agent
@@ -89,6 +96,9 @@ func runCmd() *cobra.Command {
 			cli.KeyVal("mode", h.Config.Mode)
 			if h.Config.Mode == config.ModeSpecialist {
 				cli.KeyVal("specialist", h.Config.Specialist)
+			}
+			if h.Config.DynamicPipeline {
+				cli.KeyVal("dynamic", "composer assembles a task-specific pipeline")
 			}
 			cli.KeyVal("think", fmt.Sprintf("%d passes", h.Config.ThinkPasses))
 			cli.KeyVal("parallel", fmt.Sprintf("%d", h.Config.MaxParallel))
@@ -125,6 +135,8 @@ func runCmd() *cobra.Command {
 	}
 	cmd.Flags().String("mode", "", "full | specialist (overrides config)")
 	cmd.Flags().String("agent", "", "run a single specialist (worker, explorer, …)")
+	cmd.Flags().Bool("dynamic", false, "run the composer specialist to assemble a task-specific pipeline (default: on)")
+	cmd.Flags().Bool("no-dynamic", false, "disable the dynamic pipeline (use the static pipeline)")
 	cmd.Flags().StringSlice("skill", nil, "pin/load skill by name (repeatable); also accepts @skill:name in query")
 	return cmd
 }

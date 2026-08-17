@@ -359,6 +359,14 @@ export default function LiveView() {
       {(ctx?.config?.active_pack || ctx?.config?.active_pipeline || ctx?.config?.active_stack || running) && (
         <div className="px-4 py-1.5 glass-alt border-b border-gray-100 dark:border-gray-700 flex items-center gap-3 flex-wrap">
           <span className="text-[10px] text-gray-400 font-medium">Active:</span>
+          {ctx?.config?.dynamic_pipeline !== undefined && (
+            <span
+              className={ctx.config.dynamic_pipeline ? 'badge-brand text-[10px]' : 'badge-neutral text-[10px]'}
+              title={ctx.config.dynamic_pipeline ? 'Dynamic pipeline: the composer assembles a task-specific pipeline' : 'Static pipeline'}
+            >
+              {ctx.config.dynamic_pipeline ? '🎼 dynamic' : '⚙️ static'}
+            </span>
+          )}
           {ctx?.config?.active_pack && (
             <span className="badge-brand text-[10px]">📦 {ctx.config.active_pack}</span>
           )}

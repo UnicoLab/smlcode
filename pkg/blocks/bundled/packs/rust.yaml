@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: rust
+name: Rust Language Pack
+description: >-
+  Ready-to-use Rust pack — pipeline, quality (cargo build/test/clippy), and
+  Rust-aware worker/tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: rust
+tags: [rust, cargo, pack, marketplace]
+icon: "🦀"
+shareable: true
+spec:
+  pipeline: rust
+  quality: rust
+  agents: [rust-worker, rust-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker]
+  pin_skills: true
+  override_tester: rust-tester
+  override_worker: rust-worker

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -120,8 +121,69 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 	for i := range tasks {
 		tasks[i].Normalize()
 	}
+	tasks = ensureHTMLEntrypoint(tasks, query)
+	// Collapse many worker tasks that all edit the SAME file set into one task.
+	// A splitter that emits T1..T6 all editing index.html causes endless
+	// "old_str not found" correction loops (each worker's context is stale after
+	// the previous edit) — one worker on one self-contained file is far cheaper.
+	if shouldCollapseSameFile(tasks) {
+		tasks = collapseToWorker(tasks, nil, query)
+	}
 	tasks = EnsureGreenfieldHarness(tasks, query)
 	return EnsureTesterTask(tasks, query)
+}
+
+// shouldCollapseSameFile reports whether every worker/deep task targets the exact
+// same non-empty file set (the pathological "pile of tasks on one file" shape).
+func shouldCollapseSameFile(tasks []Task) bool {
+	var files []string
+	workers := 0
+	for _, t := range tasks {
+		if t.Role != RoleWorker && t.Role != "deep" {
+			continue
+		}
+		workers++
+		cur := append([]string{}, t.Files...)
+		sort.Strings(cur)
+		if files == nil {
+			files = cur
+			continue
+		}
+		if strings.Join(files, "\x00") != strings.Join(cur, "\x00") {
+			return false
+		}
+	}
+	return workers >= 2 && len(files) > 0
+}
+
+// ensureHTMLEntrypoint fixes the "pile of .js files with no HTML" failure for
+// static-web queries: when the splitter emitted .js/.css assets but no .html
+// page, inject index.html into the first worker so the deliverable is loadable.
+func ensureHTMLEntrypoint(tasks []Task, query string) []Task {
+	if !isHTMLOrWebQuery(strings.ToLower(query)) {
+		return tasks
+	}
+	hasHTML, hasWebAsset := false, false
+	for _, t := range tasks {
+		for _, f := range t.Files {
+			switch strings.ToLower(filepath.Ext(f)) {
+			case ".html", ".htm":
+				hasHTML = true
+			case ".js", ".mjs", ".css":
+				hasWebAsset = true
+			}
+		}
+	}
+	if hasHTML || !hasWebAsset {
+		return tasks
+	}
+	for i := range tasks {
+		if tasks[i].Role == RoleWorker || tasks[i].Role == "deep" {
+			tasks[i].Files = uniq(append([]string{"index.html"}, tasks[i].Files...))
+			return tasks
+		}
+	}
+	return tasks
 }
 
 // EnsureTesterTask appends a final tester task for greenfield / multi-file code
@@ -182,8 +244,10 @@ func EnsureTesterTask(tasks []Task, query string) []Task {
 	tasks = append(tasks, Task{
 		ID:    id,
 		Title: "Verify with real execution",
-		Description: "Install deps if needed, then run pytest/go test or a Python smoke command via ws_shell. " +
-			"passed=true only when commands exit 0.",
+		Description: "Verify the deliverable with the project's ACTUAL language via ws_shell: " +
+			"Go → go build/vet/test; Python → pytest/py_compile; JS/TS → npm test/tsc; " +
+			"static web → index.html usable, asset refs resolve, node --check each .js. " +
+			"passed=true only when the checks exit 0.",
 		Role:       RoleTester,
 		Column:     ColReadyToDev,
 		DependsOn:  deps,
@@ -381,7 +445,32 @@ func InferCreateFiles(text string) []string {
 	if strings.Contains(lower, "pyproject") {
 		found = append(found, "pyproject.toml")
 	}
+	// Static web / browser requests always need an HTML entrypoint — otherwise
+	// a splitter can emit a pile of disconnected .js files with no page to load them.
+	if isHTMLOrWebQuery(lower) {
+		found = append(found, "index.html")
+		if !strings.Contains(lower, "single file") && !strings.Contains(lower, "one file") &&
+			!strings.Contains(lower, "self-contained") {
+			found = append(found, "style.css", "script.js")
+		}
+	}
 	return uniq(found)
+}
+
+// isHTMLOrWebQuery reports whether a query targets a static browser deliverable
+// (vanilla HTML/CSS/JS) as opposed to a Node/React/Go/Python program.
+func isHTMLOrWebQuery(lower string) bool {
+	htmlish := strings.Contains(lower, "html") || strings.Contains(lower, ".htm") ||
+		strings.Contains(lower, "web page") || strings.Contains(lower, "webpage") ||
+		strings.Contains(lower, "website") || strings.Contains(lower, "browser") ||
+		strings.Contains(lower, "frontend") || strings.Contains(lower, "front-end") ||
+		strings.Contains(lower, "vanilla js")
+	gameish := (strings.Contains(lower, "game") || strings.Contains(lower, "battleship") ||
+		strings.Contains(lower, "battle ship") || strings.Contains(lower, "puzzle") ||
+		strings.Contains(lower, "snake") || strings.Contains(lower, "tetris")) &&
+		(strings.Contains(lower, "js") || strings.Contains(lower, "javascript") ||
+			strings.Contains(lower, "html"))
+	return htmlish || gameish
 }
 
 func shouldCollapse(tasks []Task, query string) bool {

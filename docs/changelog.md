@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.14.0 — Dynamic Pipeline, Broad Language Support & Live Log Severity
+
+### Highlights
+- **Dynamic pipeline is now the default** — the `composer` specialist assembles a
+  task-specific pipeline (phases, team, tools, skills) before every run; disable via
+  `dynamic_pipeline: false`, `slmcode run --no-dynamic`, or the Studio Settings toggle.
+  The composer deterministically upgrades generic `worker`/`tester` to the matching
+  language specialist, enforces that `execute` + `test` always run, and falls back to a
+  safe generic pipeline for any unknown language.
+- **Six new language packs** — `web` (static HTML/CSS/JS), `rust`, `java`, `cpp`
+  (full pipeline + quality + worker/tester), plus `shell` worker/tester agents.
+  `DetectProjectLanguage`/`langHint`/splitter guidance now cover Go, Python, JS/TS,
+  Rust, Java, C/C++, HTML, and shell.
+- **Static-web deliverables are guaranteed** — HTML/browser/game queries always get an
+  `index.html` (or the splitter's chosen `.html`) entrypoint injected; a pile of
+  disconnected `.js` files with no page can no longer happen.
+- **QA gate is workspace-aware** — a stale `active_pack` (e.g. `python` from a prior
+  run) no longer forces pytest onto a Go/JS/HTML workspace; virtualenv/cache dirs are
+  skipped during quality detection; a lone `.go` file without `go.mod` uses a
+  module-free `gofmt -e` smoke, and the `go test`→`go vet` fast-path no longer emits
+  an invalid `-short` flag.
+- **Live log severity** — events now carry a `level` (`info|warning|error|success|problem`);
+  the Studio Event Log renders severity badges, colors, and a Problems filter with
+  error/warning/success counts.
+- **Tester finalize is more forgiving** — an explicit `passed:true` anywhere in the
+  finalize (not just inside the parsed JSON object) is now honored, reducing false
+  "missing passed:true" rejections.
+- **Same-file task collapse** — many worker tasks editing one self-contained file are
+  collapsed into a single worker (fixes the "7 tasks editing index.html" grind that
+  caused review/correction loops).
+- **Shell whitelist** extended for cargo/mvn/gradle/ctest/gcc/clang/shellcheck.
+
 ## v0.13.1 — 2026-08-10
 
 - Automate Homebrew formula checksum sync in the release pipeline

@@ -1,6 +1,6 @@
 # 🧩 Agents
 
-Fourteen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
+Sixteen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
 <div class="slm-banner" markdown>
 <span class="slm-banner__emoji">🧬</span>
@@ -32,6 +32,7 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `placeholder` | ✅ + `find_models` / `mcp_call` | status + gaps | Fill stubs / flag precise gaps 🩹 |
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
+| `composer` | — | pipeline JSON | Assemble a task-specific pipeline (dynamic_pipeline) 🎯 |
 
 !!! note "🧰 Coding tools"
     Coding agents share `ws_*` + `git_*` plus **`find_models`** (auth-gated catalog)

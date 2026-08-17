@@ -125,7 +125,7 @@ export default function SettingsPanel() {
             </div>
             <div>
               <h2 className="text-lg font-bold">Language Pack</h2>
-              <p className="text-sm text-gray-500">Switch between Go, Python, React pipelines in one click</p>
+              <p className="text-sm text-gray-500">Switch between Go, Python, React, Web, Rust, Java, and C/C++ pipelines in one click</p>
             </div>
           </div>
           <PackSelector
@@ -359,16 +359,18 @@ export default function SettingsPanel() {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {([
+              { key: 'dynamic_pipeline' as keyof ConfigPatch, label: 'Dynamic Pipeline (composer)', hint: 'Assemble a task-specific pipeline per run' },
               { key: 'qa_gate' as keyof ConfigPatch, label: 'QA Gate' },
               { key: 'quality_monitor' as keyof ConfigPatch, label: 'Quality Monitor' },
               { key: 'static_quality' as keyof ConfigPatch, label: 'Static Quality' },
               { key: 'thinking_budget' as keyof ConfigPatch, label: 'Thinking Budget' },
               { key: 'worker_critique' as keyof ConfigPatch, label: 'Worker Critique' },
               { key: 'post_worker_smoke' as keyof ConfigPatch, label: 'Post-Worker Smoke' },
-            ]).map(({ key, label }) => (
+            ]).map(({ key, label, hint }) => (
               <label
                 key={key}
                 className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer transition-colors"
+                title={hint}
               >
                 <input
                   type="checkbox"

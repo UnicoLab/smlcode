@@ -31,6 +31,7 @@ If you stuff the whole repo into context, don’t be surprised when the model na
 cmd/slmcode          CLI + embedded Studio (go:embed ui/)
 pkg/orchestrator     Pipeline runner + coordinator + sessions
 pkg/pipeline         Config-driven phases / slots / loop agents
+pkg/composer         Dynamic pipeline composition (Composition/Parse/Apply)
 pkg/blocks           Building block registry + bundled YAML presets
 pkg/loop             Parallel execute → review → correct
 pkg/agents           Specialist prompts + custom YAML factory

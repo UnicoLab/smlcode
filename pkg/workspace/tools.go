@@ -273,12 +273,16 @@ func RegisterCodingToolsOpts(reg *tools.ToolRegistry, root string, opts ToolOpts
 // ShellAsk is the pending interactive shell approval payload.
 type ShellAsk struct {
 	ID        string `json:"id"`
+	Kind      string `json:"kind,omitempty"`
 	Command   string `json:"command"`
+	TimeoutS  int    `json:"timeout_sec,omitempty"`
+	OnTimeout string `json:"on_timeout,omitempty"` // "deny"
 	CreatedAt string `json:"created_at"`
 }
 
 // ShellAnswer is the user decision for a pending shell command.
 type ShellAnswer struct {
+	AskID      string `json:"ask_id,omitempty"`
 	Decision   string `json:"decision"` // approve | deny
 	AnsweredAt string `json:"answered_at,omitempty"`
 }
@@ -1009,9 +1013,16 @@ func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool
 	if w.SlmDir == "" {
 		return false, fmt.Errorf("shell ask: no slm dir")
 	}
+	timeout := w.ShellAskTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	ask := ShellAsk{
 		ID:        fmt.Sprintf("shell-%d", time.Now().UnixNano()),
+		Kind:      "shell",
 		Command:   command,
+		TimeoutS:  int(timeout.Seconds()),
+		OnTimeout: "deny",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := hitl.WriteAsk(w.SlmDir, "shell", ask); err != nil {
@@ -1022,12 +1033,8 @@ func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool
 	if w.OnShellAsk != nil {
 		w.OnShellAsk(ask)
 	}
-	timeout := w.ShellAskTimeout
-	if timeout <= 0 {
-		timeout = 2 * time.Minute
-	}
 	var ans ShellAnswer
-	ok, err := hitl.WaitAnswers(ctx, w.SlmDir, "shell", timeout, &ans)
+	ok, err := hitl.WaitAnswersForID(ctx, w.SlmDir, "shell", ask.ID, timeout, &ans)
 	hitl.Clear(w.SlmDir, "shell")
 	if err != nil {
 		return false, err
@@ -1036,7 +1043,7 @@ func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool
 		return false, fmt.Errorf("shell ask timeout — command not executed: %s", command)
 	}
 	d := strings.ToLower(strings.TrimSpace(ans.Decision))
-	return d == "" || d == "approve" || d == "allow" || d == "yes" || d == "ok", nil
+	return d == "approve" || d == "allow" || d == "yes" || d == "ok", nil
 }
 
 func (w *Workspace) gitStatus(ctx context.Context, _ map[string]interface{}) (interface{}, error) {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -22,7 +23,26 @@ max_retries: 3
 max_context_kb: 64
 think_passes: 2
 qa_gate: true
+qa_gate_command: go test ./...
 write_guard: true
+shell_write_guard: true
+file_checkpoints: true
+require_smoke: true
+claims_gate: true
+over_edit_guard: true
+finalize_warn: true
+auto_text_tools: true
+scope_judge: true
+placeholder_pass: true
+dynamic_pipeline: true
+thinking_budget_tokens: 2048
+read_head_lines: 60
+shell_permission: ask
+shell_whitelist: true
+shell_allow: [go test, go build]
+react_compact: true
+react_compact_at_percent: 70
+task_timeout_sec: 300
 price_preset: deepseek
 context_compact_engine: auto
 llm_retry_count: 5
@@ -30,6 +50,8 @@ llm_retry_delay_ms: 250
 enabled_models:
   - deepseek-chat
   - deepseek-reasoner
+pinned_skills:
+  - atomic-coding
 session_event_log: true
 auto_refine: true
 model_profiles:
@@ -86,12 +108,25 @@ agents:
 	if !cfg.WriteGuard || !cfg.QAGate {
 		t.Fatalf("gates not applied")
 	}
+	if cfg.QAGateCommand != "go test ./..." || !cfg.ShellWriteGuard || !cfg.FileCheckpoints ||
+		!cfg.RequireSmoke || !cfg.ClaimsGate || !cfg.OverEditGuard || !cfg.FinalizeWarn ||
+		!cfg.AutoTextTools || !cfg.ScopeJudge || !cfg.PlaceholderPass || !cfg.DynamicPipeline {
+		t.Fatalf("production guards not applied: %+v", cfg)
+	}
+	if cfg.ThinkingBudgetTokens != 2048 || cfg.ReadHeadLines != 60 || cfg.ShellPermission != "ask" ||
+		!cfg.ShellWhitelist || len(cfg.ShellAllow) != 2 || !cfg.ReactCompact ||
+		cfg.ReactCompactAtPercent != 70 || cfg.TaskTimeout != 300*time.Second {
+		t.Fatalf("local tuning not applied: %+v", cfg)
+	}
 	if cfg.ContextCompactEngine != "auto" || cfg.LLMRetryCount != 5 || cfg.LLMRetryDelayMS != 250 {
 		t.Fatalf("compact/retry: engine=%s retry=%d delay=%d",
 			cfg.ContextCompactEngine, cfg.LLMRetryCount, cfg.LLMRetryDelayMS)
 	}
 	if len(cfg.EnabledModels) != 2 || cfg.EnabledModels[0] != "deepseek-chat" {
 		t.Fatalf("enabled_models: %v", cfg.EnabledModels)
+	}
+	if len(cfg.PinnedSkills) != 1 || cfg.PinnedSkills[0] != "atomic-coding" {
+		t.Fatalf("pinned_skills: %v", cfg.PinnedSkills)
 	}
 	if !cfg.AutoRefine || !cfg.SessionEventLog {
 		t.Fatalf("refine/events flags")

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 const (
@@ -97,5 +99,5 @@ func Save(m *Meta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0o644)
+	return atomicfile.Write(p, append(data, '\n'), 0o644)
 }

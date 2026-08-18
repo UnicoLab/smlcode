@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,11 +182,25 @@ func LoadCustomSpecs(dirs ...string) ([]CustomSpec, error) {
 func ReadCustomFile(path string) (CustomSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return CustomSpec{}, err
+		if !os.IsNotExist(err) {
+			return CustomSpec{}, err
+		}
+		data, err = os.ReadFile(atomicfile.BackupPath(path))
+		if err != nil {
+			return CustomSpec{}, err
+		}
 	}
 	var c CustomSpec
 	if err := yaml.Unmarshal(data, &c); err != nil {
-		return CustomSpec{}, err
+		backup, bakErr := os.ReadFile(atomicfile.BackupPath(path))
+		if bakErr != nil {
+			return CustomSpec{}, err
+		}
+		data = backup
+		c = CustomSpec{}
+		if err := yaml.Unmarshal(data, &c); err != nil {
+			return CustomSpec{}, err
+		}
 	}
 	if strings.TrimSpace(c.ID) == "" {
 		base := filepath.Base(path)
@@ -225,7 +240,7 @@ func WriteCustom(dir string, c CustomSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := atomicfile.WriteWithBackup(path, data, 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 //go:embed all:bundled
@@ -29,6 +31,6 @@ func MaterializeBundled(dest string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		return atomicfile.Write(target, data, 0o644)
 	})
 }

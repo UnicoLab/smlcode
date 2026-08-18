@@ -4,16 +4,28 @@ import "testing"
 
 func TestResolveModelProfileSizeBuckets(t *testing.T) {
 	p := ResolveModelProfile(DefaultModelProfiles(), "qwen2.5-coder:7b")
-	if p.ThinkingBudgetTokens != 2048 && p.MaxTokens != 2048 {
-		// 7b bucket or qwen prefix — either is fine; must be tighter than default 32b
-		if p.SkillTokenBudget > 300 {
-			t.Fatalf("expected lean 7b profile, got %+v", p)
-		}
+	if p.ThinkingBudgetTokens != 2048 || p.MaxTokens != 2048 {
+		t.Fatalf("expected 7b bucket to override qwen family defaults, got %+v", p)
 	}
 	p14 := ResolveModelProfile(DefaultModelProfiles(), "qwen2.5-coder:14b")
 	if p14.MaxTokens < p.MaxTokens && p.MaxTokens > 0 {
 		// 14b should allow at least as many tokens as 7b
 		t.Fatalf("14b=%+v 7b=%+v", p14, p)
+	}
+}
+
+func TestResolveModelProfileFamilyThenSize(t *testing.T) {
+	profiles := map[string]ModelProfile{
+		"default": {MaxTokens: 4096, SkillTokenBudget: 300, KnowledgeTokenBudget: 200, ThinkingBudgetTokens: 4096},
+		"qwen":    {SkillTokenBudget: 280, KnowledgeTokenBudget: 190},
+		"7b":      {MaxTokens: 1536, ThinkingBudgetTokens: 1024, SkillTokenBudget: 180},
+	}
+	p := ResolveModelProfile(profiles, "Qwen3-Coder-7B-Instruct")
+	if p.MaxTokens != 1536 || p.ThinkingBudgetTokens != 1024 || p.SkillTokenBudget != 180 {
+		t.Fatalf("size bucket should win budget fields: %+v", p)
+	}
+	if p.KnowledgeTokenBudget != 190 {
+		t.Fatalf("family fields should survive when size bucket omits them: %+v", p)
 	}
 }
 

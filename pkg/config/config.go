@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/authstore"
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,12 @@ const (
 	DefaultMaxContextKB = 16
 	DefaultTaskTimeout  = 12 * time.Minute
 	DefaultQAGateRounds = 1
+
+	DefaultClarifyTimeout     = 2 * time.Minute
+	DefaultPlanApproveTimeout = 2 * time.Minute
+	DefaultContinueAskTimeout = 2 * time.Minute
+	DefaultEscalateAskTimeout = 30 * time.Second
+	DefaultShellAskTimeout    = 2 * time.Minute
 )
 
 // MCPServerConfig is a thin read-only MCP server entry.
@@ -320,23 +327,23 @@ func Default(root string) *Config {
 		QAGate:                true,
 		QAGateMaxRounds:       DefaultQAGateRounds,
 		PostWorkerSmoke:       true,
-		ClarifyMode:           "auto",
-		ClarifyTimeout:        2 * time.Minute,
+		ClarifyMode:           "ask",
+		ClarifyTimeout:        DefaultClarifyTimeout,
 		ScopeJudge:            true,
-		PlanApprove:           "auto",
-		PlanApproveTimeout:    1 * time.Minute,
+		PlanApprove:           "ask",
+		PlanApproveTimeout:    DefaultPlanApproveTimeout,
 		PlaceholderPass:       true,
 		ContinueAsk:           "ask",
-		ContinueAskTimeout:    1 * time.Minute,
+		ContinueAskTimeout:    DefaultContinueAskTimeout,
 		EscalateAsk:           "ask",
-		EscalateAskTimeout:    30 * time.Second,
+		EscalateAskTimeout:    DefaultEscalateAskTimeout,
 		EscalateTimeoutAgent:  "", // auto-pick @escalate
 		Listen:                "127.0.0.1:7420",
 		ClaudeCodeBin:         "claude",
 		Permission:            "auto",
 		ShellPermission:       "allow",
 		ShellWhitelist:        true,
-		ShellAskTimeout:       2 * time.Minute,
+		ShellAskTimeout:       DefaultShellAskTimeout,
 		CompactMode:           true,
 		ContextCompact:        true,
 		ReactCompact:          true,
@@ -500,7 +507,7 @@ func readOmlxAPIKey() string {
 
 func Load(root string) (*Config, error) {
 	cfg := Default(root)
-	data, err := os.ReadFile(cfg.ConfigPath())
+	data, fromBackup, err := readConfigBytes(cfg.ConfigPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg.ApplyEnv()
@@ -509,7 +516,10 @@ func Load(root string) (*Config, error) {
 		return nil, err
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		if !fromBackup {
+			return nil, fmt.Errorf("parse config: %w", err)
+		}
+		return nil, fmt.Errorf("parse config backup: %w", err)
 	}
 	if cfg.Root == "" {
 		cfg.Root = root
@@ -517,6 +527,21 @@ func Load(root string) (*Config, error) {
 	normalize(cfg)
 	cfg.ApplyEnv()
 	return cfg, nil
+}
+
+func readConfigBytes(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		var probe Config
+		if yaml.Unmarshal(data, &probe) == nil {
+			return data, false, nil
+		}
+		if backup, bakErr := os.ReadFile(atomicfile.BackupPath(path)); bakErr == nil {
+			return backup, true, nil
+		}
+		return data, false, nil
+	}
+	return nil, false, err
 }
 
 func (c *Config) Save() error {
@@ -532,7 +557,7 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.ConfigPath(), data, 0o644)
+	return atomicfile.WriteWithBackup(c.ConfigPath(), data, 0o644)
 }
 
 func normalize(c *Config) {
@@ -579,22 +604,22 @@ func normalize(c *Config) {
 	}
 	c.ClarifyMode = NormalizeClarifyMode(c.ClarifyMode)
 	if c.ClarifyTimeout <= 0 {
-		c.ClarifyTimeout = 2 * time.Minute
+		c.ClarifyTimeout = DefaultClarifyTimeout
 	}
 	c.PlanApprove = NormalizePlanApprove(c.PlanApprove)
 	if c.PlanApproveTimeout <= 0 {
-		c.PlanApproveTimeout = 2 * time.Minute
+		c.PlanApproveTimeout = DefaultPlanApproveTimeout
 	}
 	c.ContinueAsk = NormalizeContinueAsk(c.ContinueAsk)
 	if c.ContinueAskTimeout <= 0 {
-		c.ContinueAskTimeout = 2 * time.Minute
+		c.ContinueAskTimeout = DefaultContinueAskTimeout
 	}
 	c.EscalateAsk = NormalizeEscalateAsk(c.EscalateAsk)
 	if c.EscalateAskTimeout <= 0 {
-		c.EscalateAskTimeout = 30 * time.Second
+		c.EscalateAskTimeout = DefaultEscalateAskTimeout
 	}
 	if c.ShellAskTimeout <= 0 {
-		c.ShellAskTimeout = 2 * time.Minute
+		c.ShellAskTimeout = DefaultShellAskTimeout
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:7420"
@@ -699,18 +724,28 @@ type Patch struct {
 	EscalateTimeoutAgent   *string                  `json:"escalate_timeout_agent,omitempty"`
 	AutoApprove            *bool                    `json:"auto_approve,omitempty"`
 	ShellPermission        *string                  `json:"shell_permission,omitempty"`
+	ShellWhitelist         *bool                    `json:"shell_whitelist,omitempty"`
 	ShellAskTimeoutSec     *int                     `json:"shell_ask_timeout_sec,omitempty"`
 	ContextCompact         *bool                    `json:"context_compact,omitempty"`
 	WaveSnapshots          *bool                    `json:"wave_snapshots,omitempty"`
+	FileCheckpoints        *bool                    `json:"file_checkpoints,omitempty"`
 	HooksEnabled           *bool                    `json:"hooks_enabled,omitempty"`
 	WriteGuard             *bool                    `json:"write_guard,omitempty"`
 	ReadBeforeEdit         *bool                    `json:"read_before_edit,omitempty"`
+	ShellWriteGuard        *bool                    `json:"shell_write_guard,omitempty"`
 	ToolGuidance           *bool                    `json:"tool_guidance,omitempty"`
 	KnowledgeInject        *bool                    `json:"knowledge_inject,omitempty"`
 	QualityMonitor         *bool                    `json:"quality_monitor,omitempty"`
 	StaticQuality          *bool                    `json:"static_quality,omitempty"`
 	ThinkingBudget         *bool                    `json:"thinking_budget,omitempty"`
+	ThinkingBudgetTokens   *int                     `json:"thinking_budget_tokens,omitempty"`
+	FinalizeWarn           *bool                    `json:"finalize_warn,omitempty"`
+	RequireSmoke           *bool                    `json:"require_smoke,omitempty"`
+	ClaimsGate             *bool                    `json:"claims_gate,omitempty"`
 	WorkerCritique         *bool                    `json:"worker_critique,omitempty"`
+	OverEditGuard          *bool                    `json:"over_edit_guard,omitempty"`
+	ReadHeadLines          *int                     `json:"read_head_lines,omitempty"`
+	AutoTextTools          *bool                    `json:"auto_text_tools,omitempty"`
 	DryRun                 *bool                    `json:"dry_run,omitempty"`
 	Verbose                *bool                    `json:"verbose,omitempty"`
 	Permission             *string                  `json:"permission,omitempty"`
@@ -729,6 +764,7 @@ type Patch struct {
 	LLMRetryDelayMS        *int                     `json:"llm_retry_delay_ms,omitempty"`
 	ContextCompactEngine   *string                  `json:"context_compact_engine,omitempty"`
 	ReactCompact           *bool                    `json:"react_compact,omitempty"`
+	ReactCompactAtPercent  *int                     `json:"react_compact_at_percent,omitempty"`
 	SessionEventLog        *bool                    `json:"session_event_log,omitempty"`
 	AutoRefine             *bool                    `json:"auto_refine,omitempty"`
 	AutoRefineMaxRounds    *int                     `json:"auto_refine_max_rounds,omitempty"`
@@ -876,6 +912,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.WaveSnapshots != nil {
 		c.WaveSnapshots = *p.WaveSnapshots
 	}
+	if p.FileCheckpoints != nil {
+		c.FileCheckpoints = *p.FileCheckpoints
+	}
 	if p.HooksEnabled != nil {
 		c.HooksEnabled = *p.HooksEnabled
 	}
@@ -884,6 +923,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.ReadBeforeEdit != nil {
 		c.ReadBeforeEdit = *p.ReadBeforeEdit
+	}
+	if p.ShellWriteGuard != nil {
+		c.ShellWriteGuard = *p.ShellWriteGuard
 	}
 	if p.ToolGuidance != nil {
 		c.ToolGuidance = *p.ToolGuidance
@@ -900,8 +942,29 @@ func (c *Config) ApplyPatch(p Patch) {
 	if p.ThinkingBudget != nil {
 		c.ThinkingBudget = *p.ThinkingBudget
 	}
+	if p.ThinkingBudgetTokens != nil && *p.ThinkingBudgetTokens >= 0 {
+		c.ThinkingBudgetTokens = *p.ThinkingBudgetTokens
+	}
+	if p.FinalizeWarn != nil {
+		c.FinalizeWarn = *p.FinalizeWarn
+	}
+	if p.RequireSmoke != nil {
+		c.RequireSmoke = *p.RequireSmoke
+	}
+	if p.ClaimsGate != nil {
+		c.ClaimsGate = *p.ClaimsGate
+	}
 	if p.WorkerCritique != nil {
 		c.WorkerCritique = *p.WorkerCritique
+	}
+	if p.OverEditGuard != nil {
+		c.OverEditGuard = *p.OverEditGuard
+	}
+	if p.ReadHeadLines != nil && *p.ReadHeadLines > 0 {
+		c.ReadHeadLines = *p.ReadHeadLines
+	}
+	if p.AutoTextTools != nil {
+		c.AutoTextTools = *p.AutoTextTools
 	}
 	if p.Verbose != nil {
 		c.Verbose = *p.Verbose
@@ -923,6 +986,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.ShellPermission != nil && *p.ShellPermission != "" {
 		c.ShellPermission = permissions.NormalizeShell(*p.ShellPermission)
+	}
+	if p.ShellWhitelist != nil {
+		c.ShellWhitelist = *p.ShellWhitelist
 	}
 	if p.CompactMode != nil {
 		c.CompactMode = *p.CompactMode
@@ -968,6 +1034,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.ReactCompact != nil {
 		c.ReactCompact = *p.ReactCompact
+	}
+	if p.ReactCompactAtPercent != nil && *p.ReactCompactAtPercent >= 0 {
+		c.ReactCompactAtPercent = *p.ReactCompactAtPercent
 	}
 	if p.SessionEventLog != nil {
 		c.SessionEventLog = *p.SessionEventLog

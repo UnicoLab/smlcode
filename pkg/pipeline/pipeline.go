@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -130,7 +131,7 @@ func PathDynamic(slmDir string) string {
 // Load reads pipeline.yaml or returns Default() when missing.
 func Load(slmDir string) (*Config, error) {
 	path := Path(slmDir)
-	data, err := os.ReadFile(path)
+	data, fromBackup, err := readPipelineBytes(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg := Default()
@@ -140,13 +141,45 @@ func Load(slmDir string) (*Config, error) {
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		if fromBackup {
+			return nil, fmt.Errorf("pipeline.yaml backup: %w", err)
+		}
 		return nil, fmt.Errorf("pipeline.yaml: %w", err)
 	}
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
+		if !fromBackup {
+			if backup, bakErr := os.ReadFile(atomicfile.BackupPath(path)); bakErr == nil {
+				var bak Config
+				if yaml.Unmarshal(backup, &bak) == nil {
+					bak.Normalize()
+					if bak.Validate() == nil {
+						return &bak, nil
+					}
+				}
+			}
+		}
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func readPipelineBytes(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		var probe Config
+		if yaml.Unmarshal(data, &probe) == nil {
+			probe.Normalize()
+			if probe.Validate() == nil {
+				return data, false, nil
+			}
+		}
+		if backup, bakErr := os.ReadFile(atomicfile.BackupPath(path)); bakErr == nil {
+			return backup, true, nil
+		}
+		return data, false, nil
+	}
+	return nil, false, err
 }
 
 // Save writes pipeline.yaml (creates parent dirs).
@@ -178,7 +211,7 @@ func saveFile(slmDir, fileName string, cfg *Config, header string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(slmDir, fileName), append([]byte(header), data...), 0o644)
+	return atomicfile.WriteWithBackup(filepath.Join(slmDir, fileName), append([]byte(header), data...), 0o644)
 }
 
 // Normalize fills defaults and cleans fields.

@@ -97,11 +97,18 @@ func forceClarifyGreenfield(query string) bool {
 }
 
 func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview plan.ScopeInterview) plan.ScopeInterview {
+	timeout := o.cfg.ClarifyTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	ask := plan.ScopeAsk{
 		ID:        fmt.Sprintf("ask-%d", time.Now().UnixNano()),
+		Kind:      "clarify",
 		Query:     query,
 		Questions: interview.Questions,
 		PRDDraft:  interview.PRD,
+		TimeoutS:  int(timeout.Seconds()),
+		OnTimeout: "use_recommended",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	_ = plan.WriteScopeAsk(o.cfg.SlmDir(), ask)
@@ -119,16 +126,13 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 	o.mu.Unlock()
 	if h != nil {
 		if a, err := h(ctx, ask); err == nil {
+			a.AskID = ask.ID
 			ans, got = a, true
 		}
 	}
 	if !got {
-		timeout := o.cfg.ClarifyTimeout
-		if timeout <= 0 {
-			timeout = 2 * time.Minute
-		}
 		o.emit("clarify", fmt.Sprintf("polling .slmcode/clarify/answers.json (timeout %s)", timeout), "")
-		if a, ok, err := plan.WaitScopeAnswers(ctx, o.cfg.SlmDir(), timeout); err == nil && ok {
+		if a, ok, err := plan.WaitScopeAnswersForID(ctx, o.cfg.SlmDir(), ask.ID, timeout); err == nil && ok {
 			ans, got = a, true
 		} else if err != nil && ctx.Err() != nil {
 			// cancelled
@@ -145,9 +149,9 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 }
 
 // runScopeJudgeGate ensures every task has a concrete PRD/acceptance before execute.
-func (o *Orchestrator) runScopeJudgeGate(ctx context.Context, query string, board *plan.Board, prd plan.ScopePRD) {
+func (o *Orchestrator) runScopeJudgeGate(ctx context.Context, query string, board *plan.Board, prd plan.ScopePRD) *plan.ScopeJudgeResult {
 	if o.cfg == nil || !o.cfg.ScopeJudge || board == nil {
-		return
+		return nil
 	}
 	o.emitAgent("split", "scope-judge", "", "PRD completeness check", "", "")
 
@@ -181,7 +185,7 @@ func (o *Orchestrator) runScopeJudgeGate(ctx context.Context, query string, boar
 
 	if judge.OK {
 		o.emit("split", "scope judge green — tasks PRD-complete", "")
-		return
+		return &judge
 	}
 
 	o.emitFull("split", stream.KindOutput, "scope-judge", "",
@@ -204,6 +208,7 @@ func (o *Orchestrator) runScopeJudgeGate(ctx context.Context, query string, boar
 			_ = o.store.Append(contextstore.DocScratch, "Scope gaps", strings.Join(final.Issues, "\n"))
 		}
 	}
+	return &final
 }
 
 func (o *Orchestrator) rewriteWeakTaskScopes(ctx context.Context, query string, board *plan.Board, prd plan.ScopePRD, judge plan.ScopeJudgeResult) {

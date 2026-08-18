@@ -9,7 +9,25 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
+
+type countingExec struct {
+	calls int
+}
+
+func (e *countingExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	e.calls++
+	out := make([]ggagent.SubAgentResult, len(reqs))
+	for i, req := range reqs {
+		out[i] = ggagent.SubAgentResult{
+			AgentID: req.AgentID,
+			TaskID:  req.TaskID,
+			Output:  `{"status":"done","summary":"updated file","files_changed":["a.go"]}`,
+		}
+	}
+	return out, nil
+}
 
 func TestStripScopedPack(t *testing.T) {
 	in := "# Scoped context for role=worker\n\nbig pack\n\n## Task instructions\n\nDo the thing\n"
@@ -49,6 +67,42 @@ func TestTaskInputAppendsFeedback(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "use log/slog\n") {
 		t.Fatalf("feedback not appended: %q", got)
+	}
+}
+
+func TestRunCorrectiveBoardRespectsMaxWaves(t *testing.T) {
+	exec := &countingExec{}
+	r := NewRunner(exec, nil)
+	r.Root = t.TempDir()
+	r.MaxRetries = 0
+	r.MaxWaves = 1
+	r.PostWorkerSmoke = false
+	r.RequireSmoke = false
+	r.ReviewParallel = false
+	board := &plan.Board{Tasks: []plan.Task{{
+		ID: "T1", Title: "edit", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+		Description: "update a.go", Files: []string{"a.go"},
+	}}}
+
+	ran, err := r.RunCorrectiveBoard(context.Background(), board)
+	if err != nil || !ran {
+		t.Fatalf("first corrective run: ran=%v err=%v", ran, err)
+	}
+	firstCalls := exec.calls
+	if firstCalls == 0 {
+		t.Fatal("executor was not called")
+	}
+
+	board.Tasks[0].MoveTo(plan.ColReadyToDev)
+	ran, err = r.RunCorrectiveBoard(context.Background(), board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran {
+		t.Fatal("second corrective wave should be skipped")
+	}
+	if exec.calls != firstCalls {
+		t.Fatalf("executor calls changed after skipped wave: before=%d after=%d", firstCalls, exec.calls)
 	}
 }
 

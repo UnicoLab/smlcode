@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 )
@@ -30,7 +31,7 @@ func Evolve(slmDir string, query string, board *plan.Board, lessonsMD string, sk
 
 	index := renderSkillsIndex(skillList, lessonsMD)
 	indexPath := filepath.Join(slmDir, "SKILLS.md")
-	if err := os.WriteFile(indexPath, []byte(index), 0o644); err != nil {
+	if err := atomicfile.Write(indexPath, []byte(index), 0o644); err != nil {
 		return nil, err
 	}
 	out.SkillsIndex = "SKILLS.md"
@@ -41,7 +42,7 @@ func Evolve(slmDir string, query string, board *plan.Board, lessonsMD string, sk
 	}
 	learnedPath := filepath.Join(learnedDir, "SKILL.md")
 	learnedBody := mergeLearnedSkill(learnedPath, query, board, lessonsMD)
-	if err := os.WriteFile(learnedPath, []byte(learnedBody), 0o644); err != nil {
+	if err := atomicfile.Write(learnedPath, []byte(learnedBody), 0o644); err != nil {
 		return nil, err
 	}
 	out.LearnedSkill = "skills/learned/SKILL.md"
@@ -84,7 +85,7 @@ func enrichProjectScaffold(projPath, query string, board *plan.Board) error {
 	if overviewEmpty(body) && strings.TrimSpace(query) != "" {
 		body = replaceMDSection(body, "Overview", firstLine(query))
 	}
-	return os.WriteFile(projPath, []byte(body), 0o644)
+	return atomicfile.Write(projPath, []byte(body), 0o644)
 }
 
 func projectFiles(board *plan.Board) []string {
@@ -232,7 +233,7 @@ func appendSection(path, heading, body string) error {
 		return err
 	}
 	section := fmt.Sprintf("\n\n## %s\n\n%s\n", heading, strings.TrimSpace(body))
-	return os.WriteFile(path, append(prev, []byte(section)...), 0o644)
+	return atomicfile.Write(path, append(prev, []byte(section)...), 0o644)
 }
 
 func firstLine(s string) string {

@@ -8,15 +8,22 @@
 package composer
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/repair"
 )
 
 // RoleID is the built-in specialist id for the dynamic pipeline composer.
 const RoleID = "composer"
+
+// DynamicFileName is the inspectable structured composition for the latest run.
+const DynamicFileName = "composition.dynamic.json"
 
 // StructuralPhases are engine-managed phases that always run and cannot be
 // disabled by a composition. They have no agent binding of their own.
@@ -60,6 +67,9 @@ type Composition struct {
 	Summary string `json:"summary"`
 	// Strategy is the composer's reasoning (kept short for SLMs).
 	Strategy string `json:"strategy,omitempty"`
+	// Handoff is a compact shared contract every later specialist should see:
+	// target files, non-goals, verification commands, and any sequencing notes.
+	Handoff []string `json:"handoff,omitempty"`
 	// Phases lists the phases to activate, in execution order.
 	Phases []PhaseChoice `json:"phases"`
 	// Execute configures the board worker/reviewer/corrector loop.
@@ -78,6 +88,7 @@ func (c *Composition) Normalize() {
 	}
 	c.Summary = strings.TrimSpace(c.Summary)
 	c.Strategy = strings.TrimSpace(c.Strategy)
+	c.Handoff = cleanListPreserveCase(c.Handoff)
 
 	var phases []PhaseChoice
 	seen := map[string]bool{}
@@ -136,6 +147,21 @@ func cleanList(in []string) []string {
 	return out
 }
 
+func cleanListPreserveCase(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		key := strings.ToLower(s)
+		if s == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 // Parse extracts and decodes a composer JSON output (markdown fences and common
 // SLM JSON mistakes tolerated).
 func Parse(raw string) (Composition, error) {
@@ -148,6 +174,22 @@ func Parse(raw string) (Composition, error) {
 		c.Summary = "Dynamic pipeline composed for this task"
 	}
 	return c, nil
+}
+
+// SaveDynamic persists the full latest composition for inspection/debugging.
+// Unlike pipeline.dynamic.yaml, this keeps handoff/team/skill choices too.
+func SaveDynamic(slmDir string, c *Composition) error {
+	if strings.TrimSpace(slmDir) == "" || c == nil {
+		return nil
+	}
+	if err := os.MkdirAll(slmDir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(filepath.Join(slmDir, DynamicFileName), append(b, '\n'), 0o644)
 }
 
 func boolPtr(v bool) *bool { return &v }

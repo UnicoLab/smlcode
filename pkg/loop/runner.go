@@ -64,11 +64,18 @@ type Runner struct {
 	OnEvent    AgentEvent
 	OnUsage    UsageEvent
 	BuildInput BuildInput
+	// SharedBriefLimit bounds compact sibling-task handoff injected into worker
+	// prompts. Zero uses the default; negative disables the brief.
+	SharedBriefLimit int
 	// Feedback returns live user steering text — always re-invoked so it stays
 	// fresh mid-run; nil means no feedback. Injected into worker + reviewer
 	// prompts (see feedbackSection).
-	Feedback       func() string
-	MaxRetries     int
+	Feedback   func() string
+	MaxRetries int
+	// MaxWaves caps post-test/QA corrective RunBoard re-entry waves.
+	// Zero means unlimited legacy behavior.
+	MaxWaves       int
+	correctiveRuns int
 	MaxParallel    int
 	Timeout        time.Duration
 	IdleWait       time.Duration // wait for human to promote to_scope → ready
@@ -229,6 +236,22 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 	}
 }
 
+// RunCorrectiveBoard runs one post-validation corrective execute pass if the
+// pipeline's execute.max_waves budget allows it.
+func (r *Runner) RunCorrectiveBoard(ctx context.Context, board *plan.Board) (bool, error) {
+	if r == nil {
+		return false, fmt.Errorf("nil runner")
+	}
+	if r.MaxWaves > 0 && r.correctiveRuns >= r.MaxWaves {
+		if r.Log != nil {
+			r.Log("corrective wave budget exhausted (max_waves=%d)", r.MaxWaves)
+		}
+		return false, nil
+	}
+	r.correctiveRuns++
+	return true, r.RunBoard(ctx, board)
+}
+
 func (r *Runner) persist(board *plan.Board) {
 	if r.Store != nil {
 		_ = r.Store.Replace(*board)
@@ -236,11 +259,18 @@ func (r *Runner) persist(board *plan.Board) {
 }
 
 func (r *Runner) taskInput(t plan.Task) string {
+	return r.taskInputFor(nil, t)
+}
+
+func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 	prompt := ""
 	if r.BuildInput != nil {
 		prompt = r.BuildInput(t)
 	} else {
 		prompt = r.formatWorkerPrompt(t)
+	}
+	if brief := r.sharedBriefSection(board, t); brief != "" {
+		prompt += brief
 	}
 	return prompt + r.feedbackSection()
 }
@@ -324,7 +354,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	for _, t := range needExec {
 		req := ggagent.SubAgentRequest{
 			AgentID:    r.normalizeExecRole(t.Role),
-			Input:      r.taskInput(t),
+			Input:      r.taskInputFor(board, t),
 			Timeout:    r.Timeout,
 			ShareState: true,
 			TaskID:     t.ID,
@@ -373,7 +403,7 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 					r.Log("%s overflow compact: %v", t.ID, cerr)
 				} else {
 					retryReq := ggagent.SubAgentRequest{
-						AgentID: role, Input: r.taskInput(t), Timeout: r.Timeout,
+						AgentID: role, Input: r.taskInputFor(board, t), Timeout: r.Timeout,
 						ShareState: true, TaskID: t.ID,
 					}
 					if r.applyResumeRequest(&retryReq, t.ID) {

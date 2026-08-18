@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 const maxPromptHistory = 100
@@ -131,5 +133,5 @@ func (h *PromptHistory) saveLocked() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(h.path, data, 0o644)
+	_ = atomicfile.Write(h.path, data, 0o644)
 }

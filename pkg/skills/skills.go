@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // Skill is a Claude Code–compatible SKILL.md pack.
@@ -411,7 +413,7 @@ func WriteSkill(skillsDir string, sk Skill) (string, error) {
 	}
 	b.WriteString(body)
 	b.WriteString("\n")
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+	if err := atomicfile.Write(path, []byte(b.String()), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

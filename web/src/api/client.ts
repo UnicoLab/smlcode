@@ -6,6 +6,7 @@ import type {
   Config,
   ConfigPatch,
   Health,
+  ReadinessReport,
   ModelsResponse,
   Board,
   Column,
@@ -13,22 +14,27 @@ import type {
   RunRequest,
   StartRunResponse,
   LatestRunResponse,
+  InterruptedRun,
   RunEvent,
   Skill,
   AgentSpec,
   PipelineView,
   PipelineConfig,
+  DynamicComposition,
+  CompositionPreviewResponse,
   DocItem,
   ArchiveItem,
   ArchiveView,
   QuerySession,
   QueryView,
+  QueryEventsResponse,
   AppStatus,
   ClarifyAsk,
   PlanAsk,
   ContinueAsk,
   EscalateAsk,
   ShellAsk,
+  PendingResponse,
   StackApplyResponse,
   StacksResponse,
   AuthStatus,
@@ -68,6 +74,11 @@ async function request<T>(
 // ── Health ──
 export async function getHealth(): Promise<Health> {
   return request<Health>('/health');
+}
+
+export async function getReadiness(opts?: { probe?: boolean }): Promise<ReadinessReport> {
+  const qs = opts?.probe === false ? '' : '?probe=1';
+  return request<ReadinessReport>(`/readiness${qs}`);
 }
 
 // ── Config ──
@@ -280,6 +291,19 @@ export async function stopRun(): Promise<{ ok: string }> {
   return request<{ ok: string }>('/runs/stop', { method: 'POST' });
 }
 
+// GET /api/runs/interrupted → resumable interrupted turns, newest first
+export async function getInterruptedRuns(): Promise<InterruptedRun[]> {
+  return request<InterruptedRun[]>('/runs/interrupted');
+}
+
+// POST /api/runs/resume → resume latest or selected interrupted turn
+export async function resumeRun(id?: string): Promise<StartRunResponse> {
+  return request<StartRunResponse>('/runs/resume', {
+    method: 'POST',
+    body: JSON.stringify({ id: id || '' }),
+  });
+}
+
 // GET /api/runs/latest → {running, result, events}
 export async function getLatestRun(): Promise<LatestRunResponse> {
   return request<LatestRunResponse>('/runs/latest');
@@ -294,6 +318,18 @@ export function createEventSource(): EventSource {
 // GET /api/pipeline → {config, anchors?, defaults?}
 export async function getPipeline(): Promise<PipelineView> {
   return request<PipelineView>('/pipeline');
+}
+
+// GET /api/composition → latest persisted dynamic composition, when available
+export async function getComposition(): Promise<{ ok: boolean; composition: DynamicComposition | null }> {
+  return request<{ ok: boolean; composition: DynamicComposition | null }>('/composition');
+}
+
+export async function previewComposition(query: string): Promise<CompositionPreviewResponse> {
+  return request<CompositionPreviewResponse>('/composition/preview', {
+    method: 'POST',
+    body: JSON.stringify({ query }),
+  });
 }
 
 // PUT /api/pipeline → body {config} → updated PipelineView
@@ -331,6 +367,13 @@ export async function getQuery(id: string): Promise<QueryView> {
   return request<QueryView>(`/queries/${encodeURIComponent(id)}`);
 }
 
+// GET /api/queries/{id}/events → archived query event log
+export async function getQueryEvents(id: string, limit = 1000): Promise<QueryEventsResponse> {
+  const params = new URLSearchParams();
+  if (limit > 0) params.set('limit', String(limit));
+  return request<QueryEventsResponse>(`/queries/${encodeURIComponent(id)}/events?${params.toString()}`);
+}
+
 // ── Status ──
 // GET /api/status → {text}
 export async function getStatus(): Promise<AppStatus> {
@@ -355,79 +398,91 @@ export async function compact(): Promise<{ ok: string }> {
 
 // ── HITL (human-in-the-loop) — aligned with backend handlers ──
 
-// Clarify: GET /api/clarify/pending → {pending, ask: ClarifyAsk} | {pending: false}
-//          POST /api/clarify/answer → body {answers: [{question_id, selected}, …]} | {use_all_recommended: true}
-export async function getClarifyPending(): Promise<{ pending: boolean; ask?: ClarifyAsk }> {
+// Clarify: GET /api/clarify/pending → {pending, ask: ClarifyAsk} | {pending: false, expired?: true}
+//          POST /api/clarify/answer → body {ask_id, answers: [{question_id, selected}, …]} | {ask_id, use_all_recommended: true}
+export async function getClarifyPending(): Promise<PendingResponse<ClarifyAsk>> {
   return request('/clarify/pending');
 }
 
 export async function answerClarify(
-  answers: { question_id: string; selected: string[] }[],
-): Promise<{ ok: string }> {
+  answers: { question_id: string; selected: string[]; freeform?: string; comment?: string }[],
+  notes?: string,
+  askId?: string,
+): Promise<{ ok: boolean }> {
   return request('/clarify/answer', {
     method: 'POST',
-    body: JSON.stringify({ answers }),
+    body: JSON.stringify({ answers, notes: notes || undefined, ask_id: askId || undefined }),
   });
 }
 
-export async function clarifyUseRecommended(): Promise<{ ok: string }> {
+export async function clarifyUseRecommended(notes?: string, askId?: string): Promise<{ ok: boolean }> {
   return request('/clarify/answer', {
     method: 'POST',
-    body: JSON.stringify({ use_all_recommended: true }),
+    body: JSON.stringify({ use_all_recommended: true, notes: notes || undefined, ask_id: askId || undefined }),
   });
 }
 
-// Plan: GET /api/plan/pending → {pending, ask: PlanAsk} | {pending: false}
-//       POST /api/plan/approve → body {decision: "approve"|"replan"}
-export async function getPlanPending(): Promise<{ pending: boolean; ask?: PlanAsk }> {
+// Plan: GET /api/plan/pending → {pending, ask: PlanAsk} | {pending: false, expired?: true}
+//       POST /api/plan/approve → body {ask_id, decision: "approve"|"replan"}
+export async function getPlanPending(): Promise<PendingResponse<PlanAsk>> {
   return request('/plan/pending');
 }
 
-export async function approvePlan(decision: 'approve' | 'replan'): Promise<{ ok: string }> {
+export async function approvePlan(
+  decision: 'approve' | 'replan',
+  notes?: string,
+  askId?: string,
+): Promise<{ ok: boolean }> {
   return request('/plan/approve', {
     method: 'POST',
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision, notes: notes || undefined, ask_id: askId || undefined }),
   });
 }
 
-// Continue: GET /api/continue/pending → {pending, ask: ContinueAsk} | {pending: false}
-//           POST /api/continue/answer → body {action: "continue"|"stop"|"flag_only"}
-export async function getContinuePending(): Promise<{ pending: boolean; ask?: ContinueAsk }> {
+// Continue: GET /api/continue/pending → {pending, ask: ContinueAsk} | {pending: false, expired?: true}
+//           POST /api/continue/answer → body {ask_id, action: "continue"|"stop"|"flag_only"}
+export async function getContinuePending(): Promise<PendingResponse<ContinueAsk>> {
   return request('/continue/pending');
 }
 
-export async function answerContinue(action: 'continue' | 'stop' | 'flag_only'): Promise<{ ok: string }> {
+export async function answerContinue(
+  action: 'continue' | 'stop' | 'flag_only',
+  askId?: string,
+  notes?: string,
+): Promise<{ ok: boolean }> {
   return request('/continue/answer', {
     method: 'POST',
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ask_id: askId || undefined, notes: notes || undefined }),
   });
 }
 
-// Escalate: GET /api/escalate/pending → {pending, ask: EscalateAsk} | {pending: false}
-//           POST /api/escalate/answer → body {action: "retry"|"re_scope"|"mark_done"|"abort"}
-export async function getEscalatePending(): Promise<{ pending: boolean; ask?: EscalateAsk }> {
+// Escalate: GET /api/escalate/pending → {pending, ask: EscalateAsk} | {pending: false, expired?: true}
+//           POST /api/escalate/answer → body {ask_id, action: "retry"|"re_scope"|"mark_done"|"abort"}
+export async function getEscalatePending(): Promise<PendingResponse<EscalateAsk>> {
   return request('/escalate/pending');
 }
 
 export async function answerEscalate(
   action: 'retry' | 're_scope' | 'mark_done' | 'abort',
-): Promise<{ ok: string }> {
+  askId?: string,
+  notes?: string,
+): Promise<{ ok: boolean }> {
   return request('/escalate/answer', {
     method: 'POST',
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ask_id: askId || undefined, notes: notes || undefined }),
   });
 }
 
-// Shell: GET /api/shell/pending → {pending, ask: ShellAsk} | {pending: false}
-//        POST /api/shell/approve → body {decision: "approve"|"deny"}
-export async function getShellPending(): Promise<{ pending: boolean; ask?: ShellAsk }> {
+// Shell: GET /api/shell/pending → {pending, ask: ShellAsk} | {pending: false, expired?: true}
+//        POST /api/shell/approve → body {ask_id, decision: "approve"|"deny"}
+export async function getShellPending(): Promise<PendingResponse<ShellAsk>> {
   return request('/shell/pending');
 }
 
-export async function approveShell(decision: 'approve' | 'deny'): Promise<{ ok: string }> {
+export async function approveShell(decision: 'approve' | 'deny', askId?: string): Promise<{ ok: boolean }> {
   return request('/shell/approve', {
     method: 'POST',
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision, ask_id: askId || undefined }),
   });
 }
 

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // Snapshot is a restoreable copy of files touched in a wave.
@@ -63,7 +65,7 @@ func (m *Manager) SnapshotPaths(turnID string, wave int, taskIDs, relPaths []str
 		files[rel] = string(data)
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
 		_ = os.MkdirAll(filepath.Dir(dst), 0o755)
-		_ = os.WriteFile(dst, data, 0o644)
+		_ = atomicfile.Write(dst, data, 0o644)
 	}
 	snap := &Snapshot{
 		ID: id, TurnID: turnID, Wave: wave,
@@ -72,7 +74,7 @@ func (m *Manager) SnapshotPaths(turnID string, wave int, taskIDs, relPaths []str
 		Files:     files, Dir: dir,
 	}
 	meta, _ := json.MarshalIndent(snap, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "snapshot.json"), meta, 0o644)
+	_ = atomicfile.Write(filepath.Join(dir, "snapshot.json"), meta, 0o644)
 	return snap, nil
 }
 
@@ -132,7 +134,7 @@ func (m *Manager) Restore(id string) (int, error) {
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return n, err
 		}
-		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		if err := atomicfile.Write(abs, []byte(content), 0o644); err != nil {
 			return n, err
 		}
 		n++

@@ -99,6 +99,40 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadFallsBackToBlockBackup(t *testing.T) {
+	root := t.TempDir()
+	block := &AgentBlock{
+		Meta: Meta{APIVersion: APIVersion, Kind: KindAgent, ID: "backup-agent", Name: "Backup Agent"},
+		Spec: agents.CustomSpec{
+			Title:        "Backup Agent",
+			SystemPrompt: "Use the backup.",
+		},
+	}
+	path, err := Save(root, block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block.Name = "Current Agent"
+	block.Spec.Title = "Current Agent"
+	if _, err := Save(root, block); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("api_version: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reg.GetAgent("backup-agent")
+	if !ok {
+		t.Fatal("backup-agent not loaded")
+	}
+	if got.Name != "Backup Agent" || got.Spec.Title != "Backup Agent" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestSaveReturnsProjectPath(t *testing.T) {
 	root := t.TempDir()
 	path, err := Save(root, &QualityBlock{

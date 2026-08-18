@@ -13,10 +13,13 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/hitl"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/session"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 func TestPutConfigPartialPreservesDryRun(t *testing.T) {
@@ -55,6 +58,642 @@ func TestPutConfigPartialPreservesDryRun(t *testing.T) {
 	}
 	if out["permission"] != permissions.ModeDryRun {
 		t.Fatalf("permission=%v", out["permission"])
+	}
+}
+
+func TestPlanApproveRequiresCurrentAskID(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	bad := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(`{"ask_id":"old","decision":"approve"}`))
+	badRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusConflict {
+		t.Fatalf("mismatch status=%d body=%s", badRec.Code, badRec.Body.String())
+	}
+
+	body := `{"ask_id":"` + ask.ID + `","decision":"approve","notes":"keep it focused"}`
+	good := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body))
+	goodRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(goodRec, good)
+	if goodRec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", goodRec.Code, goodRec.Body.String())
+	}
+
+	var ans plan.PlanApproveAnswer
+	ok, err := hitl.ReadAnswers(h.Config.SlmDir(), "plan", &ans)
+	if err != nil || !ok {
+		t.Fatalf("read answer ok=%v err=%v", ok, err)
+	}
+	if ans.AskID != ask.ID || ans.Notes != "keep it focused" {
+		t.Fatalf("answer=%+v", ans)
+	}
+
+	pending := httptest.NewRequest(http.MethodGet, "/api/plan/pending", nil)
+	pendingRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(pendingRec, pending)
+	if pendingRec.Code != http.StatusOK {
+		t.Fatalf("pending status=%d body=%s", pendingRec.Code, pendingRec.Body.String())
+	}
+	var pendingOut map[string]any
+	if err := json.Unmarshal(pendingRec.Body.Bytes(), &pendingOut); err != nil {
+		t.Fatal(err)
+	}
+	if pendingOut["pending"] != false || pendingOut["answered"] != true {
+		t.Fatalf("pending response=%+v", pendingOut)
+	}
+
+	dup := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body))
+	dupRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(dupRec, dup)
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate status=%d body=%s", dupRec.Code, dupRec.Body.String())
+	}
+}
+
+func TestPlanApproveRejectsInvalidDecision(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	for _, body := range []string{
+		`{"ask_id":"` + ask.ID + `"}`,
+		`{"ask_id":"` + ask.ID + `","decision":"edit"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if ok, err := hitl.ReadAnswers(h.Config.SlmDir(), "plan", &plan.PlanApproveAnswer{}); err != nil || ok {
+		t.Fatalf("invalid decision wrote answer ok=%v err=%v", ok, err)
+	}
+}
+
+func TestHITLAnswersRequireCurrentAskIDForAllKinds(t *testing.T) {
+	type hitlCase struct {
+		name     string
+		endpoint string
+		writeAsk func(*harness.Harness, string) error
+		body     func(string) string
+	}
+	cases := []hitlCase{
+		{
+			name:     "clarify",
+			endpoint: "/api/clarify/answer",
+			writeAsk: func(h *harness.Harness, id string) error {
+				return plan.WriteScopeAsk(h.Config.SlmDir(), plan.ScopeAsk{
+					ID:        id,
+					Kind:      "clarify",
+					Query:     "q",
+					Questions: []plan.ScopeQuestion{{ID: "q1", Question: "Pick?", Options: []plan.ScopeOption{{Label: "A"}}}},
+					TimeoutS:  120,
+					OnTimeout: "use_recommended",
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				})
+			},
+			body: func(id string) string {
+				return `{"ask_id":"` + id + `","answers":[{"question_id":"q1","selected":["A"]}]}`
+			},
+		},
+		{
+			name:     "plan",
+			endpoint: "/api/plan/approve",
+			writeAsk: func(h *harness.Harness, id string) error {
+				ask := plan.BuildPlanApproveAsk("q", &plan.Board{Tasks: []plan.Task{{ID: "T1", Title: "main"}}})
+				ask.ID = id
+				ask.TimeoutS = 120
+				return hitl.WriteAsk(h.Config.SlmDir(), "plan", ask)
+			},
+			body: func(id string) string {
+				return `{"ask_id":"` + id + `","decision":"approve"}`
+			},
+		},
+		{
+			name:     "continue",
+			endpoint: "/api/continue/answer",
+			writeAsk: func(h *harness.Harness, id string) error {
+				ask := plan.BuildContinueAsk("q", "reason", nil, nil)
+				ask.ID = id
+				ask.TimeoutS = 120
+				return hitl.WriteAsk(h.Config.SlmDir(), "continue", ask)
+			},
+			body: func(id string) string {
+				return `{"ask_id":"` + id + `","action":"continue"}`
+			},
+		},
+		{
+			name:     "escalate",
+			endpoint: "/api/escalate/answer",
+			writeAsk: func(h *harness.Harness, id string) error {
+				ask := plan.BuildEscalateAsk(plan.Task{ID: "T1", Title: "main"}, "detail", 120)
+				ask.ID = id
+				return hitl.WriteAsk(h.Config.SlmDir(), "escalate", ask)
+			},
+			body: func(id string) string {
+				return `{"ask_id":"` + id + `","action":"retry"}`
+			},
+		},
+		{
+			name:     "shell",
+			endpoint: "/api/shell/approve",
+			writeAsk: func(h *harness.Harness, id string) error {
+				return hitl.WriteAsk(h.Config.SlmDir(), "shell", workspace.ShellAsk{
+					ID:        id,
+					Kind:      "shell",
+					Command:   "go test ./...",
+					TimeoutS:  120,
+					OnTimeout: "deny",
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				})
+			},
+			body: func(id string) string {
+				return `{"ask_id":"` + id + `","decision":"approve"}`
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			h, err := harness.New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Init(); err != nil {
+				t.Fatal(err)
+			}
+			s := New(h, nil)
+
+			missing := httptest.NewRequest(http.MethodPost, tc.endpoint, strings.NewReader(tc.body("ask-1")))
+			missingRec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(missingRec, missing)
+			if missingRec.Code != http.StatusNotFound {
+				t.Fatalf("missing status=%d body=%s", missingRec.Code, missingRec.Body.String())
+			}
+
+			if err := tc.writeAsk(h, "ask-1"); err != nil {
+				t.Fatal(err)
+			}
+			mismatch := httptest.NewRequest(http.MethodPost, tc.endpoint, strings.NewReader(tc.body("old")))
+			mismatchRec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(mismatchRec, mismatch)
+			if mismatchRec.Code != http.StatusConflict {
+				t.Fatalf("mismatch status=%d body=%s", mismatchRec.Code, mismatchRec.Body.String())
+			}
+
+			success := httptest.NewRequest(http.MethodPost, tc.endpoint, strings.NewReader(tc.body("ask-1")))
+			successRec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(successRec, success)
+			if successRec.Code != http.StatusOK {
+				t.Fatalf("success status=%d body=%s", successRec.Code, successRec.Body.String())
+			}
+
+			duplicate := httptest.NewRequest(http.MethodPost, tc.endpoint, strings.NewReader(tc.body("ask-1")))
+			duplicateRec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(duplicateRec, duplicate)
+			if duplicateRec.Code != http.StatusConflict {
+				t.Fatalf("duplicate status=%d body=%s", duplicateRec.Code, duplicateRec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPlanApproveRejectsAnswerPastDeadline(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	ask.TimeoutS = 1
+	ask.CreatedAt = time.Now().UTC().Add(-2 * time.Second).Format(time.RFC3339Nano)
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	body := `{"ask_id":"` + ask.ID + `","decision":"approve"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPlanPendingClearsExpiredAsk(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	ask.TimeoutS = 1
+	ask.CreatedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339)
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/plan/pending", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["pending"] != false || out["expired"] != true {
+		t.Fatalf("response=%+v", out)
+	}
+	ok, err := hitl.ReadAsk(h.Config.SlmDir(), "plan", &plan.PlanApproveAsk{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expired ask was not cleared")
+	}
+}
+
+func TestShellApproveRejectsInvalidDecision(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := workspace.ShellAsk{
+		ID:        "shell-1",
+		Kind:      "shell",
+		Command:   "go test ./...",
+		TimeoutS:  120,
+		OnTimeout: "deny",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "shell", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	for _, body := range []string{
+		`{"ask_id":"` + ask.ID + `"}`,
+		`{"ask_id":"` + ask.ID + `","decision":"allow"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/shell/approve", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if ok, err := hitl.ReadAnswers(h.Config.SlmDir(), "shell", &workspace.ShellAnswer{}); err != nil || ok {
+		t.Fatalf("invalid decision wrote answer ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPlanApproveRejectsExpiredAsk(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	ask.TimeoutS = 1
+	ask.CreatedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339)
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	body := `{"ask_id":"` + ask.ID + `","decision":"approve"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPlanPendingKeepsActiveAsk(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build cli", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	ask.TimeoutS = 120
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/plan/pending", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Pending bool                `json:"pending"`
+		Ask     plan.PlanApproveAsk `json:"ask"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Pending || out.Ask.ID != ask.ID {
+		t.Fatalf("response=%+v", out)
+	}
+}
+
+func TestGetCompositionEndpoint(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	comp := &composer.Composition{
+		Summary: "dynamic",
+		Handoff: []string{"Verify with go test ./..."},
+		Phases:  []composer.PhaseChoice{{ID: "execute", Agent: "go-worker", Enabled: true}},
+		Execute: composer.ExecuteChoice{DefaultRole: "go-worker", Reviewer: "reviewer", Corrector: "corrector", MaxWaves: 2},
+		Team:    []composer.TeamMember{{Role: "go-worker", Skills: []string{"atomic-coding"}}},
+	}
+	if err := composer.SaveDynamic(h.Config.SlmDir(), comp); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/composition", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("ok=%v", out["ok"])
+	}
+	got, _ := out["composition"].(map[string]any)
+	if got["summary"] != "dynamic" {
+		t.Fatalf("composition=%+v", got)
+	}
+}
+
+func TestPreviewCompositionEndpointIsSideEffectFree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pkg", "orchestrator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pkg", "orchestrator", "composer.go"), []byte("package orchestrator\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	body := []byte(`{"query":"fix composer.go dynamic pipeline preview"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/composition/preview", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK             bool                 `json:"ok"`
+		DynamicEnabled bool                 `json:"dynamic_enabled"`
+		Composition    composer.Composition `json:"composition"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || !got.DynamicEnabled {
+		t.Fatalf("preview flags wrong: %+v", got)
+	}
+	if got.Composition.Execute.DefaultRole != "go-worker" {
+		t.Fatalf("default role=%q composition=%+v", got.Composition.Execute.DefaultRole, got.Composition)
+	}
+	if !strings.Contains(strings.Join(got.Composition.Handoff, "\n"), "composer.go") {
+		t.Fatalf("preview missing target handoff: %+v", got.Composition.Handoff)
+	}
+	if _, err := os.Stat(filepath.Join(h.Config.SlmDir(), composer.DynamicFileName)); !os.IsNotExist(err) {
+		t.Fatalf("preview should not persist latest composition, stat err=%v", err)
+	}
+}
+
+func TestReadinessEndpointReportsSLMGuards(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	h.Config.DynamicPipeline = true
+	h.Config.QAGate = true
+	h.Config.RequireSmoke = true
+	h.Config.ClaimsGate = true
+	h.Config.OverEditGuard = true
+	h.Config.WriteGuard = true
+	h.Config.ReadBeforeEdit = true
+	h.Config.FileCheckpoints = true
+	h.Config.ShellWriteGuard = true
+	h.Config.ShellWhitelist = true
+	h.Config.ContextCompact = true
+	h.Config.ReactCompact = true
+	h.Config.SessionEventLog = true
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/readiness", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK     bool            `json:"ok"`
+		Score  int             `json:"score"`
+		Guards map[string]bool `json:"guards"`
+		Checks []struct {
+			ID       string         `json:"id"`
+			OK       bool           `json:"ok"`
+			FixPatch map[string]any `json:"fix_patch"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Score < 80 {
+		t.Fatalf("readiness not ok: %+v body=%s", got, rec.Body.String())
+	}
+	if !got.Guards["write_guard"] || !got.Guards["claims_gate"] || !got.Guards["react_compact"] {
+		t.Fatalf("missing guard state: %+v", got.Guards)
+	}
+	foundDynamic := false
+	for _, check := range got.Checks {
+		if check.ID == "dynamic_pipeline" && check.OK {
+			foundDynamic = true
+		}
+	}
+	if !foundDynamic {
+		t.Fatalf("dynamic pipeline check missing: %+v", got.Checks)
+	}
+
+	h.Config.DynamicPipeline = false
+	req = httptest.NewRequest(http.MethodGet, "/api/readiness", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	foundFix := false
+	for _, check := range got.Checks {
+		if check.ID == "dynamic_pipeline" {
+			foundFix = check.OK == false && check.FixPatch["dynamic_pipeline"] == true
+		}
+	}
+	if !foundFix {
+		t.Fatalf("dynamic pipeline fix missing: %+v", got.Checks)
+	}
+}
+
+func TestReadinessEndpointProbeIsExplicit(t *testing.T) {
+	modelSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"local-coder"}]}`))
+	}))
+	defer modelSrv.Close()
+
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	h.Config.Provider = "omlx"
+	h.Config.Endpoint = modelSrv.URL
+	h.Config.Model = "local-coder"
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/readiness", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var fast struct {
+		Checks []struct {
+			ID string `json:"id"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fast); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range fast.Checks {
+		if check.ID == "provider_model" {
+			t.Fatalf("default readiness should not probe provider: %+v", fast.Checks)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/readiness?probe=1", nil)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var probed struct {
+		Checks []struct {
+			ID       string `json:"id"`
+			OK       bool   `json:"ok"`
+			Endpoint string `json:"endpoint"`
+			Latency  int64  `json:"latency_ms"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &probed); err != nil {
+		t.Fatal(err)
+	}
+	foundProbe := false
+	for _, check := range probed.Checks {
+		if check.ID == "provider_model" {
+			foundProbe = check.OK && check.Endpoint == modelSrv.URL && check.Latency >= 0
+		}
+	}
+	if !foundProbe {
+		t.Fatalf("probe readiness missing provider_model success: %+v", probed.Checks)
 	}
 }
 
@@ -102,6 +741,17 @@ func TestPutConfigSetsPermission(t *testing.T) {
 	}
 	if h.Config.DryRun || h.Config.Permission != permissions.ModeAuto {
 		t.Fatalf("clear: dry=%v perm=%s", h.Config.DryRun, h.Config.Permission)
+	}
+
+	body = []byte(`{"shell_whitelist":false}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if h.Config.ShellWhitelist {
+		t.Fatal("shell_whitelist patch was not applied")
 	}
 }
 
@@ -353,6 +1003,16 @@ func TestQueriesAPI(t *testing.T) {
 	board.Tasks[0].Normalize()
 	_ = session.SaveTurnBoard(h.Config.SlmDir(), turn, board)
 	_, _ = session.WriteTurnSummary(h.Config.SlmDir(), turn, board, "lesson")
+	comp := &composer.Composition{
+		Summary: "go coding composition",
+		Handoff: []string{"Verify with go test ./..."},
+		Phases:  []composer.PhaseChoice{{ID: "execute", Agent: "go-worker", Enabled: true}},
+		Execute: composer.ExecuteChoice{DefaultRole: "go-worker", Reviewer: "reviewer", Corrector: "corrector", MaxWaves: 2},
+		Team:    []composer.TeamMember{{Role: "go-worker", Skills: []string{"atomic-coding"}}},
+	}
+	if err := composer.SaveDynamic(session.TurnDir(h.Config.SlmDir(), turn.ID), comp); err != nil {
+		t.Fatal(err)
+	}
 
 	s := New(h, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/queries", nil)
@@ -369,6 +1029,79 @@ func TestQueriesAPI(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "summary_md") {
 		t.Fatalf("expected summary_md: %s", rec.Body.String())
+	}
+	var got struct {
+		Composition *composer.Composition `json:"composition"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Composition == nil || got.Composition.Summary != comp.Summary {
+		t.Fatalf("composition not returned: %s", rec.Body.String())
+	}
+}
+
+func TestInterruptedRunsAPIAndResumeConflict(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := session.BeginTurn(h.Config.SlmDir(), "run-stop-1", "finish interrupted work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := plan.Board{
+		QueryID: turn.ID,
+		Query:   turn.Query,
+		Tasks: []plan.Task{
+			{ID: "T1", Title: "done", Column: plan.ColDone},
+			{ID: "T2", Title: "blocked", Column: plan.ColBlocked, Error: "review failed"},
+		},
+	}
+	for i := range board.Tasks {
+		board.Tasks[i].Normalize()
+	}
+	if err := session.MarkInterrupted(h.Config.SlmDir(), turn, board, session.PhaseExecute); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/interrupted", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list []struct {
+		ID          string `json:"id"`
+		Phase       string `json:"phase"`
+		Tasks       int    `json:"tasks"`
+		Done        int    `json:"done"`
+		Blocked     int    `json:"blocked"`
+		ReactResume bool   `json:"react_resume"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != "run-stop-1" || list[0].Phase != session.PhaseExecute {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+	if list[0].Tasks != 2 || list[0].Done != 1 || list[0].Blocked != 1 || list[0].ReactResume {
+		t.Fatalf("unexpected counters: %+v", list[0])
+	}
+
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+	req = httptest.NewRequest(http.MethodPost, "/api/runs/resume", strings.NewReader(`{"id":"run-stop-1"}`))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -117,7 +118,7 @@ func WriteTurnSummary(slmDir string, t *Turn, board plan.Board, extraNotes strin
 		return "", err
 	}
 	path := filepath.Join(dir, "summary.md")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if err := atomicfile.Write(path, []byte(body), 0o644); err != nil {
 		return "", err
 	}
 	if err := writeTurnMeta(dir, t); err != nil {
@@ -291,16 +292,16 @@ func writeTurnFiles(slmDir string, t *Turn) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	_ = os.WriteFile(filepath.Join(dir, "QUERY.md"),
+	_ = atomicfile.Write(filepath.Join(dir, "QUERY.md"),
 		[]byte("# Query\n\n"+t.Query+"\n"), 0o644)
 	planMD, tasksMD := t.Board.ToMarkdown()
-	_ = os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte(planMD), 0o644)
-	_ = os.WriteFile(filepath.Join(dir, "TASKS.md"), []byte(tasksMD), 0o644)
+	_ = atomicfile.Write(filepath.Join(dir, "PLAN.md"), []byte(planMD), 0o644)
+	_ = atomicfile.Write(filepath.Join(dir, "TASKS.md"), []byte(tasksMD), 0o644)
 	data, err := json.MarshalIndent(t.Board, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+	if err := atomicfile.Write(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
 		return err
 	}
 	return writeTurnMeta(dir, t)
@@ -311,24 +312,24 @@ func writeTurnMeta(dir string, t *Turn) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "meta.json"), data, 0o644)
+	return atomicfile.Write(filepath.Join(dir, "meta.json"), data, 0o644)
 }
 
 func mirrorLive(slmDir string, t *Turn) error {
 	planMD, tasksMD := t.Board.ToMarkdown()
-	if err := os.WriteFile(filepath.Join(slmDir, "PLAN.md"), []byte(planMD), 0o644); err != nil {
+	if err := atomicfile.Write(filepath.Join(slmDir, "PLAN.md"), []byte(planMD), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(slmDir, "TASKS.md"), []byte(tasksMD), 0o644); err != nil {
+	if err := atomicfile.Write(filepath.Join(slmDir, "TASKS.md"), []byte(tasksMD), 0o644); err != nil {
 		return err
 	}
-	_ = os.WriteFile(filepath.Join(slmDir, "QUERY.md"),
+	_ = atomicfile.Write(filepath.Join(slmDir, "QUERY.md"),
 		[]byte("# Current Query\n\n"+t.Query+"\n"), 0o644)
 	data, err := json.MarshalIndent(t.Board, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(slmDir, "board.json"), data, 0o644)
+	return atomicfile.Write(filepath.Join(slmDir, "board.json"), data, 0o644)
 }
 
 func appendSummariesIndex(slmDir string, t *Turn, fullBody string) error {
@@ -358,7 +359,7 @@ func appendSummariesIndex(slmDir string, t *Turn, fullBody string) error {
 	} else if !strings.HasPrefix(strings.TrimSpace(body), "#") {
 		body = "# Prior query summaries\n" + body
 	}
-	return os.WriteFile(path, []byte(body), 0o644)
+	return atomicfile.Write(path, []byte(body), 0o644)
 }
 
 func boardStats(board plan.Board) (done, total, failed int) {

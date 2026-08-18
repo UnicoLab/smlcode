@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -48,7 +49,7 @@ func MarkInterrupted(slmDir string, t *Turn, board plan.Board, phase string) err
 	// Lightweight interrupt note for humans / later CONTEXT enrichment.
 	note := fmt.Sprintf("# Interrupted\n\n**Phase:** %s\n**When:** %s\n\nBoard preserved — resume with `/resume` or `slmcode session resume %s`.\n",
 		phase, t.UpdatedAt, t.ID)
-	_ = os.WriteFile(filepath.Join(TurnDir(slmDir, t.ID), "INTERRUPTED.md"), []byte(note), 0o644)
+	_ = atomicfile.Write(filepath.Join(TurnDir(slmDir, t.ID), "INTERRUPTED.md"), []byte(note), 0o644)
 	return writeCheckpoint(slmDir, t)
 }
 
@@ -216,7 +217,7 @@ func writeCheckpoint(slmDir string, t *Turn) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(checkpointPath(slmDir), data, 0o644)
+	return atomicfile.Write(checkpointPath(slmDir), data, 0o644)
 }
 
 func readCheckpointID(slmDir string) string {

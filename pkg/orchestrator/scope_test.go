@@ -29,6 +29,9 @@ func TestResolveAskUsesHandler(t *testing.T) {
 		PRD: plan.ScopePRD{Summary: "cli", Acceptance: []string{"prints hello"}},
 	}
 	o.OnAsk(func(ctx context.Context, ask plan.ScopeAsk) (plan.ScopeAnswers, error) {
+		if ask.Kind != "clarify" || ask.TimeoutS != 1 || ask.OnTimeout != "use_recommended" {
+			t.Fatalf("bad ask metadata: %+v", ask)
+		}
 		return plan.ScopeAnswers{
 			Answers: []plan.ScopeAnswer{{
 				QuestionID: "q1", Selected: []string{"Go"},

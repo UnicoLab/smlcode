@@ -86,7 +86,12 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 		return false, board
 	}
 
+	timeout := o.cfg.ContinueAskTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	ask := plan.BuildContinueAsk(query, reason, escalatedTaskIDs(board), gapLines(gaps))
+	ask.TimeoutS = int(timeout.Seconds())
 	payload := plan.MarshalContinueAskJSON(ask)
 	_ = o.store.Append(contextstore.DocScratch, "Continue ask",
 		ask.Summary+"\nReason: "+reason+"\n"+strings.Join(ask.Gaps, "\n"))
@@ -123,16 +128,13 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 		o.mu.Unlock()
 		if h != nil {
 			if a, err := h(ctx, ask); err == nil {
+				a.AskID = ask.ID
 				ans, got = a, true
 			}
 		}
 		if !got {
-			timeout := o.cfg.ContinueAskTimeout
-			if timeout <= 0 {
-				timeout = 2 * time.Minute
-			}
 			o.emit("test", fmt.Sprintf("waiting for continue decision (timeout %s)", timeout), "")
-			ok, err := hitl.WaitAnswers(ctx, o.cfg.SlmDir(), "continue", timeout, &ans)
+			ok, err := hitl.WaitAnswersForID(ctx, o.cfg.SlmDir(), "continue", ask.ID, timeout, &ans)
 			if err != nil {
 				hitl.Clear(o.cfg.SlmDir(), "continue")
 				return false, board
@@ -169,7 +171,11 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 				From:   "test",
 				To:     "execute",
 			})
-			if err := runner.RunBoard(ctx, board); err != nil && !isCancelErr(err) {
+			ran, err := runner.RunCorrectiveBoard(ctx, board)
+			if !ran {
+				o.emit("execute", "continue wave skipped — max_waves budget exhausted", "")
+			}
+			if err != nil && !isCancelErr(err) {
 				o.emit("execute", "continue wave warning: "+err.Error(), "")
 			}
 			snap := o.boardStore.Snapshot()

@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 const (
@@ -226,5 +228,5 @@ func writeCache(path, latest, releaseURL string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, data, 0o644)
+	_ = atomicfile.Write(path, data, 0o644)
 }

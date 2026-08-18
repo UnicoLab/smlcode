@@ -113,10 +113,11 @@ compact_mode: true        # quieter TUI/Studio live stream (default)
 ## QA gate (on by default) ✅
 
 ```yaml
-clarify_mode: auto        # auto | ask | off  (Claude Code AskUserQuestion style)
+clarify_mode: ask         # auto | ask | off  (Claude Code AskUserQuestion style)
 clarify_timeout: 2m       # ask mode: wait then apply recommended
 scope_judge: true         # post-split PRD completeness gate
-plan_approve: auto        # off | auto | ask  (Plan Mode gate before execute)
+plan_approve: ask         # off | auto | ask  (Plan Mode gate before execute)
+plan_approve_timeout: 1m  # ask mode: wait then approve by default
 auto_approve: false       # skip plan/shell/clarify HITL waits
 shell_permission: allow   # allow | ask | deny (ask = interactive approve)
 context_compact: true     # mid-run CONTEXT.md summarization
@@ -153,11 +154,13 @@ continue_ask_timeout: 2m
 Vague queries get an **interviewer** pass (options + recommended defaults).
 - `auto` — lock recommended decisions into a PRD (no pause)
 - `ask` — emit SSE `kind=ask`, write `.slmcode/clarify/ask.json`, wait for
-  Studio modal or `POST /api/clarify/answer` (timeout → recommended)
+  Studio modal or `POST /api/clarify/answer` with the pending `ask.id` as
+  `ask_id` (timeout → recommended)
 - `off` — skip interview
 
 `scope_judge` then checks every task has concrete acceptance/files before
-execute. `plan_approve: ask` pauses with a Studio modal / `POST /api/plan/approve`.
+execute. `plan_approve: ask` pauses with a Studio modal / `POST /api/plan/approve`
+using the pending plan `ask.id` as `ask_id`.
 
 ### Hooks / MCP / rewind
 

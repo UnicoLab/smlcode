@@ -39,6 +39,7 @@ type EscalateAsk struct {
 
 // EscalateAnswer is the user (or auto/timeout) decision.
 type EscalateAnswer struct {
+	AskID      string `json:"ask_id,omitempty"`
 	Action     string `json:"action"` // re_scope | retry | mark_done | abort
 	Notes      string `json:"notes,omitempty"`
 	AnsweredAt string `json:"answered_at,omitempty"`
@@ -68,7 +69,7 @@ func BuildEscalateAsk(t Task, detail string, timeoutSec int) EscalateAsk {
 		sum = t.ID + " — " + strings.TrimSpace(t.Title) + " needs human review"
 	}
 	return EscalateAsk{
-		ID:        "escalate-" + t.ID + "-" + time.Now().Format("150405"),
+		ID:        "escalate-" + t.ID + "-" + time.Now().UTC().Format("20060102T150405.000000000"),
 		Kind:      "escalate",
 		TaskID:    t.ID,
 		Title:     t.Title,

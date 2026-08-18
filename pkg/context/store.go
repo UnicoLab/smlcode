@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // Document names under .slmcode/
@@ -47,7 +49,7 @@ func (s *Store) Init(projectName string) error {
 	for name, body := range defaultDocuments(projectName) {
 		path := filepath.Join(s.dir, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			if err := atomicfile.Write(path, []byte(body), 0o644); err != nil {
 				return err
 			}
 		}
@@ -78,7 +80,7 @@ func (s *Store) Read(name string) (string, error) {
 func (s *Store) Write(name, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.WriteFile(s.Path(name), []byte(content), 0o644)
+	return atomicfile.Write(s.Path(name), []byte(content), 0o644)
 }
 
 // Append adds a timestamped section to a document.
@@ -89,7 +91,7 @@ func (s *Store) Append(name, sectionTitle, body string) error {
 	existing, _ := os.ReadFile(path)
 	stamp := time.Now().Format(time.RFC3339)
 	block := fmt.Sprintf("\n\n## %s (%s)\n\n%s\n", sectionTitle, stamp, strings.TrimSpace(body))
-	return os.WriteFile(path, append(existing, []byte(block)...), 0o644)
+	return atomicfile.Write(path, append(existing, []byte(block)...), 0o644)
 }
 
 // Bundle packs selected docs into a single prompt-friendly string, truncated

@@ -567,7 +567,9 @@ The Studio frontend polls these endpoints every 2s:
 - `GET /api/escalate/pending` → `POST /api/escalate/answer`
 - `GET /api/shell/pending` → `POST /api/shell/approve`
 
-Each ask has a timeout; on expiry the recommended/default action is applied.
+Each answer must include the current pending `ask.id` as `ask_id`; stale or
+mismatched answers are rejected. Each ask has a timeout; on expiry the
+recommended/default action is applied or the ask is reported as expired.
 
 ---
 

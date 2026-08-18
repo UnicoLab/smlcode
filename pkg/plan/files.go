@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,10 +20,9 @@ func ListWorkspaceFiles(root string, limit int) []string {
 		if err != nil {
 			return nil
 		}
-		name := d.Name()
 		if d.IsDir() {
-			if name == ".git" || name == ".slmcode" || name == "node_modules" || name == "vendor" ||
-				name == "bin" || name == "dist" || name == ".venv" || name == "__pycache__" {
+			rel, _ := filepath.Rel(root, path)
+			if skipInventoryDir(filepath.ToSlash(rel), d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -31,19 +31,85 @@ func ListWorkspaceFiles(root string, limit int) []string {
 		if err != nil || strings.HasPrefix(rel, ".") {
 			return nil
 		}
-		ext := strings.ToLower(filepath.Ext(rel))
-		switch ext {
-		case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".md", ".json", ".yaml", ".yml":
-		default:
+		if !inventoryFileAllowed(rel) {
 			return nil
 		}
-		out = append(out, rel)
-		if len(out) >= limit {
-			return filepath.SkipAll
-		}
+		out = append(out, filepath.ToSlash(rel))
 		return nil
 	})
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, pj := inventoryPathPriority(out[i]), inventoryPathPriority(out[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return out[i] < out[j]
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
 	return out
+}
+
+func inventoryFileAllowed(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case "go.mod", "go.sum", "makefile", "dockerfile", "package-lock.json", "pnpm-lock.yaml",
+		"yarn.lock", "cargo.lock", "requirements.txt":
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".md", ".json", ".yaml", ".yml",
+		".toml", ".gradle":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipInventoryDir(rel, name string) bool {
+	switch name {
+	case ".git", ".slmcode", "node_modules", "vendor", "bin", "dist", "build",
+		"coverage", ".next", "out", "target", ".turbo", ".venv", "__pycache__":
+		return true
+	}
+	switch rel {
+	case "cmd/slmcode/ui", "web/dist":
+		return true
+	default:
+		return false
+	}
+}
+
+func inventoryPathPriority(path string) int {
+	lp := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(lp)
+	switch base {
+	case "go.mod", "package.json", "pyproject.toml", "cargo.toml", "pom.xml", "build.gradle",
+		"makefile", "dockerfile", "readme.md", "agents.md", "project.md":
+		return 0
+	case "go.sum", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock",
+		"requirements.txt", "compose.yaml", "docker-compose.yml":
+		return 1
+	}
+	switch {
+	case strings.HasPrefix(lp, "cmd/"):
+		return 10
+	case strings.HasPrefix(lp, "pkg/"):
+		return 11
+	case strings.HasPrefix(lp, "internal/"):
+		return 12
+	case strings.HasPrefix(lp, "web/src/"):
+		return 13
+	case strings.HasPrefix(lp, "src/"):
+		return 14
+	case strings.HasPrefix(lp, "test/") || strings.HasPrefix(lp, "tests/"):
+		return 20
+	case strings.HasPrefix(lp, "docs/"):
+		return 30
+	default:
+		return 40
+	}
 }
 
 // FileExists reports whether rel exists under root.

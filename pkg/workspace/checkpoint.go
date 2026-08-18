@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // FileCheckpointer snapshots file contents before the first write/edit/patch
@@ -54,14 +56,14 @@ func (c *FileCheckpointer) BackupIfNeeded(rel string) {
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
-			_ = os.WriteFile(filepath.Join(c.dir(), name+".absent"), nil, 0o644)
+			_ = atomicfile.Write(filepath.Join(c.dir(), name+".absent"), nil, 0o644)
 		}
 		return
 	}
 	if len(data) > 2_000_000 {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(c.dir(), name), data, 0o644)
+	_ = atomicfile.Write(filepath.Join(c.dir(), name), data, 0o644)
 }
 
 // Restore writes the first-write backup back to the workspace (best-effort).
@@ -83,7 +85,7 @@ func (c *FileCheckpointer) Restore(rel string) error {
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(abs, data, 0o644)
+	return atomicfile.Write(abs, data, 0o644)
 }
 
 func sanitizeSession(s string) string {

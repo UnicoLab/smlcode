@@ -23,11 +23,14 @@ type ContinueAsk struct {
 	Gaps      []string `json:"gaps,omitempty"`      // precise path:line — reason
 	Escalated []string `json:"escalated,omitempty"` // task IDs
 	Options   []string `json:"options"`             // continue | stop | flag_only
+	TimeoutS  int      `json:"timeout_sec,omitempty"`
+	OnTimeout string   `json:"on_timeout,omitempty"` // "stop"
 	CreatedAt string   `json:"created_at"`
 }
 
 // ContinueAnswer is the user (or auto) decision.
 type ContinueAnswer struct {
+	AskID      string `json:"ask_id,omitempty"`
 	Action     string `json:"action"` // continue | stop | flag_only
 	Notes      string `json:"notes,omitempty"`
 	AnsweredAt string `json:"answered_at,omitempty"`
@@ -50,7 +53,7 @@ func NormalizeContinueAsk(m string) string {
 // BuildContinueAsk constructs a Studio/TUI continue prompt.
 func BuildContinueAsk(query, reason string, escalated []string, gaps []string) ContinueAsk {
 	return ContinueAsk{
-		ID:        "continue-" + time.Now().Format("150405"),
+		ID:        "continue-" + time.Now().UTC().Format("20060102T150405.000000000"),
 		Kind:      "continue",
 		Query:     query,
 		Reason:    reason,
@@ -58,6 +61,7 @@ func BuildContinueAsk(query, reason string, escalated []string, gaps []string) C
 		Gaps:      gaps,
 		Escalated: escalated,
 		Options:   []string{"continue", "stop", "flag_only"},
+		OnTimeout: "stop",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 }

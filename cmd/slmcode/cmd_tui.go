@@ -136,11 +136,20 @@ func runPremiumTUI() error {
 			if strings.TrimSpace(arg) == "" {
 				return false, fmt.Errorf("usage: /escalate re_scope|retry|mark_done|abort")
 			}
+			var ask plan.EscalateAsk
+			ok, err := hitl.ReadAsk(h.Config.SlmDir(), "escalate", &ask)
+			if err != nil {
+				return false, err
+			}
+			if !ok || strings.TrimSpace(ask.ID) == "" {
+				return false, fmt.Errorf("no pending escalate ask")
+			}
 			ans := plan.EscalateAnswer{
+				AskID:      ask.ID,
 				Action:     action,
 				AnsweredAt: time.Now().UTC().Format(time.RFC3339),
 			}
-			if err := hitl.WriteAnswers(h.Config.SlmDir(), "escalate", ans); err != nil {
+			if err := hitl.WriteAnswersOnce(h.Config.SlmDir(), "escalate", ans); err != nil {
 				return false, err
 			}
 			fmt.Println(cli.Success("escalate → " + action))

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -79,7 +80,7 @@ func (efh *EnhancedFailureHandler) ReportTaskFailure(board *plan.Board, t plan.T
 	if mErr != nil {
 		return fmt.Errorf("failed to marshal error record: %w", mErr)
 	}
-	if wErr := os.WriteFile(jsonFile, jsonContent, 0o644); wErr != nil {
+	if wErr := atomicfile.Write(jsonFile, jsonContent, 0o644); wErr != nil {
 		return fmt.Errorf("failed to write error json: %w", wErr)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -42,7 +43,7 @@ func Save(slmDir string, s Session) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(path, data, 0o644)
+	return path, atomicfile.Write(path, data, 0o644)
 }
 
 func Load(slmDir, id string) (*Session, error) {
@@ -127,7 +128,7 @@ func Archive(slmDir, runID, query, summary string) (string, error) {
 		b.WriteString(body)
 		b.WriteString("\n\n")
 	}
-	return path, os.WriteFile(path, []byte(b.String()), 0o644)
+	return path, atomicfile.Write(path, []byte(b.String()), 0o644)
 }
 
 func sanitizeID(id string) string {

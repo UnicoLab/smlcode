@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // Registry is the in-memory catalog of discovered building blocks.
@@ -77,7 +79,11 @@ func (r *Registry) loadRoot(root Root) error {
 			if err != nil {
 				continue
 			}
-			_ = r.ingest(path, data, root.Source, kind)
+			if err := r.ingest(path, data, root.Source, kind); err != nil {
+				if backup, bakErr := os.ReadFile(atomicfile.BackupPath(path)); bakErr == nil {
+					_ = r.ingest(path, backup, root.Source, kind)
+				}
+			}
 		}
 	}
 	// Flat YAML files directly under blocks/ (kind from document).
@@ -94,7 +100,11 @@ func (r *Registry) loadRoot(root Root) error {
 		if err != nil {
 			continue
 		}
-		_ = r.ingest(path, data, root.Source, "")
+		if err := r.ingest(path, data, root.Source, ""); err != nil {
+			if backup, bakErr := os.ReadFile(atomicfile.BackupPath(path)); bakErr == nil {
+				_ = r.ingest(path, backup, root.Source, "")
+			}
+		}
 	}
 	return nil
 }

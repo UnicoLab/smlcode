@@ -90,12 +90,13 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	o.mu.Unlock()
 	if h != nil {
 		if a, err := h(ctx, ask); err == nil {
+			a.AskID = ask.ID
 			ans, got = a, true
 		}
 	}
 	if !got {
 		o.emit("execute", fmt.Sprintf("waiting for escalate decision on %s (timeout %s)", t.ID, timeout), "")
-		ok, err := hitl.WaitAnswers(ctx, o.cfg.SlmDir(), "escalate", timeout, &ans)
+		ok, err := hitl.WaitAnswersForID(ctx, o.cfg.SlmDir(), "escalate", ask.ID, timeout, &ans)
 		if err != nil {
 			hitl.Clear(o.cfg.SlmDir(), "escalate")
 			// Context canceled (user stop) — leave in backlog, do not spend an LLM turn.
@@ -155,6 +156,12 @@ func (o *Orchestrator) escalateDecideRole() string {
 
 // escalateTimeoutDecide asks the SLM arbitrator; falls back to a safe heuristic.
 func (o *Orchestrator) escalateTimeoutDecide(ctx context.Context, board *plan.Board, t plan.Task, detail string) plan.EscalateAnswer {
+	if o != nil && o.cfg != nil && o.cfg.DryRun {
+		ans := plan.HeuristicEscalateDecide(t, detail)
+		o.emitFull("execute", stream.KindOutput, "escalate", t.ID,
+			"dry-run escalate timeout — heuristic: "+ans.Action, "", ans.Notes)
+		return ans
+	}
 	role := o.escalateDecideRole()
 	prompt := formatEscalateDecidePrompt(t, detail)
 	o.emitAgent("execute", role, t.ID, "escalate timeout — SLM deciding", strings.Join(t.Files, ", "), "")

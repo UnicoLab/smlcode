@@ -88,6 +88,40 @@ func TestReconcileFilesKeepsGreenfieldCreates(t *testing.T) {
 	}
 }
 
+func TestListWorkspaceFilesPrioritizesManifestsAndSkipsGeneratedUI(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":                            "module example.com/x\n\ngo 1.22\n",
+		"cmd/slmcode/ui/assets/app.js":      "generated",
+		"cmd/slmcode/main.go":               "package main\n",
+		"pkg/worker/worker.go":              "package worker\n",
+		"web/src/App.tsx":                   "export default function App() { return null }\n",
+		"node_modules/pkg/index.js":         "ignored",
+		".slmcode/composition.dynamic.json": "{}",
+	}
+	for path, body := range files {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := ListWorkspaceFiles(root, 3)
+	if len(got) != 3 {
+		t.Fatalf("inventory=%v", got)
+	}
+	if got[0] != "go.mod" {
+		t.Fatalf("manifest should rank first: %v", got)
+	}
+	for _, path := range got {
+		if strings.Contains(path, "cmd/slmcode/ui") || strings.Contains(path, "node_modules") || strings.Contains(path, ".slmcode") {
+			t.Fatalf("generated/hidden path leaked into inventory: %v", got)
+		}
+	}
+}
+
 func TestInferCreateFiles(t *testing.T) {
 	got := InferCreateFiles("Create src/lg_agent/graph.py with StateGraph")
 	found := false

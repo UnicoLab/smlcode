@@ -32,6 +32,29 @@ func TestDefaultValidateAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadFallsBackToPipelineBackup(t *testing.T) {
+	cfg := Default()
+	cfg.Execute.MaxWaves = 2
+	dir := t.TempDir()
+	if err := Save(dir, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Execute.MaxWaves = 7
+	if err := Save(dir, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(dir), []byte("version: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Execute.MaxWaves != 2 {
+		t.Fatalf("max_waves=%d", got.Execute.MaxWaves)
+	}
+}
+
 func TestSlotsAtAndWhen(t *testing.T) {
 	cfg := Default()
 	cfg.Slots = []Slot{

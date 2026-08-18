@@ -72,24 +72,46 @@ export interface Config {
   post_worker_smoke: boolean;
   permission: string;
   shell_permission: string;
+  shell_whitelist: boolean;
   dry_run: boolean;
   auto_approve: boolean;
   compact_mode: boolean;
   context_compact: boolean;
+  react_compact: boolean;
+  react_compact_at_percent: number;
   wave_snapshots: boolean;
+  file_checkpoints: boolean;
   hooks_enabled: boolean;
   write_guard: boolean;
   read_before_edit: boolean;
+  shell_write_guard: boolean;
   tool_guidance: boolean;
   knowledge_inject: boolean;
   quality_monitor: boolean;
   static_quality: boolean;
   thinking_budget: boolean;
+  thinking_budget_tokens: number;
+  finalize_warn: boolean;
+  require_smoke: boolean;
+  claims_gate: boolean;
   worker_critique: boolean;
+  over_edit_guard: boolean;
+  read_head_lines: number;
+  auto_text_tools: boolean;
   clarify_mode: string;
+  clarify_timeout?: number;
+  clarify_timeout_sec?: number;
   plan_approve: string;
+  plan_approve_timeout?: number;
+  plan_approve_timeout_sec?: number;
   continue_ask: string;
+  continue_ask_timeout?: number;
+  continue_ask_timeout_sec?: number;
   escalate_ask: string;
+  escalate_ask_timeout?: number;
+  escalate_ask_timeout_sec?: number;
+  shell_ask_timeout?: number;
+  shell_ask_timeout_sec?: number;
   embedding_enabled: boolean;
   embedding_model: string;
   embedding_endpoint: string;
@@ -105,7 +127,6 @@ export interface Config {
   llm_retry_count?: number;
   llm_retry_delay_ms?: number;
   context_compact_engine?: string;
-  react_compact?: boolean;
   session_event_log?: boolean;
   auto_refine?: boolean;
   auto_refine_max_rounds?: number;
@@ -127,6 +148,46 @@ export interface Health {
   root: string;
   running: boolean;
   events: number;
+}
+
+export interface ReadinessCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  severity: 'critical' | 'warning' | string;
+  message: string;
+  fix_label?: string;
+  fix_hint?: string;
+  fix_patch?: ConfigPatch;
+  endpoint?: string;
+  latency_ms?: number;
+  details?: Record<string, unknown>;
+}
+
+export interface ModelProfile {
+  context_limit: number;
+  max_tokens: number;
+  thinking_budget_tokens: number;
+  skill_token_budget: number;
+  knowledge_token_budget: number;
+  temperature: number;
+  max_turns: number;
+}
+
+export interface ReadinessReport {
+  ok: boolean;
+  score: number;
+  status: string;
+  provider: string;
+  model: string;
+  endpoint: string;
+  backend: string;
+  active_stack?: string;
+  active_pack?: string;
+  active_pipeline?: string;
+  guards: Record<string, boolean>;
+  model_profile: ModelProfile;
+  checks: ReadinessCheck[];
 }
 
 // ── Models / Auth ──
@@ -199,13 +260,50 @@ export interface RunEvent {
   agent?: string;
   scope?: string;
   output?: string;
+  data?: DynamicComposition;
   time: string;
+}
+
+export interface DynamicPhaseChoice {
+  id: string;
+  agent?: string;
+  enabled: boolean;
+  when?: string;
+}
+
+export interface DynamicExecuteChoice {
+  default_role?: string;
+  reviewer?: string;
+  corrector?: string;
+  max_waves?: number;
+}
+
+export interface DynamicTeamMember {
+  role: string;
+  skills?: string[];
+}
+
+export interface DynamicComposition {
+  summary: string;
+  strategy?: string;
+  handoff?: string[];
+  phases: DynamicPhaseChoice[];
+  execute: DynamicExecuteChoice;
+  team?: DynamicTeamMember[];
+  slots?: Slot[];
+}
+
+export interface CompositionPreviewResponse {
+  ok: boolean;
+  dynamic_enabled: boolean;
+  composition: DynamicComposition;
 }
 
 // ── Run Responses ──
 export interface StartRunResponse {
   status: string;
-  query: string;
+  query?: string;
+  id?: string;
 }
 
 export interface OrchestratorResult {
@@ -219,6 +317,18 @@ export interface LatestRunResponse {
   running: boolean;
   result: OrchestratorResult | null;
   events: RunEvent[];
+}
+
+export interface InterruptedRun {
+  id: string;
+  query: string;
+  updated_at: string;
+  phase?: string;
+  resume_from?: string;
+  tasks: number;
+  done: number;
+  blocked: number;
+  react_resume: boolean;
 }
 
 // ── Run Request ──
@@ -344,16 +454,30 @@ export interface QuerySession {
   success: boolean;
   summary: string;
   updated_at: string;
+  interrupted?: boolean;
+  phase?: string;
+  resume_from?: string;
 }
 
 export interface QueryView {
   id: string;
   query: string;
+  success: boolean;
+  updated_at: string;
+  interrupted?: boolean;
+  phase?: string;
+  resume_from?: string;
   summary_md: string;
   plan_md: string;
   tasks_md: string;
   board: Board;
   summary: string;
+  composition?: DynamicComposition | null;
+}
+
+export interface QueryEventsResponse {
+  id: string;
+  events: RunEvent[];
 }
 
 // ── Stack Presets ──
@@ -419,6 +543,8 @@ export interface ClarifyQuestion {
   header: string;
   question: string;
   options: ClarifyOption[];
+  multi_select?: boolean;
+  allow_freeform?: boolean;
   recommended: string;
 }
 
@@ -429,36 +555,107 @@ export interface ClarifyOption {
 }
 
 export interface ClarifyAsk {
+  id?: string;
+  kind?: string;
+  query?: string;
   questions: ClarifyQuestion[];
+  prd_draft?: {
+    summary?: string;
+    goals?: string[];
+    non_goals?: string[];
+    acceptance?: string[];
+    constraints?: string[];
+    language?: string;
+    entrypoint?: string;
+  };
+  timeout_sec?: number;
+  on_timeout?: string;
+  created_at?: string;
 }
 
 export interface PlanAsk {
+  id?: string;
+  kind?: string;
+  query?: string;
   summary: string;
+  goals?: string[];
+  assumptions?: string[];
   task_count: number;
   tasks: string[];
+  task_details?: PlanApprovalTask[];
+  composition?: DynamicComposition | null;
+  validation?: PlanValidation;
+  options?: string[];
+  timeout_sec?: number;
+  on_timeout?: string;
+  created_at?: string;
+}
+
+export interface PlanApprovalTask {
+  id: string;
+  title: string;
+  description?: string;
+  role?: string;
+  column?: string;
+  priority?: number;
+  depends_on?: string[];
+  files?: string[];
+  acceptance?: string;
+}
+
+export interface PlanValidation {
+  ok: boolean;
+  issues?: string[];
+  hints?: string[];
+  weak_task_ids?: string[];
 }
 
 export interface ContinueAsk {
+  id?: string;
+  kind?: string;
+  query?: string;
   summary: string;
   reason: string;
-  escalated: string[];
-  gaps: string[];
+  escalated?: string[];
+  gaps?: string[];
+  options?: string[];
+  timeout_sec?: number;
+  on_timeout?: string;
+  created_at?: string;
 }
 
 export interface EscalateAsk {
+  id?: string;
   task_id: string;
   title: string;
   role: string;
-  files: string[];
+  files?: string[];
   detail: string;
   summary: string;
+  options?: string[];
   timeout_sec: number;
+  on_timeout?: string;
   kind: string;
+  created_at?: string;
 }
 
 export interface ShellAsk {
+  id?: string;
+  kind?: string;
   command: string;
-  task_id: string;
+  task_id?: string;
+  timeout_sec?: number;
+  on_timeout?: string;
+  created_at?: string;
+}
+
+export interface PendingResponse<T> {
+  pending: boolean;
+  ask?: T;
+  expired?: boolean;
+  answered?: boolean;
+  stale?: boolean;
+  message?: string;
 }
 
 // ── Blocks ──

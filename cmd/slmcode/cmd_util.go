@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/readiness"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 )
@@ -205,6 +208,20 @@ func configCmd() *cobra.Command {
 			cli.KeyVal("qa_gate_command", c.QAGateCommand)
 			cli.KeyVal("qa_gate_max_rounds", fmt.Sprintf("%d", c.QAGateMaxRounds))
 			cli.KeyVal("permission", c.Permission)
+			cli.KeyVal("shell_permission", c.ShellPermission)
+			cli.KeyVal("shell_whitelist", fmt.Sprintf("%v", c.ShellWhitelist))
+			cli.KeyVal("write_guard", fmt.Sprintf("%v", c.WriteGuard))
+			cli.KeyVal("read_before_edit", fmt.Sprintf("%v", c.ReadBeforeEdit))
+			cli.KeyVal("shell_write_guard", fmt.Sprintf("%v", c.ShellWriteGuard))
+			cli.KeyVal("file_checkpoints", fmt.Sprintf("%v", c.FileCheckpoints))
+			cli.KeyVal("require_smoke", fmt.Sprintf("%v", c.RequireSmoke))
+			cli.KeyVal("claims_gate", fmt.Sprintf("%v", c.ClaimsGate))
+			cli.KeyVal("over_edit_guard", fmt.Sprintf("%v", c.OverEditGuard))
+			cli.KeyVal("context_compact", fmt.Sprintf("%v", c.ContextCompact))
+			cli.KeyVal("react_compact", fmt.Sprintf("%v", c.ReactCompact))
+			cli.KeyVal("session_event_log", fmt.Sprintf("%v", c.SessionEventLog))
+			cli.KeyVal("auto_text_tools", fmt.Sprintf("%v", c.AutoTextTools))
+			cli.KeyVal("read_head_lines", fmt.Sprintf("%d", c.ReadHeadLines))
 			cli.KeyVal("dry_run", fmt.Sprintf("%v", c.DryRun))
 			cli.KeyVal("listen", c.Listen)
 			cli.KeyVal("api_key", c.APIKey)
@@ -279,7 +296,14 @@ func configCmd() *cobra.Command {
 			case "verbose":
 				c.Verbose = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 			default:
-				return fmt.Errorf("unknown key %q", k)
+				patch, ok, err := configPatchFromSchemaValue(k, v)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("unknown key %q", k)
+				}
+				c.ApplyPatch(patch)
 			}
 			if err := c.Save(); err != nil {
 				return err
@@ -289,6 +313,83 @@ func configCmd() *cobra.Command {
 		},
 	})
 	return cmd
+}
+
+func configPatchFromSchemaValue(key, value string) (config.Patch, bool, error) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, field := range config.Schema() {
+		if field.Key != key || !field.Patchable {
+			continue
+		}
+		parsed, err := parseConfigValue(field, value)
+		if err != nil {
+			return config.Patch{}, true, err
+		}
+		b, err := json.Marshal(map[string]interface{}{field.Key: parsed})
+		if err != nil {
+			return config.Patch{}, true, err
+		}
+		var patch config.Patch
+		if err := json.Unmarshal(b, &patch); err != nil {
+			return config.Patch{}, true, err
+		}
+		return patch, true, nil
+	}
+	return config.Patch{}, false, nil
+}
+
+func parseConfigValue(field config.FieldSchema, value string) (interface{}, error) {
+	value = strings.TrimSpace(value)
+	if len(field.Enum) > 0 {
+		ok := false
+		for _, allowed := range field.Enum {
+			if value == allowed {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("%s must be one of: %s", field.Key, strings.Join(field.Enum, ", "))
+		}
+	}
+	switch field.Type {
+	case "bool":
+		v, err := parseConfigBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", field.Key, err)
+		}
+		return v, nil
+	case "int":
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be an integer", field.Key)
+		}
+		return v, nil
+	case "float":
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be a number", field.Key)
+		}
+		return v, nil
+	case "string[]":
+		if value == "" || value == "-" {
+			return []string{}, nil
+		}
+		return splitCSV(value), nil
+	default:
+		return value, nil
+	}
+}
+
+func parseConfigBool(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on", "enable", "enabled":
+		return true, nil
+	case "0", "false", "no", "off", "disable", "disabled":
+		return false, nil
+	default:
+		return false, fmt.Errorf("must be true/false")
+	}
 }
 
 func doctorCmd() *cobra.Command {
@@ -319,9 +420,17 @@ func runDoctor() error {
 	cli.KeyVal("backend", ws.Config.Backend)
 	cli.KeyVal("permission", ws.Config.Permission)
 	cli.KeyVal("shell", ws.Config.ShellPermission)
+	cli.KeyVal("dynamic_pipeline", fmt.Sprintf("%v", ws.Config.DynamicPipeline))
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
 	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
+	prof := config.ResolveModelProfile(ws.Config.ModelProfiles, ws.Config.Model)
+	cli.KeyVal("model_profile", fmt.Sprintf("ctx=%d max_tokens=%d think=%d skills=%d knowledge=%d turns=%d",
+		prof.ContextLimit, prof.MaxTokens, prof.ThinkingBudgetTokens,
+		prof.SkillTokenBudget, prof.KnowledgeTokenBudget, prof.MaxTurns))
+	cli.KeyVal("guards", fmt.Sprintf("write=%v shell_write=%v read_before_edit=%v smoke=%v claims=%v over_edit=%v",
+		ws.Config.WriteGuard, ws.Config.ShellWriteGuard, ws.Config.ReadBeforeEdit,
+		ws.Config.RequireSmoke, ws.Config.ClaimsGate, ws.Config.OverEditGuard))
 	embCfg := retrieval.Config{
 		Enabled:  ws.Config.EmbeddingEnabled,
 		Endpoint: ws.Config.EmbeddingEndpoint,
@@ -398,7 +507,25 @@ func runDoctor() error {
 	}
 	sk, _ := ws.Skills.List()
 	fmt.Println(cli.Success(fmt.Sprintf("%d skills loaded", len(sk))))
+	report := readiness.Build(ws.Config, len(sk))
+	if readinessHasFailedChecks(report) {
+		fmt.Println(cli.Warn(fmt.Sprintf("readiness: %d/100 (%s)", report.Score, report.Status)))
+		fmt.Println(cli.Dim("  failed: " + strings.Join(readinessFailedIDs(report), ", ")))
+		fmt.Println(cli.Dim("  fix: slmcode readiness --fix"))
+	} else {
+		fmt.Println(cli.Success(fmt.Sprintf("readiness: %d/100 (%s)", report.Score, report.Status)))
+	}
 	return nil
+}
+
+func readinessFailedIDs(r readiness.Report) []string {
+	var out []string
+	for _, check := range r.Checks {
+		if !check.OK {
+			out = append(out, check.ID)
+		}
+	}
+	return out
 }
 
 func watchCmd() *cobra.Command {

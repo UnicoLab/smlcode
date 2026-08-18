@@ -61,7 +61,11 @@ func (o *Orchestrator) runPlaceholderPass(ctx context.Context, query string, boa
 	o.persistBoard(board)
 	if runner != nil && board.AgentWorkRemaining() {
 		o.emit("polish", "corrective wave for remaining placeholder gaps", "")
-		if werr := runner.RunBoard(ctx, board); werr != nil && !isCancelErr(werr) {
+		ran, werr := runner.RunCorrectiveBoard(ctx, board)
+		if !ran {
+			o.emit("polish", "placeholder corrective wave skipped — max_waves budget exhausted", "")
+		}
+		if werr != nil && !isCancelErr(werr) {
 			o.emit("polish", "placeholder corrective wave warning: "+werr.Error(), "")
 		}
 		snap := o.boardStore.Snapshot()

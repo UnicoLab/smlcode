@@ -106,7 +106,12 @@ continue_ask: ask
 TUI: `/escalate re_scope|retry|mark_done|abort` while the banner shows escalate pending.
 On timeout the dedicated **@escalate** arbitrator picks retry / re-scope / abort / mark_done.
 
-API: `GET /api/escalate/pending` · `POST /api/escalate/answer` `{"action":"retry"}`.
+API: `GET /api/escalate/pending` · `POST /api/escalate/answer`
+`{"ask_id":"<pending ask.id>","action":"retry"}`.
+
+Manual HITL calls should always read the matching `GET .../pending` response
+first and post the returned `ask.id` as `ask_id`. Expired asks are cleared and
+reported as `{"pending":false,"expired":true}`.
 
 ### HITL popup overlay
 

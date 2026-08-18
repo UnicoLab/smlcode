@@ -48,6 +48,7 @@ func TestStudioUIInteraction(t *testing.T) {
 
 	// --- Fetch index.html and discover asset paths ---
 	htmlPath, jsPath, cssPath := discoverAssets(t, ts.URL)
+	jsCorpus := readBuiltJSCorpus(t, uiRoot)
 
 	// --- Static UI assets used by Live ---
 	for _, entry := range []struct {
@@ -56,13 +57,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	}{
 		{"/", []string{"SLMCode Studio", "id=\"root\"", "<title>"}},
 		{htmlPath, []string{"SLMCode Studio", "id=\"root\"", "<title>"}},
-		{jsPath, []string{
-			"/api/events", "/runs", "/runs/stop", "/runs/latest",
-			"/agents", "/board", "/config", "/skills",
-			"/pipeline", "/tasks", "/stacks",
-			"/health", "/auth", "/mcp",
-			"pipeline", "autoScroll",
-		}},
+		{jsPath, nil},
 		{cssPath, []string{
 			"--color-surface",
 		}},
@@ -83,6 +78,17 @@ func TestStudioUIInteraction(t *testing.T) {
 					t.Fatalf("%s missing %q", entry.path, marker)
 				}
 			}
+		}
+	}
+	for _, marker := range []string{
+		"/api/events", "/runs", "/runs/stop", "/runs/latest",
+		"/agents", "/board", "/config", "/skills",
+		"/pipeline", "/tasks", "/stacks",
+		"/health", "/auth", "/mcp",
+		"pipeline", "autoScroll",
+	} {
+		if !strings.Contains(jsCorpus, marker) {
+			t.Fatalf("built JS assets missing %q", marker)
 		}
 	}
 
@@ -287,6 +293,27 @@ func discoverAssets(t *testing.T, baseURL string) (htmlPath, jsPath, cssPath str
 	}
 
 	return htmlPath, jsPath, cssPath
+}
+
+func readBuiltJSCorpus(t *testing.T, uiRoot string) string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(uiRoot, "assets", "*.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no built JS assets found")
+	}
+	var b strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(body)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func findRepoRoot(t *testing.T) string {

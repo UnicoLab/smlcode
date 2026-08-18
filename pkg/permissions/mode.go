@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // Modes mirror Claude Code permission styles for local SLMs.
@@ -64,5 +66,5 @@ func RecordPending(slmDir, path, kind, content string) (string, error) {
 	name := fmt.Sprintf("%d_%s_%s.patch.json", time.Now().UnixNano(), kind, safe)
 	full := filepath.Join(dir, name)
 	body := fmt.Sprintf("{\n  \"path\": %q,\n  \"kind\": %q,\n  \"content\": %q\n}\n", path, kind, content)
-	return full, os.WriteFile(full, []byte(body), 0o644)
+	return full, atomicfile.Write(full, []byte(body), 0o644)
 }

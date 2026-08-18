@@ -1,17 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useCallback } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
-import KanbanBoard from './components/Board/KanbanBoard';
-import LiveView from './components/Live/LiveView';
-import SettingsPanel from './components/Settings/SettingsPanel';
-import PipelineEditor from './components/Pipeline/PipelineEditor';
-import AgentManager from './components/Agents/AgentManager';
-import BlockManager from './components/Blocks/BlockManager';
-import FileInspector from './components/Files/FileInspector';
-import SkillManager from './components/Skills/SkillManager';
-import MarkdownEditorView from './components/Docs/MarkdownEditor';
 import { getHealth, getConfig } from './api/client';
 import type { Config, Health, RunEvent, LatestRunResponse } from './types';
+
+const LiveView = lazy(() => import('./components/Live/LiveView'));
+const KanbanBoard = lazy(() => import('./components/Board/KanbanBoard'));
+const PipelineEditor = lazy(() => import('./components/Pipeline/PipelineEditor'));
+const AgentManager = lazy(() => import('./components/Agents/AgentManager'));
+const BlockManager = lazy(() => import('./components/Blocks/BlockManager'));
+const FileInspector = lazy(() => import('./components/Files/FileInspector'));
+const SkillManager = lazy(() => import('./components/Skills/SkillManager'));
+const MarkdownEditorView = lazy(() => import('./components/Docs/MarkdownEditor'));
+const RunHistory = lazy(() => import('./components/Runs/RunHistory'));
+const SettingsPanel = lazy(() => import('./components/Settings/SettingsPanel'));
 
 export interface AppContextValue {
   health: Health | null;
@@ -79,19 +81,33 @@ export default function App() {
 
   return (
     <AppContext.Provider value={{ health, config, dark, toggleDark, refresh, liveEvents, setLiveEvents, liveRunning, setLiveRunning, liveResult, setLiveResult }}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<LiveView />} />
-          <Route path="board" element={<KanbanBoard />} />
-          <Route path="pipeline" element={<PipelineEditor />} />
-          <Route path="agents" element={<AgentManager />} />
-          <Route path="blocks" element={<BlockManager />} />
-          <Route path="files" element={<FileInspector events={liveEvents} running={liveRunning} />} />
-          <Route path="skills" element={<SkillManager />} />
-          <Route path="docs/:docId" element={<MarkdownEditorView />} />
-          <Route path="settings" element={<SettingsPanel />} />
-        </Route>
-      </Routes>
+      <Suspense fallback={<PageLoading />}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<LiveView />} />
+            <Route path="board" element={<KanbanBoard />} />
+            <Route path="pipeline" element={<PipelineEditor />} />
+            <Route path="agents" element={<AgentManager />} />
+            <Route path="blocks" element={<BlockManager />} />
+            <Route path="files" element={<FileInspector events={liveEvents} running={liveRunning} />} />
+            <Route path="skills" element={<SkillManager />} />
+            <Route path="docs/:docId" element={<MarkdownEditorView />} />
+            <Route path="runs" element={<RunHistory />} />
+            <Route path="settings" element={<SettingsPanel />} />
+          </Route>
+        </Routes>
+      </Suspense>
     </AppContext.Provider>
+  );
+}
+
+function PageLoading() {
+  return (
+    <div className="h-screen flex items-center justify-center bg-surface text-gray-500 dark:text-gray-400">
+      <div className="flex items-center gap-3 text-sm">
+        <div className="h-4 w-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
+        Loading Studio
+      </div>
+    </div>
   );
 }

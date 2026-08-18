@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"testing"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 )
@@ -9,6 +11,33 @@ import (
 func TestNormalizeProviderGoogleAlias(t *testing.T) {
 	if NormalizeProvider("google") != "gemini" {
 		t.Fatalf("google should alias to gemini, got %s", NormalizeProvider("google"))
+	}
+}
+
+func TestDefaultHITLValidationModesAsk(t *testing.T) {
+	c := Default(t.TempDir())
+	if c.ClarifyMode != "ask" || c.PlanApprove != "ask" {
+		t.Fatalf("clarify=%q plan=%q", c.ClarifyMode, c.PlanApprove)
+	}
+}
+
+func TestDefaultHITLTimeoutsStayConsistentAfterNormalize(t *testing.T) {
+	c := Default(t.TempDir())
+	c.ClarifyTimeout = 0
+	c.PlanApproveTimeout = 0
+	c.ContinueAskTimeout = 0
+	c.EscalateAskTimeout = 0
+	c.ShellAskTimeout = 0
+
+	normalize(c)
+
+	if c.ClarifyTimeout != 2*time.Minute ||
+		c.PlanApproveTimeout != 2*time.Minute ||
+		c.ContinueAskTimeout != 2*time.Minute ||
+		c.EscalateAskTimeout != 30*time.Second ||
+		c.ShellAskTimeout != 2*time.Minute {
+		t.Fatalf("hitl timeouts: clarify=%s plan=%s continue=%s escalate=%s shell=%s",
+			c.ClarifyTimeout, c.PlanApproveTimeout, c.ContinueAskTimeout, c.EscalateAskTimeout, c.ShellAskTimeout)
 	}
 }
 
@@ -107,6 +136,29 @@ func TestNormalizePermissionFromYAML(t *testing.T) {
 	}
 	if !loaded.DryRun || loaded.Permission != permissions.ModeDryRun {
 		t.Fatalf("load sync: dry=%v perm=%s", loaded.DryRun, loaded.Permission)
+	}
+}
+
+func TestLoadFallsBackToConfigBackup(t *testing.T) {
+	root := t.TempDir()
+	c := Default(root)
+	c.Model = "valid-backup"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c.Model = "current-valid"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.ConfigPath(), []byte("provider: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "valid-backup" {
+		t.Fatalf("model=%q", got.Model)
 	}
 }
 

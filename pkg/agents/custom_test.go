@@ -48,6 +48,34 @@ func TestCustomAgentCRUD(t *testing.T) {
 	}
 }
 
+func TestReadCustomFileFallsBackToBackup(t *testing.T) {
+	dir := t.TempDir()
+	first := CustomSpec{
+		ID:           "recover-agent",
+		Title:        "Backup Agent",
+		SystemPrompt: "Use the backup.",
+	}
+	path, err := WriteCustom(dir, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Title = "Current Agent"
+	if _, err := WriteCustom(dir, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("id: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadCustomFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Backup Agent" {
+		t.Fatalf("title=%q", got.Title)
+	}
+}
+
 func TestBuiltinOverrideAllowed(t *testing.T) {
 	dir := t.TempDir()
 	c := CustomSpec{

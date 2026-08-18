@@ -14,19 +14,44 @@ func TestSchemaAndPatchNewFields(t *testing.T) {
 	engine := "auto"
 	models := []string{"gpt-4o-mini"}
 	retry := 5
+	budget := 2048
+	head := 60
+	pct := 70
 	on := true
+	off := false
 	c.ApplyPatch(Patch{
-		ContextCompactEngine: &engine,
-		EnabledModels:        &models,
-		LLMRetryCount:        &retry,
-		AutoRefine:           &on,
-		SessionEventLog:      &on,
+		ContextCompactEngine:  &engine,
+		EnabledModels:         &models,
+		LLMRetryCount:         &retry,
+		AutoRefine:            &on,
+		SessionEventLog:       &on,
+		ShellWriteGuard:       &on,
+		FileCheckpoints:       &on,
+		RequireSmoke:          &on,
+		ClaimsGate:            &on,
+		OverEditGuard:         &on,
+		FinalizeWarn:          &on,
+		AutoTextTools:         &on,
+		ThinkingBudgetTokens:  &budget,
+		ReadHeadLines:         &head,
+		ReactCompactAtPercent: &pct,
+		ShellWhitelist:        &off,
 	})
 	if c.ContextCompactEngine != "auto" || len(c.EnabledModels) != 1 || c.LLMRetryCount != 5 {
 		t.Fatalf("%+v", c)
 	}
 	if !c.AutoRefine || !c.SessionEventLog {
 		t.Fatal("bools")
+	}
+	if !c.ShellWriteGuard || !c.FileCheckpoints || !c.RequireSmoke || !c.ClaimsGate ||
+		!c.OverEditGuard || !c.FinalizeWarn || !c.AutoTextTools {
+		t.Fatalf("guards: %+v", c)
+	}
+	if c.ThinkingBudgetTokens != 2048 || c.ReadHeadLines != 60 || c.ReactCompactAtPercent != 70 {
+		t.Fatalf("budgets: %+v", c)
+	}
+	if c.ShellWhitelist {
+		t.Fatalf("shell_whitelist patch failed: %+v", c)
 	}
 }
 

@@ -36,6 +36,7 @@ const navItems: NavItem[] = [
   { to: '/blocks', label: 'Blocks', icon: <Package size={18} /> },
   { to: '/skills', label: 'Skills', icon: <Puzzle size={18} /> },
   { to: '/files', label: 'Files', icon: <FileCode size={18} /> },
+  { to: '/runs', label: 'Runs', icon: <Archive size={18} /> },
 ];
 
 const docItems: NavItem[] = [
@@ -149,16 +150,6 @@ export default function Sidebar() {
       </div>
 
       <div className="divider my-3" />
-
-      {/* Archives */}
-      <NavLink
-        to="/docs/ARCHIVES"
-        className={docLinkClass}
-        title={isCollapsed ? 'Archives' : undefined}
-      >
-        <Archive size={16} />
-        {!isCollapsed && <span>Archives</span>}
-      </NavLink>
 
       {/* Spacer */}
       <div className="flex-1" />

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -62,9 +63,12 @@ func NormProfileKey(s string) string {
 	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), ":", "-")
 }
 
+var sizeProfileRe = regexp.MustCompile(`(?i)(^|[^0-9.])((?:1\.5|3|7|8|14|15|30|32|35)b)([^a-z0-9]|$)`)
+
 // ResolveModelProfile picks the best matching profile for provider/model.
-// Exact → prefix → default. Optional env SLMCODE_BENCHMARK overlays nothing
-// unless profiles define benchmark-specific keys (future).
+// Exact → family substring → size bucket → default. Size buckets are applied
+// last so small local models keep tight budgets even when a family key such as
+// "qwen" also matches.
 func ResolveModelProfile(profiles map[string]ModelProfile, model string) ModelProfile {
 	if profiles == nil {
 		profiles = DefaultModelProfiles()
@@ -76,39 +80,60 @@ func ResolveModelProfile(profiles map[string]ModelProfile, model string) ModelPr
 	if p, ok := profiles[target]; ok {
 		return mergeProfile(profiles["default"], p)
 	}
-	var bestKey string
-	var best ModelProfile
+	out := profiles["default"]
+	var bestFamilyKey string
+	var bestFamily ModelProfile
 	for k, p := range profiles {
-		if k == "default" {
+		nk := NormProfileKey(k)
+		if nk == "default" || isSizeProfileKey(nk) {
 			continue
 		}
-		nk := NormProfileKey(k)
 		if target == nk || strings.Contains(target, nk) || strings.HasPrefix(target, nk) {
-			if len(nk) >= len(bestKey) {
-				bestKey = nk
-				best = p
+			if len(nk) >= len(bestFamilyKey) {
+				bestFamilyKey = nk
+				bestFamily = p
 			}
 		}
 	}
-	base := profiles["default"]
-	if bestKey == "" {
-		// Heuristic size buckets from model name.
-		switch {
-		case strings.Contains(target, "1.5b") || strings.Contains(target, "1b"):
-			return mergeProfile(base, profiles["1.5b"])
-		case strings.Contains(target, "3b"):
-			return mergeProfile(base, profiles["3b"])
-		case strings.Contains(target, "7b") || strings.Contains(target, "8b"):
-			return mergeProfile(base, profiles["7b"])
-		case strings.Contains(target, "14b") || strings.Contains(target, "15b"):
-			return mergeProfile(base, profiles["14b"])
-		case strings.Contains(target, "32b") || strings.Contains(target, "30b") || strings.Contains(target, "35b"):
-			return mergeProfile(base, profiles["32b"])
-		default:
-			return base
+	if bestFamilyKey != "" {
+		out = mergeProfile(out, bestFamily)
+	}
+	if sizeKey := modelSizeProfileKey(target); sizeKey != "" {
+		if p, ok := profiles[sizeKey]; ok {
+			out = mergeProfile(out, p)
 		}
 	}
-	return mergeProfile(base, best)
+	return out
+}
+
+func isSizeProfileKey(k string) bool {
+	switch k {
+	case "1b", "1.5b", "3b", "7b", "8b", "14b", "15b", "30b", "32b", "35b":
+		return true
+	default:
+		return false
+	}
+}
+
+func modelSizeProfileKey(target string) string {
+	m := sizeProfileRe.FindStringSubmatch(target)
+	if len(m) < 3 {
+		return ""
+	}
+	switch strings.ToLower(m[2]) {
+	case "1b", "1.5b":
+		return "1.5b"
+	case "3b":
+		return "3b"
+	case "7b", "8b":
+		return "7b"
+	case "14b", "15b":
+		return "14b"
+	case "30b", "32b", "35b":
+		return "32b"
+	default:
+		return ""
+	}
 }
 
 func mergeProfile(base, over ModelProfile) ModelProfile {

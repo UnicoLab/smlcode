@@ -4,6 +4,7 @@ import { getAuthStatus, getMCPStatus, putAuthKey, updateConfig } from '@/api/cli
 import type { AuthStatus, ConfigPatch, MCPStatus } from '@/types';
 import StackSelector from './StackSelector';
 import PackSelector from './PackSelector';
+import ReadinessPanel from './ReadinessPanel';
 import {
   Cpu,
   Key,
@@ -41,9 +42,23 @@ export default function SettingsPanel() {
   }
 
   const cfg = { ...config, ...local };
+  const secondsValue = (secKey: keyof ConfigPatch, durationKey: keyof ConfigPatch, fallback: number) => {
+    const fromPatch = cfg[secKey];
+    if (typeof fromPatch === 'number' && Number.isFinite(fromPatch)) return fromPatch;
+    const raw = cfg[durationKey];
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+      return Math.max(1, Math.round(raw / 1_000_000_000));
+    }
+    return fallback;
+  };
 
   const handleChange = (key: keyof ConfigPatch, value: unknown) => {
     setLocal((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleSecondsChange = (key: keyof ConfigPatch, value: string) => {
+    const n = Math.max(1, parseInt(value, 10) || 1);
+    handleChange(key, n);
   };
 
   const handleSave = async () => {
@@ -91,6 +106,8 @@ export default function SettingsPanel() {
             </div>
           )}
         </div>
+
+        <ReadinessPanel refreshKey={`${config.provider}:${config.model}:${config.endpoint}:${(config.enabled_models || []).join(',')}:${config.active_stack || ''}:${config.active_pack || ''}:${config.active_pipeline || ''}`} />
 
         {/* Stack Selector (prominent) */}
         <section className="card p-6 space-y-4">
@@ -428,6 +445,16 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
+              <label className="label">Clarify Timeout (s)</label>
+              <input
+                type="number"
+                min="5"
+                value={secondsValue('clarify_timeout_sec', 'clarify_timeout', 120)}
+                onChange={(e) => handleSecondsChange('clarify_timeout_sec', e.target.value)}
+                className="input"
+              />
+            </div>
+            <div>
               <label className="label">Plan Approve</label>
               <select
                 value={cfg.plan_approve}
@@ -438,6 +465,16 @@ export default function SettingsPanel() {
                 <option value="ask">Ask</option>
                 <option value="skip">Skip</option>
               </select>
+            </div>
+            <div>
+              <label className="label">Plan Timeout (s)</label>
+              <input
+                type="number"
+                min="5"
+                value={secondsValue('plan_approve_timeout_sec', 'plan_approve_timeout', 120)}
+                onChange={(e) => handleSecondsChange('plan_approve_timeout_sec', e.target.value)}
+                className="input"
+              />
             </div>
             <div>
               <label className="label">Continue Ask</label>
@@ -451,6 +488,16 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
+              <label className="label">Continue Timeout (s)</label>
+              <input
+                type="number"
+                min="5"
+                value={secondsValue('continue_ask_timeout_sec', 'continue_ask_timeout', 60)}
+                onChange={(e) => handleSecondsChange('continue_ask_timeout_sec', e.target.value)}
+                className="input"
+              />
+            </div>
+            <div>
               <label className="label">Escalate Ask</label>
               <select
                 value={cfg.escalate_ask}
@@ -460,6 +507,26 @@ export default function SettingsPanel() {
                 <option value="ask">Ask</option>
                 <option value="auto">Auto</option>
               </select>
+            </div>
+            <div>
+              <label className="label">Escalate Timeout (s)</label>
+              <input
+                type="number"
+                min="5"
+                value={secondsValue('escalate_ask_timeout_sec', 'escalate_ask_timeout', 30)}
+                onChange={(e) => handleSecondsChange('escalate_ask_timeout_sec', e.target.value)}
+                className="input"
+              />
+            </div>
+            <div>
+              <label className="label">Shell Timeout (s)</label>
+              <input
+                type="number"
+                min="5"
+                value={secondsValue('shell_ask_timeout_sec', 'shell_ask_timeout', 120)}
+                onChange={(e) => handleSecondsChange('shell_ask_timeout_sec', e.target.value)}
+                className="input"
+              />
             </div>
             <label className="flex items-center gap-3">
               <input

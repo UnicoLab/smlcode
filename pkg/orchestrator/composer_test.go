@@ -1,26 +1,138 @@
 package orchestrator
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/composer"
+	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 )
+
+func TestClearDynamicRunArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{pipeline.DynamicFileName, composer.DynamicFileName} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearDynamicRunArtifacts(dir)
+	for _, name := range []string{pipeline.DynamicFileName, composer.DynamicFileName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed: %v", name, err)
+		}
+	}
+}
 
 func TestCompositionMarkdown(t *testing.T) {
 	c := composer.Composition{
 		Summary: "assemble a Go worker",
+		Handoff: []string{"Touch only main.go", "Verify with go test ./..."},
 		Phases:  []composer.PhaseChoice{{ID: "execute", Agent: "worker", Enabled: true}},
 		Execute: composer.ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector"},
 		Team:    []composer.TeamMember{{Role: "worker", Skills: []string{"atomic-coding"}}},
 	}
 	md := compositionMarkdown(c)
-	for _, want := range []string{"assemble a Go worker", "execute", "worker", "atomic-coding", "reviewer", "corrector"} {
+	for _, want := range []string{"assemble a Go worker", "Touch only main.go", "execute", "worker", "atomic-coding", "reviewer", "corrector"} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, md)
 		}
+	}
+}
+
+func TestCompositionBriefIncludesHandoffTeamAndLoop(t *testing.T) {
+	c := composer.Composition{
+		Summary: "small Go change",
+		Handoff: []string{"Use pkg/calc/calc.go only", "Verify with go test ./..."},
+		Execute: composer.ExecuteChoice{DefaultRole: "go-worker", Reviewer: "reviewer", Corrector: "corrector"},
+		Team:    []composer.TeamMember{{Role: "go-worker", Skills: []string{"atomic-coding"}}},
+	}
+	brief := compositionBrief(c)
+	for _, want := range []string{"Run collaboration contract", "pkg/calc/calc.go", "go-worker", "atomic-coding", "reviewer"} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("brief missing %q:\n%s", want, brief)
+		}
+	}
+}
+
+func TestEnsureCriticalCompositionRepairsUIAndRuntimeContract(t *testing.T) {
+	comp := &composer.Composition{
+		Summary: "bad omission",
+		Phases:  []composer.PhaseChoice{{ID: "plan", Agent: "planner", Enabled: true}},
+	}
+	got := ensureCriticalComposition(comp, "go-worker", "go-tester")
+	joined := strings.Join(got, ",")
+	for _, want := range []string{"execute", "test"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in %v", want, got)
+		}
+	}
+	agentsByPhase := map[string]string{}
+	for _, p := range comp.Phases {
+		agentsByPhase[p.ID] = p.Agent
+	}
+	if agentsByPhase["execute"] != "go-worker" || agentsByPhase["test"] != "go-tester" {
+		t.Fatalf("phase agents=%+v", agentsByPhase)
+	}
+	if comp.Execute.DefaultRole != "go-worker" || comp.Execute.Reviewer != "reviewer" || comp.Execute.Corrector != "corrector" || comp.Execute.MaxWaves == 0 {
+		t.Fatalf("execute loop=%+v", comp.Execute)
+	}
+}
+
+func TestOrderCompositionPhasesCanonicalizesUIOrder(t *testing.T) {
+	comp := &composer.Composition{
+		Phases: []composer.PhaseChoice{
+			{ID: "test", Agent: "go-tester", Enabled: true},
+			{ID: "plan", Agent: "planner", Enabled: true},
+			{ID: "execute", Agent: "go-worker", Enabled: true},
+		},
+	}
+	orderCompositionPhases(comp)
+	got := []string{comp.Phases[0].ID, comp.Phases[1].ID, comp.Phases[2].ID}
+	if strings.Join(got, ",") != "plan,execute,test" {
+		t.Fatalf("order=%v", got)
+	}
+}
+
+func TestEnsureCompositionHandoffAndTeam(t *testing.T) {
+	comp := &composer.Composition{
+		Summary: "fix bug",
+		Phases: []composer.PhaseChoice{
+			{ID: "plan", Agent: "planner", Enabled: true},
+			{ID: "execute", Agent: "go-worker", Enabled: true},
+			{ID: "test", Agent: "go-tester", Enabled: true},
+		},
+		Execute: composer.ExecuteChoice{DefaultRole: "go-worker", Reviewer: "reviewer", Corrector: "corrector"},
+	}
+	skills := map[string]bool{
+		"atomic-coding":        true,
+		"multipass-quality":    true,
+		"specialist-planner":   true,
+		"specialist-reviewer":  true,
+		"specialist-corrector": true,
+	}
+	ensureCompositionHandoff(comp, "fix the bug", []string{"go.mod", "pkg/x.go"}, "Go", "go-worker", "go-tester")
+	ensureCompositionTeam(comp, skills)
+	if len(comp.Handoff) == 0 || !strings.Contains(strings.Join(comp.Handoff, "\n"), "go test") {
+		t.Fatalf("handoff=%v", comp.Handoff)
+	}
+	byRole := map[string]composer.TeamMember{}
+	for _, member := range comp.Team {
+		byRole[member.Role] = member
+	}
+	for _, want := range []string{"planner", "go-worker", "go-tester", "reviewer", "corrector"} {
+		if byRole[want].Role == "" {
+			t.Fatalf("missing team member %s in %+v", want, comp.Team)
+		}
+	}
+	if got := strings.Join(byRole["go-worker"].Skills, ","); !strings.Contains(got, "atomic-coding") {
+		t.Fatalf("worker skills=%v", byRole["go-worker"].Skills)
+	}
+	if got := strings.Join(byRole["go-tester"].Skills, ","); !strings.Contains(got, "multipass-quality") {
+		t.Fatalf("tester skills=%v", byRole["go-tester"].Skills)
 	}
 }
 
@@ -32,6 +144,7 @@ func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 		Phases: []composer.PhaseChoice{
 			{ID: "execute", Agent: "worker", Enabled: true},
 			{ID: "test", Agent: "bogus-agent", Enabled: true},
+			{ID: "invented-phase", Agent: "worker", Enabled: true},
 		},
 		Execute: composer.ExecuteChoice{DefaultRole: "worker", Reviewer: "nope", Corrector: "corrector"},
 		Team: []composer.TeamMember{
@@ -43,7 +156,7 @@ func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 
 	dropped := o.sanitizeComposition(comp)
 	joined := strings.Join(dropped, ",")
-	for _, want := range []string{"bogus-agent", "nope", "ghost", "also-bogus"} {
+	for _, want := range []string{"bogus-agent", "nope", "ghost", "also-bogus", "phase:invented-phase"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected %q in dropped %v", want, dropped)
 		}
@@ -60,6 +173,9 @@ func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 	}
 	if len(comp.Team) != 1 || comp.Team[0].Role != "worker" {
 		t.Fatalf("unknown team member must be dropped: %+v", comp.Team)
+	}
+	if len(comp.Phases) != 2 {
+		t.Fatalf("unknown phase must be dropped: %+v", comp.Phases)
 	}
 }
 
@@ -96,6 +212,126 @@ func TestEnsureCriticalPhasesNoopWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestHeuristicCompositionSelectsBroadProductionPipeline(t *testing.T) {
+	comp := heuristicComposition(
+		"improve composer.go in the SLM harness production pipeline and agents",
+		[]string{"pkg/orchestrator/composer.go", "pkg/agents/prompts.go", "README.md"},
+		"Go",
+		`{"summary":"broad repo change"}`,
+		"",
+	)
+	phases := map[string]composer.PhaseChoice{}
+	for _, p := range comp.Phases {
+		phases[p.ID] = p
+	}
+	for _, want := range []string{"context", "explore", "architect", "plan", "split", "coord", "execute", "test", "learn", "polish", "memory"} {
+		if !phases[want].Enabled {
+			t.Fatalf("expected phase %s in %+v", want, comp.Phases)
+		}
+	}
+	if phases["execute"].Agent != "go-worker" || phases["test"].Agent != "go-tester" {
+		t.Fatalf("language specialists not selected: execute=%q test=%q", phases["execute"].Agent, phases["test"].Agent)
+	}
+	if !strings.Contains(strings.Join(comp.Handoff, "\n"), "pkg/orchestrator/composer.go") {
+		t.Fatalf("handoff missing likely target file: %+v", comp.Handoff)
+	}
+}
+
+func TestHeuristicCompositionKeepsTargetedEditLean(t *testing.T) {
+	comp := heuristicComposition(
+		"fix composer.go parse bug",
+		[]string{"pkg/orchestrator/composer.go", "pkg/server/server.go"},
+		"Go",
+		`{"summary":"targeted"}`,
+		"",
+	)
+	phases := map[string]bool{}
+	for _, p := range comp.Phases {
+		phases[p.ID] = p.Enabled
+	}
+	for _, want := range []string{"context", "plan", "split", "execute", "test", "memory"} {
+		if !phases[want] {
+			t.Fatalf("expected phase %s in %+v", want, comp.Phases)
+		}
+	}
+	if phases["coord"] || phases["architect"] {
+		t.Fatalf("targeted edit should stay lean: %+v", comp.Phases)
+	}
+}
+
+func TestFilterKnownSpecialistPairDropsUnavailableHints(t *testing.T) {
+	known := map[string]bool{"worker": true, "tester": true, "go-worker": true}
+	w, tst := filterKnownSpecialistPair("rust-worker", "rust-tester", known)
+	if w != "" || tst != "" {
+		t.Fatalf("unknown hints must be cleared, got (%q,%q)", w, tst)
+	}
+	w, tst = filterKnownSpecialistPair("go-worker", "go-tester", known)
+	if w != "go-worker" || tst != "" {
+		t.Fatalf("known worker should survive and unknown tester clear, got (%q,%q)", w, tst)
+	}
+}
+
+func TestPreviewCompositionDoesNotPersistOrMutatePipeline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(root)
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := o.Pipeline().Execute.DefaultRole
+	comp := o.PreviewComposition("fix go.mod configuration")
+	if comp.Execute.DefaultRole != "go-worker" {
+		t.Fatalf("preview role=%q", comp.Execute.DefaultRole)
+	}
+	if o.Pipeline().Execute.DefaultRole != before {
+		t.Fatalf("preview mutated pipeline: before=%q after=%q", before, o.Pipeline().Execute.DefaultRole)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.SlmDir(), composer.DynamicFileName)); !os.IsNotExist(err) {
+		t.Fatalf("preview should not persist composition, stat err=%v", err)
+	}
+}
+
+func TestRankComposerInventoryPrioritizesTargetsAndManifests(t *testing.T) {
+	inventory := []string{
+		"pkg/zz_unused.go",
+		"package.json",
+		"pkg/orchestrator/composer.go",
+		"web/src/App.tsx",
+		"README.md",
+	}
+	got := rankComposerInventory("fix composer.go dynamic pipeline", inventory, 3)
+	if len(got) != 3 {
+		t.Fatalf("ranked=%v", got)
+	}
+	if got[0] != "pkg/orchestrator/composer.go" {
+		t.Fatalf("target file should rank first: %v", got)
+	}
+	if !containsString(got, "package.json") {
+		t.Fatalf("project manifest should stay in budget: %v", got)
+	}
+}
+
+func TestComposerInventoryLimitFollowsSmallModelBudget(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.Model = "qwen2.5-coder:7b"
+	o := &Orchestrator{cfg: cfg}
+	if got := o.composerInventoryLimit(); got != 24 {
+		t.Fatalf("7b inventory limit=%d", got)
+	}
+	cfg.Model = "Qwen3-Coder-30B-A3B-Instruct"
+	cfg.MaxContextKB = 16
+	if got := o.composerInventoryLimit(); got != 48 {
+		t.Fatalf("30b inventory limit=%d", got)
+	}
+	cfg.MaxContextKB = 8
+	if got := o.composerInventoryLimit(); got != 24 {
+		t.Fatalf("tight max_context_kb inventory limit=%d", got)
+	}
+}
+
 func TestQueryLanguageSpecialists(t *testing.T) {
 	cases := []struct {
 		query  string
@@ -108,6 +344,8 @@ func TestQueryLanguageSpecialists(t *testing.T) {
 		{"Build a C++ project with CMake", "cpp-worker", "cpp-tester"},
 		{"Write a Python FastAPI endpoint", "python-worker", "python-tester"},
 		{"A TypeScript React component", "react-worker", "react-tester"},
+		{"Improve the React frontend", "react-worker", "react-tester"},
+		{"Add vanilla JavaScript to this webpage", "web-worker", "web-tester"},
 		{"Refactor this mystery codebase", "", ""},
 	}
 	for _, c := range cases {
@@ -125,4 +363,36 @@ func TestQueryLanguageSpecialistsJavaVsJavaScript(t *testing.T) {
 	if w, _ := queryLanguageSpecialists("Create a Java class"); w != "java-worker" {
 		t.Fatalf("java must map to java-worker, got %q", w)
 	}
+}
+
+func TestProjectLanguageSpecialists(t *testing.T) {
+	cases := map[string]string{
+		"Go":         "go-worker",
+		"Python":     "python-worker",
+		"TypeScript": "react-worker",
+		"JavaScript": "web-worker",
+		"HTML":       "web-worker",
+		"Rust":       "rust-worker",
+		"Java":       "java-worker",
+		"C++":        "cpp-worker",
+		"C/Make":     "cpp-worker",
+	}
+	for lang, want := range cases {
+		got, _ := projectLanguageSpecialists(lang)
+		if got != want {
+			t.Fatalf("%s -> %s, want %s", lang, got, want)
+		}
+	}
+	if got, _ := projectLanguageSpecialists("unknown"); got != "" {
+		t.Fatalf("unknown lang got %s", got)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

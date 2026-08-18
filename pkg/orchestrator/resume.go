@@ -46,6 +46,7 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	clearPendingHITL(o.cfg.SlmDir())
 	start := time.Now()
 	query := turn.Query
 	runID := turn.ID
@@ -123,6 +124,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
 	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
+	runner.MaxWaves = o.Pipeline().Execute.MaxWaves
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -332,7 +334,11 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 					To:     "execute",
 					Wave:   o.waveCounter,
 				})
-				if err := runner.RunBoard(ctx, board); err != nil {
+				ran, err := runner.RunCorrectiveBoard(ctx, board)
+				if !ran {
+					o.emit("execute", "corrective wave skipped — max_waves budget exhausted", "")
+				}
+				if err != nil {
 					if isCancelErr(err) {
 						return o.checkpointInterrupt(board, session.PhaseExecute, err)
 					}
@@ -577,6 +583,12 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		res.Summary = res.Summary + " (qa_gate green)"
 	}
 	extraNotes := lessonsMD
+	o.mu.Lock()
+	dynamicBrief := strings.TrimSpace(o.dynamicBrief)
+	o.mu.Unlock()
+	if dynamicBrief != "" {
+		extraNotes = strings.TrimSpace("### Dynamic composition\n\n" + dynamicBrief + "\n\n" + extraNotes)
+	}
 	if strings.TrimSpace(testOut) != "" {
 		extraNotes = strings.TrimSpace(extraNotes + "\n\n### Tester\n" + truncate(testOut, 1500))
 	}

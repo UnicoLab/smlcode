@@ -312,6 +312,7 @@ RULES (bullet):
 - If NO specialist matches the project's language, use the generic worker + tester and let the project-language hint steer verification — do NOT invent a language.
 - Keep the default reviewer/corrector unless you have a concrete reason to change them.
 - Choose 0–4 skills per specialist; only reference skills that actually exist in the list.
+- Add 2–6 "handoff" bullets with target files, non-goals, verification command(s), sequencing constraints, and what each later specialist must preserve.
 - NEVER invent phase ids, agent ids, or skill names. Copy them exactly from the lists.
 - Disabled phases are simply omitted from "phases".
 
@@ -319,6 +320,7 @@ STRICT JSON ONLY:
 {
  "summary":"one line",
  "strategy":"one short sentence",
+ "handoff":["Target only listed files; do not invent paths","Verify with the detected project test/build command"],
  "phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","agent":"planner","enabled":true},{"id":"split","agent":"splitter","enabled":true},{"id":"execute","agent":"worker","enabled":true},{"id":"test","agent":"tester","enabled":true}],
  "execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},
  "team":[{"role":"worker","skills":["atomic-coding"]}],

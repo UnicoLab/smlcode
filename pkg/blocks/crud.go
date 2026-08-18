@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,7 +45,7 @@ func Save(projectRoot string, block any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := atomicfile.WriteWithBackup(path, data, 0o644); err != nil {
 		return "", err
 	}
 	abs, err := filepath.Abs(path)

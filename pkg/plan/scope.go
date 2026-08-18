@@ -68,6 +68,7 @@ type ScopeAnswer struct {
 
 // ScopeAnswers is the full decision handshake payload.
 type ScopeAnswers struct {
+	AskID      string        `json:"ask_id,omitempty"`
 	Answers    []ScopeAnswer `json:"answers"`
 	UseAllRec  bool          `json:"use_all_recommended,omitempty"`
 	Notes      string        `json:"notes,omitempty"`
@@ -77,9 +78,12 @@ type ScopeAnswers struct {
 // ScopeAsk is emitted to Studio/TUI/file when clarify_mode=ask.
 type ScopeAsk struct {
 	ID        string          `json:"id"`
+	Kind      string          `json:"kind,omitempty"`
 	Query     string          `json:"query"`
 	Questions []ScopeQuestion `json:"questions"`
 	PRDDraft  ScopePRD        `json:"prd_draft,omitempty"`
+	TimeoutS  int             `json:"timeout_sec,omitempty"`
+	OnTimeout string          `json:"on_timeout,omitempty"` // "use_recommended"
 	CreatedAt string          `json:"created_at"`
 }
 

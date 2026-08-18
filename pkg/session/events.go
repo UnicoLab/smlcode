@@ -18,6 +18,8 @@ type EventRecord struct {
 	TaskID  string `json:"task_id,omitempty"`
 	Message string `json:"message,omitempty"`
 	Scope   string `json:"scope,omitempty"`
+	Output  string `json:"output,omitempty"`
+	Data    any    `json:"data,omitempty"`
 	// CostUSD is optional per-event attribution (usually on usage kinds).
 	CostUSD float64 `json:"cost_usd,omitempty"`
 	Tokens  int     `json:"tokens,omitempty"`
@@ -40,6 +42,7 @@ func AppendEvent(slmDir, runID string, rec EventRecord) error {
 		rec.Time = time.Now().Format(time.RFC3339Nano)
 	}
 	rec.Message = truncateEvent(rec.Message, 2000)
+	rec.Output = truncateEvent(rec.Output, 4000)
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -55,8 +58,22 @@ func AppendEvent(slmDir, runID string, rec EventRecord) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.Write(append(b, '\n'))
-	return err
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	if shouldSyncEvent(rec) {
+		return f.Sync()
+	}
+	return nil
+}
+
+func shouldSyncEvent(rec EventRecord) bool {
+	switch rec.Kind {
+	case "ask_answered", "run_start", "run_end", "run_stop":
+		return true
+	default:
+		return false
+	}
 }
 
 // ReadEvents loads all event records (capped).

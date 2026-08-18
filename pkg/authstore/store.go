@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // FileName is the auth store basename under .slmcode/.
@@ -72,7 +74,7 @@ func Save(slmDir string, s *Store) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(Path(slmDir), b, 0o600)
+	return atomicfile.Write(Path(slmDir), b, 0o600)
 }
 
 // Get returns a key for provider (normalized).

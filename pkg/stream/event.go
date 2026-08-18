@@ -19,6 +19,7 @@ const (
 	KindIntervention = "intervention" // harness steered the model (quality/loop/whitelist/thinking)
 	KindTurn         = "turn"         // turn-budget / progress meter update
 	KindLoop         = "loop"         // tester reject / rewrite / corrective wave / continue-ask
+	KindComposition  = "composition"  // dynamic pipeline/team/skill contract
 )
 
 // Level constants classify the severity of a live event so UIs can surface
@@ -41,6 +42,7 @@ type Event struct {
 	Agent   string    `json:"agent,omitempty"`
 	Scope   string    `json:"scope,omitempty"`
 	Output  string    `json:"output,omitempty"`
+	Data    any       `json:"data,omitempty"`
 	Time    time.Time `json:"time"`
 }
 

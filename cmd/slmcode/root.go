@@ -63,8 +63,10 @@ Examples:
   slmcode                 # premium TUI (default)
   slmcode tui             # same
   slmcode init
+  slmcode compose "add JWT auth"   # preview selected phases/agents without an LLM call
   slmcode run "add JWT auth"
   slmcode board
+  slmcode readiness --fix
   slmcode studio
   slmcode doctor
   slmcode chat            # classic REPL`),
@@ -101,6 +103,8 @@ Examples:
 		studioCmd(),
 		statusCmd(),
 		boardCmd(),
+		composeCmd(),
+		readinessCmd(),
 		taskCmd(),
 		contextCmd(),
 		docsCmd(),

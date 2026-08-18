@@ -10,10 +10,12 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"gopkg.in/yaml.v3"
 )
 
@@ -367,14 +369,26 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	if v, ok := asInt(m["think_passes"]); ok {
 		cfg.ThinkPasses = v
 	}
+	if v, ok := asInt(m["task_timeout_sec"]); ok && v > 0 {
+		cfg.TaskTimeout = time.Duration(v) * time.Second
+	}
 	if v, ok := asBool(m["qa_gate"]); ok {
 		cfg.QAGate = v
+	}
+	if v := strKey(m, "qa_gate_command"); v != "" {
+		cfg.QAGateCommand = v
 	}
 	if v, ok := asInt(m["qa_gate_max_rounds"]); ok {
 		cfg.QAGateMaxRounds = v
 	}
 	if v, ok := asBool(m["post_worker_smoke"]); ok {
 		cfg.PostWorkerSmoke = v
+	}
+	if v, ok := asBool(m["scope_judge"]); ok {
+		cfg.ScopeJudge = v
+	}
+	if v, ok := asBool(m["placeholder_pass"]); ok {
+		cfg.PlaceholderPass = v
 	}
 	if v, ok := asBool(m["quality_monitor"]); ok {
 		cfg.QualityMonitor = v
@@ -388,11 +402,32 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	if v, ok := asBool(m["worker_critique"]); ok {
 		cfg.WorkerCritique = v
 	}
+	if v, ok := asBool(m["require_smoke"]); ok {
+		cfg.RequireSmoke = v
+	}
+	if v, ok := asBool(m["claims_gate"]); ok {
+		cfg.ClaimsGate = v
+	}
+	if v, ok := asBool(m["over_edit_guard"]); ok {
+		cfg.OverEditGuard = v
+	}
+	if v, ok := asBool(m["finalize_warn"]); ok {
+		cfg.FinalizeWarn = v
+	}
+	if v, ok := asBool(m["auto_text_tools"]); ok {
+		cfg.AutoTextTools = v
+	}
 	if v, ok := asBool(m["write_guard"]); ok {
 		cfg.WriteGuard = v
 	}
 	if v, ok := asBool(m["read_before_edit"]); ok {
 		cfg.ReadBeforeEdit = v
+	}
+	if v, ok := asBool(m["shell_write_guard"]); ok {
+		cfg.ShellWriteGuard = v
+	}
+	if v, ok := asBool(m["file_checkpoints"]); ok {
+		cfg.FileCheckpoints = v
 	}
 	if v, ok := asBool(m["tool_guidance"]); ok {
 		cfg.ToolGuidance = v
@@ -408,6 +443,9 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	}
 	if v, ok := asBool(m["react_compact"]); ok {
 		cfg.ReactCompact = v
+	}
+	if v, ok := asInt(m["react_compact_at_percent"]); ok {
+		cfg.ReactCompactAtPercent = v
 	}
 	if v, ok := asBool(m["session_event_log"]); ok {
 		cfg.SessionEventLog = v
@@ -426,6 +464,12 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	}
 	if ss, ok := asStringSlice(m["enabled_models"]); ok {
 		cfg.EnabledModels = ss
+	}
+	if v, ok := asBool(m["dynamic_pipeline"]); ok {
+		cfg.DynamicPipeline = v
+	}
+	if ss, ok := asStringSlice(m["pinned_skills"]); ok {
+		cfg.PinnedSkills = ss
 	}
 	if v, ok := asBool(m["wave_snapshots"]); ok {
 		cfg.WaveSnapshots = v
@@ -447,6 +491,31 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	}
 	if v, ok := asBool(m["auto_approve"]); ok {
 		cfg.AutoApprove = v
+	}
+	if v := strKey(m, "permission"); v != "" {
+		cfg.Permission = v
+		cfg.DryRun = strings.EqualFold(v, "dry-run")
+	}
+	if v, ok := asBool(m["dry_run"]); ok {
+		cfg.DryRun = v
+		if v {
+			cfg.Permission = "dry-run"
+		}
+	}
+	if v := strKey(m, "shell_permission"); v != "" {
+		cfg.ShellPermission = v
+	}
+	if v, ok := asBool(m["shell_whitelist"]); ok {
+		cfg.ShellWhitelist = v
+	}
+	if ss, ok := asStringSlice(m["shell_allow"]); ok {
+		cfg.ShellAllow = ss
+	}
+	if v, ok := asInt(m["thinking_budget_tokens"]); ok {
+		cfg.ThinkingBudgetTokens = v
+	}
+	if v, ok := asInt(m["read_head_lines"]); ok {
+		cfg.ReadHeadLines = v
 	}
 	if v := strKey(m, "price_preset"); v != "" {
 		cfg.PricePreset = v
@@ -472,6 +541,8 @@ func normalizeStackCfg(cfg *config.Config) {
 	if cfg.Backend == "" {
 		cfg.Backend = config.BackendSLMCode
 	}
+	cfg.Permission = permissions.Normalize(cfg.Permission)
+	cfg.ShellPermission = permissions.NormalizeShell(cfg.ShellPermission)
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 4096
 	}

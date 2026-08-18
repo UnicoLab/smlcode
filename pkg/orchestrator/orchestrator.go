@@ -15,10 +15,12 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/compact"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/instructions"
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/mcp"
@@ -89,6 +91,10 @@ type Orchestrator struct {
 	// dynamicSkills maps specialist roles → composer-selected skills for the
 	// in-flight dynamic-pipeline run. Guarded by mu.
 	dynamicSkills map[string][]string
+	// dynamicBrief is the compact collaboration contract emitted by the
+	// composer and injected into later role-scoped packs. Guarded by mu.
+	dynamicBrief       string
+	dynamicComposition *composer.Composition
 
 	mu      sync.Mutex
 	running bool
@@ -399,10 +405,18 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	if o.packer != nil {
 		o.packer.ClearCache()
 	}
+	if o.cfg != nil {
+		clearDynamicRunArtifacts(o.cfg.SlmDir())
+		clearPendingHITL(o.cfg.SlmDir())
+	}
 	o.mu.Lock()
 	o.latencyMs = map[string]int64{}
 	o.usage = TokenUsage{}
 	o.refineRound = 0
+	o.dynamicSkills = nil
+	o.dynamicBrief = ""
+	o.dynamicComposition = nil
+	o.loadPipelineLocked()
 	o.mu.Unlock()
 
 	o.emit("init", "starting "+runID, "")
@@ -465,13 +479,22 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 // + composer-selected skills for this role).
 func (o *Orchestrator) skillPackFor(role, query string) string {
 	pins := append([]string{}, o.cfg.PinnedSkills...)
+	brief := ""
 	if o != nil {
 		o.mu.Lock()
 		pins = append(pins, o.dynamicSkills[strings.ToLower(strings.TrimSpace(role))]...)
+		brief = o.dynamicBrief
 		o.mu.Unlock()
 	}
 	list := o.skills.ResolveForRun(query, role, pins, 4)
-	return skills.RenderPack(list, 1600)
+	rendered := skills.RenderPack(list, 1600)
+	if strings.TrimSpace(brief) == "" {
+		return rendered
+	}
+	if strings.TrimSpace(rendered) == "" {
+		return brief
+	}
+	return brief + "\n\n" + rendered
 }
 
 // thinkRefinePasses maps config think_passes → multipass critique loops.
@@ -956,7 +979,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		board.Tasks[i] = t
 	}
 	// 4a Scope / PRD judge gate — enrich or rewrite weak tasks before execute.
-	o.runScopeJudgeGate(ctx, query, board, prd)
+	scopeValidation := o.runScopeJudgeGate(ctx, query, board, prd)
 	o.persistBoard(board)
 	o.emit("split", fmt.Sprintf("TASKS.md + board: %d agent tasks", len(board.Tasks)), "")
 
@@ -964,7 +987,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	o.coordinate(ctx, query, board, "pre-execute")
 
 	// 4c Plan approval gate (Claude Code Plan Mode)
-	ok, aerr := o.runPlanApprovalGate(ctx, query, board)
+	ok, aerr := o.runPlanApprovalGate(ctx, query, board, scopeValidation)
 	if aerr != nil || !ok {
 		if aerr == nil {
 			aerr = fmt.Errorf("plan not approved")
@@ -996,6 +1019,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
 	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
+	runner.MaxWaves = o.Pipeline().Execute.MaxWaves
 	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
 	runner.WaveSnapshots = o.cfg.WaveSnapshots
 	runner.RewindMgr = o.rewindMgr
@@ -1626,6 +1650,9 @@ func (o *Orchestrator) persistBoard(board *plan.Board) {
 		_ = o.boardStore.Replace(*board)
 		return
 	}
+	if o.store == nil {
+		return
+	}
 	planMD, tasksMD := board.ToMarkdown()
 	_ = o.store.Write(contextstore.DocPlan, planMD)
 	_ = o.store.Write(contextstore.DocTasks, tasksMD)
@@ -1662,6 +1689,10 @@ func (o *Orchestrator) emitProblem(phase, msg, taskID string) {
 }
 
 func (o *Orchestrator) emitFullL(phase, kind, agent, taskID, msg, scope, output, level string) {
+	o.emitFullDataL(phase, kind, agent, taskID, msg, scope, output, level, nil)
+}
+
+func (o *Orchestrator) emitFullDataL(phase, kind, agent, taskID, msg, scope, output, level string, data any) {
 	if kind == "" {
 		kind = stream.KindPhase
 	}
@@ -1678,7 +1709,7 @@ func (o *Orchestrator) emitFullL(phase, kind, agent, taskID, msg, scope, output,
 	if o.cfg != nil && o.cfg.SessionEventLog && o.currentTurn != nil {
 		_ = session.AppendEvent(o.cfg.SlmDir(), o.currentTurn.ID, session.EventRecord{
 			Phase: phase, Kind: kind, Agent: agent, TaskID: taskID,
-			Message: msg, Scope: scope,
+			Message: msg, Scope: scope, Output: stream.Truncate(output, 4000), Data: data,
 			Model: o.cfg.Model,
 		})
 	}
@@ -1686,6 +1717,7 @@ func (o *Orchestrator) emitFullL(phase, kind, agent, taskID, msg, scope, output,
 		o.onEvent(Event{
 			Phase: phase, Kind: kind, Level: level, Message: msg, TaskID: taskID,
 			Agent: agent, Scope: scope, Output: stream.Truncate(output, 2000),
+			Data: data,
 			Time: time.Now(),
 		})
 	}
@@ -1804,7 +1836,7 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	if _, err := os.Stat(boardPath); os.IsNotExist(err) {
 		empty := plan.Board{}
 		if data, err := json.MarshalIndent(empty, "", "  "); err == nil {
-			_ = os.WriteFile(boardPath, data, 0o644)
+			_ = atomicfile.Write(boardPath, data, 0o644)
 		}
 	}
 	return cfg.Save()

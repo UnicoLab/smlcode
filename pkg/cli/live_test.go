@@ -34,3 +34,14 @@ func TestFormatEventKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatCompositionEvent(t *testing.T) {
+	line := FormatEvent(stream.Event{
+		Kind: stream.KindComposition, Phase: "compose", Agent: "composer",
+		Message: "dynamic pipeline active",
+		Output:  "# Dynamic pipeline\n\n**Summary:** use go-worker\n\n## Phases\n\n- `execute`",
+	})
+	if !strings.Contains(line, "dynamic pipeline active") || !strings.Contains(line, "use go-worker") {
+		t.Fatalf("composition line weak: %s", line)
+	}
+}

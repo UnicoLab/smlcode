@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // ClarifyAskPath returns .slmcode/clarify/ask.json under slmDir.
@@ -33,7 +35,7 @@ func WriteScopeAsk(slmDir string, ask ScopeAsk) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ClarifyAskPath(slmDir), data, 0o644)
+	return atomicfile.Write(ClarifyAskPath(slmDir), data, 0o644)
 }
 
 // ClearScopeAsk removes pending ask/answer files.
@@ -64,6 +66,15 @@ func ReadScopeAnswers(slmDir string) (ScopeAnswers, bool, error) {
 
 // WriteScopeAnswers stores user answers (API / Studio / CLI).
 func WriteScopeAnswers(slmDir string, ans ScopeAnswers) error {
+	return writeScopeAnswers(slmDir, ans, false)
+}
+
+// WriteScopeAnswersOnce stores user answers only when no answer exists yet.
+func WriteScopeAnswersOnce(slmDir string, ans ScopeAnswers) error {
+	return writeScopeAnswers(slmDir, ans, true)
+}
+
+func writeScopeAnswers(slmDir string, ans ScopeAnswers, once bool) error {
 	if slmDir == "" {
 		return nil
 	}
@@ -78,12 +89,20 @@ func WriteScopeAnswers(slmDir string, ans ScopeAnswers) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ClarifyAnswersPath(slmDir), data, 0o644)
+	if once {
+		return atomicfile.WriteOnce(ClarifyAnswersPath(slmDir), data, 0o644)
+	}
+	return atomicfile.Write(ClarifyAnswersPath(slmDir), data, 0o644)
 }
 
 // WaitScopeAnswers polls for answers.json until ctx done or timeout.
 // Returns (answers, true, nil) on success; (empty, false, nil) on timeout.
 func WaitScopeAnswers(ctx context.Context, slmDir string, timeout time.Duration) (ScopeAnswers, bool, error) {
+	return WaitScopeAnswersForID(ctx, slmDir, "", timeout)
+}
+
+// WaitScopeAnswersForID polls for a matching answers.json until ctx done or timeout.
+func WaitScopeAnswersForID(ctx context.Context, slmDir, askID string, timeout time.Duration) (ScopeAnswers, bool, error) {
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
@@ -96,15 +115,32 @@ func WaitScopeAnswers(ctx context.Context, slmDir string, timeout time.Duration)
 			return ScopeAnswers{}, false, err
 		}
 		if ok {
+			if scopeAnswerWrittenAfter(slmDir, deadline) {
+				_ = os.Remove(ClarifyAnswersPath(slmDir))
+				return ScopeAnswers{}, false, nil
+			}
+			if askID != "" && ans.AskID != askID {
+				_ = os.Remove(ClarifyAnswersPath(slmDir))
+				goto wait
+			}
 			return ans, true, nil
 		}
 		if time.Now().After(deadline) {
 			return ScopeAnswers{}, false, nil
 		}
+	wait:
 		select {
 		case <-ctx.Done():
 			return ScopeAnswers{}, false, ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func scopeAnswerWrittenAfter(slmDir string, deadline time.Time) bool {
+	info, err := os.Stat(ClarifyAnswersPath(slmDir))
+	if err != nil {
+		return false
+	}
+	return info.ModTime().After(deadline)
 }

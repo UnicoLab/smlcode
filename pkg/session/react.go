@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // React schema version for mid-run HITL checkpoints.
@@ -76,7 +78,7 @@ func SaveReactCheckpoint(slmDir string, cp ReactCheckpoint) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(ReactPath(slmDir, cp.TurnID, cp.TaskID), data, 0o644); err != nil {
+	if err := atomicfile.Write(ReactPath(slmDir, cp.TurnID, cp.TaskID), data, 0o644); err != nil {
 		return err
 	}
 	return updateCheckpointReactTasks(slmDir, cp.TurnID, cp.TaskID, true)
@@ -198,5 +200,5 @@ func updateCheckpointReactTasks(slmDir, turnID, taskID string, add bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	return atomicfile.Write(path, out, 0o644)
 }

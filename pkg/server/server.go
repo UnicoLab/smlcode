@@ -19,6 +19,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/authstore"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/harness"
@@ -27,6 +28,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/readiness"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
@@ -104,6 +106,7 @@ func (s *Server) ListenAndServe(addr string) error {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/readiness", s.handleReadiness)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
 	s.mux.HandleFunc("GET /api/docs", s.handleListDocs)
@@ -123,6 +126,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/skills/{name}", s.handleDeleteSkill)
 	s.mux.HandleFunc("POST /api/runs", s.handleStartRun)
 	s.mux.HandleFunc("POST /api/runs/stop", s.handleStopRun)
+	s.mux.HandleFunc("GET /api/runs/interrupted", s.handleInterruptedRuns)
+	s.mux.HandleFunc("POST /api/runs/resume", s.handleResumeRun)
 	s.mux.HandleFunc("GET /api/runs/latest", s.handleLatestRun)
 	s.mux.HandleFunc("GET /api/clarify/pending", s.handleClarifyPending)
 	s.mux.HandleFunc("POST /api/clarify/answer", s.handleClarifyAnswer)
@@ -155,6 +160,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/agents/{id}", s.handlePutAgent)
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 	s.mux.HandleFunc("GET /api/pipeline", s.handleGetPipeline)
+	s.mux.HandleFunc("GET /api/composition", s.handleGetComposition)
+	s.mux.HandleFunc("POST /api/composition/preview", s.handlePreviewComposition)
 	s.mux.HandleFunc("PUT /api/pipeline", s.handlePutPipeline)
 	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)
 	s.mux.HandleFunc("GET /api/blocks", s.handleListBlocks)
@@ -197,6 +204,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"running":  running,
 		"events":   nEvents,
 	})
+}
+
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	cfg := s.h.Config
+	skillCount := 0
+	if s.h != nil && s.h.Orchestrator != nil && s.h.Orchestrator.Skills() != nil {
+		if list, err := s.h.Orchestrator.Skills().List(); err == nil {
+			skillCount = len(list)
+		}
+	}
+	ctx := r.Context()
+	if r.URL.Query().Get("probe") == "1" || strings.EqualFold(r.URL.Query().Get("probe"), "true") {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		writeJSON(w, readiness.BuildWithProbe(ctx, cfg, skillCount))
+		return
+	}
+	writeJSON(w, readiness.Build(cfg, skillCount))
 }
 
 // handleUpdateCheck reports whether a newer SLMCode release exists (cached 6h).
@@ -503,6 +529,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "query required", 400)
 		return
 	}
+	hitl.ClearAll(s.h.Config.SlmDir())
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -573,6 +600,87 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "started", "query": req.Query})
 }
 
+func (s *Server) handleInterruptedRuns(w http.ResponseWriter, r *http.Request) {
+	turns, err := session.ListInterrupted(s.h.Config.SlmDir())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	type item struct {
+		ID          string `json:"id"`
+		Query       string `json:"query"`
+		UpdatedAt   string `json:"updated_at"`
+		Phase       string `json:"phase,omitempty"`
+		ResumeFrom  string `json:"resume_from,omitempty"`
+		Tasks       int    `json:"tasks"`
+		Done        int    `json:"done"`
+		Blocked     int    `json:"blocked"`
+		ReactResume bool   `json:"react_resume"`
+	}
+	out := make([]item, 0, len(turns))
+	for _, t := range turns {
+		done := 0
+		for _, task := range t.Board.Tasks {
+			task.Normalize()
+			if task.Column == plan.ColDone {
+				done++
+			}
+		}
+		out = append(out, item{
+			ID: t.ID, Query: t.Query, UpdatedAt: t.UpdatedAt,
+			Phase: t.Phase, ResumeFrom: t.ResumeFrom,
+			Tasks: len(t.Board.Tasks), Done: done, Blocked: t.Board.FailedCount(),
+			ReactResume: session.HasReactHistory(s.h.Config.SlmDir(), t.ID),
+		})
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	id := strings.TrimSpace(req.ID)
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		http.Error(w, "run already in progress", 409)
+		return
+	}
+	s.running = true
+	s.events = nil
+	s.mu.Unlock()
+
+	s.wireOrchestratorEvents()
+	s.emit(orchestrator.Event{
+		Phase: "init", Kind: "run_start", Message: "resume started", Time: time.Now(),
+	})
+	go func() {
+		ctx := context.Background()
+		res, err := s.h.Resume(ctx, id)
+		s.mu.Lock()
+		s.running = false
+		if res != nil {
+			s.lastRes = res
+		}
+		s.mu.Unlock()
+		phase := "done"
+		msg := "resumed"
+		if err != nil {
+			phase = "error"
+			msg = err.Error()
+		} else if res != nil {
+			msg = res.Summary
+		}
+		s.emit(orchestrator.Event{Phase: phase, Kind: "run_end", Message: msg, Time: time.Now()})
+	}()
+
+	writeJSON(w, map[string]string{"status": "started", "id": id})
+}
+
 func (s *Server) handleClarifyPending(w http.ResponseWriter, r *http.Request) {
 	path := plan.ClarifyAskPath(s.h.Config.SlmDir())
 	data, err := os.ReadFile(path)
@@ -589,6 +697,20 @@ func (s *Server) handleClarifyPending(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	if answered, expired := answeredAskState(plan.ClarifyAnswersPath(s.h.Config.SlmDir()), ask.ID, ask.CreatedAt, ask.TimeoutS, s.h.Config.ClarifyTimeout, path); answered || expired {
+		if expired {
+			plan.ClearScopeAsk(s.h.Config.SlmDir())
+			writeJSON(w, map[string]any{"pending": false, "expired": true})
+			return
+		}
+		writeJSON(w, map[string]any{"pending": false, "answered": true})
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ClarifyTimeout, path) {
+		plan.ClearScopeAsk(s.h.Config.SlmDir())
+		writeJSON(w, map[string]any{"pending": false, "expired": true})
+		return
+	}
 	writeJSON(w, map[string]any{"pending": true, "ask": ask})
 }
 
@@ -598,7 +720,34 @@ func (s *Server) handleClarifyAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid answers JSON", 400)
 		return
 	}
-	if err := plan.WriteScopeAnswers(s.h.Config.SlmDir(), ans); err != nil {
+	var ask plan.ScopeAsk
+	data, err := os.ReadFile(plan.ClarifyAskPath(s.h.Config.SlmDir()))
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "no pending clarify ask", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := json.Unmarshal(data, &ask); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ClarifyTimeout, plan.ClarifyAskPath(s.h.Config.SlmDir())) {
+		plan.ClearScopeAsk(s.h.Config.SlmDir())
+		http.Error(w, "clarify ask expired", http.StatusGone)
+		return
+	}
+	ans.AskID = ask.ID
+	if err := plan.WriteScopeAnswersOnce(s.h.Config.SlmDir(), ans); err != nil {
+		if os.IsExist(err) {
+			http.Error(w, "clarify ask already answered", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -619,6 +768,20 @@ func (s *Server) handlePlanPending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"pending": false})
 		return
 	}
+	if answered, expired := answeredAskState(hitl.AnswersPath(s.h.Config.SlmDir(), "plan"), ask.ID, ask.CreatedAt, ask.TimeoutS, s.h.Config.PlanApproveTimeout, hitl.AskPath(s.h.Config.SlmDir(), "plan")); answered || expired {
+		if expired {
+			hitl.Clear(s.h.Config.SlmDir(), "plan")
+			writeJSON(w, map[string]any{"pending": false, "expired": true})
+			return
+		}
+		writeJSON(w, map[string]any{"pending": false, "answered": true})
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.PlanApproveTimeout, hitl.AskPath(s.h.Config.SlmDir(), "plan")) {
+		hitl.Clear(s.h.Config.SlmDir(), "plan")
+		writeJSON(w, map[string]any{"pending": false, "expired": true})
+		return
+	}
 	writeJSON(w, map[string]any{"pending": true, "ask": ask})
 }
 
@@ -628,10 +791,38 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
+	var ask plan.PlanApproveAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "plan", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		http.Error(w, "no pending plan ask", http.StatusNotFound)
+		return
+	}
+	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.PlanApproveTimeout, hitl.AskPath(s.h.Config.SlmDir(), "plan")) {
+		hitl.Clear(s.h.Config.SlmDir(), "plan")
+		http.Error(w, "plan ask expired", http.StatusGone)
+		return
+	}
+	ans.Decision = strings.ToLower(strings.TrimSpace(ans.Decision))
+	if ans.Decision != "approve" && ans.Decision != "replan" {
+		http.Error(w, "invalid plan decision", http.StatusBadRequest)
+		return
+	}
+	ans.AskID = ask.ID
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "plan", ans); err != nil {
+	if err := hitl.WriteAnswersOnce(s.h.Config.SlmDir(), "plan", ans); err != nil {
+		if os.IsExist(err) {
+			http.Error(w, "plan ask already answered", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -652,6 +843,20 @@ func (s *Server) handleContinuePending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"pending": false})
 		return
 	}
+	if answered, expired := answeredAskState(hitl.AnswersPath(s.h.Config.SlmDir(), "continue"), ask.ID, ask.CreatedAt, ask.TimeoutS, s.h.Config.ContinueAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "continue")); answered || expired {
+		if expired {
+			hitl.Clear(s.h.Config.SlmDir(), "continue")
+			writeJSON(w, map[string]any{"pending": false, "expired": true})
+			return
+		}
+		writeJSON(w, map[string]any{"pending": false, "answered": true})
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ContinueAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "continue")) {
+		hitl.Clear(s.h.Config.SlmDir(), "continue")
+		writeJSON(w, map[string]any{"pending": false, "expired": true})
+		return
+	}
 	writeJSON(w, map[string]any{"pending": true, "ask": ask})
 }
 
@@ -661,11 +866,34 @@ func (s *Server) handleContinueAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
+	var ask plan.ContinueAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "continue", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		http.Error(w, "no pending continue ask", http.StatusNotFound)
+		return
+	}
+	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ContinueAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "continue")) {
+		hitl.Clear(s.h.Config.SlmDir(), "continue")
+		http.Error(w, "continue ask expired", http.StatusGone)
+		return
+	}
+	ans.AskID = ask.ID
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	ans.Action = plan.NormalizeContinueAction(ans.Action)
-	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "continue", ans); err != nil {
+	if err := hitl.WriteAnswersOnce(s.h.Config.SlmDir(), "continue", ans); err != nil {
+		if os.IsExist(err) {
+			http.Error(w, "continue ask already answered", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -686,6 +914,20 @@ func (s *Server) handleEscalatePending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"pending": false})
 		return
 	}
+	if answered, expired := answeredAskState(hitl.AnswersPath(s.h.Config.SlmDir(), "escalate"), ask.ID, ask.CreatedAt, ask.TimeoutS, s.h.Config.EscalateAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "escalate")); answered || expired {
+		if expired {
+			hitl.Clear(s.h.Config.SlmDir(), "escalate")
+			writeJSON(w, map[string]any{"pending": false, "expired": true})
+			return
+		}
+		writeJSON(w, map[string]any{"pending": false, "answered": true})
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.EscalateAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "escalate")) {
+		hitl.Clear(s.h.Config.SlmDir(), "escalate")
+		writeJSON(w, map[string]any{"pending": false, "expired": true})
+		return
+	}
 	writeJSON(w, map[string]any{"pending": true, "ask": ask})
 }
 
@@ -695,11 +937,34 @@ func (s *Server) handleEscalateAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
+	var ask plan.EscalateAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "escalate", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		http.Error(w, "no pending escalate ask", http.StatusNotFound)
+		return
+	}
+	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.EscalateAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "escalate")) {
+		hitl.Clear(s.h.Config.SlmDir(), "escalate")
+		http.Error(w, "escalate ask expired", http.StatusGone)
+		return
+	}
+	ans.AskID = ask.ID
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	ans.Action = plan.NormalizeEscalateAction(ans.Action)
-	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "escalate", ans); err != nil {
+	if err := hitl.WriteAnswersOnce(s.h.Config.SlmDir(), "escalate", ans); err != nil {
+		if os.IsExist(err) {
+			http.Error(w, "escalate ask already answered", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -720,6 +985,20 @@ func (s *Server) handleShellPending(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"pending": false})
 		return
 	}
+	if answered, expired := answeredAskState(hitl.AnswersPath(s.h.Config.SlmDir(), "shell"), ask.ID, ask.CreatedAt, ask.TimeoutS, s.h.Config.ShellAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "shell")); answered || expired {
+		if expired {
+			hitl.Clear(s.h.Config.SlmDir(), "shell")
+			writeJSON(w, map[string]any{"pending": false, "expired": true})
+			return
+		}
+		writeJSON(w, map[string]any{"pending": false, "answered": true})
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ShellAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "shell")) {
+		hitl.Clear(s.h.Config.SlmDir(), "shell")
+		writeJSON(w, map[string]any{"pending": false, "expired": true})
+		return
+	}
 	writeJSON(w, map[string]any{"pending": true, "ask": ask})
 }
 
@@ -729,10 +1008,38 @@ func (s *Server) handleShellApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
+	var ask workspace.ShellAsk
+	ok, err := hitl.ReadAsk(s.h.Config.SlmDir(), "shell", &ask)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		http.Error(w, "no pending shell ask", http.StatusNotFound)
+		return
+	}
+	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
+		return
+	}
+	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.h.Config.ShellAskTimeout, hitl.AskPath(s.h.Config.SlmDir(), "shell")) {
+		hitl.Clear(s.h.Config.SlmDir(), "shell")
+		http.Error(w, "shell ask expired", http.StatusGone)
+		return
+	}
+	ans.Decision = strings.ToLower(strings.TrimSpace(ans.Decision))
+	if ans.Decision != "approve" && ans.Decision != "deny" {
+		http.Error(w, "invalid shell decision", http.StatusBadRequest)
+		return
+	}
+	ans.AskID = ask.ID
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if err := hitl.WriteAnswers(s.h.Config.SlmDir(), "shell", ans); err != nil {
+	if err := hitl.WriteAnswersOnce(s.h.Config.SlmDir(), "shell", ans); err != nil {
+		if os.IsExist(err) {
+			http.Error(w, "shell ask already answered", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -740,6 +1047,81 @@ func (s *Server) handleShellApprove(w http.ResponseWriter, r *http.Request) {
 		Phase: "execute", Kind: "ask_answered", Message: "shell decision: " + ans.Decision, Time: time.Now(),
 	})
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func requireMatchingAskID(w http.ResponseWriter, postedID, currentID string) bool {
+	postedID = strings.TrimSpace(postedID)
+	currentID = strings.TrimSpace(currentID)
+	if currentID == "" {
+		http.Error(w, "pending ask has no id", http.StatusConflict)
+		return false
+	}
+	if postedID == "" {
+		http.Error(w, "missing ask_id", http.StatusConflict)
+		return false
+	}
+	if postedID != currentID {
+		http.Error(w, "ask_id does not match current pending ask", http.StatusConflict)
+		return false
+	}
+	return true
+}
+
+func askExpiredWithFallback(createdAt string, timeoutSec int, fallback time.Duration, path string) bool {
+	deadline, ok := askDeadline(createdAt, timeoutSec, fallback, path)
+	return ok && time.Now().After(deadline)
+}
+
+func answeredAskState(answerPath, askID, createdAt string, timeoutSec int, fallback time.Duration, askPath string) (answered bool, expired bool) {
+	data, err := os.ReadFile(answerPath)
+	if err != nil {
+		return false, false
+	}
+	var meta struct {
+		AskID string `json:"ask_id"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil || strings.TrimSpace(meta.AskID) != strings.TrimSpace(askID) {
+		_ = os.Remove(answerPath)
+		return false, false
+	}
+	deadline, ok := askDeadline(createdAt, timeoutSec, fallback, askPath)
+	if !ok {
+		return true, false
+	}
+	if info, err := os.Stat(answerPath); err == nil && info.ModTime().After(deadline) {
+		return false, true
+	}
+	return true, false
+}
+
+func askDeadline(createdAt string, timeoutSec int, fallback time.Duration, path string) (time.Time, bool) {
+	if timeoutSec <= 0 && fallback > 0 {
+		timeoutSec = int(fallback.Seconds())
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 120
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
+	if created, ok := parseAskCreatedAt(createdAt); ok {
+		return created.Add(timeout), true
+	}
+	if info, err := os.Stat(path); err == nil {
+		return info.ModTime().Add(timeout), true
+	}
+	return time.Time{}, false
+}
+
+func parseAskCreatedAt(createdAt string) (time.Time, bool) {
+	createdAt = strings.TrimSpace(createdAt)
+	if createdAt == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, createdAt); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (s *Server) handleRewindList(w http.ResponseWriter, r *http.Request) {
@@ -996,6 +1378,39 @@ func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 		events = []session.EventRecord{}
 	}
 	writeJSON(w, map[string]interface{}{"id": id, "events": events})
+}
+
+func (s *Server) handleGetComposition(w http.ResponseWriter, r *http.Request) {
+	comp, ok, err := readComposition(filepath.Join(s.h.Config.SlmDir(), composer.DynamicFileName))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]interface{}{"ok": false, "composition": nil})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ok": true, "composition": comp})
+}
+
+func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		http.Error(w, "query required", 400)
+		return
+	}
+	comp := s.h.Orchestrator.PreviewComposition(req.Query)
+	writeJSON(w, map[string]interface{}{
+		"ok":              true,
+		"dynamic_enabled": s.h.Config.DynamicPipeline,
+		"composition":     comp,
+	})
 }
 
 // enrichAgentMaps attaches effective_* inheritance fields for Studio/TUI.
@@ -1363,11 +1778,14 @@ func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type item struct {
-		ID        string `json:"id"`
-		Query     string `json:"query"`
-		Success   bool   `json:"success"`
-		Summary   string `json:"summary,omitempty"`
-		UpdatedAt string `json:"updated_at"`
+		ID          string `json:"id"`
+		Query       string `json:"query"`
+		Success     bool   `json:"success"`
+		Summary     string `json:"summary,omitempty"`
+		UpdatedAt   string `json:"updated_at"`
+		Interrupted bool   `json:"interrupted,omitempty"`
+		Phase       string `json:"phase,omitempty"`
+		ResumeFrom  string `json:"resume_from,omitempty"`
 	}
 	var out []item
 	for _, e := range entries {
@@ -1381,6 +1799,7 @@ func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
 		out = append(out, item{
 			ID: t.ID, Query: t.Query, Success: t.Success,
 			Summary: t.Summary, UpdatedAt: t.UpdatedAt,
+			Interrupted: t.Interrupted, Phase: t.Phase, ResumeFrom: t.ResumeFrom,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
@@ -1408,11 +1827,29 @@ func (s *Server) handleGetQuery(w http.ResponseWriter, r *http.Request) {
 	sum, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "summary.md"))
 	planMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "PLAN.md"))
 	tasksMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "TASKS.md"))
+	comp, _, _ := readComposition(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), composer.DynamicFileName))
 	writeJSON(w, map[string]interface{}{
 		"id": t.ID, "query": t.Query, "success": t.Success,
 		"summary": t.Summary, "updated_at": t.UpdatedAt, "board": t.Board,
+		"interrupted": t.Interrupted, "phase": t.Phase, "resume_from": t.ResumeFrom,
 		"summary_md": string(sum), "plan_md": string(planMD), "tasks_md": string(tasksMD),
+		"composition": comp,
 	})
+}
+
+func readComposition(path string) (*composer.Composition, bool, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var comp composer.Composition
+	if err := json.Unmarshal(body, &comp); err != nil {
+		return nil, false, err
+	}
+	return &comp, true, nil
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

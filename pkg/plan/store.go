@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
 // LiveStore is a thread-safe board persisted as board.json (+ optional markdown sync).
@@ -65,7 +67,7 @@ func (s *LiveStore) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o644)
+	return atomicfile.Write(s.path, data, 0o644)
 }
 
 // Snapshot returns a copy of the board.

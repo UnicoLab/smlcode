@@ -1,6 +1,9 @@
 package composer
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
@@ -10,6 +13,7 @@ func TestParseNormalizes(t *testing.T) {
 	raw := `{
 		"summary": "  Build the thing ",
 		"strategy": "keep it small",
+		"handoff": [" Keep target files authoritative ", "keep target files authoritative"],
 		"phases": [
 			{"id": "EXPLORE", "enabled": true},
 			{"id": "plan", "agent": "PLANNER", "enabled": true},
@@ -39,6 +43,30 @@ func TestParseNormalizes(t *testing.T) {
 	}
 	if len(c.Team) != 1 || len(c.Team[0].Skills) != 1 {
 		t.Fatalf("team=%+v", c.Team)
+	}
+	if len(c.Handoff) != 1 || c.Handoff[0] != "Keep target files authoritative" {
+		t.Fatalf("handoff=%+v", c.Handoff)
+	}
+}
+
+func TestSaveDynamicPersistsFullComposition(t *testing.T) {
+	dir := t.TempDir()
+	c := &Composition{
+		Summary: "dynamic",
+		Handoff: []string{"Verify with go test ./..."},
+		Team:    []TeamMember{{Role: "go-worker", Skills: []string{"atomic-coding"}}},
+	}
+	if err := SaveDynamic(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, DynamicFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"dynamic", "Verify with go test", "go-worker", "atomic-coding"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("saved composition missing %q:\n%s", want, body)
+		}
 	}
 }
 

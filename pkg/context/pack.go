@@ -1,6 +1,7 @@
 package contextstore
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ type TaskPack struct {
 	TaskTitle  string            `json:"task_title,omitempty"`
 	Docs       map[string]string `json:"docs"`
 	Files      map[string]string `json:"files"`
+	Priority   string            `json:"priority,omitempty"`
 	Skills     string            `json:"skills,omitempty"`
 	BudgetUsed int               `json:"budget_used"`
 	LeanFiles  bool              `json:"-"` // tighter per-file caps for workers
@@ -38,6 +40,10 @@ const (
 	// MaxSkillFraction is the maximum share of remaining budget given to skills
 	// when context is tight (15% of remaining after files+docs).
 	MaxSkillFraction = 15 // percent
+
+	// MaxPriorityBytes caps first-class run handoff/context that must survive
+	// tight packs without letting it crowd out focus files.
+	MaxPriorityBytes = 2400
 )
 
 // Packer builds incremental, budgeted context packs from markdown + file excerpts.
@@ -77,8 +83,10 @@ func (p *Packer) ClearCache() {
 // history. Skills are truncated relative to remaining budget rather than a
 // hardcoded cap.
 func (p *Packer) Build(role, query string, docNames []string, filePaths []string, skillsMarkdown string) (*TaskPack, error) {
+	priorityMarkdown, skillsMarkdown := splitPriorityMarkdown(skillsMarkdown)
 	cacheKey := role + "\x00" + query + "\x00" + strings.Join(docNames, ",") + "\x00" +
-		strings.Join(filePaths, ",") + "\x00" + skillsMarkdown
+		strings.Join(filePaths, ",") + "\x00" + p.freshnessKey(docNames, filePaths) + "\x00" +
+		priorityMarkdown + "\x00" + skillsMarkdown
 	if p != nil {
 		p.cacheMu.Lock()
 		if cached, ok := p.cache[cacheKey]; ok && cached != nil {
@@ -92,11 +100,10 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	}
 
 	pack := &TaskPack{
-		Query:  query,
-		Role:   role,
-		Docs:   map[string]string{},
-		Files:  map[string]string{},
-		Skills: skillsMarkdown,
+		Query: query,
+		Role:  role,
+		Docs:  map[string]string{},
+		Files: map[string]string{},
 	}
 
 	// --- budget with safety margin ---
@@ -109,6 +116,11 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	// so even budget-rich stacks (128 KB) don't drown small SLMs.
 	if lean && budget > MaxLeanPackBytes {
 		budget = MaxLeanPackBytes
+	}
+
+	if priorityMarkdown != "" && budget-used > MinRemainingBytes {
+		pack.Priority = takePriority(priorityMarkdown, budget-used)
+		used += len(pack.Priority)
 	}
 
 	fileLimit := (budget * 50) / 100 // 50 % of budget per file
@@ -216,6 +228,46 @@ func (p *Packer) Build(role, query string, docNames []string, filePaths []string
 	return pack, nil
 }
 
+func (p *Packer) freshnessKey(docNames []string, filePaths []string) string {
+	if p == nil {
+		return ""
+	}
+	h := sha256.New()
+	for _, name := range docNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(h, "doc:%s:", name)
+		if p.Store == nil {
+			_, _ = h.Write([]byte("no-store;"))
+			continue
+		}
+		data, err := os.ReadFile(p.Store.Path(name))
+		if err != nil {
+			_, _ = fmt.Fprintf(h, "err:%v;", err)
+			continue
+		}
+		sum := sha256.Sum256(data)
+		_, _ = h.Write(sum[:])
+	}
+	for _, rel := range filePaths {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(h, "file:%s:", filepath.ToSlash(rel))
+		data, err := os.ReadFile(filepath.Join(p.Root, rel))
+		if err != nil {
+			_, _ = fmt.Fprintf(h, "err:%v;", err)
+			continue
+		}
+		sum := sha256.Sum256(data)
+		_, _ = h.Write(sum[:])
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
 func copyStringMap(m map[string]string) map[string]string {
 	if m == nil {
 		return nil
@@ -225,6 +277,45 @@ func copyStringMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func splitPriorityMarkdown(markdown string) (priority, rest string) {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return "", ""
+	}
+	const marker = "## Run collaboration contract"
+	idx := strings.Index(markdown, marker)
+	if idx < 0 {
+		return "", markdown
+	}
+	if idx > 0 {
+		return "", markdown
+	}
+	next := strings.Index(markdown[len(marker):], "\n## ")
+	if next < 0 {
+		return markdown, ""
+	}
+	cut := len(marker) + next + 1
+	return strings.TrimSpace(markdown[:cut]), strings.TrimSpace(markdown[cut:])
+}
+
+func takePriority(markdown string, remaining int) string {
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" || remaining <= 0 {
+		return ""
+	}
+	cap := remaining
+	if cap > MaxPriorityBytes {
+		cap = MaxPriorityBytes
+	}
+	if len(markdown) <= cap {
+		return markdown
+	}
+	if cap <= 16 {
+		return markdown[:cap]
+	}
+	return strings.TrimSpace(markdown[:cap-16]) + "\n...[truncated]"
 }
 
 func isLeanRole(role string) bool {
@@ -247,6 +338,10 @@ func (p *TaskPack) Render() string {
 	if p.Query != "" {
 		b.WriteString("## User query\n\n")
 		b.WriteString(p.Query)
+		b.WriteString("\n\n")
+	}
+	if p.Priority != "" {
+		b.WriteString(p.Priority)
 		b.WriteString("\n\n")
 	}
 	if p.Skills != "" {

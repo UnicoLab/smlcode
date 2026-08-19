@@ -403,9 +403,9 @@ export default function LiveView() {
   const progressPct = totalPhases > 0 ? Math.round((stats.phasesCompleted / totalPhases) * 100) : 0;
 
   return (
-    <div className="flex h-full flex-col bg-gray-50/70 dark:bg-gray-950">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
       {/* ── Command Center ── */}
-      <div className="border-b border-gray-200 bg-white px-4 py-4 shadow-sm dark:border-gray-800 dark:bg-gray-950">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-4 shadow-sm dark:border-gray-800 dark:bg-gray-950">
         <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0 flex-1">
@@ -640,21 +640,21 @@ export default function LiveView() {
       </div>
 
       {previewLoading && !shownComposition && !running && (
-        <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-teal-50/30 dark:bg-teal-950/10 text-xs text-teal-700 dark:text-teal-300 flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-teal-50/30 px-4 py-2 text-xs text-teal-700 dark:border-gray-800 dark:bg-teal-950/10 dark:text-teal-300">
           <Loader2 size={13} className="animate-spin" />
           Previewing dynamic pipeline
         </div>
       )}
 
       {!running && persistedCompositionError && (
-        <div className="px-4 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100 flex items-start gap-2">
+        <div className="flex shrink-0 items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">Saved dynamic composition could not be read: {persistedCompositionError}</span>
         </div>
       )}
 
       {shownComposition && (
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-teal-50/45 dark:bg-teal-950/20">
+        <div className="shrink-0 border-b border-gray-200 bg-teal-50/45 px-4 py-3 dark:border-gray-800 dark:bg-teal-950/20">
           <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/50 flex items-center justify-center shrink-0">
               <Layers size={16} className="text-teal-700 dark:text-teal-300" />
@@ -769,7 +769,7 @@ export default function LiveView() {
       {/* Active Agent Panel */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       {running && activeAgentId && (
-        <div className="px-4 py-2.5 border-b border-gray-200 dark:border-gray-800 bg-violet-50/40 dark:bg-violet-950/20">
+        <div className="shrink-0 border-b border-gray-200 bg-violet-50/40 px-4 py-2.5 dark:border-gray-800 dark:bg-violet-950/20">
           <div className="flex items-center gap-3">
             {/* Pulsing agent icon */}
             <div className="relative shrink-0">
@@ -819,9 +819,9 @@ export default function LiveView() {
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* ── Content area: event log + result sidebar ── */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="flex-1 overflow-hidden lg:flex">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {/* Event log */}
-        <div className="flex min-h-[24rem] flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {/* Collapsible header */}
           <button
             onClick={() => setLogExpanded((v) => !v)}
@@ -838,7 +838,7 @@ export default function LiveView() {
 
           {/* Log body */}
           {logExpanded && (
-            <div className="flex-1 overflow-auto p-4">
+            <div className="min-h-0 flex-1 overflow-auto p-4">
               {events.length === 0 && !result ? (
                 <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
                   <div className="w-16 h-16 rounded-2xl bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center">
@@ -863,7 +863,7 @@ export default function LiveView() {
         </div>
 
         {/* Right sidebar: Tasks + Results tabs */}
-        <div className="flex min-h-[22rem] shrink-0 flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:w-[27rem] lg:border-l lg:border-t-0">
+        <div className="flex min-h-0 w-full shrink-0 flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:w-[27rem] lg:border-l lg:border-t-0">
           {/* Tab bar */}
           <div className="flex border-b border-gray-200 dark:border-gray-700 shrink-0">
             <button
@@ -902,7 +902,7 @@ export default function LiveView() {
           </div>
 
           {/* Tab content */}
-          <div className="flex-1 overflow-auto">
+          <div className="min-h-0 flex-1 overflow-hidden">
             {sidebarTab === 'tasks' && <LiveTaskPanel />}
             {sidebarTab === 'result' && (
               <div className="h-full overflow-auto p-4">

@@ -91,6 +91,7 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	}
 
 	_ = o.store.SetQuery(query)
+	o.seedAdaptiveLessons()
 	o.shared.SetGlobal("query", query)
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
@@ -529,6 +530,9 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		if strings.TrimSpace(memOut) != "" {
 			_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
 			lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
+		}
+		if strings.TrimSpace(lessonsMD) != "" {
+			_ = learning.AppendGlobalMemory("Session lessons", lessonsMD)
 		}
 	} else {
 		o.emit("memory", "phase disabled — skipping memory distillation", "")

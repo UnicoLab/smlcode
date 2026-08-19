@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
 
 func TestBuildSharedBriefPrioritizesDependenciesAndSharedFiles(t *testing.T) {
@@ -231,5 +232,35 @@ func TestTaskInputForInjectsSharedBriefBeforeFeedback(t *testing.T) {
 	}
 	if !strings.Contains(input, "created helper") {
 		t.Fatalf("dependency summary missing:\n%s", input)
+	}
+}
+
+func TestTaskInputInjectsAdaptiveLessonsBeforeFeedback(t *testing.T) {
+	shared := ggagent.NewSharedState()
+	shared.SetGlobal("adaptive_lessons", "- global memory: Timeout after context deadline exceeded; lower max_parallel or split smaller")
+	r := NewRunner(nil, shared)
+	r.Feedback = func() string { return "user says keep going" }
+	task := plan.Task{
+		ID:          "T1",
+		Title:       "Retry focused edit",
+		Role:        plan.RoleWorker,
+		Column:      plan.ColReadyToDev,
+		Description: "do it",
+	}
+
+	input := r.taskInputFor(nil, task)
+	adaptiveIdx := strings.Index(input, "## Adaptive harness lessons")
+	feedbackIdx := strings.Index(input, "## LIVE FEEDBACK FROM USER")
+	if adaptiveIdx < 0 {
+		t.Fatalf("missing adaptive lessons:\n%s", input)
+	}
+	if feedbackIdx < 0 {
+		t.Fatalf("missing feedback:\n%s", input)
+	}
+	if adaptiveIdx > feedbackIdx {
+		t.Fatalf("adaptive lessons should precede live feedback:\n%s", input)
+	}
+	if !strings.Contains(input, "Timeout adaptation") {
+		t.Fatalf("missing deterministic timeout adaptation:\n%s", input)
 	}
 }

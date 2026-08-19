@@ -29,51 +29,77 @@ const PHASE_COLORS: Record<string, string> = {
 };
 
 const KIND_ICONS: Record<string, string> = {
-  run_start: '🚀',
-  run_done: '✅',
-  run_error: '❌',
-  task_start: '▶️',
-  task_done: '✔️',
-  task_fail: '❌',
-  review: '👁️',
-  correct: '🔧',
-  coord: '🎯',
-  plan: '📋',
-  explore: '🔍',
-  context: '📝',
-  clarify: '❓',
-  split: '✂️',
-  polish: '✨',
-  test: '🧪',
-  memory: '🧠',
-  agent: '🤖',
-  llm: '💭',
-  tool: '🔨',
-  shell: '💻',
-  wave: '🌊',
-  gate: '🚧',
-  rewind: '⏪',
+  run_start: 'RUN',
+  run_done: 'OK',
+  run_error: 'ERR',
+  agent_start: 'GO',
+  agent_end: 'END',
+  task_start: 'GO',
+  task_done: 'OK',
+  task_fail: 'ERR',
+  review: 'REV',
+  correct: 'FIX',
+  coord: 'CO',
+  plan: 'PLAN',
+  explore: 'FIND',
+  context: 'CTX',
+  clarify: 'ASK',
+  split: 'SPLIT',
+  polish: 'POLISH',
+  test: 'TEST',
+  memory: 'MEM',
+  output: 'OUT',
+  tool: 'TOOL',
+  file_change: 'FILE',
+  shell: 'SH',
+  wave: 'WAVE',
+  gate: 'GATE',
+  loop: 'LOOP',
+  ask: 'ASK',
+  intervention: 'HELP',
+  latency: 'TIME',
+  usage: 'TOK',
+  debug: 'DBG',
+  rewind: 'RW',
 };
 
 // Severity styling — problems/warnings/errors are visually distinct from routine info.
 const LEVEL_STYLES: Record<string, { row: string; badge: string; label: string; icon: string }> = {
-  error: { row: 'bg-red-50/70 dark:bg-red-900/15', badge: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', label: 'ERROR', icon: '❌' },
-  problem: { row: 'bg-orange-50/70 dark:bg-orange-900/15', badge: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', label: 'PROBLEM', icon: '⚠️' },
-  warning: { row: 'bg-amber-50/60 dark:bg-amber-900/10', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', label: 'WARN', icon: '⚠️' },
-  success: { row: 'bg-green-50/60 dark:bg-green-900/10', badge: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300', label: 'OK', icon: '✅' },
+  error: { row: 'bg-red-50/70 dark:bg-red-900/15', badge: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', label: 'ERROR', icon: 'ERR' },
+  problem: { row: 'bg-orange-50/70 dark:bg-orange-900/15', badge: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', label: 'PROBLEM', icon: '!' },
+  warning: { row: 'bg-amber-50/60 dark:bg-amber-900/10', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', label: 'WARN', icon: '!' },
+  success: { row: 'bg-green-50/60 dark:bg-green-900/10', badge: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300', label: 'OK', icon: 'OK' },
   info: { row: '', badge: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400', label: 'INFO', icon: '·' },
 };
 
 type Filter = 'all' | 'problems';
 
+type DisplayEvent = {
+  event: RunEvent;
+  count: number;
+  signature: string;
+  view: EventView;
+};
+
+type EventView = {
+  icon: string;
+  title: string;
+  subtitle?: string;
+  detail?: string;
+  preview?: string;
+  raw?: string;
+  chips: { label: string; tone?: 'phase' | 'agent' | 'task' | 'file' | 'kind' }[];
+};
+
 export default function EventLog({ events, summary }: EventLogProps) {
   const [filter, setFilter] = useState<Filter>('all');
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const insightSummary = useMemo(() => summary || summarizeEvents(events), [events, summary]);
 
   const counts = useMemo(() => {
     const c = { error: 0, problem: 0, warning: 0, success: 0 };
     for (const e of events) {
-      const lvl = e.level || 'info';
+      const lvl = eventLevel(e);
       if (lvl in c) c[lvl as keyof typeof c] += 1;
     }
     return c;
@@ -82,10 +108,21 @@ export default function EventLog({ events, summary }: EventLogProps) {
   const visible = useMemo(() => {
     if (filter === 'all') return events;
     return events.filter((e) => {
-      const lvl = e.level || 'info';
+      const lvl = eventLevel(e);
       return lvl === 'error' || lvl === 'problem' || lvl === 'warning';
     });
   }, [events, filter]);
+
+  const displayEvents = useMemo(() => compactAdjacentEvents(visible), [visible]);
+
+  const toggleExpanded = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   if (events.length === 0) {
     return (
@@ -124,82 +161,537 @@ export default function EventLog({ events, summary }: EventLogProps) {
           Problems ({counts.error + counts.problem + counts.warning})
         </button>
         <span className="ml-auto flex items-center gap-2 text-gray-400 dark:text-gray-500">
-          {counts.error > 0 && <span className="text-red-500">❌ {counts.error}</span>}
-          {counts.problem > 0 && <span className="text-orange-500">⚠️ {counts.problem}</span>}
-          {counts.warning > 0 && <span className="text-amber-500">⚠️ {counts.warning}</span>}
-          {counts.success > 0 && <span className="text-green-500">✅ {counts.success}</span>}
+          {counts.error > 0 && <span className="text-red-500">ERR {counts.error}</span>}
+          {counts.problem > 0 && <span className="text-orange-500">PROBLEM {counts.problem}</span>}
+          {counts.warning > 0 && <span className="text-amber-500">WARN {counts.warning}</span>}
+          {counts.success > 0 && <span className="text-green-500">OK {counts.success}</span>}
         </span>
       </div>
 
       <div className="space-y-0.5 font-mono text-xs">
-        {visible.map((event, i) => {
-          const lvl = event.level || 'info';
+        {displayEvents.map((item, i) => {
+          const event = item.event;
+          const view = item.view;
+          const rowKey = `${item.signature}-${event.time}-${i}`;
+          const lvl = eventLevel(event);
           const style = LEVEL_STYLES[lvl] || LEVEL_STYLES.info;
+          const isExpanded = expanded.has(rowKey);
           return (
             <div
-              key={`${event.time}-${i}`}
+              key={rowKey}
               className={clsx(
-                'flex items-start gap-3 px-3 py-2 rounded-lg transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50',
+                'rounded-lg px-3 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50',
                 style.row,
                 event.phase === 'error' && 'bg-red-50/50 dark:bg-red-900/10',
               )}
             >
-              {/* Severity icon (preferred over kind icon for non-info levels) */}
-              <span className="shrink-0 mt-px text-sm" title={lvl}>
-                {lvl !== 'info' ? style.icon : KIND_ICONS[event.kind] || '·'}
-              </span>
-
-              {/* Timestamp */}
-              <span className="text-gray-400 dark:text-gray-600 shrink-0 w-20 tabular-nums">
-                {formatTime(event.time)}
-              </span>
-
-              {/* Severity badge */}
-              <span
-                className={clsx(
-                  'shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold leading-none',
-                  style.badge,
-                )}
-              >
-                {style.label}
-              </span>
-
-              {/* Phase badge */}
-              <span
-                className={clsx(
-                  'shrink-0 w-20 text-right text-[10px] font-semibold uppercase tracking-wider',
-                  PHASE_COLORS[event.phase] || 'text-gray-500',
-                )}
-              >
-                {event.phase}
-              </span>
-
-              {/* Message */}
-              <span className="flex-1 text-gray-700 dark:text-gray-300 break-words">
-                {event.agent && (
-                  <span className="text-brand-500 font-semibold">[{event.agent}] </span>
-                )}
-                {event.task_id && (
-                  <span className="text-gray-400">#{event.task_id} </span>
-                )}
-                {event.scope && (
-                  <span className="text-violet-500">({event.scope}) </span>
-                )}
-                {event.message}
-              </span>
-
-              {/* Output preview */}
-              {event.output && (
-                <span className="text-gray-400 truncate max-w-[200px] ml-2">
-                  {event.output.slice(0, 80)}
+              <div className="flex items-start gap-3">
+                <span
+                  className={clsx(
+                    'mt-0.5 flex h-6 w-10 shrink-0 items-center justify-center rounded-md border font-sans text-[9px] font-bold tracking-wide',
+                    lvl === 'error' && 'border-red-200 bg-red-100 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300',
+                    lvl === 'problem' && 'border-orange-200 bg-orange-100 text-orange-700 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-300',
+                    lvl === 'warning' && 'border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300',
+                    lvl === 'success' && 'border-green-200 bg-green-100 text-green-700 dark:border-green-900 dark:bg-green-950/50 dark:text-green-300',
+                    lvl === 'info' && 'border-gray-200 bg-gray-100 text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400',
+                  )}
+                  title={`${style.label} / ${event.kind}`}
+                >
+                  {lvl !== 'info' ? style.icon : view.icon}
                 </span>
-              )}
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-sans text-[10px] text-gray-400 dark:text-gray-600 tabular-nums">
+                      {formatTime(event.time)}
+                    </span>
+                    <span className={clsx('font-sans text-[10px] font-semibold uppercase tracking-wider', PHASE_COLORS[event.phase] || 'text-gray-500')}>
+                      {event.phase || 'event'}
+                    </span>
+                    {item.count > 1 && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-sans text-[9px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                        repeated x{item.count}
+                      </span>
+                    )}
+                    {view.chips.map((chip, idx) => (
+                      <span
+                        key={`${chip.label}-${idx}`}
+                        className={clsx(
+                          'rounded px-1.5 py-0.5 font-sans text-[9px] font-semibold',
+                          chip.tone === 'agent' && 'bg-brand-50 text-brand-600 dark:bg-brand-950/40 dark:text-brand-300',
+                          chip.tone === 'task' && 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+                          chip.tone === 'file' && 'bg-violet-50 text-violet-600 dark:bg-violet-950/40 dark:text-violet-300',
+                          chip.tone === 'kind' && 'bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300',
+                          (!chip.tone || chip.tone === 'phase') && 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+                        )}
+                      >
+                        {chip.label}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-1 font-sans text-sm font-semibold leading-snug text-gray-800 dark:text-gray-100">
+                    {view.title}
+                  </div>
+                  {view.subtitle && (
+                    <div className="mt-0.5 font-sans text-xs leading-snug text-gray-500 dark:text-gray-400">
+                      {view.subtitle}
+                    </div>
+                  )}
+                  {view.detail && (
+                    <div className="mt-1 rounded-md bg-gray-50 px-2 py-1.5 font-sans text-xs leading-relaxed text-gray-600 dark:bg-gray-900/70 dark:text-gray-300">
+                      {view.detail}
+                    </div>
+                  )}
+                  {view.preview && (
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(rowKey)}
+                      className="mt-1 block w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-left font-mono text-[10px] leading-relaxed text-gray-500 hover:border-gray-300 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400 dark:hover:border-gray-700"
+                      title={isExpanded ? 'Collapse event output' : 'Expand event output'}
+                    >
+                      <span className={clsx('block whitespace-pre-wrap break-words', !isExpanded && 'line-clamp-2')}>
+                        {isExpanded ? view.raw || view.preview : view.preview}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}
       </div>
     </div>
   );
+}
+
+function compactAdjacentEvents(events: RunEvent[]): DisplayEvent[] {
+  const out: DisplayEvent[] = [];
+  for (const event of events) {
+    const signature = eventSignature(event);
+    const last = out[out.length - 1];
+    if (last && last.signature === signature) {
+      last.count += 1;
+      last.event = event;
+      continue;
+    }
+    out.push({ event, count: 1, signature, view: describeEvent(event) });
+  }
+  return out;
+}
+
+function eventLevel(event: RunEvent) {
+  const configured = event.level || 'info';
+  if (configured !== 'info') return configured;
+  const text = `${event.phase || ''} ${event.kind || ''} ${event.message || ''} ${event.output || ''}`.toLowerCase();
+  if (event.phase === 'error' || text.includes('context canceled') || text.includes('context cancelled') ||
+    text.includes('deadline exceeded') || text.includes('timed out') || text.includes('panic') ||
+    text.includes('exception')) {
+    return 'error';
+  }
+  if (text.includes('failed') || text.includes('blocked') || text.includes('rejected') ||
+    text.includes('still red') || text.includes('qa_gate failed')) {
+    return 'problem';
+  }
+  if (text.includes('warning') || text.includes('warn') || text.includes('degraded')) {
+    return 'warning';
+  }
+  if (text.includes('green') || text.includes('approved=true') || text.includes('passed') ||
+    text.includes('run completed')) {
+    return 'success';
+  }
+  return configured;
+}
+
+function eventSignature(event: RunEvent) {
+  return [
+    event.phase || '',
+    event.kind || '',
+    event.level || '',
+    event.agent || '',
+    event.task_id || '',
+    event.scope || '',
+    normalizeLogText(event.message || ''),
+    normalizeLogText(event.output || '').slice(0, 240),
+  ].join('|');
+}
+
+function describeEvent(event: RunEvent): EventView {
+  const msg = cleanEventText(event.message || '');
+  const output = cleanEventText(event.output || '');
+  const lower = `${event.phase || ''} ${event.kind || ''} ${msg} ${output}`.toLowerCase();
+  const actor = actorLabel(event);
+  const file = primaryFile(event);
+  const chips = eventChips(event, file);
+  const preview = outputPreview(event);
+  const base: EventView = {
+    icon: KIND_ICONS[event.kind] || KIND_ICONS[event.phase] || 'EVT',
+    title: msg || `${titleCase(event.kind || event.phase || 'event')} update`,
+    preview,
+    raw: output || undefined,
+    chips,
+  };
+
+  if (event.phase === 'error' || lower.includes('context canceled') || lower.includes('context cancelled')) {
+    return {
+      ...base,
+      icon: 'STOP',
+      title: 'Run was interrupted or canceled',
+      subtitle: 'The harness stopped before the pipeline reached a clean final state.',
+      detail: msg || output || 'Context was canceled.',
+    };
+  }
+
+  if (lower.includes('timed out') || lower.includes('deadline exceeded') || lower.includes('timeout')) {
+    return {
+      ...base,
+      icon: 'TIME',
+      title: `${actor} hit a timeout`,
+      subtitle: file ? `The task on ${file} needs retry or narrower scope.` : 'The task needs retry or narrower scope.',
+      detail: msg || output,
+    };
+  }
+
+  if (event.kind === 'file_change') {
+    const op = fileOperation(msg);
+    return {
+      ...base,
+      icon: 'FILE',
+      title: `${actor} ${op.verb} ${op.file || file || 'a file'}`,
+      subtitle: op.explain,
+      detail: file ? `Focus file: ${file}` : undefined,
+    };
+  }
+
+  if (event.kind === 'agent_start') {
+    return {
+      ...base,
+      icon: 'GO',
+      title: `${actor} started${event.task_id ? ` task ${event.task_id}` : ''}`,
+      subtitle: startSubtitle(event, msg),
+      detail: file ? `Scope: ${file}` : undefined,
+    };
+  }
+
+  if (event.kind === 'agent_end') {
+    return {
+      ...base,
+      icon: endIcon(lower),
+      title: endTitle(event, actor, msg),
+      subtitle: endSubtitle(event, msg),
+      detail: output && output !== msg ? summarizePayload(output, 220) : undefined,
+    };
+  }
+
+  if (event.kind === 'turn') {
+    return {
+      ...base,
+      icon: 'TURN',
+      title: `${actor} progress update`,
+      subtitle: msg,
+    };
+  }
+
+  if (event.kind === 'loop') {
+    const loop = parseLoopPayload(output);
+    return {
+      ...base,
+      icon: 'LOOP',
+      title: loop?.action ? loopActionTitle(loop.action) : 'Pipeline loop decision',
+      subtitle: loop?.reason || msg,
+      detail: loopDetail(loop),
+    };
+  }
+
+  if (event.kind === 'ask') {
+    return {
+      ...base,
+      icon: 'ASK',
+      title: askTitle(event),
+      subtitle: msg,
+      detail: output ? summarizePayload(output, 260) : undefined,
+    };
+  }
+
+  if (event.kind === 'intervention') {
+    return {
+      ...base,
+      icon: 'HELP',
+      title: interventionTitle(event),
+      subtitle: msg,
+      detail: output || undefined,
+    };
+  }
+
+  if (event.kind === 'latency') {
+    return {
+      ...base,
+      icon: 'TIME',
+      title: 'Timing update',
+      subtitle: msg,
+    };
+  }
+
+  if (event.kind === 'usage') {
+    return {
+      ...base,
+      icon: 'TOK',
+      title: 'Token usage update',
+      subtitle: msg,
+    };
+  }
+
+  if (event.phase === 'test' || event.agent === 'qa' || lower.includes('qa_gate')) {
+    return {
+      ...base,
+      icon: lower.includes('green') || lower.includes('passed') ? 'OK' : 'TEST',
+      title: qaTitle(event, msg, lower),
+      subtitle: output ? summarizePayload(output, 180) : msg,
+    };
+  }
+
+  if (event.phase === 'learn' || event.phase === 'memory') {
+    return {
+      ...base,
+      icon: 'MEM',
+      title: 'Harness updated memory',
+      subtitle: msg,
+      detail: output ? summarizePayload(output, 220) : undefined,
+    };
+  }
+
+  if (event.kind === 'output' && output) {
+    return {
+      ...base,
+      title: `${actor} produced output`,
+      subtitle: msg || summarizePayload(output, 140),
+      detail: summarizePayload(output, 220),
+    };
+  }
+
+  return {
+    ...base,
+    title: phaseTitle(event, msg),
+    subtitle: defaultSubtitle(event),
+    detail: output ? summarizePayload(output, 220) : undefined,
+  };
+}
+
+function actorLabel(event: RunEvent) {
+  const agent = cleanEventText(event.agent || '');
+  if (!agent) return titleCase(event.phase || 'Harness');
+  if (agent === 'qa') return 'QA gate';
+  if (agent === 'loop') return 'Pipeline loop';
+  if (agent === 'harness') return 'Harness';
+  return titleCase(agent.replace(/[-_]/g, ' '));
+}
+
+function eventChips(event: RunEvent, file?: string) {
+  const chips: EventView['chips'] = [];
+  if (event.agent) chips.push({ label: `@${event.agent}`, tone: 'agent' });
+  if (event.task_id) chips.push({ label: `#${event.task_id}`, tone: 'task' });
+  if (file) chips.push({ label: file, tone: 'file' });
+  if (event.kind && event.kind !== 'phase') chips.push({ label: event.kind, tone: 'kind' });
+  return chips.slice(0, 5);
+}
+
+function primaryFile(event: RunEvent) {
+  const scope = cleanEventText(event.scope || '');
+  const msg = cleanEventText(event.message || '');
+  const candidates = [scope, msg];
+  for (const text of candidates) {
+    const match = text.match(/[A-Za-z0-9_./-]+\.(go|ts|tsx|js|jsx|py|rs|java|cpp|c|h|hpp|css|html|md|yaml|yml|json|toml)/);
+    if (match) return match[0];
+  }
+  return scope && scope.length < 80 ? scope : '';
+}
+
+function fileOperation(message: string) {
+  const parts = message.trim().split(/\s+/);
+  const op = (parts[0] || '').toLowerCase();
+  const file = parts[1] || '';
+  switch (op) {
+    case 'write':
+      return { verb: 'wrote', file, explain: 'Created or replaced file content through the workspace tool.' };
+    case 'edit':
+      return { verb: 'edited', file, explain: 'Applied a targeted patch to an existing file.' };
+    case 'patch':
+      return { verb: 'patched', file, explain: 'Applied a structured patch.' };
+    case 'read':
+      return { verb: 'read', file, explain: 'Loaded file context before deciding the next edit.' };
+    case 'delete':
+    case 'remove':
+      return { verb: 'removed', file, explain: 'Deleted a file or block.' };
+    case 'mv':
+    case 'move':
+    case 'rename':
+      return { verb: 'renamed', file, explain: 'Moved or renamed a file.' };
+    default:
+      return { verb: 'updated', file, explain: message || 'File activity from the workspace tool.' };
+  }
+}
+
+function startSubtitle(event: RunEvent, message: string) {
+  if (message === 'correction pass') return 'Review found issues; the corrector is applying a fix.';
+  if (message.includes('review')) return 'Checking whether the task is actually complete.';
+  if (message.includes('worker self-critique')) return 'The harness detected weak output and is asking for a self-fix.';
+  if (event.phase === 'test') return 'Verification is running against the current workspace.';
+  return message || 'Agent call is in progress.';
+}
+
+function endTitle(event: RunEvent, actor: string, message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes('review approved')) return `${actor} approved the task`;
+  if (lower.includes('review approved=false')) return `${actor} rejected the task`;
+  if (lower.includes('corrector finished')) return `${actor} finished a correction`;
+  if (lower.includes('worker finished')) return `${actor} finished task work`;
+  if (lower.includes('timed out')) return `${actor} timed out`;
+  if (lower.includes('error')) return `${actor} ended with an error`;
+  if (lower.includes('green')) return `${actor} passed`;
+  return `${actor} finished`;
+}
+
+function endSubtitle(event: RunEvent, message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes('review approved=true')) return 'The reviewer accepted the implementation for this task.';
+  if (lower.includes('review approved=false')) return 'The task will move into correction or escalation.';
+  if (lower.includes('corrector')) return 'The task should return to review after this fix.';
+  if (event.task_id) return `Task ${event.task_id} moved forward in the pipeline.`;
+  return message;
+}
+
+function endIcon(lower: string) {
+  if (lower.includes('error') || lower.includes('false') || lower.includes('red')) return 'ERR';
+  if (lower.includes('approved=true') || lower.includes('green') || lower.includes('passed')) return 'OK';
+  return 'END';
+}
+
+function parseLoopPayload(output: string): { action?: string; reason?: string; from?: string; to?: string; awaiting?: boolean; failures?: string[] } | null {
+  try {
+    const raw = extractJSON(output);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function loopActionTitle(action: string) {
+  const label = action.replace(/_/g, ' ');
+  if (action.includes('corrective') || action.includes('continue')) return `Running another ${label}`;
+  if (action.includes('pending')) return `Waiting for ${label.replace(' pending', '')}`;
+  if (action.includes('resolved')) return 'Loop resolved';
+  if (action.includes('rewrite')) return 'Rewriting tasks from feedback';
+  return titleCase(label);
+}
+
+function loopDetail(loop: ReturnType<typeof parseLoopPayload>) {
+  if (!loop) return undefined;
+  const parts = [];
+  if (loop.from || loop.to) parts.push(`${loop.from || '?'} -> ${loop.to || '?'}`);
+  if (loop.awaiting) parts.push('waiting for user or timeout');
+  if (loop.failures && loop.failures.length) parts.push(`failures: ${loop.failures.slice(0, 3).join('; ')}`);
+  return parts.join(' · ') || undefined;
+}
+
+function askTitle(event: RunEvent) {
+  if (event.agent === 'continue') return 'Harness needs a continue decision';
+  if (event.agent === 'escalate') return 'Task needs a retry/re-scope decision';
+  if (event.agent === 'plan-approve') return 'Plan approval is waiting';
+  if (event.agent === 'shell') return 'Shell command approval is waiting';
+  return 'Harness is waiting for input';
+}
+
+function interventionTitle(event: RunEvent) {
+  const scope = event.scope || '';
+  if (scope === 'timeout') return 'Harness caught a timeout and made it actionable';
+  if (scope === 'escalate') return 'Harness escalated a task for decision';
+  if (scope === 'review') return 'Harness blocked a weak approval';
+  if (scope === 'finalize') return 'Harness asked the agent to finish cleanly';
+  if (scope === 'thinking_budget') return 'Harness stopped over-thinking';
+  return 'Harness intervention';
+}
+
+function qaTitle(event: RunEvent, message: string, lower: string) {
+  if (lower.includes('green') || lower.includes('passed')) return 'Verification passed';
+  if (lower.includes('failed') || lower.includes('red')) return 'Verification failed';
+  if (event.agent === 'qa') return 'QA gate update';
+  return message || 'Verification update';
+}
+
+function phaseTitle(event: RunEvent, message: string) {
+  if (event.kind === 'phase') return `${titleCase(event.phase || 'Pipeline')} phase: ${message}`;
+  if (event.agent) return `${actorLabel(event)}: ${message}`;
+  return message || `${titleCase(event.phase || event.kind || 'Pipeline')} update`;
+}
+
+function defaultSubtitle(event: RunEvent) {
+  if (event.scope) return `Scope: ${event.scope}`;
+  if (event.kind) return `Event kind: ${event.kind}`;
+  return undefined;
+}
+
+function outputPreview(event: RunEvent) {
+  const out = cleanEventText(event.output || '');
+  if (!out) return undefined;
+  const summarized = summarizePayload(out, 520);
+  if (summarized === cleanEventText(event.message || '')) return undefined;
+  return summarized;
+}
+
+function summarizePayload(raw: string, limit: number) {
+  const text = cleanEventText(raw);
+  if (!text) return '';
+  const parsed = parseStatusJSON(text);
+  if (parsed) return parsed;
+  if (text.includes('\n')) {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const interesting = lines.filter((line) => !line.startsWith('//') || line.length < 120).slice(0, 6);
+    return truncate((interesting.length ? interesting : lines).join('\n'), limit);
+  }
+  return truncate(text, limit);
+}
+
+function parseStatusJSON(raw: string) {
+  try {
+    const json = extractJSON(raw);
+    if (!json) return '';
+    const obj = JSON.parse(json);
+    const parts = [];
+    if (obj.status) parts.push(`status: ${obj.status}`);
+    if (typeof obj.passed === 'boolean') parts.push(`passed: ${obj.passed}`);
+    if (obj.summary) parts.push(`summary: ${obj.summary}`);
+    if (Array.isArray(obj.files_changed) && obj.files_changed.length) parts.push(`files: ${obj.files_changed.slice(0, 4).join(', ')}`);
+    if (Array.isArray(obj.failures) && obj.failures.length) parts.push(`failures: ${obj.failures.slice(0, 3).join('; ')}`);
+    if (Array.isArray(obj.commands) && obj.commands.length) parts.push(`commands: ${obj.commands.slice(0, 3).join('; ')}`);
+    return parts.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function extractJSON(raw: string) {
+  const text = raw.trim();
+  const objStart = text.indexOf('{');
+  const objEnd = text.lastIndexOf('}');
+  if (objStart >= 0 && objEnd > objStart) return text.slice(objStart, objEnd + 1);
+  return '';
+}
+
+function cleanEventText(value: string) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeLogText(value: string) {
+  return cleanEventText(value).toLowerCase();
+}
+
+function titleCase(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function RunInsightPanel({ summary }: { summary: RunEventSummary }) {

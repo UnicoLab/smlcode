@@ -240,7 +240,7 @@ func fromSessionToolCalls(calls []session.ReactToolCall) []llm.ToolCall {
 }
 
 func isCancelResult(err error, res ggagent.SubAgentResult) bool {
-	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+	if err != nil && (errors.Is(err, context.Canceled) ||
 		strings.Contains(strings.ToLower(err.Error()), "canceled") ||
 		strings.Contains(strings.ToLower(err.Error()), "cancelled")) {
 		return true
@@ -252,4 +252,32 @@ func isCancelResult(err error, res ggagent.SubAgentResult) bool {
 			errors.Is(res.Error, context.Canceled)
 	}
 	return false
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "deadline") || strings.Contains(lower, "timeout")
+}
+
+func isTimeoutResult(err error, res ggagent.SubAgentResult) bool {
+	if isTimeoutErr(res.Error) {
+		return true
+	}
+	return res.Error == nil && strings.TrimSpace(outputString(res)) == "" && isTimeoutErr(err)
+}
+
+func timeoutErr(err error, res ggagent.SubAgentResult) error {
+	if isTimeoutErr(res.Error) {
+		return res.Error
+	}
+	if isTimeoutErr(err) {
+		return err
+	}
+	return context.DeadlineExceeded
 }

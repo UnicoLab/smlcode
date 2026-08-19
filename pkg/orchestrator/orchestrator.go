@@ -441,6 +441,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 
 	_ = o.store.SetQuery(query)
 	o.injectPriorKnowledge(ctx, query)
+	o.seedAdaptiveLessons()
 	o.shared.SetGlobal("query", query)
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
@@ -1520,7 +1521,9 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 
 	if md != "" {
 		_ = o.store.Append(contextstore.DocMemory, "Wave lessons", md)
+		_ = learning.AppendGlobalMemory("Wave lessons", md)
 		o.shared.SetGlobal("latest_lessons", md)
+		o.shared.SetGlobal("adaptive_lessons", md)
 	}
 
 	o.refineRound++
@@ -1544,6 +1547,21 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		t.Description = loop.StripScopedPack(t.Description)
 		board.Tasks[i] = t
 	}
+}
+
+func (o *Orchestrator) seedAdaptiveLessons() {
+	if o == nil || o.store == nil || o.shared == nil {
+		return
+	}
+	projectMemory, _ := o.store.Read(contextstore.DocMemory)
+	globalMemory := learning.ReadGlobalMemory()
+	adaptive := learning.RecentAdaptiveMemory(projectMemory, globalMemory, 1600)
+	if adaptive == "" {
+		return
+	}
+	o.shared.SetGlobal("adaptive_lessons", adaptive)
+	o.emitFull("learn", stream.KindOutput, "memory", "",
+		"seeded adaptive lessons from project/global memory", "", truncate(adaptive, 500))
 }
 
 func (o *Orchestrator) contextSummarizer() compact.Summarizer {

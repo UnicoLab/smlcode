@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
@@ -27,6 +28,15 @@ func (e *countingExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubA
 		}
 	}
 	return out, nil
+}
+
+type timeoutExec struct {
+	calls int
+}
+
+func (e *timeoutExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	e.calls++
+	return nil, context.DeadlineExceeded
 }
 
 func TestStripScopedPack(t *testing.T) {
@@ -103,6 +113,61 @@ func TestRunCorrectiveBoardRespectsMaxWaves(t *testing.T) {
 	}
 	if exec.calls != firstCalls {
 		t.Fatalf("executor calls changed after skipped wave: before=%d after=%d", firstCalls, exec.calls)
+	}
+}
+
+func TestRunBoardTimeoutsDoNotInterruptOrLeaveTasksInProgress(t *testing.T) {
+	root := t.TempDir()
+	exec := &timeoutExec{}
+	r := NewRunner(exec, nil)
+	r.Root = root
+	r.MaxParallel = 3
+	r.MaxRetries = 0
+	r.Timeout = time.Second
+	r.IdleWait = time.Millisecond
+	r.PostWorkerSmoke = false
+	r.RequireSmoke = false
+	r.FailureHandler = NewEnhancedFailureHandler(root)
+
+	var interventions int
+	r.OnEvent = func(kind, agent, taskID, message, scope, output string) {
+		if kind == "intervention" && scope == "timeout" {
+			interventions++
+		}
+	}
+
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Title: "one", Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: []string{"a.go"}},
+		{ID: "T2", Title: "two", Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: []string{"b.go"}},
+		{ID: "T3", Title: "three", Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: []string{"c.go"}},
+	}}
+
+	if err := r.RunBoard(context.Background(), board); err != nil {
+		t.Fatalf("timeout wave should be recoverable, got %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("executor calls=%d, want 1", exec.calls)
+	}
+	if interventions != 3 {
+		t.Fatalf("timeout interventions=%d, want 3", interventions)
+	}
+	for _, task := range board.Tasks {
+		if task.Column == plan.ColInProgress {
+			t.Fatalf("%s left in progress: %+v", task.ID, task)
+		}
+		if task.Column != plan.ColToScope {
+			t.Fatalf("%s column=%s, want %s", task.ID, task.Column, plan.ColToScope)
+		}
+		if !strings.Contains(strings.ToLower(task.Error), "timed out") {
+			t.Fatalf("%s missing timeout error: %q", task.ID, task.Error)
+		}
+	}
+	lessons, err := os.ReadFile(filepath.Join(root, ".slmcode", "errors", "wave_lessons.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lessons), "context deadline exceeded") {
+		t.Fatalf("wave lessons missing timeout detail:\n%s", lessons)
 	}
 }
 

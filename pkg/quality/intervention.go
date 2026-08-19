@@ -11,6 +11,7 @@ const (
 	InterventionFinalize  = "finalize"
 	InterventionMalformed = "malformed_args"
 	InterventionQuality   = "quality"
+	InterventionTimeout   = "timeout"
 	InterventionEscalate  = "escalate" // review rejected after max retries — needs human
 	InterventionReview    = "review"   // soft-pass refused / precise fix needed
 )
@@ -37,6 +38,9 @@ func ClassifyIntervention(reason string) string {
 		return InterventionWhitelist
 	case strings.Contains(reason, "TURN BUDGET") || strings.Contains(reason, "finalize"):
 		return InterventionFinalize
+	case reason == "timeout" || strings.Contains(reason, "timed out") ||
+		strings.Contains(reason, "deadline") || strings.Contains(reason, "timeout"):
+		return InterventionTimeout
 	case reason == "escalate" || strings.Contains(reason, "ESCALATED") ||
 		strings.Contains(reason, "max retries") || strings.Contains(reason, "needs human"):
 		return InterventionEscalate

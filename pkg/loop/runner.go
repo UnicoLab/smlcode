@@ -272,7 +272,104 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 	if brief := r.sharedBriefSection(board, t); brief != "" {
 		prompt += brief
 	}
+	if lessons := r.adaptiveLessonsSection(); lessons != "" {
+		prompt += lessons
+	}
 	return prompt + r.feedbackSection()
+}
+
+func (r *Runner) adaptiveLessonsSection() string {
+	if r == nil || r.Shared == nil {
+		return ""
+	}
+	raw := ""
+	for _, key := range []string{"adaptive_lessons", "latest_lessons"} {
+		if v, ok := r.Shared.GetGlobal(key); ok {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" {
+				raw = s
+				break
+			}
+		}
+	}
+	if raw == "" {
+		return ""
+	}
+	return "\n## Adaptive harness lessons\n" +
+		"Apply these learned corrections now; do not repeat the failed pattern.\n" +
+		adaptiveGuidance(raw, 900) + "\n"
+}
+
+func adaptiveGuidance(raw string, limit int) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || limit <= 0 {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	var lines []string
+	if strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline") {
+		lines = append(lines, "- Timeout adaptation: make the smallest focused edit, avoid broad scans, run one targeted smoke command, and finish JSON promptly.")
+		lines = append(lines, "- If the task is too broad for one worker turn, state the exact smaller split instead of continuing to churn.")
+	}
+	if strings.Contains(lower, "max_parallel") || strings.Contains(lower, "contention") {
+		lines = append(lines, "- Concurrency adaptation: assume local SLM contention; keep tool calls short and avoid long speculative detours.")
+	}
+	if strings.Contains(lower, "smoke") || strings.Contains(lower, "qa_gate") || strings.Contains(lower, "acceptance") {
+		lines = append(lines, "- Verification adaptation: fix the reported command failure first and include real shell evidence before claiming done.")
+	}
+	if strings.Contains(lower, "placeholder") || strings.Contains(lower, "stub") {
+		lines = append(lines, "- Quality adaptation: replace placeholders/stubs with real implementation before finalizing.")
+	}
+	lines = append(lines, recentLessonLines(raw)...)
+	out := strings.TrimSpace(strings.Join(dedupeLines(lines), "\n"))
+	if len(out) > limit {
+		out = truncateASCII(out, limit)
+	}
+	return out
+}
+
+func recentLessonLines(raw string) []string {
+	fields := strings.Split(raw, "\n")
+	var picked []string
+	for i := len(fields) - 1; i >= 0 && len(picked) < 6; i-- {
+		line := strings.TrimSpace(fields[i])
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") ||
+			strings.Contains(lower, "smoke") || strings.Contains(lower, "qa_gate") ||
+			strings.Contains(lower, "acceptance") || strings.Contains(lower, "placeholder") ||
+			strings.Contains(lower, "stub") || strings.Contains(lower, "max retries") {
+			picked = append(picked, normalizeLessonLine(line))
+		}
+	}
+	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
+		picked[i], picked[j] = picked[j], picked[i]
+	}
+	return picked
+}
+
+func normalizeLessonLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimLeft(line, "-•⚠✓ ")
+	if line == "" {
+		return ""
+	}
+	return "- Learned: " + line
+}
+
+func dedupeLines(lines []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		out = append(out, line)
+	}
+	return out
 }
 
 // feedbackSection renders the live user feedback block to append to agent
@@ -372,6 +469,21 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	if err != nil {
 		r.Log("wave execution warning: %v", err)
 	}
+	if len(results) > len(reqs) {
+		results = results[:len(reqs)]
+	}
+	if err != nil && len(results) < len(reqs) {
+		filled := make([]ggagent.SubAgentResult, len(reqs))
+		copy(filled, results)
+		for k := len(results); k < len(reqs); k++ {
+			filled[k] = ggagent.SubAgentResult{
+				AgentID: reqs[k].AgentID,
+				TaskID:  reqs[k].TaskID,
+				Error:   err,
+			}
+		}
+		results = filled
+	}
 
 	canceled := false
 	for j, res := range results {
@@ -380,6 +492,10 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		role := roles[i]
 		r.noteUsage(res, reqs[j].Input, outputString(res))
 		t.Output = outputString(res)
+		if isTimeoutResult(err, res) {
+			r.handleTaskTimeout(board, t, role, res, timeoutErr(err, res))
+			continue
+		}
 		if isCancelResult(err, res) || (res.Error != nil && isCancelResult(res.Error, res)) {
 			r.saveReactFromResult(t.ID, role, res)
 			canceled = true
@@ -672,6 +788,41 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		return context.Canceled
 	}
 	return nil
+}
+
+func (r *Runner) handleTaskTimeout(board *plan.Board, t plan.Task, role string, res ggagent.SubAgentResult, err error) {
+	if err == nil {
+		err = context.DeadlineExceeded
+	}
+	if len(res.Messages) > 0 {
+		r.saveReactFromResult(t.ID, role, res)
+	}
+	scope := strings.Join(t.Files, ", ")
+	baseOut := strings.TrimSpace(outputString(res))
+	after := r.Timeout
+	if after <= 0 {
+		after = 12 * time.Minute
+	}
+	timeoutMsg := fmt.Sprintf("task timed out after %s: %s", after.Round(time.Second), err.Error())
+	if baseOut == "" {
+		t.Output = fmt.Sprintf(`{"status":"blocked","summary":%q,"files_changed":[],"notes":"harness timeout; retry with smaller scope or lower concurrency"}`, timeoutMsg)
+	} else {
+		t.Output = baseOut + "\n\n## Harness timeout\n" + timeoutMsg
+	}
+	t.Error = timeoutMsg
+	t.Notes = strings.TrimSpace(t.Notes + "\nTIMEOUT: " +
+		"the worker exceeded task_timeout. Retry with smaller scope, lower max_parallel, or a larger task_timeout.")
+	t.MoveTo(plan.ColToScope)
+	board.UpdateTask(t)
+	r.persist(board)
+	r.fire("agent_end", role, t.ID, "timed out — task needs retry/re-scope", scope, timeoutMsg)
+	r.fireIntervention(t.ID, "timeout",
+		fmt.Sprintf("%s timed out — choose retry/re-scope or continue another corrective wave", t.ID),
+		timeoutMsg)
+	if r.FailureHandler != nil {
+		_ = r.FailureHandler.ReportTaskFailure(board, t, err, t.Retries)
+		_ = r.FailureHandler.AddWaveLesson(board, t, err)
+	}
 }
 
 func (r *Runner) reviewerID() string {

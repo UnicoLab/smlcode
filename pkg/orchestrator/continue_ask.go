@@ -61,6 +61,8 @@ func escalatedTaskIDs(board *plan.Board) []string {
 		if t.Column == plan.ColBlocked ||
 			strings.Contains(blob, "escalated") || strings.Contains(blob, "needs human") ||
 			strings.Contains(blob, "max retries") || strings.Contains(blob, "placeholder gap") ||
+			strings.Contains(blob, "timeout") || strings.Contains(blob, "timed out") ||
+			strings.Contains(blob, "deadline") ||
 			(t.Column == plan.ColToScope && strings.TrimSpace(t.Error) != "") {
 			ids = append(ids, t.ID)
 		}
@@ -236,7 +238,9 @@ func reopenForContinue(board *plan.Board, gaps []quality.PreciseGap) {
 		blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review)
 		if t.Column == plan.ColToScope || t.Column == plan.ColBlocked ||
 			strings.Contains(blob, "escalated") || strings.Contains(blob, "max retries") ||
-			strings.Contains(blob, "qa_gate") || strings.Contains(blob, "review rejected") {
+			strings.Contains(blob, "qa_gate") || strings.Contains(blob, "review rejected") ||
+			strings.Contains(blob, "timeout") || strings.Contains(blob, "timed out") ||
+			strings.Contains(blob, "deadline") {
 			if t.Role == plan.RoleWorker || t.Role == plan.RoleCorrector || t.Role == "deep" ||
 				t.Role == plan.RoleTester || t.Role == plan.RolePlaceholder {
 				t.Error = ""

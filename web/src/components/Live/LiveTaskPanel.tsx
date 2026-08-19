@@ -417,11 +417,11 @@ export default function LiveTaskPanel() {
 
   // ── Render ──
   return (
-    <div className="flex flex-col h-full text-xs overflow-y-auto">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden text-xs">
       {/* ═══════════════════════════════════════════════════ */}
       {/* ── SECTION 5: Context Injection ── */}
       {/* ═══════════════════════════════════════════════════ */}
-      <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
+      <div className="shrink-0 border-b border-gray-200 p-3 dark:border-gray-800 glass-alt">
         <div className="flex items-center gap-2 mb-2">
           <Target size={13} className="text-brand-500 shrink-0" />
           <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
@@ -756,7 +756,7 @@ export default function LiveTaskPanel() {
       {/* ═══════════════════════════════════════════════════ */}
       {/* ── SECTION 1: Task List ── */}
       {/* ═══════════════════════════════════════════════════ */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {tasksLoading && taskCount === 0 && optimisticTasks.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-[10px] text-gray-400">
             <Loader2 size={12} className="animate-spin mr-2" />

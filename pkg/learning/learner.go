@@ -37,7 +37,7 @@ func Extract(t plan.Task) []Lesson {
 				Text: fmt.Sprintf("Acceptance pattern that worked for %s: %s", t.ID, firstSentence(t.Acceptance)),
 			})
 		}
-	case plan.ColBlocked:
+	case plan.ColBlocked, plan.ColToScope, plan.ColScoped:
 		msg := t.Error
 		if msg == "" {
 			msg = firstSentence(t.Review)
@@ -82,7 +82,7 @@ func RenderMarkdown(lessons []Lesson) string {
 
 // ContextDelta builds a short CONTEXT.md append after a wave.
 func ContextDelta(wave []plan.Task) string {
-	var done, blocked, progress []string
+	var done, blocked, needsScope, progress []string
 	for _, t := range wave {
 		t.Normalize()
 		switch t.Column {
@@ -90,6 +90,10 @@ func ContextDelta(wave []plan.Task) string {
 			done = append(done, t.ID+": "+t.Title)
 		case plan.ColBlocked:
 			blocked = append(blocked, t.ID+": "+firstSentence(t.Error+t.Review))
+		case plan.ColToScope, plan.ColScoped:
+			if strings.TrimSpace(t.Error) != "" {
+				needsScope = append(needsScope, t.ID+": "+firstSentence(t.Error+t.Review))
+			}
 		case plan.ColInProgress, plan.ColInReview:
 			progress = append(progress, t.ID)
 		}
@@ -101,6 +105,9 @@ func ContextDelta(wave []plan.Task) string {
 	}
 	if len(blocked) > 0 {
 		b.WriteString("**Blocked:** " + strings.Join(blocked, "; ") + "\n\n")
+	}
+	if len(needsScope) > 0 {
+		b.WriteString("**Needs scope / decision:** " + strings.Join(needsScope, "; ") + "\n\n")
 	}
 	if len(progress) > 0 {
 		b.WriteString("**Still active:** " + strings.Join(progress, ", ") + "\n\n")

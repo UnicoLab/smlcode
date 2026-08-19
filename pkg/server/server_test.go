@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -58,6 +59,87 @@ func TestPutConfigPartialPreservesDryRun(t *testing.T) {
 	}
 	if out["permission"] != permissions.ModeDryRun {
 		t.Fatalf("permission=%v", out["permission"])
+	}
+}
+
+func TestPutConfigRejectedWhileRunActive(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"model":"patched-model"}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if h.Config.Model == "patched-model" {
+		t.Fatal("config changed while run was active")
+	}
+}
+
+func TestStatusIncludesOperationalFields(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("ship it", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "main"}},
+	})
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+	comp := composer.Composition{
+		Summary: "focused dynamic pipeline",
+		Phases:  []composer.PhaseChoice{{ID: "plan", Agent: "planner", Enabled: true, When: "always"}},
+		Execute: composer.ExecuteChoice{
+			DefaultRole: "worker",
+			Reviewer:    "reviewer",
+			Corrector:   "corrector",
+			MaxWaves:    1,
+		},
+	}
+	if err := composer.SaveDynamic(h.Config.SlmDir(), &comp); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(fmt.Sprint(out["text"])) == "" {
+		t.Fatalf("missing text status: %+v", out)
+	}
+	if out["running"] != true || out["plan_pending"] != true {
+		t.Fatalf("missing operational flags: %+v", out)
+	}
+	if out["readiness"] == nil || out["composition"] == nil {
+		t.Fatalf("missing readiness/composition: %+v", out)
 	}
 }
 
@@ -495,6 +577,43 @@ func TestGetCompositionEndpoint(t *testing.T) {
 	if got["summary"] != "dynamic" {
 		t.Fatalf("composition=%+v", got)
 	}
+	fit, _ := got["slm_fit"].([]any)
+	if len(fit) == 0 || !strings.Contains(fmt.Sprint(fit), "enabled phases") {
+		t.Fatalf("missing slm_fit in composition: %+v", got)
+	}
+}
+
+func TestGetCompositionEndpointReportsLoadError(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.Config.SlmDir(), composer.DynamicFileName), []byte(`{broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/composition", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		OK               bool   `json:"ok"`
+		Composition      any    `json:"composition"`
+		CompositionError string `json:"composition_error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OK || out.Composition != nil || !strings.Contains(out.CompositionError, "read dynamic composition") {
+		t.Fatalf("unexpected response: %+v body=%s", out, rec.Body.String())
+	}
 }
 
 func TestPreviewCompositionEndpointIsSideEffectFree(t *testing.T) {
@@ -528,6 +647,7 @@ func TestPreviewCompositionEndpointIsSideEffectFree(t *testing.T) {
 		OK             bool                 `json:"ok"`
 		DynamicEnabled bool                 `json:"dynamic_enabled"`
 		Composition    composer.Composition `json:"composition"`
+		SLMFit         []string             `json:"slm_fit"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -540,6 +660,9 @@ func TestPreviewCompositionEndpointIsSideEffectFree(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got.Composition.Handoff, "\n"), "composer.go") {
 		t.Fatalf("preview missing target handoff: %+v", got.Composition.Handoff)
+	}
+	if !strings.Contains(strings.Join(got.SLMFit, "\n"), "enabled phases") || !strings.Contains(strings.Join(got.SLMFit, "\n"), "handoff") {
+		t.Fatalf("preview missing SLM fit hints: %+v", got.SLMFit)
 	}
 	if _, err := os.Stat(filepath.Join(h.Config.SlmDir(), composer.DynamicFileName)); !os.IsNotExist(err) {
 		t.Fatalf("preview should not persist latest composition, stat err=%v", err)
@@ -1013,6 +1136,7 @@ func TestQueriesAPI(t *testing.T) {
 	if err := composer.SaveDynamic(session.TurnDir(h.Config.SlmDir(), turn.ID), comp); err != nil {
 		t.Fatal(err)
 	}
+	h.Config.DynamicPipeline = false
 
 	s := New(h, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/queries", nil)
@@ -1031,13 +1155,68 @@ func TestQueriesAPI(t *testing.T) {
 		t.Fatalf("expected summary_md: %s", rec.Body.String())
 	}
 	var got struct {
-		Composition *composer.Composition `json:"composition"`
+		Composition      map[string]any `json:"composition"`
+		CompositionError string         `json:"composition_error"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Composition == nil || got.Composition.Summary != comp.Summary {
+	if got.CompositionError != "" {
+		t.Fatalf("unexpected composition error: %s", got.CompositionError)
+	}
+	if got.Composition == nil || got.Composition["summary"] != comp.Summary {
 		t.Fatalf("composition not returned: %s", rec.Body.String())
+	}
+	if fit, _ := got.Composition["slm_fit"].([]any); len(fit) == 0 || !strings.Contains(fmt.Sprint(fit), "enabled phases") {
+		t.Fatalf("missing slm_fit in query composition: %+v", got.Composition)
+	}
+	if strings.Contains(fmt.Sprint(got.Composition["slm_fit"]), "enable dynamic_pipeline") {
+		t.Fatalf("historical composition used current dynamic_pipeline=false hint: %+v", got.Composition["slm_fit"])
+	}
+}
+
+func TestQueriesAPIReportsCompositionLoadError(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := session.BeginTurn(h.Config.SlmDir(), "run-q2", "inspect corrupt composition")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := plan.Board{
+		QueryID: turn.ID, Query: turn.Query,
+		Plan:  plan.Plan{Summary: "scoped"},
+		Tasks: []plan.Task{{ID: "T1", Title: "do", Column: plan.ColDone}},
+	}
+	board.Tasks[0].Normalize()
+	if err := session.SaveTurnBoard(h.Config.SlmDir(), turn, board); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(session.TurnDir(h.Config.SlmDir(), turn.ID), composer.DynamicFileName), []byte(`{broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/queries/run-q2", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Composition      any    `json:"composition"`
+		CompositionError string `json:"composition_error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Composition != nil || !strings.Contains(got.CompositionError, "read dynamic composition") {
+		t.Fatalf("unexpected response: %+v body=%s", got, rec.Body.String())
 	}
 }
 

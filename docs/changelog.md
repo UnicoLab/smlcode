@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.15.0 — Production SLM Harness, HITL UX & Studio Control Plane
+
+### Highlights
+- **Production readiness diagnostics** — richer status/readiness commands and Studio
+  checks surface backend health, provider state, dynamic pipeline fit, and actionable
+  warnings before a run starts.
+- **User-validation UX** — plan approval, clarification, continuation, escalation, and
+  shell asks now use structured pending-state handling with timeouts/default actions,
+  making HITL decisions visible and resumable from Studio.
+- **SLM information sharing** — shared briefs, session event summaries, and composer
+  fit analysis help specialized agents pass compact task context without exhausting
+  local-model context windows.
+- **Dynamic pipeline visibility** — the Live page now shows selected agents, composed
+  phases, SLM-fit hints, execute-loop roles, phase progress, current stage, recent
+  agent activity, and readable long labels with hover/full-detail access.
+- **Board task control** — the Kanban board supports adding tasks to any column,
+  editing all primary task fields, moving tasks across custom columns, viewing long
+  descriptions/outputs without clipping, and deleting tasks from the board UI.
+- **Studio UX polish** — agent cards, Live task views, run history, readiness panels,
+  and event logs are more readable for long local-model names, prompts, task titles,
+  and diagnostics.
+
 ## v0.14.0 — Dynamic Pipeline, Broad Language Support & Live Log Severity
 
 ### Highlights

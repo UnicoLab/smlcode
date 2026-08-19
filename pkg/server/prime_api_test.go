@@ -74,6 +74,11 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := session.AppendEvent(h.Config.SlmDir(), "run-test", session.EventRecord{
+		Phase: "execute", Kind: "task_fail", TaskID: "T1", Agent: "worker", Message: "retry failed after timeout", Model: "local-slm",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	req = httptest.NewRequest(http.MethodGet, "/api/queries/run-test/events", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
@@ -85,7 +90,11 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	events, _ := ev["events"].([]interface{})
-	if len(events) != 1 {
+	if len(events) != 2 {
 		t.Fatalf("events: %+v", ev)
+	}
+	summary, _ := ev["summary"].(map[string]interface{})
+	if summary["failures"].(float64) != 1 || summary["retries"].(float64) != 1 {
+		t.Fatalf("summary missing diagnostics: %+v", summary)
 	}
 }

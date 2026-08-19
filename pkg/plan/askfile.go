@@ -116,7 +116,7 @@ func WaitScopeAnswersForID(ctx context.Context, slmDir, askID string, timeout ti
 		}
 		if ok {
 			if scopeAnswerWrittenAfter(slmDir, deadline) {
-				_ = os.Remove(ClarifyAnswersPath(slmDir))
+				ClearScopeAsk(slmDir)
 				return ScopeAnswers{}, false, nil
 			}
 			if askID != "" && ans.AskID != askID {
@@ -126,6 +126,7 @@ func WaitScopeAnswersForID(ctx context.Context, slmDir, askID string, timeout ti
 			return ans, true, nil
 		}
 		if time.Now().After(deadline) {
+			ClearScopeAsk(slmDir)
 			return ScopeAnswers{}, false, nil
 		}
 	wait:

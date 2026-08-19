@@ -3,6 +3,7 @@ package quality
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -128,7 +129,7 @@ func RunPostWorkerSmoke(ctx context.Context, root string, t plan.Task, timeout t
 
 // DetectPostWorkerCommand picks a fast per-task smoke command for changed files.
 func DetectPostWorkerCommand(root string, files []string) string {
-	var py, goFiles, jsFiles []string
+	var py, goFiles, jsFiles, tsFiles []string
 	for _, f := range files {
 		f = strings.TrimSpace(f)
 		if f == "" || strings.Contains(f, "..") {
@@ -146,6 +147,10 @@ func DetectPostWorkerCommand(root string, files []string) string {
 		case ".js", ".mjs", ".cjs":
 			if fileExists(filepath.Join(root, f)) {
 				jsFiles = append(jsFiles, f)
+			}
+		case ".ts", ".tsx", ".jsx":
+			if fileExists(filepath.Join(root, f)) {
+				tsFiles = append(tsFiles, f)
 			}
 		}
 	}
@@ -193,7 +198,50 @@ func DetectPostWorkerCommand(root string, files []string) string {
 		}
 		return strings.Join(parts, " && ")
 	}
+	if len(tsFiles) > 0 {
+		if cmd := detectTypeScriptSmokeCommand(root); cmd != "" {
+			return cmd
+		}
+	}
 	return ""
+}
+
+func detectTypeScriptSmokeCommand(root string) string {
+	scripts := npmScripts(root)
+	for _, name := range []string{"typecheck", "type-check", "check-types"} {
+		if strings.TrimSpace(scripts[name]) != "" {
+			return "npm run -s " + name
+		}
+	}
+	for _, name := range []string{"lint", "check"} {
+		if scriptLooksLikeTypeScriptCheck(scripts[name]) {
+			return "npm run -s " + name
+		}
+	}
+	if fileExists(filepath.Join(root, "tsconfig.json")) &&
+		fileExists(filepath.Join(root, "node_modules", ".bin", "tsc")) {
+		return "./node_modules/.bin/tsc --noEmit --pretty false"
+	}
+	return ""
+}
+
+func npmScripts(root string) map[string]string {
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return nil
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil
+	}
+	return pkg.Scripts
+}
+
+func scriptLooksLikeTypeScriptCheck(script string) bool {
+	lower := strings.ToLower(script)
+	return strings.Contains(lower, "tsc") || strings.Contains(lower, "vue-tsc")
 }
 
 // IsWeakQACommand reports whether a QA/smoke command is syntax-only and must

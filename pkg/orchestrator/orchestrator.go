@@ -804,195 +804,171 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		return nil, r.err
 	}
 
-	// 3 Plan (multipass when think_passes>1; single-shot otherwise)
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
-	if err := o.runPipelineSlots(ctx, "plan", "before", query, exploreOut, ""); err != nil {
-		return nil, err
-	}
-	planAgent := o.phaseAgent("plan", plan.RolePlanner)
+	// 3+4 Plan / Split / approval. Users can request a bounded replan from
+	// the validation modal; their notes are fed back into planner and splitter.
+	const maxPlanApprovalReplans = 2
 	var planOut string
-	if o.Pipeline().HasReplace("plan") {
-		if err := o.runPipelineSlots(ctx, "plan", "replace", query, exploreOut, ""); err != nil {
+	var pl plan.Plan
+	var board *plan.Board
+	var replanNotes []string
+	for planAttempt := 0; ; planAttempt++ {
+		if planAttempt > 0 {
+			o.emit("plan", fmt.Sprintf("replanning from user feedback (%d/%d)", planAttempt, maxPlanApprovalReplans), "")
+		}
+
+		// 3 Plan (multipass when think_passes>1; single-shot otherwise)
+		session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
+		if err := o.runPipelineSlots(ctx, "plan", "before", query, exploreOut, ""); err != nil {
 			return nil, err
 		}
-		planOut = `{"summary":"pipeline slot replaced plan","goals":[],"steps":["Execute board tasks"]}`
-	} else if o.phaseEnabled("plan") {
-		o.emitAgent("plan", planAgent, "", "creating plan", "", "")
-		planDocs := contextstore.LeanDocsForRole("planner")
-		planPack, _ := o.packer.Build(planAgent, query, planDocs, nil, o.skillPackFor(planAgent, query))
-		exploreCap := 2500
-		if o.cfg.ThinkPasses >= 3 {
-			exploreCap = 4000
-		}
-		planPrompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
-		if archOut != "" {
-			planPrompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
-		}
-		if prd.Summary != "" || len(prd.Acceptance) > 0 || len(clarify.Assumptions) > 0 ||
-			clarify.Language != "" || clarify.Entrypoint != "" {
-			planPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
-			planPrompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
-		}
-		planPrompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
-			"Do NOT continue prior plans. STRICT JSON plan only."
-		planOut, err = o.runRoleMultipassTracked(ctx, planAgent, "", planPrompt)
-		if err != nil {
-			if isCancelErr(err) {
-				return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+		planAgent := o.phaseAgent("plan", plan.RolePlanner)
+		planOut = ""
+		if o.Pipeline().HasReplace("plan") {
+			if err := o.runPipelineSlots(ctx, "plan", "replace", query, exploreOut, ""); err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("planner: %w", err)
-		}
-		// Extra plan critique only when think_passes≥3.
-		if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
-			revAgent := o.Pipeline().Execute.Reviewer
-			if revAgent == "" {
-				revAgent = plan.RoleReviewer
+			planOut = `{"summary":"pipeline slot replaced plan","goals":[],"steps":["Execute board tasks"]}`
+		} else if o.phaseEnabled("plan") {
+			o.emitAgent("plan", planAgent, "", "creating plan", "", "")
+			planPrompt := o.buildPlannerPrompt(query, runID, planAgent, exploreOut, archOut, prd, clarify, replanNotes)
+			planOut, err = o.runRoleMultipassTracked(ctx, planAgent, "", planPrompt)
+			if err != nil {
+				if isCancelErr(err) {
+					return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+				}
+				return nil, fmt.Errorf("planner: %w", err)
 			}
-			o.emitAgent("plan", revAgent, "", "plan critique pass", "", "")
-			critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
-				"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
-				"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
-			critique, _ := o.runRoleTracked(ctx, revAgent, "", critiquePrompt)
-			if strings.TrimSpace(critique) != "" {
-				_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
-				o.emitFull("plan", stream.KindOutput, revAgent, "", "plan critique", "", truncate(critique, 800))
-				if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
-					!strings.Contains(strings.ToLower(critique), `"ok":true`) {
-					o.emitAgent("plan", planAgent, "", "refining plan from critique", "", "")
-					refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
-						"\n\nRevise. Atomic for SLM. STRICT JSON plan."
-					if refined, rerr := o.runRoleTracked(ctx, planAgent, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
-						planOut = refined
+			// Extra plan critique only when think_passes≥3.
+			if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
+				revAgent := o.Pipeline().Execute.Reviewer
+				if revAgent == "" {
+					revAgent = plan.RoleReviewer
+				}
+				o.emitAgent("plan", revAgent, "", "plan critique pass", "", "")
+				critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
+					"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
+					"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
+				critique, _ := o.runRoleTracked(ctx, revAgent, "", critiquePrompt)
+				if strings.TrimSpace(critique) != "" {
+					_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
+					o.emitFull("plan", stream.KindOutput, revAgent, "", "plan critique", "", truncate(critique, 800))
+					if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
+						!strings.Contains(strings.ToLower(critique), `"ok":true`) {
+						o.emitAgent("plan", planAgent, "", "refining plan from critique", "", "")
+						refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
+							"\n\nRevise. Atomic for SLM. STRICT JSON plan."
+						if refined, rerr := o.runRoleTracked(ctx, planAgent, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
+							planOut = refined
+						}
 					}
 				}
 			}
 		}
-	}
-	if err := o.runPipelineSlots(ctx, "plan", "after", query, exploreOut, planOut); err != nil {
-		return nil, err
-	}
-	pl, _ := plan.ParsePlanJSON(planOut)
-	if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
-		pl.Summary = firstSentence(stripJSONNoise(planOut))
-		if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
-			pl.Summary = "Implement request with locked PRD"
-		}
-	}
-	pl = plan.MergeClarifyIntoPlan(pl, clarify)
-	pl = plan.MergePRDIntoPlan(pl, prd)
-	// Persist agent plan immediately so Studio PLAN.md / board update live mid-run.
-	o.persistBoard(&plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: nil})
-	o.emit("plan", "PLAN.md rewritten for this query", "")
-
-	// 4 Split
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
-	if err := o.runPipelineSlots(ctx, "split", "before", query, exploreOut, planOut); err != nil {
-		return nil, err
-	}
-	splitAgent := o.phaseAgent("split", "splitter")
-	var tasksOut string
-	if o.Pipeline().HasReplace("split") {
-		if err := o.runPipelineSlots(ctx, "split", "replace", query, exploreOut, planOut); err != nil {
+		if err := o.runPipelineSlots(ctx, "plan", "after", query, exploreOut, planOut); err != nil {
 			return nil, err
 		}
-		tasksOut = `{"tasks":[]}`
-	} else if o.phaseEnabled("split") {
-		o.emitAgent("split", splitAgent, "", "atomic task split", "", "")
-		splitDocs := contextstore.LeanDocsForRole("splitter")
-		splitPack, _ := o.packer.Build(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
-		splitPrompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
-		if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
-			splitPrompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
-			splitPrompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
-		}
-		// Inject project language so the splitter uses language-appropriate files + acceptances.
-		if lang := detectProjectLang(o.cfg.Root); lang != "" {
-			splitPrompt += fmt.Sprintf("\n\nProject language: %s.", lang)
-			switch lang {
-			case "Go":
-				splitPrompt += " Go modules: main package lives in root (main.go), library packages in subdirs (e.g. pkg/calc/calc.go). Acceptance: go build, go test ./..., go vet. NEVER use pytest/go run for non-main packages."
-			case "Python":
-				splitPrompt += " Python: src/ or flat layout. Acceptance: pytest -q, python -m py_compile, python main.py. NEVER use go test."
-			case "TypeScript", "JavaScript":
-				splitPrompt += " JS/TS: src/ or app/. Acceptance: npm test, npx tsc --noEmit, npm run build. NEVER use pytest or go test."
-			case "Rust":
-				splitPrompt += " Rust: src/ + Cargo.toml. Acceptance: cargo build --quiet, cargo test --quiet. NEVER use pytest/go test/npm test."
-			case "Java":
-				splitPrompt += " Java: src/main/java + pom.xml (or build.gradle). Acceptance: mvn -q test / ./gradlew test, mvn -q -DskipTests compile. NEVER use pytest/go test/npm test."
-			case "C++", "C/Make":
-				splitPrompt += " C/C++: CMakeLists.txt (or Makefile). Acceptance: cmake --build build / make, ctest when present. NEVER use pytest/go test/npm test."
-			case "HTML":
-				splitPrompt += " Static web (vanilla HTML/CSS/JS): produce an index.html entrypoint plus style.css/script.js (or one self-contained index.html). Acceptance: index.html exists & is usable in a browser; asset refs resolve; node --check each .js. NEVER use pytest, go test, or npm test (no package.json)."
-			default:
-				splitPrompt += " Use language-appropriate acceptance criteria and real project file paths."
+		pl, _ = plan.ParsePlanJSON(planOut)
+		if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
+			pl.Summary = firstSentence(stripJSONNoise(planOut))
+			if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
+				pl.Summary = "Implement request with locked PRD"
 			}
-			splitPrompt += " Do NOT invent files that don't exist in the workspace inventory."
-		} else {
-			splitPrompt += "\n\nUse language-appropriate acceptance criteria based on the project's actual files. " +
-				"Do NOT invent files that don't exist in the workspace inventory."
 		}
-		splitPrompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
-		if o.cfg.ThinkPasses >= 2 {
-			splitPrompt += "\nPrefer ≤5 tiny tasks with files + acceptance. Tester when code changes."
+		pl = plan.MergeClarifyIntoPlan(pl, clarify)
+		pl = plan.MergePRDIntoPlan(pl, prd)
+		if len(replanNotes) > 0 {
+			pl.Assumptions = append(pl.Assumptions, "User replan notes: "+strings.Join(replanNotes, " | "))
 		}
-		tasksOut, err = o.runRoleMultipassTracked(ctx, splitAgent, "", splitPrompt)
-		if err != nil {
-			if isCancelErr(err) {
-				return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
+		// Persist agent plan immediately so Studio PLAN.md / board update live mid-run.
+		o.persistBoard(&plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: nil})
+		o.emit("plan", "PLAN.md rewritten for this query", "")
+
+		// 4 Split
+		session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
+		if err := o.runPipelineSlots(ctx, "split", "before", query, exploreOut, planOut); err != nil {
+			return nil, err
+		}
+		splitAgent := o.phaseAgent("split", "splitter")
+		var tasksOut string
+		if o.Pipeline().HasReplace("split") {
+			if err := o.runPipelineSlots(ctx, "split", "replace", query, exploreOut, planOut); err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("splitter: %w", err)
+			tasksOut = `{"tasks":[]}`
+		} else if o.phaseEnabled("split") {
+			o.emitAgent("split", splitAgent, "", "atomic task split", "", "")
+			splitPrompt := o.buildSplitterPrompt(query, splitAgent, planOut, prd, clarify, replanNotes)
+			tasksOut, err = o.runRoleMultipassTracked(ctx, splitAgent, "", splitPrompt)
+			if err != nil {
+				if isCancelErr(err) {
+					return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
+				}
+				return nil, fmt.Errorf("splitter: %w", err)
+			}
 		}
-	}
-	if err := o.runPipelineSlots(ctx, "split", "after", query, exploreOut, planOut); err != nil {
-		return nil, err
-	}
-	tasks, err := plan.ParseTasksJSON(tasksOut)
-	if err != nil || len(tasks) == 0 {
-		tasks = fallbackTasks(pl)
-	}
-	discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, exploreOut)
-	if len(discoveredEarly) > 0 {
-		discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, discoveredEarly...), inventory)
-	}
-	tasks = plan.SanitizeTasksIn(tasks, exploreOut+"\n"+strings.Join(discovered, "\n"), query, o.cfg.Root)
-	tasks = plan.EnsureTaskPRDs(tasks, prd, query)
-	if len(discovered) > 0 {
-		_ = o.store.Append(contextstore.DocContext, "Discovered files", "- "+strings.Join(discovered, "\n- "))
-	}
-	for i := range tasks {
-		tasks[i].Files = plan.ReconcileFiles(o.cfg.Root, tasks[i].Files, discovered)
-		// Keep persisted descriptions lean — scoped packs are injected at execute time.
-		tasks[i].Description = loop.StripScopedPack(tasks[i].Description)
-	}
-	if len(tasks) > 8 {
-		o.emit("split", fmt.Sprintf("capping tasks %d → 8 for SLM efficiency (preserving harness/tester)", len(tasks)), "")
-		tasks = plan.CapTasksPreserveHarness(tasks, 8)
-	}
-
-	board := &plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: tasks}
-	for i := range board.Tasks {
-		t := board.Tasks[i]
-		if t.Column == "" {
-			t.Column = plan.ColReadyToDev
+		if err := o.runPipelineSlots(ctx, "split", "after", query, exploreOut, planOut); err != nil {
+			return nil, err
 		}
-		t.Normalize()
-		board.Tasks[i] = t
-	}
-	// 4a Scope / PRD judge gate — enrich or rewrite weak tasks before execute.
-	scopeValidation := o.runScopeJudgeGate(ctx, query, board, prd)
-	o.persistBoard(board)
-	o.emit("split", fmt.Sprintf("TASKS.md + board: %d agent tasks", len(board.Tasks)), "")
-
-	// 4b Coordinator reviews the board before execute
-	o.coordinate(ctx, query, board, "pre-execute")
-
-	// 4c Plan approval gate (Claude Code Plan Mode)
-	ok, aerr := o.runPlanApprovalGate(ctx, query, board, scopeValidation)
-	if aerr != nil || !ok {
-		if aerr == nil {
-			aerr = fmt.Errorf("plan not approved")
+		tasks, err := plan.ParseTasksJSON(tasksOut)
+		if err != nil || len(tasks) == 0 {
+			tasks = fallbackTasks(pl)
 		}
-		return nil, aerr
+		discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, exploreOut)
+		if len(discoveredEarly) > 0 {
+			discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, discoveredEarly...), inventory)
+		}
+		tasks = plan.SanitizeTasksIn(tasks, exploreOut+"\n"+strings.Join(discovered, "\n"), query, o.cfg.Root)
+		tasks = plan.EnsureTaskPRDs(tasks, prd, query)
+		if len(discovered) > 0 {
+			_ = o.store.Append(contextstore.DocContext, "Discovered files", "- "+strings.Join(discovered, "\n- "))
+		}
+		for i := range tasks {
+			tasks[i].Files = plan.ReconcileFiles(o.cfg.Root, tasks[i].Files, discovered)
+			// Keep persisted descriptions lean - scoped packs are injected at execute time.
+			tasks[i].Description = loop.StripScopedPack(tasks[i].Description)
+		}
+		if len(tasks) > 8 {
+			o.emit("split", fmt.Sprintf("capping tasks %d -> 8 for SLM efficiency (preserving harness/tester)", len(tasks)), "")
+			tasks = plan.CapTasksPreserveHarness(tasks, 8)
+		}
+
+		board = &plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: tasks}
+		for i := range board.Tasks {
+			t := board.Tasks[i]
+			if t.Column == "" {
+				t.Column = plan.ColReadyToDev
+			}
+			t.Normalize()
+			board.Tasks[i] = t
+		}
+		// 4a Scope / PRD judge gate - enrich or rewrite weak tasks before execute.
+		scopeValidation := o.runScopeJudgeGate(ctx, query, board, prd)
+		o.persistBoard(board)
+		o.emit("split", fmt.Sprintf("TASKS.md + board: %d agent tasks", len(board.Tasks)), "")
+
+		// 4b Coordinator reviews the board before execute
+		o.coordinate(ctx, query, board, "pre-execute")
+
+		// 4c Plan approval gate (Claude Code Plan Mode)
+		decision, aerr := o.runPlanApprovalDecision(ctx, query, board, scopeValidation)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if decision.Approved {
+			break
+		}
+		if !decision.Replan {
+			return nil, fmt.Errorf("plan not approved")
+		}
+		if planAttempt >= maxPlanApprovalReplans {
+			return nil, fmt.Errorf("plan replan limit reached after %d revision(s): %s", maxPlanApprovalReplans, decision.Notes)
+		}
+		note := strings.TrimSpace(decision.Notes)
+		if note == "" {
+			note = "Revise the plan for smaller, safer, better-scoped execution."
+		}
+		replanNotes = append(replanNotes, note)
+		_ = o.store.Append(contextstore.DocScratch, "Plan replan request", "- "+note)
 	}
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
@@ -2246,6 +2222,99 @@ func stripJSONNoise(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func (o *Orchestrator) buildPlannerPrompt(query, runID, planAgent, exploreOut, archOut string, prd plan.ScopePRD, clarify plan.ClarifyResult, replanNotes []string) string {
+	planDocs := contextstore.LeanDocsForRole("planner")
+	planPack, _ := o.packer.Build(planAgent, query, planDocs, nil, o.skillPackFor(planAgent, query))
+	exploreCap := 2500
+	if o.cfg.ThinkPasses >= 3 {
+		exploreCap = 4000
+	}
+	prompt := planPack.Render() + "\nExploration:\n" + truncate(exploreOut, exploreCap)
+	if archOut != "" {
+		prompt += "\n\nArchitecture:\n" + truncate(archOut, 1500)
+	}
+	if prd.Summary != "" || len(prd.Acceptance) > 0 || len(clarify.Assumptions) > 0 ||
+		clarify.Language != "" || clarify.Entrypoint != "" {
+		prompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+		prompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
+	}
+	prompt += projectLanguageGuidance(o.cfg.Root)
+	if block := replanInstructionBlock(replanNotes, "Revise the previous approach accordingly. Make the plan smaller, safer, and easier for SLM specialists to execute."); block != "" {
+		prompt += block
+	}
+	prompt += "\n\nIMPORTANT: Brand-new plan for THIS query only (query_id=" + runID + "). " +
+		"Do NOT continue prior plans. STRICT JSON plan only."
+	return prompt
+}
+
+func (o *Orchestrator) buildSplitterPrompt(query, splitAgent, planOut string, prd plan.ScopePRD, clarify plan.ClarifyResult, replanNotes []string) string {
+	splitDocs := contextstore.LeanDocsForRole("splitter")
+	splitPack, _ := o.packer.Build(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
+	prompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
+	if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
+		prompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
+		prompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"
+	}
+	if block := replanInstructionBlock(replanNotes, "Reflect these instructions in task scope, file focus, dependencies, and acceptance criteria."); block != "" {
+		prompt += block
+	}
+	prompt += projectLanguageGuidance(o.cfg.Root)
+	prompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
+	if o.cfg.ThinkPasses >= 2 {
+		prompt += "\nPrefer <=5 tiny tasks with files + acceptance. Tester when code changes."
+	}
+	return prompt
+}
+
+func projectLanguageGuidance(root string) string {
+	if lang := detectProjectLang(root); lang != "" {
+		out := fmt.Sprintf("\n\nProject language: %s.", lang)
+		switch lang {
+		case "Go":
+			out += " Go modules: main package lives in root (main.go), library packages in subdirs (e.g. pkg/calc/calc.go). Acceptance: go build, go test ./..., go vet. NEVER use pytest/go run for non-main packages."
+		case "Python":
+			out += " Python: src/ or flat layout. Acceptance: pytest -q, python -m py_compile, python main.py. NEVER use go test."
+		case "TypeScript", "JavaScript":
+			out += " JS/TS: src/ or app/. Acceptance: npm test, npx tsc --noEmit, npm run build. NEVER use pytest or go test."
+		case "Rust":
+			out += " Rust: src/ + Cargo.toml. Acceptance: cargo build --quiet, cargo test --quiet. NEVER use pytest/go test/npm test."
+		case "Java":
+			out += " Java: src/main/java + pom.xml (or build.gradle). Acceptance: mvn -q test / ./gradlew test, mvn -q -DskipTests compile. NEVER use pytest/go test/npm test."
+		case "C++", "C/Make":
+			out += " C/C++: CMakeLists.txt (or Makefile). Acceptance: cmake --build build / make, ctest when present. NEVER use pytest/go test/npm test."
+		case "HTML":
+			out += " Static web (vanilla HTML/CSS/JS): produce an index.html entrypoint plus style.css/script.js (or one self-contained index.html). Acceptance: index.html exists & is usable in a browser; asset refs resolve; node --check each .js. NEVER use pytest, go test, or npm test (no package.json)."
+		default:
+			out += " Use language-appropriate acceptance criteria and real project file paths."
+		}
+		return out + " Do NOT invent files that don't exist in the workspace inventory."
+	}
+	return "\n\nUse language-appropriate acceptance criteria based on the project's actual files. " +
+		"Do NOT invent files that don't exist in the workspace inventory."
+}
+
+func replanInstructionBlock(notes []string, instruction string) string {
+	body := formatReplanNotes(notes)
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return "\n\n## User replan instructions\n\n" + body + "\n" + instruction + "\n"
+}
+
+func formatReplanNotes(notes []string) string {
+	var b strings.Builder
+	for _, note := range notes {
+		note = strings.TrimSpace(note)
+		if note == "" {
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(note)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func truncate(s string, n int) string {

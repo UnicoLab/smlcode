@@ -146,7 +146,8 @@ func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, qu
 		_ = composer.SaveDynamic(session.TurnDir(o.cfg.SlmDir(), o.currentTurn.ID), comp)
 	}
 
-	o.emitFullDataL("compose", stream.KindComposition, composer.RoleID, "", comp.Summary, "composition", compositionMarkdown(*comp), stream.LevelSuccess, *comp)
+	prof := config.ResolveModelProfile(o.cfg.ModelProfiles, o.cfg.Model)
+	o.emitFullDataL("compose", stream.KindComposition, composer.RoleID, "", comp.Summary, "composition", compositionMarkdown(*comp), stream.LevelSuccess, composer.Annotate(*comp, o.cfg.DynamicPipeline, prof.ContextLimit))
 	mode := "dynamic pipeline active"
 	if heuristic {
 		mode = "deterministic dynamic pipeline active"
@@ -287,26 +288,131 @@ func orderCompositionPhases(comp *composer.Composition) {
 }
 
 func ensureCompositionHandoff(comp *composer.Composition, query string, inventory []string, lang, workerHint, testerHint string) {
-	if comp == nil || len(comp.Handoff) > 0 {
+	if comp == nil {
 		return
 	}
-	var handoff []string
-	if strings.TrimSpace(lang) != "" {
-		handoff = append(handoff, "Detected project language: "+lang)
+	handoff := normalizeHandoff(comp.Handoff)
+	add := func(item string) {
+		item = strings.TrimSpace(item)
+		if item == "" || handoffContains(handoff, item) {
+			return
+		}
+		handoff = append(handoff, item)
 	}
-	if workerHint != "" || testerHint != "" {
-		handoff = append(handoff, "Use "+valueOr(workerHint, "worker")+" for implementation and "+valueOr(testerHint, "tester")+" for verification")
+
+	if strings.TrimSpace(lang) != "" && !handoffHasPrefix(handoff, "Detected project language:") {
+		add("Detected project language: " + lang)
 	}
 	if len(inventory) > 0 {
-		handoff = append(handoff, "Use only authoritative workspace paths; do not invent files")
+		targets := heuristicTargetFiles(query, inventory, 5)
+		if len(targets) > 0 && !handoffHasPrefix(handoff, "Likely target files:") {
+			add("Likely target files: " + strings.Join(targets, ", "))
+		}
+		if !handoffMentions(handoff, "authoritative") && !handoffMentions(handoff, "invent") {
+			add("Use only authoritative workspace paths; do not invent files")
+		}
 	}
-	if cmd := verificationHintForLang(lang); cmd != "" {
-		handoff = append(handoff, "Verify with "+cmd)
+	if (workerHint != "" || testerHint != "") && !handoffMentions(handoff, "implementation") && !handoffMentions(handoff, "verification") {
+		add("Use " + valueOr(workerHint, "worker") + " for implementation and " + valueOr(testerHint, "tester") + " for verification")
 	}
-	if strings.TrimSpace(query) != "" {
-		handoff = append(handoff, "Keep changes scoped to this user request")
+	if cmd := verificationHintForLang(lang); cmd != "" && !handoffMentions(handoff, "verify") {
+		add("Verify with " + cmd)
 	}
-	comp.Handoff = handoff
+	if strings.TrimSpace(query) != "" && !handoffMentions(handoff, "scope") && !handoffMentions(handoff, "request") {
+		add("Keep changes scoped to this user request")
+	}
+	comp.Handoff = capHandoff(handoff, 8)
+}
+
+func normalizeHandoff(items []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range items {
+		item = strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
+		if item == "" {
+			continue
+		}
+		if len(item) > 220 {
+			item = strings.TrimSpace(item[:220]) + "..."
+		}
+		key := strings.ToLower(item)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func capHandoff(items []string, limit int) []string {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	priority := []string{
+		"Detected project language:",
+		"Likely target files:",
+		"Use only authoritative",
+		"Use ",
+		"Verify with ",
+		"Keep changes scoped",
+	}
+	var out []string
+	used := map[int]bool{}
+	for _, prefix := range priority {
+		prefix = strings.ToLower(prefix)
+		for i, item := range items {
+			if used[i] || !strings.HasPrefix(strings.ToLower(item), prefix) {
+				continue
+			}
+			out = append(out, item)
+			used[i] = true
+			if len(out) >= limit {
+				return out
+			}
+			break
+		}
+	}
+	for i, item := range items {
+		if used[i] {
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			return out
+		}
+	}
+	return out
+}
+
+func handoffContains(items []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, item := range items {
+		if strings.ToLower(strings.TrimSpace(item)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffHasPrefix(items []string, prefix string) bool {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	for _, item := range items {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(item)), prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffMentions(items []string, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureCompositionTeam(comp *composer.Composition, skills map[string]bool) {
@@ -767,6 +873,7 @@ func (o *Orchestrator) sanitizeComposition(comp *composer.Composition) []string 
 	if comp == nil {
 		return nil
 	}
+	comp.Normalize()
 	known := map[string]bool{}
 	for _, s := range o.factory.AllSpecs() {
 		known[strings.ToLower(s.ID)] = true
@@ -800,9 +907,37 @@ func (o *Orchestrator) sanitizeComposition(comp *composer.Composition) []string 
 	note(&comp.Execute.DefaultRole)
 	note(&comp.Execute.Reviewer)
 	note(&comp.Execute.Corrector)
-	for i := range comp.Slots {
-		note(&comp.Slots[i].Agent)
+	var slots []pipeline.Slot
+	seenSlot := map[string]bool{}
+	for _, s := range comp.Slots {
+		s.ID = strings.ToLower(strings.TrimSpace(s.ID))
+		s.Agent = strings.ToLower(strings.TrimSpace(s.Agent))
+		s.Before = strings.ToLower(strings.TrimSpace(s.Before))
+		s.After = strings.ToLower(strings.TrimSpace(s.After))
+		s.Replace = strings.ToLower(strings.TrimSpace(s.Replace))
+		if !validCompositionSlotID(s.ID) {
+			dropped = append(dropped, "slot:"+valueOr(s.ID, "<empty>"))
+			continue
+		}
+		if seenSlot[s.ID] {
+			dropped = append(dropped, "slot:"+s.ID)
+			continue
+		}
+		if s.Agent == "" || !known[s.Agent] {
+			if s.Agent != "" {
+				dropped = append(dropped, s.Agent)
+			}
+			dropped = append(dropped, "slot:"+s.ID)
+			continue
+		}
+		if !slotAnchorsKnown(s, knownPhases) {
+			dropped = append(dropped, "slot:"+s.ID)
+			continue
+		}
+		seenSlot[s.ID] = true
+		slots = append(slots, s)
 	}
+	comp.Slots = slots
 	// Team members with unknown roles are dropped (their skills can't be bound).
 	var team []composer.TeamMember
 	for _, t := range comp.Team {
@@ -814,6 +949,37 @@ func (o *Orchestrator) sanitizeComposition(comp *composer.Composition) []string 
 	}
 	comp.Team = team
 	return dropped
+}
+
+func validCompositionSlotID(id string) bool {
+	if len(id) < 2 || len(id) > 64 {
+		return false
+	}
+	for i, r := range id {
+		switch {
+		case i == 0 && r >= 'a' && r <= 'z':
+		case i > 0 && r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		case i > 0 && (r == '_' || r == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func slotAnchorsKnown(s pipeline.Slot, knownPhases map[string]bool) bool {
+	placed := false
+	for _, anchor := range []string{s.Before, s.After, s.Replace} {
+		if anchor == "" {
+			continue
+		}
+		placed = true
+		if !knownPhases[anchor] {
+			return false
+		}
+	}
+	return placed
 }
 
 func (o *Orchestrator) availableSkillNames() map[string]bool {

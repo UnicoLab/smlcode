@@ -441,7 +441,7 @@ export default function SettingsPanel() {
               >
                 <option value="auto">Auto</option>
                 <option value="ask">Ask</option>
-                <option value="skip">Skip</option>
+                <option value="off">Off</option>
               </select>
             </div>
             <div>
@@ -463,7 +463,7 @@ export default function SettingsPanel() {
               >
                 <option value="auto">Auto</option>
                 <option value="ask">Ask</option>
-                <option value="skip">Skip</option>
+                <option value="off">Off</option>
               </select>
             </div>
             <div>
@@ -485,6 +485,7 @@ export default function SettingsPanel() {
               >
                 <option value="ask">Ask</option>
                 <option value="auto">Auto</option>
+                <option value="off">Off</option>
               </select>
             </div>
             <div>
@@ -506,6 +507,7 @@ export default function SettingsPanel() {
               >
                 <option value="ask">Ask</option>
                 <option value="auto">Auto</option>
+                <option value="off">Off</option>
               </select>
             </div>
             <div>

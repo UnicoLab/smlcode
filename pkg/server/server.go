@@ -235,6 +235,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	var patch config.Patch
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -1283,7 +1286,33 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, map[string]string{"text": st})
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	skillCount := 0
+	if s.h != nil && s.h.Orchestrator != nil && s.h.Orchestrator.Skills() != nil {
+		if list, err := s.h.Orchestrator.Skills().List(); err == nil {
+			skillCount = len(list)
+		}
+	}
+	comp, ok, compErr := composer.LoadDynamic(s.h.Config.SlmDir())
+	var compPtr *composer.Composition
+	var compErrText string
+	if compErr != nil {
+		compErrText = compErr.Error()
+	} else if ok {
+		compPtr = &comp
+	}
+	var planAsk plan.PlanApproveAsk
+	planPending, _ := hitl.ReadAsk(s.h.Config.SlmDir(), "plan", &planAsk)
+	writeJSON(w, map[string]any{
+		"text":              st,
+		"running":           running,
+		"readiness":         readiness.Build(s.h.Config, skillCount),
+		"composition":       s.savedCompositionView(compPtr),
+		"composition_error": compErrText,
+		"plan_pending":      planPending,
+	})
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -1377,20 +1406,24 @@ func (s *Server) handleQueryEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []session.EventRecord{}
 	}
-	writeJSON(w, map[string]interface{}{"id": id, "events": events})
+	writeJSON(w, map[string]interface{}{
+		"id":      id,
+		"events":  events,
+		"summary": session.AnalyzeEvents(events),
+	})
 }
 
 func (s *Server) handleGetComposition(w http.ResponseWriter, r *http.Request) {
-	comp, ok, err := readComposition(filepath.Join(s.h.Config.SlmDir(), composer.DynamicFileName))
+	comp, ok, err := composer.LoadDynamic(s.h.Config.SlmDir())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		writeJSON(w, map[string]interface{}{"ok": false, "composition": nil, "composition_error": err.Error()})
 		return
 	}
 	if !ok {
 		writeJSON(w, map[string]interface{}{"ok": false, "composition": nil})
 		return
 	}
-	writeJSON(w, map[string]interface{}{"ok": true, "composition": comp})
+	writeJSON(w, map[string]interface{}{"ok": true, "composition": s.savedCompositionView(&comp)})
 }
 
 func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request) {
@@ -1405,11 +1438,18 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 		http.Error(w, "query required", 400)
 		return
 	}
-	comp := s.h.Orchestrator.PreviewComposition(req.Query)
+	var comp composer.Composition
+	if s.h != nil && s.h.Orchestrator != nil {
+		comp = s.h.Orchestrator.PreviewComposition(req.Query)
+	} else {
+		comp = orchestrator.PreviewCompositionForConfig(s.h.Config, req.Query)
+	}
+	prof := config.ResolveModelProfile(s.h.Config.ModelProfiles, s.h.Config.Model)
 	writeJSON(w, map[string]interface{}{
 		"ok":              true,
 		"dynamic_enabled": s.h.Config.DynamicPipeline,
-		"composition":     comp,
+		"composition":     s.compositionView(&comp),
+		"slm_fit":         composer.FitHints(comp, s.h.Config.DynamicPipeline, prof.ContextLimit),
 	})
 }
 
@@ -1457,6 +1497,17 @@ func (s *Server) rebuildOrchestrator() error {
 	return nil
 }
 
+func (s *Server) rejectMutationWhileRunning(w http.ResponseWriter) bool {
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	if running {
+		http.Error(w, "cannot update configuration while a run is active", http.StatusConflict)
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleListStacks(w http.ResponseWriter, r *http.Request) {
 	list, err := stacks.List()
 	if err != nil {
@@ -1488,6 +1539,9 @@ func (s *Server) handleGetStack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleApplyStack(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	st, err := stacks.Load(id)
 	if err != nil {
@@ -1546,6 +1600,9 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	var req agents.CustomSpec
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -1573,6 +1630,9 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePutAgent(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 	var req agents.CustomSpec
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1608,6 +1668,9 @@ func (s *Server) handlePutAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 	// An agent can live in two places: a materialized override in
 	// .slmcode/agents/ and a block definition in .slmcode/blocks/agents/.
@@ -1653,6 +1716,9 @@ func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePutPipeline(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -1689,6 +1755,9 @@ func (s *Server) handlePutPipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleResetPipeline(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	cfg := pipeline.Default()
 	if s.h.Orchestrator != nil {
 		if err := s.h.Orchestrator.SetPipeline(&cfg); err != nil {
@@ -1827,29 +1896,38 @@ func (s *Server) handleGetQuery(w http.ResponseWriter, r *http.Request) {
 	sum, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "summary.md"))
 	planMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "PLAN.md"))
 	tasksMD, _ := os.ReadFile(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), "TASKS.md"))
-	comp, _, _ := readComposition(filepath.Join(session.TurnDir(s.h.Config.SlmDir(), id), composer.DynamicFileName))
+	comp, ok, compErr := composer.LoadDynamic(session.TurnDir(s.h.Config.SlmDir(), id))
+	var compPtr *composer.Composition
+	if ok {
+		compPtr = &comp
+	}
+	var compErrText string
+	if compErr != nil {
+		compErrText = compErr.Error()
+	}
 	writeJSON(w, map[string]interface{}{
 		"id": t.ID, "query": t.Query, "success": t.Success,
 		"summary": t.Summary, "updated_at": t.UpdatedAt, "board": t.Board,
 		"interrupted": t.Interrupted, "phase": t.Phase, "resume_from": t.ResumeFrom,
 		"summary_md": string(sum), "plan_md": string(planMD), "tasks_md": string(tasksMD),
-		"composition": comp,
+		"composition": s.savedCompositionView(compPtr), "composition_error": compErrText,
 	})
 }
 
-func readComposition(path string) (*composer.Composition, bool, error) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, false, err
+func (s *Server) compositionView(comp *composer.Composition) interface{} {
+	return s.compositionViewFor(comp, s.h.Config.DynamicPipeline)
+}
+
+func (s *Server) savedCompositionView(comp *composer.Composition) interface{} {
+	return s.compositionViewFor(comp, true)
+}
+
+func (s *Server) compositionViewFor(comp *composer.Composition, dynamicEnabled bool) interface{} {
+	if comp == nil {
+		return nil
 	}
-	var comp composer.Composition
-	if err := json.Unmarshal(body, &comp); err != nil {
-		return nil, false, err
-	}
-	return &comp, true, nil
+	prof := config.ResolveModelProfile(s.h.Config.ModelProfiles, s.h.Config.Model)
+	return composer.Annotate(*comp, dynamicEnabled, prof.ContextLimit)
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

@@ -142,7 +142,7 @@ func WaitAnswersForID(ctx context.Context, slmDir, kind, askID string, timeout t
 		}
 		if ok {
 			if answerWrittenAfter(slmDir, kind, deadline) {
-				_ = os.Remove(AnswersPath(slmDir, kind))
+				Clear(slmDir, kind)
 				return false, nil
 			}
 			if !answerMatchesAskID(slmDir, kind, askID) {
@@ -152,6 +152,7 @@ func WaitAnswersForID(ctx context.Context, slmDir, kind, askID string, timeout t
 			return true, nil
 		}
 		if time.Now().After(deadline) {
+			Clear(slmDir, kind)
 			return false, nil
 		}
 	wait:

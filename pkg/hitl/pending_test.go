@@ -74,6 +74,9 @@ func TestWaitAnswersForIDRejectsLateAnswerFile(t *testing.T) {
 		AskID    string `json:"ask_id,omitempty"`
 		Decision string `json:"decision"`
 	}
+	if err := WriteAsk(dir, "plan", map[string]string{"id": "current"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := WriteAnswers(dir, "plan", ans{AskID: "current", Decision: "approve"}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +89,35 @@ func TestWaitAnswersForIDRejectsLateAnswerFile(t *testing.T) {
 	ok, err := WaitAnswersForID(context.Background(), dir, "plan", "current", time.Nanosecond, &got)
 	if err != nil || ok {
 		t.Fatalf("wait %+v ok=%v err=%v", got, ok, err)
+	}
+	if _, err := os.Stat(AskPath(dir, "plan")); !os.IsNotExist(err) {
+		t.Fatalf("late answer did not clear ask err=%v", err)
+	}
+	if _, err := os.Stat(AnswersPath(dir, "plan")); !os.IsNotExist(err) {
+		t.Fatalf("late answer was not cleared err=%v", err)
+	}
+}
+
+func TestWaitAnswersForIDTimeoutClearsPendingAsk(t *testing.T) {
+	dir := t.TempDir()
+	type ans struct {
+		AskID    string `json:"ask_id,omitempty"`
+		Decision string `json:"decision"`
+	}
+	if err := WriteAsk(dir, "continue", map[string]string{"id": "current"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got ans
+	ok, err := WaitAnswersForID(context.Background(), dir, "continue", "current", time.Nanosecond, &got)
+	if err != nil || ok {
+		t.Fatalf("wait %+v ok=%v err=%v", got, ok, err)
+	}
+	if _, err := os.Stat(AskPath(dir, "continue")); !os.IsNotExist(err) {
+		t.Fatalf("timeout did not clear ask err=%v", err)
+	}
+	if _, err := os.Stat(AnswersPath(dir, "continue")); !os.IsNotExist(err) {
+		t.Fatalf("timeout did not clear answers err=%v", err)
 	}
 }
 

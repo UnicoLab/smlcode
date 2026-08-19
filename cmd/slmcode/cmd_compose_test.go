@@ -38,6 +38,9 @@ func TestFormatCompositionCLIShowsAgentsHandoffAndLoop(t *testing.T) {
 	for _, want := range []string{
 		"Composition Preview",
 		"focused Go pipeline",
+		"SLM Fit",
+		"3 enabled phases selected",
+		"2 handoff bullets",
 		"Touch pkg/foo.go only",
 		"execute",
 		"go-worker",
@@ -59,6 +62,49 @@ func TestFormatCompositionCLIWarnsWhenDynamicDisabled(t *testing.T) {
 	})
 	if !strings.Contains(out, "dynamic_pipeline is disabled") {
 		t.Fatalf("missing disabled warning:\n%s", out)
+	}
+	if !strings.Contains(out, "enable dynamic_pipeline") {
+		t.Fatalf("missing SLM fit dynamic hint:\n%s", out)
+	}
+}
+
+func TestCompositionSLMFitFlagsWeakLocalComposition(t *testing.T) {
+	resp := compositionCLIResponse{
+		Mode:           "latest",
+		DynamicEnabled: true,
+		ModelProfile:   config.ModelProfile{ContextLimit: 4096},
+		Composition: composer.Composition{
+			Phases: []composer.PhaseChoice{
+				{ID: "context", Enabled: true},
+				{ID: "explore", Enabled: true},
+				{ID: "docs", Enabled: true},
+				{ID: "architect", Enabled: true},
+				{ID: "plan", Enabled: true},
+				{ID: "split", Enabled: true},
+				{ID: "coord", Enabled: true},
+				{ID: "execute", Agent: "worker", Enabled: true},
+				{ID: "test", Agent: "tester", Enabled: true},
+				{ID: "polish", Enabled: true},
+				{ID: "memory", Enabled: true},
+			},
+			Execute: composer.ExecuteChoice{DefaultRole: "worker", MaxWaves: 5},
+			Slots: []pipeline.Slot{
+				{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"},
+			},
+		},
+	}
+	out := strings.Join(compositionSLMFit(resp), "\n")
+	for _, want := range []string{
+		"11 enabled phases",
+		"handoff is empty",
+		"team is empty",
+		"worker role is generic",
+		"max_waves=5",
+		"4 slots",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hint missing %q:\n%s", want, out)
+		}
 	}
 }
 

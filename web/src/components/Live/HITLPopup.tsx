@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useId } from 'react';
-import type { RefObject } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import {
   Clock,
   AlertTriangle,
@@ -225,11 +225,12 @@ export default function HITLPopup({ running }: HITLPopupProps) {
         if (pendingItems.length > 0) {
           if (!active || answeredRef.current) return;
 
-          setPendingQueue(pendingItems);
+          const sortedPendingItems = [...pendingItems].sort((a, b) => initialCountdown(a) - initialCountdown(b));
+          setPendingQueue(sortedPendingItems);
 
           const current = pendingRef.current;
           const currentKey = current ? pendingKey(current) : '';
-          const candidates = pendingItems.filter((item) => !answeredKeysRef.current.has(pendingKey(item)));
+          const candidates = sortedPendingItems.filter((item) => !answeredKeysRef.current.has(pendingKey(item)));
           const next = candidates.find((item) => pendingKey(item) === currentKey) || candidates[0];
 
           if (!next) {
@@ -328,21 +329,9 @@ export default function HITLPopup({ running }: HITLPopupProps) {
   useEffect(() => {
     if (!pending || countdown > 0 || answeredRef.current) return;
 
-    answeredRef.current = true;
-    handleDefaultAnswer(pending);
+    setSyncNotice(`${TYPE_LABELS[pending.type]} timer reached zero; ${defaultActionLabel(pending).toLowerCase()}. Waiting for harness confirmation.`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [countdown]);
-
-  // ── Default / recommended answer ──
-  const handleDefaultAnswer = useCallback(async (p: PendingState) => {
-    const key = pendingKey(p);
-    answeredKeysRef.current.add(key);
-    setPending(null);
-    setCountdown(0);
-    setSubmitError(null);
-    setSyncNotice(`${TYPE_LABELS[p.type]} timed out; waiting for harness default handling.`);
-    answeredRef.current = false;
-  }, []);
 
   // ── User-driven answer ──
   const handleAnswer = useCallback(async (action: string) => {
@@ -431,6 +420,7 @@ export default function HITLPopup({ running }: HITLPopupProps) {
   const progressPct = timeoutSec > 0 ? (countdown / timeoutSec) * 100 : 0;
   const urgency = countdown <= 10;
   const defaultLabel = defaultActionLabel(pending);
+  const deadlineLabel = deadlineFor(pending);
   const modalWidth = pending.type === 'plan' || pending.type === 'clarify' ? 'max-w-3xl' : 'max-w-lg';
   const visibleQueue = pendingQueue.filter((item) => pendingKey(item) !== pendingKey(pending));
 
@@ -497,24 +487,45 @@ export default function HITLPopup({ running }: HITLPopupProps) {
           />
         </div>
 
+        <DecisionStrip
+          pending={pending}
+          countdown={countdown}
+          timeoutSec={timeoutSec}
+          defaultLabel={defaultLabel}
+          deadlineLabel={deadlineLabel}
+        />
+
         {visibleQueue.length > 0 && (
           <div className="mx-6 mt-3 flex flex-wrap items-center gap-1.5">
             <span className="text-[10px] font-semibold uppercase text-gray-400 dark:text-gray-500">
               Also waiting
             </span>
             {visibleQueue.map((item) => (
-              <span
+              <button
                 key={pendingKey(item)}
-                className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
+                type="button"
+                onClick={() => {
+                  setPending(item);
+                  setCountdown(initialCountdown(item));
+                  setSubmitError(null);
+                  setSyncNotice(null);
+                  setHitlNotes('');
+                }}
+                className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700"
               >
-                {TYPE_LABELS[item.type]}
-              </span>
+                {TYPE_LABELS[item.type]} · {formatSeconds(initialCountdown(item))}
+              </button>
             ))}
           </div>
         )}
 
         {/* Body — type-specific */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          {syncNotice && (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+              {syncNotice}
+            </div>
+          )}
           {pending.type === 'clarify' && (
             <ClarifyBody
               data={pending.data as ClarifyAsk}
@@ -555,6 +566,7 @@ export default function HITLPopup({ running }: HITLPopupProps) {
               color={color}
               answering={answering}
               notes={hitlNotes}
+              validationOK={(pending.data as PlanAsk).validation?.ok}
               onNotesChange={setHitlNotes}
               firstActionRef={firstActionRef}
               onAnswer={handleAnswer}
@@ -611,8 +623,18 @@ function ClarifyBody({
 }) {
   const draft = data.prd_draft;
   const questions = Array.isArray(data.questions) ? data.questions : [];
+  const hasDraft = !!(draft && (draft.summary || draft.goals?.length || draft.non_goals?.length || draft.acceptance?.length || draft.constraints?.length || draft.language || draft.entrypoint));
+  const hasAnyContent = !!data.query || hasDraft || questions.length > 0;
   return (
     <div className="space-y-4">
+      {!hasAnyContent && (
+        <EmptyState
+          title="Specification details are still loading"
+          body="The harness opened a validation request before structured scope details arrived. Add notes below or wait for the next poll to refresh this ask."
+          tone="purple"
+        />
+      )}
+
       {data.query && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase text-gray-400 dark:text-gray-500">
@@ -622,7 +644,7 @@ function ClarifyBody({
         </div>
       )}
 
-      {draft && (draft.summary || draft.goals?.length || draft.acceptance?.length || draft.constraints?.length) && (
+      {hasDraft && (
         <div className="grid gap-3 md:grid-cols-2">
           {draft.summary && (
             <div>
@@ -643,6 +665,7 @@ function ClarifyBody({
             </div>
           ) : null}
           <CompactList title="Goals" items={draft.goals || []} />
+          <CompactList title="Non-goals" items={draft.non_goals || []} />
           <CompactList title="Acceptance" items={draft.acceptance || []} />
           <CompactList title="Constraints" items={draft.constraints || []} />
         </div>
@@ -666,7 +689,7 @@ function ClarifyBody({
               {q.header || `Question ${index + 1}`}
             </h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              {q.question}
+              {q.question || 'Choose the option that best matches the intended specification.'}
             </p>
             <div className="space-y-1.5">
               {options.map((opt: typeof q.options[number]) => {
@@ -735,12 +758,22 @@ function ClarifyBody({
 function PlanBody({ data }: { data: PlanAsk }) {
   const goals = data.goals || [];
   const assumptions = data.assumptions || [];
-  const tasks = data.tasks || [];
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
   const taskDetails = data.task_details || [];
   const validation = data.validation;
   const composition = data.composition;
+  const taskCount = Number(data.task_count || taskDetails.length || tasks.length || 0);
+  const hasPlanContent = !!data.summary || goals.length > 0 || assumptions.length > 0 || taskDetails.length > 0 || tasks.length > 0 || !!composition;
   return (
     <div className="space-y-4">
+      {!hasPlanContent && (
+        <EmptyState
+          title="Plan details are still loading"
+          body="The approval gate is active, but no structured plan was attached yet. You can wait for refresh, approve only if the request is trivial, or request a replan with notes."
+          tone="fuchsia"
+        />
+      )}
+
       {data.query && (
         <div className="rounded-lg border border-fuchsia-200 dark:border-fuchsia-800 bg-fuchsia-50/70 dark:bg-fuchsia-900/20 px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase text-fuchsia-500 dark:text-fuchsia-300">
@@ -750,13 +783,15 @@ function PlanBody({ data }: { data: PlanAsk }) {
         </div>
       )}
 
+      <PlanApprovalGate data={data} />
+
       <div>
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Plan Summary</h3>
           <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
             <ClipboardList className="w-3.5 h-3.5" />
             <span>
-              {data.task_count} task{data.task_count !== 1 ? 's' : ''}
+              {taskCount} task{taskCount !== 1 ? 's' : ''}
             </span>
           </div>
         </div>
@@ -869,9 +904,9 @@ function PlanBody({ data }: { data: PlanAsk }) {
               </div>
             ))}
           </div>
-          {data.task_count > taskDetails.length && (
+          {taskCount > taskDetails.length && (
             <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
-              Showing {taskDetails.length} of {data.task_count} tasks.
+              Showing {taskDetails.length} of {taskCount} tasks.
             </p>
           )}
         </div>
@@ -900,9 +935,9 @@ function PlanBody({ data }: { data: PlanAsk }) {
               );
             })}
           </div>
-          {data.task_count > tasks.length && (
+          {taskCount > tasks.length && (
             <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
-              Showing {tasks.length} of {data.task_count} tasks.
+              Showing {tasks.length} of {taskCount} tasks.
             </p>
           )}
         </div>
@@ -911,12 +946,97 @@ function PlanBody({ data }: { data: PlanAsk }) {
   );
 }
 
+function PlanApprovalGate({ data }: { data: PlanAsk }) {
+  const composition = data.composition;
+  const phases = (composition?.phases || []).filter((phase) => phase.enabled && phase.when !== 'never');
+  const agents = new Set<string>();
+  for (const phase of phases) {
+    if (phase.agent) agents.add(phase.agent);
+  }
+  for (const member of composition?.team || []) {
+    if (member.role) agents.add(member.role);
+  }
+  if (composition?.execute?.default_role) agents.add(composition.execute.default_role);
+  if (composition?.execute?.reviewer) agents.add(composition.execute.reviewer);
+  if (composition?.execute?.corrector) agents.add(composition.execute.corrector);
+  const slots = composition?.slots || [];
+  const timeout = Number(data.timeout_sec || 0);
+  const defaultAction = planAskDefaultAction(data.on_timeout);
+  const validationOK = data.validation?.ok;
+  const taskCount = Number(data.task_count || 0);
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 dark:border-gray-800 dark:bg-gray-950/40">
+      <div className="flex flex-wrap items-center gap-2">
+        <MiniStatus
+          icon={<Clock className="h-3.5 w-3.5" />}
+          label={timeout > 0 ? formatSeconds(timeout) : 'default timer'}
+          sub={defaultAction}
+        />
+        <MiniStatus
+          icon={validationOK === false ? <AlertTriangle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+          label={validationOK === false ? 'review scope' : 'scope checked'}
+          sub={`${taskCount} task${taskCount === 1 ? '' : 's'}`}
+          tone={validationOK === false ? 'warn' : 'ok'}
+        />
+        <MiniStatus
+          icon={<ClipboardList className="h-3.5 w-3.5" />}
+          label={composition ? `${phases.length} phase${phases.length === 1 ? '' : 's'}` : 'static pipeline'}
+          sub={`${agents.size} agent${agents.size === 1 ? '' : 's'}`}
+        />
+        <MiniStatus
+          icon={<RefreshCw className="h-3.5 w-3.5" />}
+          label={`${slots.length} slot${slots.length === 1 ? '' : 's'}`}
+          sub="replan keeps notes"
+        />
+      </div>
+    </div>
+  );
+}
+
+function MiniStatus({
+  icon,
+  label,
+  sub,
+  tone = 'neutral',
+}: {
+  icon: ReactNode;
+  label: string;
+  sub: string;
+  tone?: 'neutral' | 'ok' | 'warn';
+}) {
+  return (
+    <div
+      className={clsx(
+        'flex min-w-[8.5rem] flex-1 items-center gap-2 rounded-md border px-2.5 py-2',
+        tone === 'ok' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300',
+        tone === 'warn' && 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300',
+        tone === 'neutral' && 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-800 dark:bg-gray-900/70 dark:text-gray-300',
+      )}
+    >
+      <span className="shrink-0 opacity-80">{icon}</span>
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold">{label}</span>
+        <span className="block truncate text-[10px] text-gray-500 dark:text-gray-400">{sub}</span>
+      </span>
+    </div>
+  );
+}
+
 function ContinueBody({ data }: { data: ContinueAsk }) {
   const escalated = data.escalated || [];
   const gaps = data.gaps || [];
+  const hasContent = !!data.summary || !!data.reason || escalated.length > 0 || gaps.length > 0;
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700 dark:text-gray-300">{data.summary}</p>
+      {!hasContent && (
+        <EmptyState
+          title="Continue decision is waiting"
+          body="No retry summary was attached yet. Wait for refresh or add guidance before continuing."
+          tone="amber"
+        />
+      )}
+      {data.summary && <p className="text-sm text-gray-700 dark:text-gray-300">{data.summary}</p>}
       {data.reason && (
         <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
@@ -953,8 +1073,16 @@ function ContinueBody({ data }: { data: ContinueAsk }) {
 
 function EscalateBody({ data }: { data: EscalateAsk }) {
   const files = data.files || [];
+  const hasContent = !!data.title || !!data.detail || !!data.summary || !!data.task_id || files.length > 0;
   return (
     <div className="space-y-3">
+      {!hasContent && (
+        <EmptyState
+          title="Escalation details are missing"
+          body="The harness needs a decision, but the task details have not synced yet. Wait for refresh or abort only if you want to stop this branch."
+          tone="red"
+        />
+      )}
       <div className="flex items-center gap-2">
         <span className="px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400">
           {data.kind || 'escalation'}
@@ -995,9 +1123,17 @@ function ShellBody({ data }: { data: ShellAsk }) {
           {data.task_id ? `Task #${data.task_id}` : 'Shell command'}
         </span>
       </div>
-      <pre className="p-3 rounded-lg bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
-        {data.command}
-      </pre>
+      {data.command ? (
+        <pre className="p-3 rounded-lg bg-gray-900 dark:bg-gray-950 text-green-400 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+          {data.command}
+        </pre>
+      ) : (
+        <EmptyState
+          title="Command is missing"
+          body="The shell approval request did not include a command. Deny it unless a later refresh shows the exact command."
+          tone="cyan"
+        />
+      )}
     </div>
   );
 }
@@ -1029,6 +1165,9 @@ function ClarifyActions({
         placeholder="Notes for scope or constraints"
         className="w-full resize-none rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500/30"
       />
+      <ActionHint>
+        Submit answers to lock the specification. Use recommended keeps selected defaults and attaches these notes to the ask.
+      </ActionHint>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <button
           ref={firstActionRef}
@@ -1063,6 +1202,7 @@ function PlanActions({
   color,
   answering,
   notes,
+  validationOK,
   onNotesChange,
   firstActionRef,
   onAnswer,
@@ -1070,10 +1210,12 @@ function PlanActions({
   color: string;
   answering: boolean;
   notes: string;
+  validationOK?: boolean;
   onNotesChange: (notes: string) => void;
   firstActionRef: RefObject<HTMLButtonElement>;
   onAnswer: (action: string) => void;
 }) {
+  const preferReplan = validationOK === false;
   return (
     <div className="space-y-2">
       <textarea
@@ -1084,31 +1226,37 @@ function PlanActions({
         placeholder="Notes, constraints, or replan instructions"
         className="w-full resize-none rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/30"
       />
+      <ActionHint>
+        Approve starts execution with this pipeline. Request Replan sends your notes back to planning and keeps the gate open for another validation pass.
+      </ActionHint>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <button
-          ref={firstActionRef}
-          disabled={answering}
-          onClick={() => onAnswer('approve')}
-          className={clsx(
-            'flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all',
-            COLOR_BTN_PRIMARY[color],
-            'disabled:opacity-50',
-          )}
-        >
-          <Check className="w-4 h-4" />
-          {answering ? 'Approving…' : 'Approve Plan'}
-        </button>
-        <button
+          ref={preferReplan ? firstActionRef : undefined}
           disabled={answering}
           onClick={() => onAnswer('replan')}
           className={clsx(
-            'flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition-all',
-            COLOR_BTN_GHOST[color],
+            'flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all',
+            preferReplan ? COLOR_BTN_PRIMARY[color] : COLOR_BTN_GHOST[color],
+            !preferReplan && 'border',
             'disabled:opacity-50',
           )}
         >
           <RefreshCw className="w-4 h-4" />
-          Stop for Replan
+          Request Replan
+        </button>
+        <button
+          ref={!preferReplan ? firstActionRef : undefined}
+          disabled={answering}
+          onClick={() => onAnswer('approve')}
+          className={clsx(
+            'flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all',
+            preferReplan ? COLOR_BTN_GHOST[color] : COLOR_BTN_PRIMARY[color],
+            preferReplan && 'border',
+            'disabled:opacity-50',
+          )}
+        >
+          <Check className="w-4 h-4" />
+          {answering ? 'Approving…' : preferReplan ? 'Approve Anyway' : 'Approve Plan'}
         </button>
       </div>
     </div>
@@ -1140,6 +1288,9 @@ function ContinueActions({
         placeholder="Guidance for the next wave"
         className="w-full resize-none rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
       />
+      <ActionHint>
+        Continue launches another correction wave. Stop preserves current flags; Flag keeps precise issues without another broad retry.
+      </ActionHint>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <button
           ref={firstActionRef}
@@ -1209,6 +1360,9 @@ function EscalateActions({
         placeholder="Retry, re-scope, or override guidance"
         className="w-full resize-none rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/30"
       />
+      <ActionHint>
+        Retry preserves scope. Re-scope narrows the task before another attempt. Abort stops this path.
+      </ActionHint>
       <div className="flex items-center gap-2">
         <button
           ref={firstActionRef}
@@ -1309,11 +1463,57 @@ function ShellActions({
 
 // ── Helpers ──
 
+function DecisionStrip({
+  pending,
+  countdown,
+  timeoutSec,
+  defaultLabel,
+  deadlineLabel,
+}: {
+  pending: PendingState;
+  countdown: number;
+  timeoutSec: number;
+  defaultLabel: string;
+  deadlineLabel: string;
+}) {
+  const isExpired = countdown <= 0;
+  return (
+    <div className="mx-6 mt-3 grid gap-2 md:grid-cols-3">
+      <MiniStatus
+        icon={<Clock className="h-3.5 w-3.5" />}
+        label={isExpired ? 'timeout reached' : `${formatSeconds(countdown)} left`}
+        sub={timeoutSec > 0 ? `${formatSeconds(timeoutSec)} window` : 'default timer'}
+        tone={isExpired ? 'warn' : 'neutral'}
+      />
+      <MiniStatus
+        icon={<ChevronRight className="h-3.5 w-3.5" />}
+        label={defaultLabel.replace(/^Default:\s*/i, '')}
+        sub="default action"
+        tone="neutral"
+      />
+      <MiniStatus
+        icon={TYPE_ICONS[pending.type]}
+        label={deadlineLabel}
+        sub={metadata(pending).id ? `ask ${metadata(pending).id}` : 'current validation ask'}
+        tone="neutral"
+      />
+    </div>
+  );
+}
+
 function CompositionApprovalPanel({ composition }: { composition: DynamicComposition }) {
   const phases = (composition.phases || []).filter((phase) => phase.enabled && phase.when !== 'never');
   const team = composition.team || [];
   const slots = composition.slots || [];
   const loop = composition.execute || {};
+  const fitHints = composition.slm_fit || [];
+  const phaseAgents = new Set(phases.map((phase) => phase.agent).filter(Boolean));
+  const teamRoles = new Set(team.map((member) => member.role).filter(Boolean));
+  const selectedAgents = new Set([...phaseAgents, ...teamRoles]);
+  if (loop.default_role) selectedAgents.add(loop.default_role);
+  if (loop.reviewer) selectedAgents.add(loop.reviewer);
+  if (loop.corrector) selectedAgents.add(loop.corrector);
+  const hasCompositionDetails = !!composition.summary || !!composition.strategy || composition.handoff?.length || phases.length > 0 || team.length > 0 || slots.length > 0;
   return (
     <div className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2.5 dark:border-indigo-800 dark:bg-indigo-900/20">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1321,11 +1521,9 @@ function CompositionApprovalPanel({ composition }: { composition: DynamicComposi
           <div className="text-[10px] font-semibold uppercase text-indigo-600 dark:text-indigo-300">
             Selected Pipeline
           </div>
-          {composition.summary && (
-            <p className="mt-1 text-sm font-medium text-gray-800 dark:text-gray-200 break-words">
-              {composition.summary}
-            </p>
-          )}
+          <p className="mt-1 text-sm font-medium text-gray-800 dark:text-gray-200 break-words">
+            {composition.summary || 'Dynamic composition is attached for validation.'}
+          </p>
         </div>
         <div className="flex flex-wrap gap-1">
           {loop.default_role && (
@@ -1343,6 +1541,39 @@ function CompositionApprovalPanel({ composition }: { composition: DynamicComposi
         </div>
       </div>
 
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
+        <MiniStatus
+          icon={<ClipboardList className="h-3.5 w-3.5" />}
+          label={`${phases.length} phase${phases.length === 1 ? '' : 's'}`}
+          sub={phases.length > 0 ? phases.slice(0, 3).map((p) => p.id).join(', ') : 'static fallback'}
+        />
+        <MiniStatus
+          icon={<HelpCircle className="h-3.5 w-3.5" />}
+          label={`${selectedAgents.size} agent${selectedAgents.size === 1 ? '' : 's'}`}
+          sub={selectedAgents.size > 0 ? Array.from(selectedAgents).slice(0, 3).join(', ') : 'generic team'}
+        />
+        <MiniStatus
+          icon={<RefreshCw className="h-3.5 w-3.5" />}
+          label={`${slots.length} slot${slots.length === 1 ? '' : 's'}`}
+          sub={slots.length > 0 ? 'special hooks' : 'no extra hooks'}
+        />
+        <MiniStatus
+          icon={<Check className="h-3.5 w-3.5" />}
+          label={typeof loop.max_waves === 'number' && loop.max_waves > 0 ? `${loop.max_waves} wave${loop.max_waves === 1 ? '' : 's'}` : 'default waves'}
+          sub={loop.default_role || 'worker'}
+        />
+      </div>
+
+      {!hasCompositionDetails && (
+        <div className="mt-3">
+          <EmptyState
+            title="Composition details are sparse"
+            body="The harness attached an empty dynamic composition. Request a replan with team or phase guidance if this task needs specialist routing."
+            tone="indigo"
+          />
+        </div>
+      )}
+
       {composition.strategy && (
         <p className="mt-2 text-xs leading-relaxed text-gray-600 dark:text-gray-400 break-words">
           {composition.strategy}
@@ -1352,6 +1583,24 @@ function CompositionApprovalPanel({ composition }: { composition: DynamicComposi
       {composition.handoff && composition.handoff.length > 0 && (
         <div className="mt-3">
           <CompactList title="Handoff" items={composition.handoff} maxItems={composition.handoff.length} />
+        </div>
+      )}
+
+      {fitHints.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-300">
+            SLM Fit
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {fitHints.map((hint, i) => (
+              <span
+                key={`${hint}-${i}`}
+                className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+              >
+                {hint}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1431,6 +1680,42 @@ function MiniBadge({ label }: { label: string }) {
   );
 }
 
+function ActionHint({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-500 dark:border-gray-800 dark:bg-gray-950/40 dark:text-gray-400">
+      {children}
+    </div>
+  );
+}
+
+type EmptyTone = 'gray' | 'purple' | 'fuchsia' | 'amber' | 'red' | 'cyan' | 'indigo';
+
+function EmptyState({
+  title,
+  body,
+  tone = 'gray',
+}: {
+  title: string;
+  body: string;
+  tone?: EmptyTone;
+}) {
+  const toneClass: Record<EmptyTone, string> = {
+    gray: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-800 dark:bg-gray-950/40 dark:text-gray-300',
+    purple: 'border-purple-200 bg-purple-50 text-purple-800 dark:border-purple-800 dark:bg-purple-900/20 dark:text-purple-200',
+    fuchsia: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-800 dark:border-fuchsia-800 dark:bg-fuchsia-900/20 dark:text-fuchsia-200',
+    amber: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200',
+    red: 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200',
+    cyan: 'border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-200',
+    indigo: 'border-indigo-200 bg-indigo-50 text-indigo-800 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-200',
+  };
+  return (
+    <div className={clsx('rounded-lg border px-3 py-2.5', toneClass[tone])}>
+      <div className="text-xs font-semibold">{title}</div>
+      <p className="mt-1 text-xs leading-relaxed opacity-80">{body}</p>
+    </div>
+  );
+}
+
 function CompactList({ title, items, maxItems = 6 }: { title: string; items: string[]; maxItems?: number }) {
   if (!items.length) return null;
   const visibleItems = items.slice(0, maxItems);
@@ -1478,6 +1763,20 @@ function initialCountdown(p: PendingState): number {
   if (!Number.isFinite(createdMs)) return timeout;
   const elapsed = Math.floor((Date.now() - createdMs) / 1000);
   return Math.max(0, Math.min(timeout, timeout - elapsed));
+}
+
+function deadlineFor(p: PendingState): string {
+  const createdAt = metadata(p).created_at;
+  if (!createdAt) return 'deadline pending';
+  const createdMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdMs)) return 'deadline pending';
+  const timeout = timeoutFor(p);
+  if (timeout <= 0) return 'deadline pending';
+  return new Date(createdMs + timeout * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 function defaultAction(p: PendingState): string {
@@ -1534,6 +1833,14 @@ function defaultActionLabel(p: PendingState): string {
     abort: 'abort',
   };
   return `Default: ${labels[action] || action} on timeout`;
+}
+
+function planAskDefaultAction(action?: string): string {
+  const normalized = (action || 'approve').trim();
+  if (!normalized) return 'approve on timeout';
+  if (normalized === 'approve') return 'approve on timeout';
+  if (normalized === 'replan') return 'replan on timeout';
+  return `${normalized.replace(/_/g, ' ')} on timeout`;
 }
 
 function errorMessage(err: unknown, fallback: string): string {

@@ -117,6 +117,31 @@ func TestBlocksCreateAgent(t *testing.T) {
 	}
 }
 
+func TestBlocksMutationsRejectedWhileRunActive(t *testing.T) {
+	s, _ := newBlocksTestServer(t)
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+
+	cases := []struct {
+		method string
+		path   string
+		body   []byte
+	}{
+		{http.MethodPost, "/api/blocks/agent", []byte(testAgentBlock)},
+		{http.MethodPut, "/api/blocks/agent/my-agent", []byte(testAgentBlock)},
+		{http.MethodDelete, "/api/blocks/agent/my-agent", nil},
+		{http.MethodPost, "/api/packs/go/apply", nil},
+		{http.MethodPost, "/api/pipeline-presets/go/apply", nil},
+	}
+	for _, tc := range cases {
+		rec := doReq(t, s, tc.method, tc.path, tc.body)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s %s status=%d body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestBlocksCreateDuplicate(t *testing.T) {
 	s, _ := newBlocksTestServer(t)
 	if rec := doReq(t, s, http.MethodPost, "/api/blocks/agent", []byte(testAgentBlock)); rec.Code != 200 {

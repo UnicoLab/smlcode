@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://unicolab.ai"><img alt="UnicoLab" src="https://img.shields.io/badge/Made%20with%20%E2%99%A5%20by-UnicoLab-0f6e8c?style=flat-square" /></a>
-  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf&label=v0.13.1" /></a>
+  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf&label=v0.15.0" /></a>
   <a href="https://github.com/UnicoLab/smlcode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/UnicoLab/smlcode/ci.yml?branch=main&style=flat-square&label=CI" /></a>
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />
@@ -130,7 +130,7 @@ Deep dive: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**
 | 💨 **Wave fast-path** | When ALL tasks have clean QA + disk evidence, skip reviewer LLM entirely |
 | 🏎️ **`fast_model`** | Dual-model routing — 8B for light agents (reviewer, planner), 30B for heavy (worker, tester) |
 
-### 🧩 Agents (19 specialists)
+### 🧩 Agents (17 specialists)
 
 | Agent | Role | Tools |
 |-------|------|-------|
@@ -138,7 +138,7 @@ Deep dive: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**
 | 🏗️ `architect` | Design structure & components | ❌ |
 | 📋 `planner` | High-level execution plan | ❌ |
 | ✂️ `splitter` | Break plan into atomic tasks | ❌ |
-| 🎤 `interviewer` | Ask clarifying questions (HITL) | ❌ |
+| 🎯 `composer` | Assemble task-specific dynamic pipelines | ❌ |
 | 🛠️ `worker` | Implement scoped changes | ✅ |
 | 🔨 `deep` | Multi-step complex worker | ✅ |
 | 👁️ `reviewer` | Self-critic / approve | ❌ |
@@ -148,7 +148,6 @@ Deep dive: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**
 | 📝 `context` | Maintain CONTEXT.md | ❌ |
 | 📚 `docs` | Read documentation | ✅ |
 | 🧠 `memory` | Distill MEMORY.md | ❌ |
-| 🎓 `learner` | Wave lessons for future packs | ❌ |
 | 🗂️ `coordinator` | Manage board & task flow | ❌ |
 | 🎼 `orchestrator` | High-level coordination | ❌ |
 | 🚨 `escalate` | Arbitrate max-retry failures | ❌ |
@@ -197,8 +196,8 @@ slmcode studio --port-auto        → auto-switch if port is busy
 
 | Gate | Default | What it does |
 |------|---------|-------------|
-| 🎤 **Clarify** | `auto` | Interview agent asks about language/stack/framework |
-| ✅ **Plan approve** | `auto` | Human reviews plan before workers execute |
+| 🎤 **Clarify** | `ask` | Interview agent asks about language/stack/framework |
+| ✅ **Plan approve** | `ask` | Human reviews plan before workers execute |
 | 🔄 **Continue** | `ask` | Ask when retries exhausted — another wave or stop? |
 | 🚨 **Escalate** | `ask` | Task hit max retries — retry / re-scope / abort? |
 | 🐚 **Shell** | `allow` | Approve shell commands before execution |
@@ -237,7 +236,7 @@ static_quality: true      # reject stub/placeholder code
 | 🐘 Large-model habit | 🐭 SLMCode approach |
 |----------------------|---------------------|
 | Stuff the repo into chat | Incremental `.slmcode/*.md` memory |
-| One free-form agent | Plan → atomic tasks → 19 specialists |
+| One free-form agent | Plan → atomic tasks → 17 specialists |
 | Re-scan every turn | Reuse CONTEXT/MEMORY; skip deep explore |
 | Hope the model self-corrects | Reviewer ↔ corrector + multipass |
 | Opaque progress | Live CLI + Studio SSE stream |
@@ -254,6 +253,9 @@ slmcode init                         # auto-detects language & applies pack
 
 slmcode                              # premium TUI
 slmcode run -v "add JWT validation"
+slmcode compose "add JWT validation"      # preview selected phases/agents first
+slmcode readiness --fix                   # apply safe local-model defaults
+slmcode status                            # plan gate, diagnostics, latest composition
 slmcode board                        # live kanban
 slmcode studio                       # http://127.0.0.1:7420
 ```
@@ -264,7 +266,8 @@ Useful knobs:
 slmcode stack list
 slmcode stack apply deepseek         # switch to DeepSeek
 slmcode config set fast_model LFM2.5-8B-A1B-MLX-4bit   # speed boost!
-slmcode run --parallel 6 --think-passes 2 "refactor auth"
+slmcode run --dynamic --parallel 6 --think-passes 2 "refactor auth"
+slmcode run --no-dynamic "fix README typo" # force static pipeline for tiny jobs
 slmcode config set plan_approve ask  # require human plan approval
 slmcode blocks apply python          # apply Python language pack
 ```
@@ -280,7 +283,10 @@ slmcode blocks apply python          # apply Python language pack
 | `agent list` / `agent show` | Inspect agent specialists |
 | `blocks list` / `blocks apply` | Browse & apply building blocks |
 | `skills list` / `skills new` | Manage skill packs |
+| `compose` | Preview dynamic phases, specialists, handoff, and SLM fit |
+| `readiness` / `ready` | Score and optionally fix local SLM production settings |
 | `run -v` | Full pipeline + live stream |
+| `status` | Query, dynamic pipeline, plan gate, diagnostics, board counts |
 | `tui` / bare `slmcode` | Premium interactive TUI |
 | `chat` | Classic REPL |
 | `board` / `watch` | Colored kanban |
@@ -298,9 +304,11 @@ TUI: `/compact`, `/models`, `/mcp`, `/auth`, `/schema`, `/sessions`, `/stats`, `
 |---------|-----------|
 | ⚡ **Parallel execution** | 6 concurrent paths: workers, QA, critique, review, phases, speculative races |
 | 🏎️ **Dual-model** | `fast_model` routes light agents (reviewer, planner) to smaller/faster LLM |
+| 🎯 **Dynamic composition** | `compose` previews task-specific phases, agents, slots, handoff, and SLM fit |
 | 💨 **Wave fast-path** | Tasks with clean QA + disk evidence skip reviewer LLM entirely |
 | 🔄 **QA gate** | Single-round gate, auto-fixes gofmt/ruff, skips when no test files |
-| 🧪 **Smart smoke** | Uses `go vet` (instant) when no `*_test.go` files exist |
+| 🧪 **Smart smoke** | Uses fast local Go/Python/TypeScript checks when configured |
+| 🩺 **Readiness** | Scores provider/model reachability and safe SLM defaults before long runs |
 | 📦 **Auto-pack** | Detects `go.mod` / `pyproject.toml` / `package.json` on `init` |
 
 ---

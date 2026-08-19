@@ -326,7 +326,7 @@ Examples:
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Snapshot of query, plan head, board counts",
+		Short: "Snapshot of query, dynamic pipeline, plan gate, diagnostics, and board counts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
@@ -337,6 +337,10 @@ func statusCmd() *cobra.Command {
 			cli.KeyVal("provider", ws.Config.Provider)
 			cli.KeyVal("model", ws.Config.Model)
 			cli.KeyVal("backend", ws.Config.Backend)
+			fmt.Print(formatPipelineStatus(ws.Config))
+			if comp := formatLatestCompositionStatus(ws.Config); comp != "" {
+				fmt.Print(comp)
+			}
 			b := ws.Board.Snapshot()
 			by := b.ByColumn()
 			fmt.Println()
@@ -350,6 +354,9 @@ func statusCmd() *cobra.Command {
 			fmt.Println()
 			q, _ := ws.Store.Read("QUERY.md")
 			fmt.Println(cli.Dim(q))
+			if diag := formatLatestRunDiagnostics(ws.Config.SlmDir()); diag != "" {
+				fmt.Print(diag)
+			}
 			return nil
 		},
 	}

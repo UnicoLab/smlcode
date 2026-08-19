@@ -52,21 +52,53 @@ func TestParseNormalizes(t *testing.T) {
 func TestSaveDynamicPersistsFullComposition(t *testing.T) {
 	dir := t.TempDir()
 	c := &Composition{
-		Summary: "dynamic",
-		Handoff: []string{"Verify with go test ./..."},
-		Team:    []TeamMember{{Role: "go-worker", Skills: []string{"atomic-coding"}}},
+		Summary: " dynamic ",
+		Handoff: []string{" Verify with go test ./... ", "Verify with go test ./..."},
+		Phases: []PhaseChoice{
+			{ID: " Execute ", Agent: " Go-Worker ", Enabled: true},
+		},
+		Team: []TeamMember{{Role: " Go-Worker ", Skills: []string{" Atomic-Coding ", "atomic-coding"}}},
 	}
 	if err := SaveDynamic(dir, c); err != nil {
 		t.Fatal(err)
+	}
+	if c.Summary != " dynamic " || c.Team[0].Role != " Go-Worker " {
+		t.Fatalf("SaveDynamic should not mutate caller: %+v", c)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, DynamicFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dynamic", "Verify with go test", "go-worker", "atomic-coding"} {
+	for _, want := range []string{`"summary": "dynamic"`, "Verify with go test", `"id": "execute"`, `"agent": "go-worker"`, `"role": "go-worker"`, `"atomic-coding"`} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("saved composition missing %q:\n%s", want, body)
 		}
+	}
+	if strings.Count(string(body), "Verify with go test") != 1 || strings.Count(string(body), "atomic-coding") != 1 {
+		t.Fatalf("saved composition should be deduped:\n%s", body)
+	}
+}
+
+func TestLoadDynamicNormalizesMissingAndCorruptFiles(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok, err := LoadDynamic(dir); err != nil || ok {
+		t.Fatalf("missing ok=%v err=%v", ok, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, DynamicFileName), []byte(`{"summary":" x ","phases":[{"id":" Execute ","enabled":true}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := LoadDynamic(dir)
+	if err != nil || !ok {
+		t.Fatalf("load ok=%v err=%v", ok, err)
+	}
+	if got.Summary != "x" || len(got.Phases) != 1 || got.Phases[0].ID != "execute" {
+		t.Fatalf("not normalized: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, DynamicFileName), []byte(`{broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := LoadDynamic(dir); err == nil || ok || !strings.Contains(err.Error(), "read dynamic composition") {
+		t.Fatalf("corrupt ok=%v err=%v", ok, err)
 	}
 }
 

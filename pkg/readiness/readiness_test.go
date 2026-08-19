@@ -72,6 +72,79 @@ func TestPatchForFailedAppliesAllReadinessFixes(t *testing.T) {
 	}
 }
 
+func TestBuildWarnsWhenParallelismTooHighForTightLocalProfile(t *testing.T) {
+	cfg := probeConfig(t, "omlx", "http://127.0.0.1:1234/v1", "tiny-local")
+	cfg.MaxParallel = 4
+	cfg.ModelProfiles = map[string]config.ModelProfile{
+		"default":    config.DefaultModelProfiles()["default"],
+		"tiny-local": {ContextLimit: 4096, MaxTokens: 1024, MaxTurns: 8},
+	}
+	report := Build(cfg, 1)
+	check := findReadinessCheck(t, report, "parallel_budget")
+	if check.OK {
+		t.Fatalf("expected high parallel warning: %+v", check)
+	}
+	if check.FixPatch["max_parallel"] != 1 {
+		t.Fatalf("fix patch=%+v", check.FixPatch)
+	}
+	if !strings.Contains(check.Message, "ctx=4096") {
+		t.Fatalf("message should explain context: %+v", check)
+	}
+
+	patch, ok, err := PatchForFailed(report)
+	if err != nil || !ok {
+		t.Fatalf("patch ok=%v err=%v", ok, err)
+	}
+	cfg.ApplyPatch(patch)
+	if cfg.MaxParallel != 1 {
+		t.Fatalf("max_parallel fix not applied: %d", cfg.MaxParallel)
+	}
+}
+
+func TestBuildWarnsWhenPlanValidationIsBypassed(t *testing.T) {
+	cfg := probeConfig(t, "omlx", "http://127.0.0.1:1234/v1", "local-coder")
+	cfg.AutoApprove = true
+	cfg.PlanApprove = "off"
+	cfg.PlanApproveTimeout = 5 * time.Second
+
+	report := Build(cfg, 1)
+	check := findReadinessCheck(t, report, "plan_validation")
+	if check.OK {
+		t.Fatalf("expected plan validation warning: %+v", check)
+	}
+	if check.FixPatch["plan_approve"] != "ask" || check.FixPatch["auto_approve"] != false {
+		t.Fatalf("fix patch=%+v", check.FixPatch)
+	}
+	if !strings.Contains(check.Message, "auto_approve=true") {
+		t.Fatalf("message should expose bypass: %+v", check)
+	}
+
+	patch, ok, err := PatchForFailed(report)
+	if err != nil || !ok {
+		t.Fatalf("patch ok=%v err=%v", ok, err)
+	}
+	cfg.ApplyPatch(patch)
+	if cfg.AutoApprove || cfg.PlanApprove != "ask" || cfg.PlanApproveTimeout != config.DefaultPlanApproveTimeout {
+		t.Fatalf("plan validation fix not applied: auto=%v mode=%s timeout=%s", cfg.AutoApprove, cfg.PlanApprove, cfg.PlanApproveTimeout)
+	}
+}
+
+func TestBuildAllowsHigherParallelismForLargeHostedProfile(t *testing.T) {
+	cfg := probeConfig(t, "openai", "https://api.openai.com/v1", "large-hosted")
+	cfg.MaxParallel = 6
+	cfg.ModelProfiles = map[string]config.ModelProfile{
+		"default":      config.DefaultModelProfiles()["default"],
+		"large-hosted": {ContextLimit: 32768, MaxTokens: 4096, MaxTurns: 24},
+	}
+	check := findReadinessCheck(t, Build(cfg, 1), "parallel_budget")
+	if !check.OK {
+		t.Fatalf("large hosted model should allow higher parallelism: %+v", check)
+	}
+	if check.FixPatch != nil {
+		t.Fatalf("unexpected fix patch: %+v", check.FixPatch)
+	}
+}
+
 func TestBuildWithProbeFindsOpenAICompatibleModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {

@@ -637,10 +637,10 @@ wave_snapshots: true           # Per-wave file rewind points
 hooks_enabled: true            # Load .slmcode/hooks.json
 
 # ── Interaction Modes ──
-clarify_mode: ask              # auto | ask | skip
-plan_approve: ask              # auto | ask | skip
-escalate_ask: ask              # ask | auto | skip
-continue_ask: ask              # ask | auto | skip
+clarify_mode: ask              # auto | ask | off
+plan_approve: ask              # off | auto | ask
+escalate_ask: ask              # ask | auto | off
+continue_ask: ask              # ask | auto | off
 auto_approve: false            # Skip all HITL waits (forces recommended)
 
 # ── Model Profiles (per-model caps) ──
@@ -898,15 +898,15 @@ qa_gate_max_rounds: 3          # Max QA gate iterations
 post_worker_smoke: true        # Run smoke after each worker
 
 # ── Interaction Modes ──
-clarify_mode: ask              # auto | ask | skip
+clarify_mode: ask              # auto | ask | off
 clarify_timeout: 2m0s          # Timeout for ask mode
 scope_judge: true              # Post-split PRD completeness check
-plan_approve: ask              # auto | ask | skip
-plan_approve_timeout: 1m0s
+plan_approve: ask              # off | auto | ask
+plan_approve_timeout: 2m0s
 placeholder_pass: true         # Post-execute stub scan
-continue_ask: ask              # ask | auto | skip
+continue_ask: ask              # ask | auto | off
 continue_ask_timeout: 2m0s
-escalate_ask: ask              # ask | auto | skip
+escalate_ask: ask              # ask | auto | off
 escalate_ask_timeout: 30s
 escalate_timeout_agent: ""     # Specialist that decides on timeout
 

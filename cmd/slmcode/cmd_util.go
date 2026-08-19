@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -450,40 +449,10 @@ func runDoctor() error {
 	b := ws.Board.Snapshot()
 	fmt.Println(cli.Success(fmt.Sprintf("board: %d tasks", len(b.Tasks))))
 
-	endpoint := ws.Config.Endpoint
-	ws.Config.ResolveAPIKey()
-	url := strings.TrimRight(endpoint, "/") + "/models"
-	if config.IsOllama(ws.Config.Provider) {
-		base := strings.TrimSuffix(strings.TrimRight(ws.Config.Endpoint, "/"), "/v1")
-		url = strings.TrimRight(base, "/") + "/api/tags"
-	} else if !strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/v1") {
-		url = strings.TrimRight(endpoint, "/") + "/v1/models"
-	}
-	req, _ := http.NewRequest("GET", url, nil)
-	if ws.Config.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+ws.Config.APIKey)
-	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Println(cli.Error(fmt.Sprintf("LLM unreachable at %s: %v", url, err)))
-		fmt.Println(cli.Dim("  tip: start your provider, or override with --provider / --endpoint / --model"))
-		fmt.Println(cli.Dim("  examples: omlx start · ollama serve · LM Studio local server"))
-	} else {
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			fmt.Println(cli.Success(fmt.Sprintf("LLM ok — %s / %s (HTTP %d)", ws.Config.Provider, ws.Config.Model, resp.StatusCode)))
-		} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			fmt.Println(cli.Error(fmt.Sprintf("LLM auth failed (HTTP %d) at %s", resp.StatusCode, url)))
-			if ws.Config.APIKey == "" {
-				fmt.Println(cli.Dim("  tip: set OMLX_API_KEY / SLMCODE_API_KEY, or ~/.omlx/settings.json → auth.api_key"))
-			} else {
-				fmt.Println(cli.Dim("  tip: api_key is set but rejected — refresh key from provider settings"))
-			}
-		} else {
-			fmt.Println(cli.Warn(fmt.Sprintf("LLM responded %d at %s", resp.StatusCode, url)))
-		}
-	}
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	providerCheck := readiness.ProbeProvider(probeCtx, ws.Config)
+	probeCancel()
+	printDoctorProviderProbe(providerCheck)
 	auth := models.ResolveAuth(ws.Config)
 	if auth.Configured {
 		fmt.Println(cli.Success(fmt.Sprintf("auth OK (%s)", auth.Source)))
@@ -508,6 +477,10 @@ func runDoctor() error {
 	sk, _ := ws.Skills.List()
 	fmt.Println(cli.Success(fmt.Sprintf("%d skills loaded", len(sk))))
 	report := readiness.Build(ws.Config, len(sk))
+	report.Checks = append(report.Checks, providerCheck)
+	report.Score = readiness.Score(report.Checks)
+	report.Status = readiness.Status(report.Score)
+	report.OK = report.Score >= 80
 	if readinessHasFailedChecks(report) {
 		fmt.Println(cli.Warn(fmt.Sprintf("readiness: %d/100 (%s)", report.Score, report.Status)))
 		fmt.Println(cli.Dim("  failed: " + strings.Join(readinessFailedIDs(report), ", ")))
@@ -516,6 +489,45 @@ func runDoctor() error {
 		fmt.Println(cli.Success(fmt.Sprintf("readiness: %d/100 (%s)", report.Score, report.Status)))
 	}
 	return nil
+}
+
+func printDoctorProviderProbe(check readiness.Check) {
+	fmt.Print(formatDoctorProviderProbe(check))
+}
+
+func formatDoctorProviderProbe(check readiness.Check) string {
+	var b strings.Builder
+	if check.OK {
+		msg := check.Message
+		if check.Latency > 0 {
+			msg = fmt.Sprintf("%s · %d ms", msg, check.Latency)
+		}
+		b.WriteString(cli.Success("LLM ok — " + msg))
+		b.WriteString("\n")
+		return b.String()
+	}
+	if check.Severity == "critical" {
+		b.WriteString(cli.Error("LLM check failed — " + check.Message))
+	} else {
+		b.WriteString(cli.Warn("LLM check warning — " + check.Message))
+	}
+	b.WriteString("\n")
+	if check.Endpoint != "" {
+		b.WriteString(cli.Dim("  endpoint: " + check.Endpoint))
+		b.WriteString("\n")
+	}
+	if check.FixHint != "" {
+		b.WriteString(cli.Dim("  tip: " + check.FixHint))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(cli.Dim("  tip: start your provider, or override with --provider / --endpoint / --model"))
+		b.WriteString("\n")
+	}
+	if check.FixLabel != "" {
+		b.WriteString(cli.Dim("  fix: " + check.FixLabel))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func readinessFailedIDs(r readiness.Report) []string {

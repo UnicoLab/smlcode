@@ -14,7 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { getQueries, getQuery, getQueryEvents, resumeRun } from '@/api/client';
-import type { DynamicComposition, QuerySession, QueryView, RunEvent, Task } from '@/types';
+import type { DynamicComposition, QuerySession, QueryView, RunEvent, RunEventSummary, Task } from '@/types';
 import { AppContext } from '@/App';
 import EventLog from '@/components/Live/EventLog';
 import clsx from 'clsx';
@@ -35,6 +35,7 @@ export default function RunHistory() {
   const [selectedID, setSelectedID] = useState('');
   const [selected, setSelected] = useState<QueryView | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [eventSummary, setEventSummary] = useState<RunEventSummary | null>(null);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingRun, setLoadingRun] = useState(false);
   const [filter, setFilter] = useState('');
@@ -63,16 +64,20 @@ export default function RunHistory() {
     if (!selectedID) {
       setSelected(null);
       setEvents([]);
+      setEventSummary(null);
       return;
     }
     let cancelled = false;
     setLoadingRun(true);
     setError('');
+    setEvents([]);
+    setEventSummary(null);
     Promise.all([getQuery(selectedID), getQueryEvents(selectedID, 1500)])
       .then(([q, ev]) => {
         if (cancelled) return;
         setSelected(q);
         setEvents(ev.events || []);
+        setEventSummary(ev.summary || null);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load run');
@@ -95,6 +100,7 @@ export default function RunHistory() {
 
   const boardStats = useMemo(() => summarizeTasks(selected?.board?.tasks || []), [selected]);
   const composition = selected?.composition || latestCompositionEvent(events);
+  const compositionError = selected?.composition_error || '';
 
   const handleResume = async (id: string) => {
     if (!id || ctx?.liveRunning) return;
@@ -195,6 +201,7 @@ export default function RunHistory() {
               running={!!ctx?.liveRunning}
               onResume={handleResume}
             />
+            {compositionError && <CompositionWarning message={compositionError} />}
             {composition && <CompositionPanel composition={composition} />}
             <BoardSnapshot tasks={selected?.board?.tasks || []} stats={boardStats} />
             <SummaryPanel run={selected} />
@@ -204,7 +211,7 @@ export default function RunHistory() {
                 <h2 className="text-sm font-bold">Event Log</h2>
                 <span className="badge-neutral ml-auto">{events.length}</span>
               </div>
-              <EventLog events={events} />
+              <EventLog events={events} summary={eventSummary} />
             </section>
           </div>
         )}
@@ -263,8 +270,23 @@ function RunHeader({
   );
 }
 
+function CompositionWarning({ message }: { message: string }) {
+  return (
+    <section className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+        <div className="min-w-0">
+          <div className="font-semibold">Saved composition unavailable</div>
+          <div className="mt-1 break-words text-xs opacity-85">{message}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CompositionPanel({ composition }: { composition: DynamicComposition }) {
   const enabledPhases = (composition.phases || []).filter((p) => p.enabled && p.when !== 'never');
+  const fitHints = composition.slm_fit || [];
   return (
     <section className="card p-4 space-y-4">
       <div className="flex items-center gap-2">
@@ -273,6 +295,18 @@ function CompositionPanel({ composition }: { composition: DynamicComposition }) 
         <span className="badge-brand ml-auto">{enabledPhases.length} phases</span>
       </div>
       {composition.summary && <p className="text-sm text-gray-600 dark:text-gray-300">{composition.summary}</p>}
+      {!!fitHints.length && (
+        <div>
+          <div className="label">SLM Fit</div>
+          <div className="flex flex-wrap gap-2">
+            {fitHints.map((hint, i) => (
+              <span key={`${hint}-${i}`} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                {hint}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {!!composition.handoff?.length && (
         <div>
           <div className="label">Handoff</div>

@@ -63,6 +63,7 @@ func Build(cfg *config.Config, skillCount int) Report {
 			Message:  boolMessage(cfg.SessionEventLog, "Runs persist events for replay and debugging", "Archived runs will have weak traceability"),
 			FixLabel: "Enable event log", FixPatch: fixPatchIf(!cfg.SessionEventLog, "session_event_log", true),
 		},
+		planValidationCheck(cfg),
 		{
 			ID: "file_guards", Label: "File Guards", OK: cfg.WriteGuard && cfg.ReadBeforeEdit && cfg.FileCheckpoints, Severity: "critical",
 			Message:  boolMessage(cfg.WriteGuard && cfg.ReadBeforeEdit && cfg.FileCheckpoints, "Write guard, read-before-edit, and checkpoints are active", "File edit protection is incomplete"),
@@ -86,6 +87,7 @@ func Build(cfg *config.Config, skillCount int) Report {
 			Message: fmt.Sprintf("ctx=%d max_tokens=%d think=%d turns=%d",
 				prof.ContextLimit, prof.MaxTokens, prof.ThinkingBudgetTokens, prof.MaxTurns),
 		},
+		parallelBudgetCheck(cfg, prof),
 		{
 			ID: "skills", Label: "Skills", OK: skillCount > 0, Severity: "warning",
 			Message: fmt.Sprintf("%d skills loaded", skillCount),
@@ -126,6 +128,95 @@ func Build(cfg *config.Config, skillCount int) Report {
 		},
 		ModelProfile: prof,
 		Checks:       checks,
+	}
+}
+
+func planValidationCheck(cfg *config.Config) Check {
+	timeout := cfg.PlanApproveTimeout
+	timeoutSec := int(timeout.Seconds())
+	mode := config.NormalizePlanApprove(cfg.PlanApprove)
+	ok := !cfg.AutoApprove && mode == "ask" && timeout >= 30*time.Second
+	check := Check{
+		ID:       "plan_validation",
+		Label:    "Plan Validation",
+		OK:       ok,
+		Severity: "warning",
+		Details: map[string]interface{}{
+			"plan_approve": mode,
+			"timeout_sec":  timeoutSec,
+			"auto_approve": cfg.AutoApprove,
+		},
+	}
+	if ok {
+		check.Message = fmt.Sprintf("Plan approval pauses before execute (timeout=%ds)", timeoutSec)
+		return check
+	}
+	check.Message = fmt.Sprintf("Plan approval is not enforced for user validation (mode=%s timeout=%ds auto_approve=%v)",
+		mode, timeoutSec, cfg.AutoApprove)
+	check.FixLabel = "Require plan approval"
+	check.FixHint = "Use ask mode with a practical timeout so users can validate the selected plan, agents, and pipeline before execution."
+	check.FixPatch = map[string]interface{}{
+		"auto_approve":             false,
+		"plan_approve":             "ask",
+		"plan_approve_timeout_sec": int(config.DefaultPlanApproveTimeout.Seconds()),
+	}
+	return check
+}
+
+func parallelBudgetCheck(cfg *config.Config, prof config.ModelProfile) Check {
+	check := Check{
+		ID:       "parallel_budget",
+		Label:    "Parallel Budget",
+		Severity: "warning",
+		OK:       true,
+		Message:  fmt.Sprintf("max_parallel=%d", cfg.MaxParallel),
+		Details: map[string]interface{}{
+			"max_parallel":  cfg.MaxParallel,
+			"context_limit": prof.ContextLimit,
+		},
+	}
+	recommended, constrained := recommendedMaxParallel(cfg.Provider, prof)
+	if constrained {
+		check.Details["recommended_max_parallel"] = recommended
+	}
+	if !constrained || cfg.MaxParallel <= recommended {
+		if constrained {
+			check.Message = fmt.Sprintf("max_parallel=%d fits ctx=%d local-model budget", cfg.MaxParallel, prof.ContextLimit)
+		}
+		return check
+	}
+	check.OK = false
+	check.Message = fmt.Sprintf("max_parallel=%d is high for ctx=%d; local SLMs share context and RAM better at <=%d",
+		cfg.MaxParallel, prof.ContextLimit, recommended)
+	check.FixLabel = fmt.Sprintf("Set max_parallel=%d", recommended)
+	check.FixPatch = map[string]interface{}{"max_parallel": recommended}
+	check.FixHint = "Lower parallelism for tight local-model profiles; raise it again for larger hosted models or strong local hardware."
+	return check
+}
+
+func recommendedMaxParallel(provider string, prof config.ModelProfile) (int, bool) {
+	if prof.ContextLimit <= 0 {
+		return 0, false
+	}
+	local := isLocalProvider(provider)
+	switch {
+	case prof.ContextLimit <= 4096:
+		return 1, true
+	case prof.ContextLimit <= 8192:
+		return 2, true
+	case local && prof.ContextLimit <= 16384:
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+func isLocalProvider(provider string) bool {
+	switch config.NormalizeProvider(provider) {
+	case "local", "omlx", "ollama", "lmstudio", "vllm", "litellm", "custom":
+		return true
+	default:
+		return false
 	}
 }
 

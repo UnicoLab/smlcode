@@ -185,11 +185,33 @@ func SaveDynamic(slmDir string, c *Composition) error {
 	if err := os.MkdirAll(slmDir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
+	cp := *c
+	cp.Normalize()
+	b, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicfile.Write(filepath.Join(slmDir, DynamicFileName), append(b, '\n'), 0o644)
+}
+
+// LoadDynamic reads the inspectable latest composition from slmDir.
+func LoadDynamic(slmDir string) (Composition, bool, error) {
+	var comp Composition
+	if strings.TrimSpace(slmDir) == "" {
+		return comp, false, nil
+	}
+	body, err := os.ReadFile(filepath.Join(slmDir, DynamicFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return comp, false, nil
+		}
+		return comp, false, err
+	}
+	if err := json.Unmarshal(body, &comp); err != nil {
+		return comp, false, fmt.Errorf("read dynamic composition: %w", err)
+	}
+	comp.Normalize()
+	return comp, true, nil
 }
 
 func boolPtr(v bool) *bool { return &v }

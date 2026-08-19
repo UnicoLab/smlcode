@@ -121,6 +121,43 @@ func TestDetectPostWorkerCommandGoModuleUsesGoTest(t *testing.T) {
 	}
 }
 
+func TestDetectPostWorkerCommandTypeScriptUsesExplicitPackageScript(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "package.json"),
+		[]byte(`{"scripts":{"lint":"tsc --noEmit"}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "src.ts"), []byte("export const x: number = 1\n"), 0o644)
+	cmd := DetectPostWorkerCommand(root, []string{"src.ts"})
+	if cmd != "npm run -s lint" {
+		t.Fatalf("TypeScript smoke should use explicit tsc script, got %q", cmd)
+	}
+}
+
+func TestDetectPostWorkerCommandTypeScriptUsesLocalTSC(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(root, "tsconfig.json"), []byte(`{"compilerOptions":{}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(bin, "tsc"), []byte("#!/bin/sh\n"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "component.tsx"), []byte("export function C() { return null }\n"), 0o644)
+	cmd := DetectPostWorkerCommand(root, []string{"component.tsx"})
+	if cmd != "./node_modules/.bin/tsc --noEmit --pretty false" {
+		t.Fatalf("TypeScript smoke should use local tsc, got %q", cmd)
+	}
+}
+
+func TestDetectPostWorkerCommandTypeScriptWithoutToolingIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "package.json"),
+		[]byte(`{"scripts":{"lint":"eslint ."}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "src.ts"), []byte("export const x = 1\n"), 0o644)
+	cmd := DetectPostWorkerCommand(root, []string{"src.ts"})
+	if cmd != "" {
+		t.Fatalf("TypeScript smoke should not invent tooling, got %q", cmd)
+	}
+}
+
 func TestDetectProjectLanguageHTMLAndGoScript(t *testing.T) {
 	root := t.TempDir()
 	_ = os.WriteFile(filepath.Join(root, "index.html"), []byte("<html></html>"), 0o644)

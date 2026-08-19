@@ -117,7 +117,7 @@ clarify_mode: ask         # auto | ask | off  (Claude Code AskUserQuestion style
 clarify_timeout: 2m       # ask mode: wait then apply recommended
 scope_judge: true         # post-split PRD completeness gate
 plan_approve: ask         # off | auto | ask  (Plan Mode gate before execute)
-plan_approve_timeout: 1m  # ask mode: wait then approve by default
+plan_approve_timeout: 2m  # ask mode: wait then approve by default
 auto_approve: false       # skip plan/shell/clarify HITL waits
 shell_permission: allow   # allow | ask | deny (ask = interactive approve)
 context_compact: true     # mid-run CONTEXT.md summarization

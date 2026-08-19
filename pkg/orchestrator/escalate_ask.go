@@ -67,7 +67,14 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		return ans
 	}
 
-	_ = hitl.WriteAsk(o.cfg.SlmDir(), "escalate", ask)
+	if err := hitl.WriteAsk(o.cfg.SlmDir(), "escalate", ask); err != nil {
+		o.emitWarn("execute", "escalate ask unavailable — re-scoping task", err.Error())
+		ans.Action = plan.EscalateActionReScope
+		ans.Notes = "escalate ask could not be written: " + err.Error()
+		plan.ApplyEscalateAction(board, t.ID, ans.Action, ans.Notes)
+		o.persistBoard(board)
+		return ans
+	}
 	o.emitLoop("execute", LoopEvent{
 		Action:   "escalate_pending",
 		Reason:   ask.Summary,

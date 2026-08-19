@@ -1,7 +1,7 @@
 // ── LiveTaskPanel ──
 // Compact sidebar panel for task management + context injection in LiveView.
 // Self-contained: fetches its own data from the API.
-import { useState, useEffect, useCallback, useContext } from 'react';
+import { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { AppContext } from '@/App';
 import {
   getTasks,
@@ -411,7 +411,9 @@ export default function LiveTaskPanel() {
   // ── Derived: tasks grouped by column ──
   const columns = board?.columns || [];
   const byColumn = board?.by_column || {};
-  const taskCount = board?.tasks?.length || 0;
+  const allTasks = board?.tasks || [];
+  const taskCount = allTasks.length;
+  const taskHealth = useMemo(() => summarizeTaskHealth(allTasks), [allTasks]);
 
   // ── Render ──
   return (
@@ -609,6 +611,49 @@ export default function LiveTaskPanel() {
           </button>
         </div>
       </div>
+
+      {taskCount > 0 && (
+        <div className="p-3 border-b border-gray-200 dark:border-gray-800 glass-alt">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <ListChecks size={13} className="text-emerald-500 shrink-0" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                Task Health
+              </span>
+            </div>
+            <span className="text-[9px] text-gray-400 tabular-nums">
+              {taskHealth.withFiles}/{taskCount} scoped
+            </span>
+          </div>
+
+          <div className="grid grid-cols-4 gap-1.5">
+            <TaskMetric label="Active" value={taskHealth.active} tone={taskHealth.active > 0 ? 'info' : 'neutral'} />
+            <TaskMetric label="Blocked" value={taskHealth.blocked} tone={taskHealth.blocked > 0 ? 'error' : 'neutral'} />
+            <TaskMetric label="Failed" value={taskHealth.failed} tone={taskHealth.failed > 0 ? 'error' : 'neutral'} />
+            <TaskMetric label="Retries" value={taskHealth.retries} tone={taskHealth.retries > 0 ? 'warning' : 'neutral'} />
+          </div>
+
+          {taskHealth.attention.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {taskHealth.attention.map((task) => (
+                <div
+                  key={task.id}
+                  className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300"
+                  title={task.title}
+                >
+                  <AlertCircle size={11} className="shrink-0" />
+                  <span className="truncate font-medium">{task.title}</span>
+                  <span className="ml-auto shrink-0 font-mono opacity-70">{taskStateLabel(task)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-300">
+              No blocked, failed, or retrying tasks.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Add Task Form ── */}
       {showAddForm && (
@@ -1067,4 +1112,76 @@ export default function LiveTaskPanel() {
       </div>
     </div>
   );
+}
+
+function TaskMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'neutral' | 'info' | 'warning' | 'error';
+}) {
+  return (
+    <div className="rounded-md bg-white/70 px-2 py-1.5 dark:bg-gray-900/50">
+      <div className="text-[9px] uppercase text-gray-400">{label}</div>
+      <div
+        className={clsx(
+          'mt-0.5 font-mono text-sm font-bold tabular-nums',
+          tone === 'info' && 'text-blue-600 dark:text-blue-300',
+          tone === 'warning' && 'text-amber-600 dark:text-amber-300',
+          tone === 'error' && 'text-red-600 dark:text-red-300',
+          tone === 'neutral' && 'text-gray-700 dark:text-gray-300',
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function summarizeTaskHealth(tasks: Task[]) {
+  let active = 0;
+  let blocked = 0;
+  let failed = 0;
+  let retries = 0;
+  let withFiles = 0;
+  const attention: Task[] = [];
+
+  for (const task of tasks) {
+    if (task.files?.length > 0) withFiles += 1;
+    if (isBlockedTask(task)) blocked += 1;
+    if (isFailedTask(task)) failed += 1;
+    if (isActiveTask(task)) active += 1;
+    if ((task.retries || 0) > 0) retries += 1;
+    if (
+      attention.length < 3 &&
+      (isBlockedTask(task) || isFailedTask(task) || (task.retries || 0) > 0)
+    ) {
+      attention.push(task);
+    }
+  }
+
+  return { active, blocked, failed, retries, withFiles, attention };
+}
+
+function taskStateLabel(task: Task): string {
+  return task.status || task.column || 'task';
+}
+
+function isActiveTask(task: Task): boolean {
+  return task.status === 'running' ||
+    task.status === 'review' ||
+    task.status === 'correcting' ||
+    task.column === 'in_progress' ||
+    task.column === 'in_review';
+}
+
+function isBlockedTask(task: Task): boolean {
+  return task.status === 'blocked' || task.column === 'blocked';
+}
+
+function isFailedTask(task: Task): boolean {
+  return task.status === 'failed' || task.column === 'failed';
 }

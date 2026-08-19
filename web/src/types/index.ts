@@ -261,7 +261,56 @@ export interface RunEvent {
   scope?: string;
   output?: string;
   data?: DynamicComposition;
+  model?: string;
+  tokens?: number;
+  cost_usd?: number;
   time: string;
+}
+
+export interface RunEventCount {
+  name: string;
+  count: number;
+}
+
+export interface RunInsight {
+  severity: 'info' | 'warning' | 'error' | 'success' | 'problem' | string;
+  title: string;
+  detail?: string;
+  phase?: string;
+  task_id?: string;
+  agent?: string;
+  time?: string;
+}
+
+export interface RunAction {
+  title: string;
+  detail?: string;
+  command?: string;
+}
+
+export interface RunEventSummary {
+  total_events: number;
+  started_at?: string;
+  last_at?: string;
+  duration_ms?: number;
+  final_phase?: string;
+  final_kind?: string;
+  last_message?: string;
+  phases?: RunEventCount[];
+  agents?: RunEventCount[];
+  models?: RunEventCount[];
+  tasks: number;
+  retries: number;
+  replans: number;
+  failures: number;
+  warnings: number;
+  errors: number;
+  tool_calls: number;
+  shell_calls: number;
+  tokens?: number;
+  cost_usd?: number;
+  insights?: RunInsight[];
+  actions?: RunAction[];
 }
 
 export interface DynamicPhaseChoice {
@@ -287,8 +336,9 @@ export interface DynamicComposition {
   summary: string;
   strategy?: string;
   handoff?: string[];
-  phases: DynamicPhaseChoice[];
-  execute: DynamicExecuteChoice;
+  slm_fit?: string[];
+  phases?: DynamicPhaseChoice[] | null;
+  execute?: DynamicExecuteChoice | null;
   team?: DynamicTeamMember[];
   slots?: Slot[];
 }
@@ -297,6 +347,13 @@ export interface CompositionPreviewResponse {
   ok: boolean;
   dynamic_enabled: boolean;
   composition: DynamicComposition;
+  slm_fit?: string[];
+}
+
+export interface CompositionGetResponse {
+  ok: boolean;
+  composition: DynamicComposition | null;
+  composition_error?: string;
 }
 
 // ── Run Responses ──
@@ -473,11 +530,13 @@ export interface QueryView {
   board: Board;
   summary: string;
   composition?: DynamicComposition | null;
+  composition_error?: string;
 }
 
 export interface QueryEventsResponse {
   id: string;
   events: RunEvent[];
+  summary?: RunEventSummary;
 }
 
 // ── Stack Presets ──
@@ -535,6 +594,11 @@ export interface StackApplyResponse {
 // ── Status ──
 export interface AppStatus {
   text: string;
+  running?: boolean;
+  readiness?: ReadinessReport;
+  composition?: DynamicComposition | null;
+  composition_error?: string;
+  plan_pending?: boolean;
 }
 
 // ── HITL (human-in-the-loop) types ──

@@ -65,6 +65,7 @@ type PlanComposition struct {
 	Summary  string                 `json:"summary,omitempty"`
 	Strategy string                 `json:"strategy,omitempty"`
 	Handoff  []string               `json:"handoff,omitempty"`
+	SLMFit   []string               `json:"slm_fit,omitempty"`
 	Phases   []PlanCompositionPhase `json:"phases,omitempty"`
 	Execute  PlanCompositionExecute `json:"execute,omitempty"`
 	Team     []PlanCompositionTeam  `json:"team,omitempty"`

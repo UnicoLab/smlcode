@@ -387,23 +387,25 @@ export default function AgentManager() {
         )}
 
         {/* Agent list */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {agents.map((agent) => (
             <div
               key={agent.id}
-              className="card-hover p-4 group"
+              className="card-hover group flex min-h-[17rem] flex-col p-4"
             >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/30">
                     <Bot size={20} className="text-brand-600" />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-sm">{agent.title}</h3>
-                    <p className="text-[10px] font-mono text-gray-400">{agent.id}</p>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold leading-snug line-clamp-2" title={agent.title || agent.id}>
+                      {agent.title || agent.id}
+                    </h3>
+                    <p className="font-mono text-[10px] text-gray-400 truncate" title={agent.id}>{agent.id}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                   <button
                     onClick={() => handleEdit(agent)}
                     className="btn-ghost p-1.5 rounded-lg"
@@ -422,16 +424,28 @@ export default function AgentManager() {
               </div>
 
               {agent.description && (
-                <p className="text-xs text-gray-500 mt-3 line-clamp-2">{agent.description}</p>
+                <details className="mt-3 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
+                  <summary className="cursor-pointer list-none text-xs font-medium text-gray-700 line-clamp-3 dark:text-gray-200" title={agent.description}>
+                    {agent.description}
+                  </summary>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+                    {agent.description}
+                  </p>
+                </details>
               )}
 
               {agent.system_prompt && (
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2 line-clamp-2 font-mono leading-relaxed">
-                  {agent.system_prompt}
-                </p>
+                <details className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
+                  <summary className="cursor-pointer list-none font-mono text-[10px] text-gray-500 line-clamp-2 dark:text-gray-400" title={agent.system_prompt}>
+                    {agent.system_prompt}
+                  </summary>
+                  <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-gray-600 dark:text-gray-300">
+                    {agent.system_prompt}
+                  </pre>
+                </details>
               )}
 
-              <div className="flex items-center gap-2 mt-3 flex-wrap">
+              <div className="mt-auto flex items-center gap-2 pt-3 flex-wrap">
                 {agent.custom && <span className="badge-brand">custom</span>}
                 {!agent.custom && <span className="badge-neutral">built-in</span>}
                 {agent.override && <span className="badge-brand">override</span>}
@@ -440,26 +454,31 @@ export default function AgentManager() {
                     {agent.skills.length} skills
                   </span>
                 )}
-                <span className="badge-neutral flex items-center gap-1" title="Effective LLM after stack inheritance">
-                  <Cpu size={10} />
-                  {agent.effective_provider || agent.provider || 'stack'}/
-                  {agent.effective_model || agent.model || 'inherit'}
+                <span
+                  className="badge-neutral flex max-w-full items-center gap-1 whitespace-normal break-all text-left"
+                  title={`Effective LLM after stack inheritance: ${agent.effective_provider || agent.provider || 'stack'}/${agent.effective_model || agent.model || 'inherit'}`}
+                >
+                  <Cpu size={10} className="shrink-0" />
+                  <span className="min-w-0">
+                    {agent.effective_provider || agent.provider || 'stack'}/
+                    {agent.effective_model || agent.model || 'inherit'}
+                  </span>
                 </span>
                 {agent.inherits_model && agent.inherits_provider && (
                   <span className="badge-neutral">inherits stack</span>
                 )}
               </div>
 
-              <div className="grid grid-cols-3 gap-2 mt-3 text-[10px] text-gray-400">
-                <div className="flex items-center gap-1">
+              <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-gray-400">
+                <div className="flex min-w-0 items-center gap-1">
                   <Thermometer size={10} />
                   {agent.temperature}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex min-w-0 items-center gap-1" title={`${agent.max_tokens} tokens`}>
                   <BrainCircuit size={10} />
                   {agent.max_tokens} tok
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex min-w-0 items-center gap-1">
                   <Wrench size={10} />
                   {agent.tools !== false ? 'tools' : 'no tools'}
                 </div>

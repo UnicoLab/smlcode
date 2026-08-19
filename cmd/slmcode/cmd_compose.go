@@ -69,19 +69,13 @@ With no query, prints the latest saved runtime composition from .slmcode/.`),
 }
 
 func readLatestComposition(slmDir string) (composer.Composition, error) {
-	var comp composer.Composition
-	path := filepath.Join(slmDir, composer.DynamicFileName)
-	b, err := os.ReadFile(path)
+	comp, ok, err := composer.LoadDynamic(slmDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return comp, fmt.Errorf("no saved composition at %s — run `slmcode compose \"your task\"` to preview one", path)
-		}
 		return comp, err
 	}
-	if err := json.Unmarshal(b, &comp); err != nil {
-		return comp, fmt.Errorf("read latest composition: %w", err)
+	if !ok {
+		return comp, fmt.Errorf("no saved composition at %s — run `slmcode compose \"your task\"` to preview one", filepath.Join(slmDir, composer.DynamicFileName))
 	}
-	comp.Normalize()
 	return comp, nil
 }
 
@@ -112,6 +106,16 @@ func formatCompositionCLI(resp compositionCLIResponse) string {
 		b.WriteString("  ")
 		b.WriteString(cli.Warn("dynamic_pipeline is disabled; this is an inspection preview"))
 		b.WriteString("\n")
+	}
+	if hints := compositionSLMFit(resp); len(hints) > 0 {
+		b.WriteString("\n")
+		b.WriteString(cli.Bold("SLM Fit"))
+		b.WriteString("\n")
+		for _, hint := range hints {
+			b.WriteString("  - ")
+			b.WriteString(hint)
+			b.WriteString("\n")
+		}
 	}
 
 	if len(c.Handoff) > 0 {
@@ -186,6 +190,10 @@ func formatCompositionCLI(resp compositionCLIResponse) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+func compositionSLMFit(resp compositionCLIResponse) []string {
+	return composer.FitHints(resp.Composition, resp.DynamicEnabled, resp.ModelProfile.ContextLimit)
 }
 
 func writeCLIKeyVal(b *strings.Builder, k, v string) {

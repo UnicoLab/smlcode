@@ -1,6 +1,6 @@
 # 🧩 Agents
 
-Sixteen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
+Seventeen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
 <div class="slm-banner" markdown>
 <span class="slm-banner__emoji">🧬</span>

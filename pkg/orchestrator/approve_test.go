@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +92,9 @@ func TestPlanApprovalAskIncludesDynamicComposition(t *testing.T) {
 		if len(ask.Composition.Slots) != 1 || ask.Composition.Slots[0].Before != "execute" {
 			t.Fatalf("slots=%+v", ask.Composition.Slots)
 		}
+		if got := strings.Join(ask.Composition.SLMFit, "\n"); !strings.Contains(got, "2 enabled phases") || !strings.Contains(got, "2 handoff bullets") {
+			t.Fatalf("slm fit=%q", got)
+		}
 		return plan.PlanApproveAnswer{Decision: "approve"}, nil
 	})
 
@@ -97,6 +103,99 @@ func TestPlanApprovalAskIncludesDynamicComposition(t *testing.T) {
 	})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPlanApprovalDecisionReportsReplanWithoutHardError(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.PlanApprove = plan.PlanApproveModeAsk
+	cfg.PlanApproveTimeout = time.Second
+	o := &Orchestrator{cfg: cfg, onEvent: func(Event) {}}
+	o.OnPlanApprove(func(ctx context.Context, ask plan.PlanApproveAsk) (plan.PlanApproveAnswer, error) {
+		return plan.PlanApproveAnswer{Decision: "replan", Notes: "split into one file per task"}, nil
+	})
+
+	decision, err := o.runPlanApprovalDecision(context.Background(), "q", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Replan || decision.Approved || decision.Notes != "split into one file per task" {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestPlanApprovalGateWrapperStillStopsOnReplan(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.PlanApprove = plan.PlanApproveModeAsk
+	cfg.PlanApproveTimeout = time.Second
+	o := &Orchestrator{cfg: cfg, onEvent: func(Event) {}}
+	o.OnPlanApprove(func(ctx context.Context, ask plan.PlanApproveAsk) (plan.PlanApproveAnswer, error) {
+		return plan.PlanApproveAnswer{Decision: "replan", Notes: "make it smaller"}, nil
+	})
+
+	ok, err := o.runPlanApprovalGate(context.Background(), "q", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "a"}},
+	})
+	if err == nil || ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if err.Error() != "user requested replan: make it smaller" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestReplanNotesReachPlannerAndSplitterPrompts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/replan\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(root)
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := []string{"split into one file per task", "avoid broad docs changes"}
+	prd := plan.ScopePRD{
+		Summary:    "tight change",
+		Acceptance: []string{"go test ./... passes"},
+		Language:   "Go",
+	}
+	clarify := plan.ClarifyResult{Assumptions: []string{"keep current API"}}
+
+	plannerPrompt := o.buildPlannerPrompt("fix auth", "run-1", plan.RolePlanner, `{"summary":"auth"}`, "use existing package", prd, clarify, notes)
+	splitterPrompt := o.buildSplitterPrompt("fix auth", "splitter", `{"summary":"plan"}`, prd, clarify, notes)
+
+	for name, prompt := range map[string]string{"planner": plannerPrompt, "splitter": splitterPrompt} {
+		for _, want := range []string{
+			"## User replan instructions",
+			"- split into one file per task",
+			"- avoid broad docs changes",
+			"Locked PRD",
+			"NEVER use pytest",
+			"Do NOT invent files",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing %q:\n%s", name, want, prompt)
+			}
+		}
+	}
+	if !strings.Contains(plannerPrompt, "query_id=run-1") {
+		t.Fatalf("planner prompt missing query id:\n%s", plannerPrompt)
+	}
+	if !strings.Contains(splitterPrompt, "Reflect these instructions in task scope") {
+		t.Fatalf("splitter prompt missing splitter-specific instruction:\n%s", splitterPrompt)
+	}
+}
+
+func TestReplanInstructionBlockSkipsEmptyNotes(t *testing.T) {
+	if got := replanInstructionBlock([]string{"", "   "}, "revise"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	got := replanInstructionBlock([]string{"  keep scope tight  "}, "revise")
+	if !strings.Contains(got, "- keep scope tight\n") || !strings.Contains(got, "revise") {
+		t.Fatalf("block=%q", got)
 	}
 }
 

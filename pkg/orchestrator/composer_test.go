@@ -10,6 +10,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
+	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
 func TestClearDynamicRunArtifacts(t *testing.T) {
@@ -136,6 +137,78 @@ func TestEnsureCompositionHandoffAndTeam(t *testing.T) {
 	}
 }
 
+func TestEnsureCompositionHandoffEnrichesWeakComposerOutput(t *testing.T) {
+	comp := &composer.Composition{
+		Summary: "weak local composition",
+		Handoff: []string{
+			"do the task",
+			"do the task",
+			strings.Repeat("x", 260),
+		},
+	}
+	ensureCompositionHandoff(
+		comp,
+		"fix composer.go handoff",
+		[]string{"pkg/orchestrator/composer.go", "pkg/server/server.go", "go.mod"},
+		"Go",
+		"go-worker",
+		"go-tester",
+	)
+	joined := strings.Join(comp.Handoff, "\n")
+	for _, want := range []string{
+		"do the task",
+		"Likely target files: pkg/orchestrator/composer.go",
+		"Use only authoritative workspace paths",
+		"Use go-worker for implementation and go-tester for verification",
+		"Verify with go test ./... -count=1",
+		"Keep changes scoped to this user request",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("handoff missing %q:\n%v", want, comp.Handoff)
+		}
+	}
+	if strings.Count(joined, "do the task") != 1 {
+		t.Fatalf("handoff should deduplicate existing bullets: %v", comp.Handoff)
+	}
+	for _, item := range comp.Handoff {
+		if len(item) > 223 {
+			t.Fatalf("handoff item was not bounded: %q", item)
+		}
+	}
+}
+
+func TestEnsureCompositionHandoffCapsButKeepsOperationalContract(t *testing.T) {
+	comp := &composer.Composition{
+		Handoff: []string{
+			"custom note 1",
+			"custom note 2",
+			"custom note 3",
+			"custom note 4",
+			"custom note 5",
+			"custom note 6",
+			"custom note 7",
+			"custom note 8",
+		},
+	}
+	ensureCompositionHandoff(
+		comp,
+		"update README.md",
+		[]string{"README.md", "go.mod"},
+		"Go",
+		"go-worker",
+		"go-tester",
+	)
+	if len(comp.Handoff) != 8 {
+		t.Fatalf("handoff length=%d items=%v", len(comp.Handoff), comp.Handoff)
+	}
+	joined := strings.Join(comp.Handoff, "\n")
+	for _, want := range []string{"Likely target files: README.md", "Verify with go test ./... -count=1"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("priority handoff item missing %q:\n%v", want, comp.Handoff)
+		}
+	}
+}
+
 func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 	f := agents.NewFactory(nil, nil, "m", "p")
 	o := &Orchestrator{factory: f}
@@ -151,7 +224,7 @@ func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 			{Role: "worker", Skills: []string{"atomic-coding"}},
 			{Role: "ghost", Skills: []string{"atomic-coding"}},
 		},
-		Slots: []pipeline.Slot{{ID: "s", Agent: "also-bogus", After: "execute"}},
+		Slots: []pipeline.Slot{{ID: "slot-x", Agent: "also-bogus", After: "execute"}},
 	}
 
 	dropped := o.sanitizeComposition(comp)
@@ -176,6 +249,47 @@ func TestSanitizeCompositionDropsUnknownAgents(t *testing.T) {
 	}
 	if len(comp.Phases) != 2 {
 		t.Fatalf("unknown phase must be dropped: %+v", comp.Phases)
+	}
+	if len(comp.Slots) != 0 {
+		t.Fatalf("unknown-agent slot must be dropped: %+v", comp.Slots)
+	}
+}
+
+func TestSanitizeCompositionDropsUnsafeSlotsBeforeApply(t *testing.T) {
+	f := agents.NewFactory(nil, nil, "m", "p")
+	o := &Orchestrator{factory: f}
+
+	comp := &composer.Composition{
+		Phases: []composer.PhaseChoice{
+			{ID: "execute", Agent: "worker", Enabled: true},
+			{ID: "test", Agent: "tester", Enabled: true},
+		},
+		Execute: composer.ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector"},
+		Slots: []pipeline.Slot{
+			{ID: " Keep ", Agent: " TESTER ", After: " EXECUTE "},
+			{ID: "", Agent: "tester", After: "execute"},
+			{ID: "bad-anchor", Agent: "tester", After: "made-up"},
+			{ID: "no-anchor", Agent: "tester"},
+			{ID: "bad-agent", Agent: "ghost", After: "execute"},
+			{ID: "keep", Agent: "tester", Before: "test"},
+		},
+	}
+
+	dropped := o.sanitizeComposition(comp)
+	if len(comp.Slots) != 1 {
+		t.Fatalf("expected only safe slot to survive, got %+v; dropped=%v", comp.Slots, dropped)
+	}
+	if comp.Slots[0].ID != "keep" || comp.Slots[0].Agent != "tester" || comp.Slots[0].After != "execute" {
+		t.Fatalf("safe slot not normalized/preserved: %+v", comp.Slots[0])
+	}
+	joined := strings.Join(dropped, ",")
+	for _, want := range []string{"slot:<empty>", "slot:bad-anchor", "slot:no-anchor", "ghost", "slot:bad-agent", "slot:keep"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %q in dropped %v", want, dropped)
+		}
+	}
+	if _, err := composer.Apply(*comp); err != nil {
+		t.Fatalf("sanitized composition should apply without slot validation fallback: %v", err)
 	}
 }
 
@@ -291,6 +405,57 @@ func TestPreviewCompositionDoesNotPersistOrMutatePipeline(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfg.SlmDir(), composer.DynamicFileName)); !os.IsNotExist(err) {
 		t.Fatalf("preview should not persist composition, stat err=%v", err)
+	}
+}
+
+func TestActivateDynamicCompositionEmitsAnnotatedTelemetryWithoutPersistingHints(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".slmcode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(root)
+	cfg.DynamicPipeline = true
+	cfg.Model = "qwen2.5-coder:7b"
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var data any
+	o.OnEvent(func(e Event) {
+		if e.Kind == stream.KindComposition {
+			data = e.Data
+		}
+	})
+	comp := &composer.Composition{
+		Summary: "focused local run",
+		Handoff: []string{
+			"Touch pkg/a.go only",
+			"Verify with go test ./pkg/...",
+		},
+		Phases: []composer.PhaseChoice{
+			{ID: "execute", Agent: "worker", Enabled: true, When: pipeline.WhenAlways},
+			{ID: "test", Agent: "tester", Enabled: true, When: pipeline.WhenAlways},
+		},
+		Execute: composer.ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector", MaxWaves: 1},
+		Team:    []composer.TeamMember{{Role: "worker"}},
+	}
+	if err := o.activateDynamicComposition(comp, "fix package", []string{"pkg/a.go"}, true); err != nil {
+		t.Fatal(err)
+	}
+	annotated, ok := data.(composer.AnnotatedComposition)
+	if !ok {
+		t.Fatalf("composition event data type=%T", data)
+	}
+	if annotated.Summary != "focused local run" || len(annotated.SLMFit) == 0 {
+		t.Fatalf("annotated=%+v", annotated)
+	}
+	body, err := os.ReadFile(filepath.Join(cfg.SlmDir(), composer.DynamicFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "slm_fit") {
+		t.Fatalf("persisted composition should not contain derived slm_fit: %s", string(body))
 	}
 }
 

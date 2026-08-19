@@ -47,6 +47,8 @@ slmcode <command> --help
 | `chat` | Classic REPL 💬 |
 | `studio` | GUI + HTTP/SSE (`--listen host:port`) 🎨 |
 | `doctor` | Provider/model/workspace health 🩺 |
+| `readiness` / `ready` | Score local SLM readiness; `--fix` applies safe defaults |
+| `compose` | Preview the dynamic pipeline phases/agents without an LLM call |
 | `init` | Create `.slmcode/` scaffolding 🌱 |
 | `stack` | list / show / apply provider+model presets 📦 |
 | `agent` | list / show / set per-agent LLM pins 🧩 |
@@ -61,7 +63,7 @@ slmcode <command> --help
 | `board` | Show kanban |
 | `watch` | Live-refreshing kanban 👀 |
 | `task` | add / show / edit / move / delegate / checklist / promote |
-| `status` | Query + plan head + board counts |
+| `status` | Query, dynamic pipeline state, plan approval gate, board counts |
 | `plan` | Show `PLAN.md` |
 
 ### Memory & skills 💾
@@ -92,6 +94,8 @@ slmcode run -v "add JWT auth"
 slmcode run --agent explorer "Where is auth handled?"
 slmcode run --skill atomic-coding "Refactor helpers"
 slmcode run --mode specialist --agent worker "…"
+slmcode run --dynamic "add JWT auth"      # force task-specific composition
+slmcode run --no-dynamic "tiny typo fix"  # use the static pipeline
 slmcode run --think-passes 2 --parallel 2 --retries 2 "…"
 ```
 
@@ -99,12 +103,36 @@ slmcode run --think-passes 2 --parallel 2 --retries 2 "…"
 |------|---------|
 | `--agent` / `--mode specialist` | Single-role run |
 | `--skill` | Pin a skill pack |
+| `--dynamic` / `--no-dynamic` | Override `dynamic_pipeline` for this run |
 | `--think-passes` | Draft → critique → refine |
 | `--parallel` | Concurrent ready tasks |
 | `--retries` | Critic loop stubbornness |
 | `--dry-run` | Simulate writes |
 
 Query sugar: `@skill:name`, `@file:path`, `@folder:path` (when supported by instructions loader).
+
+## Dynamic pipeline & readiness 🎯
+
+```bash
+slmcode compose "add JWT auth"       # inspect phases, team, execute loop, SLM fit
+slmcode compose --json "add JWT auth"
+slmcode status                       # includes dynamic + latest composition + plan gate
+slmcode readiness                    # checks provider/model and SLM-safe settings
+slmcode readiness --fix              # enables safe local-model defaults where needed
+```
+
+`dynamic_pipeline` defaults on: the composer selects a task-specific subset of phases,
+agents, slots, and execute-loop roles before workers run. `compose` is deterministic
+inspection only; it does not call the LLM or write code. To force the static configured
+pipeline, use `slmcode run --no-dynamic` or `slmcode config set dynamic_pipeline false`.
+
+Plan approval is controlled by `plan_approve` (`off | auto | ask`) and `auto_approve`.
+When a run is paused before execute, `slmcode status` reports the pending plan gate id,
+task count, and timeout so you can approve in Studio or through the plan approval API.
+
+`readiness` is the local SLM preflight: it scores provider reachability, model
+availability, skills, dynamic pipeline, HITL, and other safety defaults. It exits
+non-zero when required checks fail; `--fix` applies the safe config patch it recommends.
 
 ---
 

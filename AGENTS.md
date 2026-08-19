@@ -12,7 +12,7 @@
 | Concept | Purpose |
 |---------|---------|
 | **Pipeline** | YAML-configurable execution graph of 16 phases |
-| **Agents** | 15 built-in role experts with SLM-optimized prompts |
+| **Agents** | 17 built-in role experts with SLM-optimized prompts |
 | **Blocks** | Marketplace-ready YAML packages: pipelines, agents, quality, packs |
 | **Stacks** | Provider/model presets (omlx-local, deepseek, openai, …) |
 | **Skills** | Claude Code–compatible `SKILL.md` convention packs |
@@ -292,7 +292,7 @@ Slots are user-inserted agent calls around phase anchors:
 
 ---
 
-## 5. Built-in Specialists (16 total)
+## 5. Built-in Specialists (17 total)
 
 Defined in `pkg/agents/prompts.go` + `pkg/agents/factory.go`:
 

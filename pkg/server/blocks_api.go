@@ -72,6 +72,9 @@ func (s *Server) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	kind := blocks.NormalizeKind(r.PathValue("kind"))
 	if kind == "" {
 		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
@@ -105,6 +108,9 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateBlock(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	kind := blocks.NormalizeKind(r.PathValue("kind"))
 	if kind == "" {
 		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
@@ -142,6 +148,9 @@ func (s *Server) handleUpdateBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	kind := blocks.NormalizeKind(r.PathValue("kind"))
 	if kind == "" {
 		http.Error(w, "unknown kind (pipeline|agent|quality|pack)", 400)
@@ -296,6 +305,9 @@ func blockExists(reg *blocks.Registry, kind, id string) bool {
 }
 
 func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 	var body struct {
 		MaterializeAgents bool `json:"materialize_agents"`
@@ -340,6 +352,9 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleApplyPipelineBlock(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 	reg, err := blocks.Load(s.h.Config.Root)
 	if err != nil {

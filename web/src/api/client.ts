@@ -21,6 +21,7 @@ import type {
   PipelineView,
   PipelineConfig,
   DynamicComposition,
+  CompositionGetResponse,
   CompositionPreviewResponse,
   DocItem,
   ArchiveItem,
@@ -321,8 +322,8 @@ export async function getPipeline(): Promise<PipelineView> {
 }
 
 // GET /api/composition → latest persisted dynamic composition, when available
-export async function getComposition(): Promise<{ ok: boolean; composition: DynamicComposition | null }> {
-  return request<{ ok: boolean; composition: DynamicComposition | null }>('/composition');
+export async function getComposition(): Promise<CompositionGetResponse> {
+  return request<CompositionGetResponse>('/composition');
 }
 
 export async function previewComposition(query: string): Promise<CompositionPreviewResponse> {

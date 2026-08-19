@@ -20,7 +20,9 @@ type sharedBriefItem struct {
 
 func (r *Runner) sharedBriefSection(board *plan.Board, current plan.Task) string {
 	limit := defaultSharedBriefLimit
+	root := ""
 	if r != nil {
+		root = r.Root
 		if r.SharedBriefLimit < 0 {
 			return ""
 		}
@@ -28,7 +30,7 @@ func (r *Runner) sharedBriefSection(board *plan.Board, current plan.Task) string
 			limit = r.SharedBriefLimit
 		}
 	}
-	body := buildSharedBrief(board, current, limit)
+	body := buildSharedBriefWithRoot(board, current, limit, root)
 	if body == "" {
 		return ""
 	}
@@ -38,16 +40,20 @@ func (r *Runner) sharedBriefSection(board *plan.Board, current plan.Task) string
 }
 
 func buildSharedBrief(board *plan.Board, current plan.Task, limit int) string {
+	return buildSharedBriefWithRoot(board, current, limit, "")
+}
+
+func buildSharedBriefWithRoot(board *plan.Board, current plan.Task, limit int, root string) string {
 	if board == nil || limit <= 0 {
 		return ""
 	}
-	items := rankSharedBriefItems(board.Tasks, current)
+	items := rankSharedBriefItems(board.Tasks, current, root)
 	if len(items) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, item := range items {
-		line := formatSharedBriefLine(item.task)
+		line := formatSharedBriefLineWithRoot(item.task, root)
 		if line == "" {
 			continue
 		}
@@ -66,7 +72,7 @@ func buildSharedBrief(board *plan.Board, current plan.Task, limit int) string {
 	return strings.TrimSpace(b.String())
 }
 
-func rankSharedBriefItems(tasks []plan.Task, current plan.Task) []sharedBriefItem {
+func rankSharedBriefItems(tasks []plan.Task, current plan.Task, root string) []sharedBriefItem {
 	deps := map[string]bool{}
 	for _, id := range current.DependsOn {
 		id = strings.TrimSpace(id)
@@ -74,26 +80,36 @@ func rankSharedBriefItems(tasks []plan.Task, current plan.Task) []sharedBriefIte
 			deps[id] = true
 		}
 	}
-	currentFiles := normalizedFileSet(current.Files)
-	currentDirs := dirSet(current.Files)
+	currentFiles := normalizedFileSet(current.Files, root)
+	currentDirs := dirSet(current.Files, root)
 	items := make([]sharedBriefItem, 0, len(tasks))
 	for i, task := range tasks {
 		task.Normalize()
-		if task.ID == current.ID || task.Column != plan.ColDone {
+		if task.ID == current.ID {
 			continue
 		}
-		if strings.TrimSpace(task.Output) == "" && strings.TrimSpace(task.Review) == "" && strings.TrimSpace(task.Notes) == "" {
+		files := briefFiles(task, root)
+		sameFile := sharesFile(files, currentFiles)
+		sameDir := sharesDir(files, currentDirs)
+		related := deps[task.ID] || sameFile || sameDir
+		if !briefCandidate(task, related) {
 			continue
 		}
 		score := 1
 		if deps[task.ID] {
 			score += 100
 		}
-		if sharesFile(task.Files, currentFiles) {
+		if sameFile {
 			score += 80
 		}
-		if sharesDir(task.Files, currentDirs) {
+		if sameDir {
 			score += 40
+		}
+		if task.Column == plan.ColBlocked || task.Status == plan.StatusFailed || strings.TrimSpace(task.Error) != "" {
+			score += 45
+		}
+		if task.Column == plan.ColInReview || strings.TrimSpace(task.Review) != "" {
+			score += 20
 		}
 		if task.Role == plan.RoleExplorer || task.Role == plan.RoleTester {
 			score += 15
@@ -113,23 +129,108 @@ func rankSharedBriefItems(tasks []plan.Task, current plan.Task) []sharedBriefIte
 }
 
 func formatSharedBriefLine(task plan.Task) string {
+	return formatSharedBriefLineWithRoot(task, "")
+}
+
+func formatSharedBriefLineWithRoot(task plan.Task, root string) string {
 	summary := taskSummary(task)
 	if summary == "" {
 		return ""
 	}
-	files := task.Files
-	if len(files) == 0 {
-		files = parseFilesChanged(task.Output)
-	}
+	files := briefFiles(task, root)
 	filePart := ""
 	if len(files) > 0 {
 		filePart = "; files=" + strings.Join(limitStrings(files, 4), ",")
 	}
+	status := sharedStatusHint(task)
 	review := firstLine(task.Review)
 	if review != "" {
 		review = "; review=" + truncateASCII(review, 120)
 	}
-	return fmt.Sprintf("- %s @%s: %s%s%s", task.ID, firstNonEmpty(task.Role, plan.RoleWorker), truncateASCII(summary, 220), filePart, review)
+	errText := firstLine(task.Error)
+	if errText != "" {
+		errText = "; error=" + truncateASCII(errText, 120)
+	}
+	verify := sharedVerificationHint(task)
+	if verify != "" {
+		verify = "; verify=" + truncateASCII(verify, 160)
+	}
+	return fmt.Sprintf("- %s @%s: %s%s%s%s%s%s", task.ID, firstNonEmpty(task.Role, plan.RoleWorker), truncateASCII(summary, 220), status, filePart, review, errText, verify)
+}
+
+func briefCandidate(task plan.Task, related bool) bool {
+	if strings.TrimSpace(task.Output) == "" &&
+		strings.TrimSpace(task.Review) == "" &&
+		strings.TrimSpace(task.Notes) == "" &&
+		strings.TrimSpace(task.Error) == "" {
+		return false
+	}
+	if task.Column == plan.ColDone {
+		return true
+	}
+	return related && (task.Column == plan.ColBlocked ||
+		task.Column == plan.ColInReview ||
+		task.Status == plan.StatusFailed ||
+		strings.TrimSpace(task.Review) != "" ||
+		strings.TrimSpace(task.Error) != "")
+}
+
+func briefFiles(task plan.Task, root string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(files []string) {
+		for _, f := range files {
+			display, ok := displayBriefPath(f, root)
+			if !ok {
+				continue
+			}
+			norm := normalizeBriefPath(display)
+			if norm == "" || seen[norm] {
+				continue
+			}
+			seen[norm] = true
+			out = append(out, display)
+		}
+	}
+	add(task.Files)
+	add(parseFilesChanged(task.Output))
+	return out
+}
+
+func sharedStatusHint(task plan.Task) string {
+	var parts []string
+	if task.Column != "" && task.Column != plan.ColDone {
+		parts = append(parts, "status="+task.Column)
+	}
+	if task.Status != "" && task.Status != sharedStatusFromColumn(task.Column) {
+		parts = append(parts, "state="+task.Status)
+	}
+	if task.Retries > 0 {
+		parts = append(parts, fmt.Sprintf("retries=%d", task.Retries))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, ",")
+}
+
+func sharedStatusFromColumn(col string) string {
+	switch col {
+	case plan.ColToScope, plan.ColScoped:
+		return plan.StatusPending
+	case plan.ColReadyToDev:
+		return plan.StatusReady
+	case plan.ColInProgress:
+		return plan.StatusRunning
+	case plan.ColInReview:
+		return plan.StatusReview
+	case plan.ColDone:
+		return plan.StatusDone
+	case plan.ColBlocked:
+		return plan.StatusFailed
+	default:
+		return plan.StatusPending
+	}
 }
 
 func taskSummary(task plan.Task) string {
@@ -165,6 +266,24 @@ func taskSummary(task plan.Task) string {
 	return firstMeaningfulOutputLine(task.Output)
 }
 
+func sharedVerificationHint(task plan.Task) string {
+	if strings.EqualFold(task.Role, plan.RoleTester) {
+		tr := plan.ParseTesterJSON(task.Output)
+		switch {
+		case len(tr.Failures) > 0:
+			return "fix " + firstLine(tr.Failures[0])
+		case len(tr.Commands) > 0:
+			return strings.Join(limitStrings(tr.Commands, 3), ",")
+		case tr.Passed:
+			return "tester passed"
+		}
+	}
+	if strings.TrimSpace(task.Acceptance) == "" {
+		return ""
+	}
+	return firstLine(task.Acceptance)
+}
+
 func firstJSONObject(s string) string {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
@@ -188,10 +307,10 @@ func firstMeaningfulOutputLine(s string) string {
 	return ""
 }
 
-func normalizedFileSet(files []string) map[string]bool {
+func normalizedFileSet(files []string, root string) map[string]bool {
 	out := map[string]bool{}
 	for _, f := range files {
-		f = normalizeBriefPath(f)
+		f = normalizeBriefPathWithRoot(f, root)
 		if f != "" {
 			out[f] = true
 		}
@@ -199,10 +318,10 @@ func normalizedFileSet(files []string) map[string]bool {
 	return out
 }
 
-func dirSet(files []string) map[string]bool {
+func dirSet(files []string, root string) map[string]bool {
 	out := map[string]bool{}
 	for _, f := range files {
-		f = normalizeBriefPath(f)
+		f = normalizeBriefPathWithRoot(f, root)
 		if f == "" {
 			continue
 		}
@@ -238,9 +357,46 @@ func sharesDir(files []string, currentDirs map[string]bool) bool {
 }
 
 func normalizeBriefPath(path string) string {
-	path = filepath.ToSlash(strings.TrimSpace(path))
-	path = strings.Trim(path, "`'\"")
-	return strings.ToLower(path)
+	display, ok := displayBriefPath(path, "")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(display)
+}
+
+func normalizeBriefPathWithRoot(path, root string) string {
+	display, ok := displayBriefPath(path, root)
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(display)
+}
+
+func displayBriefPath(path, root string) (string, bool) {
+	path = strings.Trim(strings.TrimSpace(path), "`'\"")
+	if path == "" || strings.ContainsRune(path, '\x00') {
+		return "", false
+	}
+	localPath := filepath.FromSlash(path)
+	if filepath.IsAbs(localPath) {
+		if strings.TrimSpace(root) == "" {
+			return "", false
+		}
+		cleanRoot, err := filepath.Abs(root)
+		if err != nil {
+			return "", false
+		}
+		rel, err := filepath.Rel(cleanRoot, filepath.Clean(localPath))
+		if err != nil {
+			return "", false
+		}
+		localPath = rel
+	}
+	clean := filepath.ToSlash(filepath.Clean(localPath))
+	if clean == "." || clean == "" || clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) {
+		return "", false
+	}
+	return clean, true
 }
 
 func limitStrings(in []string, n int) []string {

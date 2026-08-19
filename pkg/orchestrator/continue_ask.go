@@ -108,7 +108,17 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 		})
 		action = "continue"
 	} else {
-		_ = hitl.WriteAsk(o.cfg.SlmDir(), "continue", ask)
+		if err := hitl.WriteAsk(o.cfg.SlmDir(), "continue", ask); err != nil {
+			o.emitWarn("test", "continue ask unavailable — stopping with remaining work flagged", err.Error())
+			o.emitLoop("test", LoopEvent{
+				Action: "aborted",
+				Reason: "continue ask could not be written — stopping with work flagged",
+				From:   "test",
+				To:     "done",
+				Wave:   o.waveCounter,
+			})
+			return false, board
+		}
 		o.emitLoop("test", LoopEvent{
 			Action:   "continue_pending",
 			Reason:   reason,

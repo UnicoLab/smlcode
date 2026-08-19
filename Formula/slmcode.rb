@@ -9,28 +9,28 @@
 class Slmcode < Formula
   desc "Coding harness for SLMs and any OpenAI-compatible LLM — building blocks, language packs, Studio UI"
   homepage "https://unicolab.ai"
-  version "0.15.0"
+  version "0.16.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"
-      sha256 "81abf28bedf187016802b0bb4e9a4bfb0d111ec99bd8d20b2663899ecab57ef1"
+      sha256 "8661041c3c1c3ff7fc6b46ec6c403b43f39605e4d0d37028829e44c0d0049b0e"
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_amd64"
-      sha256 "4afa0d7496e115ab0a6df084516567830edf7fb33665641f2ae0cce2239eaa6e"
+      sha256 "91c128cd321d9a8e2a4ac6199d911ef174450af77519516bd70c1743c0c89f1f"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_arm64"
-      sha256 "5b175dc37c37d6f0f6b6287b3de6ca9c0aab6705f5fd83bb69294de12ede8590"
+      sha256 "24cb68c1a600bf2ba7b85a60f3ed4b7d4e05eb7529aa5158a8e51037f12638c6"
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_amd64"
-      sha256 "e5d489283e866c8674e9f803bbead704932733f95eb30d42e43e6c3cda2936e1"
+      sha256 "503c4ea1911a82fbb47847d20584b0d9ed4ff7f8404db917ce9efe55db7062c6"
     end
   end
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.16.0 — 2026-08-19
+
+- Add self-evolving harness memory
+- Sync Homebrew formula checksums for v0.15.0 [skip ci]
 ## v0.15.0 — Production SLM Harness, HITL UX & Studio Control Plane
 
 ### Highlights

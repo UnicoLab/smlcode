@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://unicolab.ai"><img alt="UnicoLab" src="https://img.shields.io/badge/Made%20with%20%E2%99%A5%20by-UnicoLab-0f6e8c?style=flat-square" /></a>
-  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf&label=v0.15.0" /></a>
+  <a href="https://github.com/UnicoLab/smlcode/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/UnicoLab/smlcode?style=flat-square&color=2dd4bf&label=v0.16.0" /></a>
   <a href="https://github.com/UnicoLab/smlcode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/UnicoLab/smlcode/ci.yml?branch=main&style=flat-square&label=CI" /></a>
   <img alt="go" src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-0ea5e9?style=flat-square" />

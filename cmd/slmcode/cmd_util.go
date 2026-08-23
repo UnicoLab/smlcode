@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -280,22 +279,17 @@ func runDoctorJSON() error {
 
 // gitignoreStatus reports whether the secret-bearing .slmcode paths are ignored.
 //
-// Directory rules end in "/" so they only match directories; probing them with
-// a representative child path makes the answer correct whether or not the
-// directory exists yet.
-var gitignoreProbes = map[string]string{
-	"auth.json": ".slmcode/auth.json",
-	"pending":   ".slmcode/pending/x.patch.json",
-	"sessions":  ".slmcode/sessions/x.json",
-	"queries":   ".slmcode/queries/x/events.jsonl",
-	"archives":  ".slmcode/archives/x.json",
-	"errors":    ".slmcode/errors/errors.md",
-}
+// The probe set comes from pkg/config, the same list `slmcode init` renders
+// into `.slmcode/.gitignore`, so doctor can never check fewer paths than init
+// writes. Directory rules end in "/" so they only match directories; probing
+// them with a representative child path makes the answer correct whether or
+// not the directory exists yet.
+func gitignoreProbes() map[string]string { return config.SlmIgnoreProbes() }
 
 func gitignoreStatus(root, slmDir string) map[string]any {
 	out := map[string]any{}
 	ok := true
-	for name, probe := range gitignoreProbes {
+	for name, probe := range gitignoreProbes() {
 		ignored := gitIgnores(root, probe)
 		out[name] = ignored
 		if !ignored {
@@ -305,6 +299,19 @@ func gitignoreStatus(root, slmDir string) map[string]any {
 	out["ok"] = ok
 	out["file"] = filepath.Join(slmDir, ".gitignore")
 	return out
+}
+
+// gitignoreGaps names every .slmcode path git would currently stage, in the
+// order pkg/config lists them (credentials first, then run content).
+func gitignoreGaps(status map[string]any) []string {
+	var leaky []string
+	for _, e := range config.SlmIgnoreEntries {
+		name := strings.TrimSuffix(e.Pattern, "/")
+		if ignored, ok := status[name].(bool); ok && !ignored {
+			leaky = append(leaky, ".slmcode/"+e.Pattern)
+		}
+	}
+	return leaky
 }
 
 func runDoctor() error {
@@ -436,15 +443,10 @@ func runDoctor() error {
 	// .slmcode/auth.json holds provider API keys; `slmcode commit` runs
 	// `git add -A`, so an un-ignored .slmcode is a real leak path.
 	if gs := gitignoreStatus(ws.Config.Root, ws.Config.SlmDir()); gs["ok"] != true {
-		var leaky []string
-		for _, name := range []string{"auth.json", "pending", "sessions", "queries", "archives", "errors"} {
-			if ignored, _ := gs[name].(bool); !ignored {
-				leaky = append(leaky, ".slmcode/"+name)
-			}
-		}
-		sort.Strings(leaky)
-		fmt.Println(cli.Warn("git would stage: " + strings.Join(leaky, ", ")))
-		fmt.Println(cli.Dim("  fix: slmcode init   (writes .slmcode/.gitignore)"))
+		leaky := gitignoreGaps(gs)
+		fmt.Println(cli.Warn(fmt.Sprintf("git would stage %d of %d .slmcode paths: %s",
+			len(leaky), len(config.SlmIgnoreEntries), strings.Join(leaky, ", "))))
+		fmt.Println(cli.Dim("  fix: delete .slmcode/.gitignore and re-run `slmcode init` (it rewrites the full list)"))
 	} else {
 		fmt.Println(cli.Success(".slmcode secrets are git-ignored"))
 	}

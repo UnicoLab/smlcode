@@ -46,8 +46,13 @@ the focus guard is disabled** — it is a privilege boundary, not an anti-wander
 `.slmcode/` used to be unconditionally writable, which let an agent:
 
 - drop a `hooks.json` — arbitrary shell on the next run;
-- rewrite `config.yaml` to disable its own guards;
+- rewrite `config.yaml` to disable its own guards, or to add an `mcp_servers` entry that is
+  spawned as a child process on the next startup;
 - forge `pending/*.patch.json` entries that a human would then apply.
+
+The two "a file in the repo names a program to run" vectors are closed a second time, so that a
+**human** committing one is no better off than an agent writing one: hooks fail closed behind
+`slmcode hooks trust` (§10), and `mcp_servers` is ignored outside the user config layer (§10.1).
 
 ## 4. Shell policy — `shell_permission`
 
@@ -327,17 +332,70 @@ could have answered.
 
 ## 10. Hooks
 
-`hooks_enabled` (on) loads `.slmcode/hooks.json` — lifecycle commands run by the harness. See
-`.slmcode-hooks.example.json` in the repo root. Because hooks execute shell, `.slmcode/` is not
-tool-writable; that is the whole reason for §3.
+`.slmcode/hooks.json` makes the harness run shell commands around tool calls (`PreToolUse`,
+`PostToolUse`). See `.slmcode-hooks.example.json` in the repo root for the shape.
+
+**It is fully opt-in, twice over**, because that file lives *inside the project*: a repository you
+cloned can ship one, and `git clone && slmcode run` must not equal `bash -c <whatever the repo
+wrote>`.
+
+1. **`hooks_enabled` defaults to `false`.** Turn it on per project with
+   `slmcode config set hooks_enabled true`. With it off, nothing in the file is even loaded.
+2. **The file's exact contents must be trusted by you.** `pkg/hooks` fails closed: it hashes the
+   file and refuses to load it unless *this* operator has approved *that* digest. The approval
+   record lives in your OS config directory, never in the repository, so a repo cannot ship its
+   own approval — and any edit to `hooks.json` changes the digest and needs approval again.
+
+```bash
+slmcode hooks list      # every command the file would run, plus its trust state
+slmcode hooks trust     # print the commands, then approve this exact content
+slmcode hooks untrust   # withdraw approval
+```
+
+`slmcode hooks list` prints the commands **before** anything is approved and without executing
+them — an approval you cannot inspect is not an approval. When the harness refuses an untrusted
+file it prints the same list, so you always know what did not run.
+
+`SLMCODE_TRUST_HOOKS=1` force-trusts every hooks file on the machine. It exists for CI images that
+generate their own hooks file; do not set it in a shell you use to run code you did not write.
+`slmcode hooks list` says so explicitly when it is set, so a hook that fires for that reason is
+never a mystery.
+
+Because hooks execute shell, `.slmcode/` is not tool-writable; that is the whole reason for §3.
+
+## 10.1 MCP servers are a user-layer key
+
+The same reasoning as §10, applied to the other place a repository could name a program to run.
+Every entry in `mcp_servers:` is spawned as a **child process at orchestrator startup** — before
+the model says anything, before any tool runs, before any permission prompt.
+
+`.slmcode/config.yaml` lives inside the project, so `mcp_servers` is honoured **only** from the
+user config layer (`$SLMCODE_USER_CONFIG`, `$XDG_CONFIG_HOME/slmcode/config.yaml`,
+`~/.slmcode/config.yaml`, `~/.config/slmcode/config.yaml`). A project file can neither add a
+server, replace the list, nor clear it — the user-layer list is restored wholesale after the
+project layer is applied.
+
+Whatever the project file declared is named in a warning that `status`, `doctor` and
+`config show` all print, with the exact command that was not started and where to move it.
+`SLMCODE_TRUST_PROJECT_MCP=1` force-honours the project layer, for CI images that generate the
+project config themselves.
+
+Unlike hooks this needs no approval store: an MCP server is per-user by nature (the same `docs` or
+`jira` server is wanted in every project), so the user layer is where it belonged anyway.
 
 ## 11. Secrets
 
 API keys resolve in this order: explicit config → `SLMCODE_API_KEY` → `.slmcode/auth.json` →
 provider-specific env (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `OMLX_API_KEY`, …).
 
-`slmcode init` writes a `.slmcode/.gitignore` covering `auth.json`, `pending/` and `sessions/`,
-because `slmcode commit` runs `git add -A`.
+`slmcode init` writes a `.slmcode/.gitignore` covering all 26 paths that hold credentials or run
+content — `auth.json`, `credentials.json`, `sessions/`, `queries/`, `memory/`, `summaries/`,
+`metrics/`, `evolve/`, `pending/`, `checkpoints/`, `waves/`, the five HITL handshake directories,
+`capabilities.json`, `throughput.json`, `repomap.json`, `*.log` and more — because `slmcode
+commit` runs `git add -A`. The list lives in `pkg/config` (`SlmIgnoreEntries`) and is the same one
+`slmcode doctor` probes with `git check-ignore`, so the check can never cover less than `init`
+writes. What is deliberately **not** ignored: `config.yaml`, `board.json`, `hooks.json`, `skills/`,
+`agents/` and `blocks/` — the parts a team is meant to share and review.
 
 ## 12. Studio
 

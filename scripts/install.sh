@@ -142,16 +142,30 @@ LDFLAGS="-s -w -X main.Version=${VERSION} -X main.SourceRoot=${ROOT} -X main.Git
 echo "Building SLMCode ${VERSION} (${GIT_COMMIT})…"
 cd "${ROOT}"
 
-# Build Vite/React Studio UI before Go compilation (required by go:embed)
+# Build the Vite/React Studio UI before Go compilation.
+#
+# This step is OPTIONAL and must never abort the install: cmd/slmcode/ui/
+# ships a tracked placeholder index.html so `go:embed all:ui` always has
+# something, and the CLI, the API and every command work without the SPA — only
+# the Studio web page is missing, and `slmcode studio` says so. A failed
+# `npm ci` (no Node, no registry, a proxy) used to kill the whole install under
+# `set -e`, which turned "your npm mirror is down" into "slmcode will not
+# install".
 if [[ -f web/package.json && -f web/package-lock.json ]]; then
   if command -v npm >/dev/null 2>&1; then
     echo "→ Building Studio UI (Vite + React)…"
-    cd web && npm ci --silent --no-audit --no-fund && npm run build && cd ..
-    rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
-    cp -r web/dist/* cmd/slmcode/ui/
+    if ( cd web && npm ci --silent --no-audit --no-fund && npm run build ); then
+      rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
+      cp -r web/dist/* cmd/slmcode/ui/
+      echo "→ Studio UI built"
+    else
+      echo "WARNING: the Studio UI build failed — installing with the placeholder page." >&2
+      echo "  The CLI and the API are unaffected; rebuild the SPA later with:" >&2
+      echo "    make ui-react" >&2
+    fi
   else
-    echo "WARNING: npm required to build Studio UI — install Node.js" >&2
-    echo "  If you cloned the repo for development, run:" >&2
+    echo "WARNING: npm not found — installing with the placeholder Studio page." >&2
+    echo "  The CLI and the API are unaffected. To get the web UI:" >&2
     echo "    brew install node && make ui-react" >&2
   fi
 fi
@@ -282,7 +296,7 @@ echo
 if command -v omlx >/dev/null 2>&1; then
   echo "oMLX detected — ensure: omlx start"
 else
-  echo "Tip: point provider at any OpenAI-compatible LLM (see docs/PROVIDERS.md)."
+  echo "Tip: point provider at any OpenAI-compatible LLM (see docs/providers.md)."
 fi
 echo "Built ${BUILD_TIME}"
 echo "Made with ♥ by UnicoLab — https://unicolab.ai  ·  AI & Innovation  ♥"

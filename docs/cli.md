@@ -17,9 +17,9 @@ Every command is safe to call from a script, a CI job or another agent.
   `NO_COLOR` is unset. `slmcode status | cat` is plain text. Override with
   `--color=auto|always|never` or `FORCE_COLOR=1`.
 - **JSON.** `--json` is available on `status`, `doctor`, `readiness`, `board`, `version`, `apply`,
-  `compose`, `blocks list`, every `config` subcommand, and every `memory` / `evolve` / `metrics`
-  subcommand. It writes a single JSON document to stdout with colour forced off; diagnostics go
-  to stderr.
+  `compose`, `task show`, `blocks list`, `hooks list`, `auth list`, `auth get`, every `config`
+  subcommand except `config set`, and every `memory` / `evolve` / `metrics` subcommand. It writes
+  a single JSON document to stdout with colour forced off; diagnostics go to stderr.
 - **Prompts.** Nothing prompts without a TTY. `slmcode apply` refuses interactive review (exit 2)
   and points at `--all`/`--list`/`--json`; `slmcode` with no workspace refuses to scaffold
   (exit 3); `slmcode update` needs `--yes`.
@@ -66,7 +66,8 @@ Every command is safe to call from a script, a CI job or another agent.
 | `--max-task-calls` | per-task LLM call budget (config: `max_task_calls`) |
 | `--architect-editor` | enable the describer→editor role pair (config: `architect_editor`) |
 | `--structured-decoding` | `auto\|off` — constrained decoding policy |
-| `--no-banner` | hide the ASCII banner on help |
+| `--no-banner` | hide the ASCII banner — help, `studio`, the TUI and `version` |
+| `--version` | print the version and exit; `slmcode version` is the detailed form (`--check` queries GitHub) |
 
 ### Configuration layering
 
@@ -118,6 +119,7 @@ path is embedded in a file that may be committed. Older files are migrated forwa
 | `agent` | `list` · `show` · `edit` · `clear-llm` — per-agent LLM pins |
 | `blocks` | `list` · `show` · `new` · `edit` · `delete` · `apply` · `validate` |
 | `skills` | `list` · `show` · `new` · `edit` · `path` |
+| `hooks` | `list` · `trust` · `untrust` — inspect and approve `.slmcode/hooks.json` |
 | `update` | Refresh the binary release or rebuild from source |
 
 ### Inspect
@@ -312,6 +314,33 @@ Studio mints a per-run session token and prints it in the URL (`http://127.0.0.1
 open **that** URL, or `/api/*` returns 401. `--kill` only ever signals a process whose executable
 is exactly `slmcode`. `Ctrl+C` shuts down gracefully. See [Studio](studio.md).
 
+## `hooks`
+
+`.slmcode/hooks.json` runs shell commands around tool calls, and it lives inside the project — so
+the harness **fails closed** on it. Nothing runs until both `hooks_enabled: true` and an explicit
+per-content approval from you.
+
+```bash
+slmcode hooks list        # every command the file would run, and whether it is trusted
+slmcode hooks list --json
+slmcode hooks trust       # prints the commands, then asks; -y skips the prompt
+slmcode hooks untrust     # withdraw approval
+```
+
+The listing always prints the commands **before** asking, and never executes them. Approvals are
+keyed on `(absolute path, SHA-256 of the file)` and stored in your OS config directory, never in
+the repository — so a repo cannot ship its own approval, and editing `hooks.json` revokes it.
+
+`SLMCODE_TRUST_HOOKS=1` force-trusts every hooks file on the machine (for CI images that generate
+their own). `hooks list` says so when it is set. Details → [Permissions §10](permissions.md#10-hooks).
+
+| Exit | Meaning |
+|---:|---|
+| 0 | listed / trusted / untrusted |
+| 1 | the hooks file does not parse, or declares no commands |
+| 3 | there is no hooks file to trust |
+| 6 | you answered "no" at the approval prompt |
+
 ## `stack` & `agent`
 
 ```bash
@@ -415,6 +444,8 @@ slmcode completion powershell
 | `SLMCODE_USER_CONFIG`, `XDG_CONFIG_HOME` | user-level config layer location |
 | `SLMCODE_BASH_ALLOW` | extra shell allowlist prefixes (comma-separated) |
 | `SLMCODE_BLOCKS`, `SLMCODE_STACKS` | extra block / stack search paths |
+| `SLMCODE_TRUST_HOOKS=1` | force-trust every `.slmcode/hooks.json` (CI images that write their own; see `slmcode hooks`) |
+| `SLMCODE_TRUST_PROJECT_MCP=1` | honour `mcp_servers` from a **project** config file — normally a user-layer-only key, because each entry is spawned as a child process at startup |
 | `SLMCODE_TUI=0`, `CI=true` | force the non-interactive path |
 | `SLMCODE_NO_QUIET=1` | do not filter dependency stderr during engine construction |
 | `SLMCODE_SKIP_UPDATE_CHECK=1` | never contact GitHub |

@@ -14,9 +14,11 @@ slmcode studio --no-auth            # drop the session token (loopback enforceme
 ```
 
 The printed URL carries the session token. Open **that** URL, not a bare
-`http://127.0.0.1:7420` — without the token every `/api/*` call returns 401. The CLI states which
-mode it is in (`auth: session token required (the URL above carries it)`, or a warning that auth
-is disabled).
+`http://127.0.0.1:7420` — the HTML shell is authenticated too, so an untokenised navigation gets a
+401 page telling you to go back to the terminal, and every `/api/*` call gets a bare 401. The CLI
+states which mode it is in (`auth: session token required (the URL above carries it)`, or a
+warning that auth is disabled). See [Security model](#security-model) for the cookie the token
+mints and for an honest account of what it does and does not protect against.
 
 `Ctrl+C` shuts down gracefully: an in-flight run unwinds and every SSE stream closes, rather than
 responses being truncated mid-write.
@@ -129,8 +131,44 @@ Every response also carries `X-Frame-Options: DENY`, `X-Content-Type-Options: no
 
 ### Session token
 
-`slmcode studio` mints a random 256-bit hex session token per run (`--no-auth` disables it).
-Every `/api/*` request must then carry it, supplied as:
+`slmcode studio` mints a random 256-bit hex session token per launch and prints it in the URL:
+
+```
+✔ Studio listening
+  url    http://127.0.0.1:7420/?t=8f3c…
+  auth   session token required (the URL above carries it)
+```
+
+Open **that** URL. Everything is behind the token — **including the HTML shell**. A bare
+`http://127.0.0.1:7420/` does not load Studio; it gets **401** and a static page that says to open
+the URL the CLI printed. `/api/*` without a token gets a 401 JSON-less body and
+`WWW-Authenticate: Bearer realm="slmcode-studio"`.
+
+#### How a browser gets authenticated
+
+1. You open the CLI's `?t=<token>` URL.
+2. The server validates the parameter and replies with a session cookie:
+
+   ```
+   Set-Cookie: slmcode_studio=<token>; Path=/; HttpOnly; SameSite=Strict
+   ```
+
+3. From then on the cookie authenticates every request — page loads, `fetch`
+   (`credentials: 'same-origin'`) and `EventSource` alike. The SPA strips `?t=` from the address
+   bar on first read, so the token stops appearing in history, screenshots and shoulder-surfing
+   range.
+
+The cookie is deliberately shaped:
+
+| Attribute | Why |
+|---|---|
+| `HttpOnly` | keeps it out of `document.cookie`, so an XSS in a rendered diff cannot exfiltrate it |
+| `SameSite=Strict` | it is never attached to a request originated by another site |
+| `Path=/` | one cookie covers the SPA and `/api/` alike |
+| no `Secure` | Studio is plain HTTP on loopback; a `Secure` cookie would simply be dropped |
+| session cookie (no `Max-Age`) | closing the browser drops it; re-open the CLI's URL to re-issue |
+
+A non-browser client (curl, a script, another agent) can present the token directly instead:
 
 | Transport | Form |
 |---|---|
@@ -138,10 +176,25 @@ Every `/api/*` request must then carry it, supplied as:
 | Header | `Authorization: Bearer <tok>` |
 | Query | `?t=<tok>` — for `EventSource`, which cannot set headers |
 
-The SPA picks it up from the `?t=` parameter of the URL the CLI prints, or from the
-`<meta name="slmcode-token">` tag the server injects into `index.html`, stores it in
-`sessionStorage`, and strips the parameter from the address bar on first read
-(`web/src/api/session.ts`).
+Any of the three also mints the cookie, so a browser only ever needs it once.
+
+!!! warning "The `<meta name="slmcode-token">` tag is gone"
+    Studio used to serve `GET /` unauthenticated and inject the token into the HTML for the SPA to
+    read. That made the shell an **unauthenticated token dispenser**: any other process on the
+    machine could `curl http://127.0.0.1:7420/`, scrape the token out of the page and then drive
+    the agent. There is no meta tag and no meta fallback any more, by design. If you built a
+    client against it, read the token from the CLI output or set `SLMCODE_STUDIO_TOKEN` yourself.
+
+#### Turning it off
+
+`--no-auth` (or `SLMCODE_STUDIO_NO_AUTH=1`) drops the token requirement entirely: every request is
+treated as already authenticated and no cookie is minted. Loopback and same-origin enforcement stay
+on. The CLI prints `⚠ auth disabled — any local process can drive this agent`, which is exactly
+what it means. Use it for a throwaway container, not on a machine you share.
+
+`--dev-cors` (or `SLMCODE_STUDIO_DEV_CORS=1`) allows the Vite dev origins so `npm run dev` on
+:5173 can talk to the API. It does not weaken the token: the dev server still has to present one,
+which it does by proxying `/api` through the same origin.
 
 Environment overrides, for embedders and tests:
 
@@ -151,9 +204,28 @@ Environment overrides, for embedders and tests:
 | `SLMCODE_STUDIO_NO_AUTH` | disable the token requirement — same as `--no-auth` |
 | `SLMCODE_STUDIO_DEV_CORS` | allow the Vite dev origins — same as `--dev-cors` |
 
-Loopback and origin enforcement stay on regardless of the token setting. The token is defense in
-depth against **other local processes and users** on a shared machine; loopback and same-origin
-are what stop a remote page.
+#### What the token actually buys you — and what it does not
+
+Be precise about this, because the previous version of this page overstated it.
+
+**It does bound:**
+
+- any other **origin** — a page you visit cannot read Studio's responses, and `SameSite=Strict`
+  means the cookie is never attached to its requests;
+- an unprivileged process that can reach the port but **cannot read your terminal or your
+  process's memory** — for example something in another container, another user's account on a
+  shared box, or a service that only got a socket;
+- accidental exposure through a proxy or a port-forward, since the URL alone is not enough without
+  the `?t=` parameter.
+
+**It does not bound another process running as you.** The token is printed to your terminal's
+stdout and lives in the server process's memory. Anything with your uid can read your scrollback,
+your shell history if you pasted the URL, `/proc/<pid>` on Linux, or simply the terminal
+multiplexer buffer. On a single-user laptop the token is a good hygiene measure and a genuine
+anti-CSRF/anti-rebinding control — it is **not** a sandbox against malware already running as you.
+
+Loopback and same-origin are what stop a **remote** page. The token is what stops a **local
+listener that is not you**. Neither stops **you**, or anything running with your privileges.
 
 ### Transport hardening
 

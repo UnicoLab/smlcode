@@ -26,9 +26,28 @@ Needs Go 1.23+ and a Node with `npm ci` support (the SPA is React 18 + Vite + Ty
 make check
 ```
 
-It runs, in order: `make tidy`, `make lint` (gofmt check → `go vet ./...` → golangci-lint, blocking →
-embedded-UI smoke check), `make test` (`go test ./...`), `make race`
-(`go test -race -count=1 ./pkg/...`), then `npm run lint && npm run build` in `web/`.
+It runs, in order:
+
+| Step | What it is | If it cannot run here |
+|---|---|---|
+| `make tidy-check` | `go mod tidy -diff` — go.mod/go.sum match the imports | **SKIP** with a reason, when the module proxy is unreachable |
+| `make lint` | gofmt check → `go vet ./...` → golangci-lint (blocking) → embedded-UI smoke | golangci-lint missing → skipped with an install link; the rest always run |
+| `make cover` | `go test ./...` with coverage, against the floor in `scripts/coverage-check.sh` | never skipped |
+| `make race` | `go test -race -count=1 ./pkg/...` | never skipped |
+| `make web-check` | `npm ci` (if needed) → `npm run lint` → `npm run build` in `web/` | **SKIP** with a reason, when `npm` is missing or the registry is unreachable |
+
+Two of those steps degrade instead of failing, on purpose. `make check` is the one command this
+document tells you to run, so it has to be runnable — on a plane, in an air-gapped runner, in a
+sandbox. A gate that fails for a reason you cannot fix is a gate people learn to bypass. Every
+skip names itself in the output, so a skipped step is never a silent one, and CI (which has both
+the proxy and the registry) runs all five for real.
+
+`check` deliberately runs `cover`, not `test`: coverage instrumentation runs the same suite, so
+running both would just double the wall time.
+
+It also no longer depends on `make tidy` — a verification target must not rewrite `go.mod` as a
+side effect. `make tidy` is still there when you actually want to tidy. For the same reason
+`make build` no longer runs `tidy` either, which is what lets it work offline.
 
 CI's lint-test job and `.pre-commit-config.yaml` run exactly this, so local and CI cannot
 diverge. If you want to know whether a PR will pass CI, run `make check`.
@@ -37,7 +56,9 @@ Other targets worth knowing:
 
 | Target | What it does |
 |---|---|
-| `make cover` | coverage with a total floor (`scripts/coverage-check.sh`, floor `COVERAGE_FLOOR`, currently 51.0%) |
+| `make cover` | coverage with a total floor (`scripts/coverage-check.sh`, floor `COVERAGE_FLOOR`, currently 63.0%, measured 64.5%) — also run as part of `make check` |
+| `make web-check` | the web half of `make check` on its own |
+| `make tidy` | `go mod tidy` — rewrites `go.mod`/`go.sum`; needs the module proxy |
 | `make e2e` | offline e2e (`test/e2e/`) + `scripts/e2e_prime_smoke.sh` |
 | `RUN_E2E=1 make e2e` | additionally runs `TestLiveOMLX` / `TestIsolatedMultiAgent` against a live model |
 | `make govulncheck` | vulnerability scan |

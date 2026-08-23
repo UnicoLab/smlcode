@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 )
 
@@ -21,9 +25,23 @@ func TestEnsureSlmGitignoreCoversSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(data)
-	for _, want := range []string{"auth.json", "pending/", "sessions/", "queries/", "archives/", "errors/"} {
-		if !strings.Contains(body, want) {
-			t.Errorf(".gitignore missing %q:\n%s", want, body)
+	// Every entry pkg/config declares must be in the rendered file — the CLI
+	// no longer keeps its own list, so this is the check that init cannot fall
+	// behind the workspace layout again.
+	if len(config.SlmIgnoreEntries) < 20 {
+		t.Fatalf("the ignore list shrank to %d entries — that is a leak, not a cleanup", len(config.SlmIgnoreEntries))
+	}
+	for _, e := range config.SlmIgnoreEntries {
+		if !strings.Contains(body, "\n"+e.Pattern+"\n") {
+			t.Errorf(".gitignore missing pattern %q:\n%s", e.Pattern, body)
+		}
+	}
+	// The paths a team is meant to share must NOT be ignored.
+	for _, shared := range []string{"config.yaml", "board.json", "hooks.json"} {
+		for _, line := range strings.Split(body, "\n") {
+			if strings.TrimSpace(line) == shared {
+				t.Errorf("%q is ignored — that is shared, reviewable state", shared)
+			}
 		}
 	}
 }
@@ -67,9 +85,38 @@ func TestGitIgnoresAuthJSON(t *testing.T) {
 	if !gitIgnores(root, ".slmcode/auth.json") {
 		t.Fatal(".slmcode/auth.json is stageable — API keys can leak into a commit")
 	}
-	for name, probe := range gitignoreProbes {
+	probes := gitignoreProbes()
+	if len(probes) != len(config.SlmIgnoreEntries) {
+		t.Fatalf("doctor probes %d paths but init writes %d rules", len(probes), len(config.SlmIgnoreEntries))
+	}
+	// Real `git check-ignore`, one probe per rule: this is the assertion that
+	// the file a fresh `init` writes actually covers everything doctor claims
+	// to have checked. A rule that is present but ineffective (a trailing
+	// comment, a missing "/") fails here and nowhere else.
+	for name, probe := range probes {
 		if !gitIgnores(root, probe) {
-			t.Errorf(".slmcode/%s is not ignored (probe %q)", name, probe)
+			t.Errorf(".slmcode/%s is not ignored (probe %q) — `git add -A` would stage it", name, probe)
+		}
+	}
+}
+
+// TestDoctorGitignoreGapsNameTheRealPaths proves the doctor warning lists the
+// paths that are actually stageable, not a hardcoded subset of six.
+func TestDoctorGitignoreGapsNameTheRealPaths(t *testing.T) {
+	status := map[string]any{"ok": false}
+	for _, e := range config.SlmIgnoreEntries {
+		status[strings.TrimSuffix(e.Pattern, "/")] = true
+	}
+	status["memory"] = false
+	status["metrics"] = false
+	gaps := gitignoreGaps(status)
+	want := []string{".slmcode/memory/", ".slmcode/metrics/"}
+	if len(gaps) != len(want) {
+		t.Fatalf("gaps=%v want %v", gaps, want)
+	}
+	for i := range want {
+		if gaps[i] != want[i] {
+			t.Fatalf("gaps=%v want %v", gaps, want)
 		}
 	}
 }
@@ -215,6 +262,21 @@ func TestExitCodeMapping(t *testing.T) {
 	if got := exitCodeFor(errString("context canceled")); got != 130 {
 		t.Fatalf("interrupt exit=%d", got)
 	}
+	if got := exitCodeFor(fmt.Errorf("call failed: %w", context.Canceled)); got != 130 {
+		t.Fatalf("wrapped context.Canceled exit=%d (errors.Is must win)", got)
+	}
+	// A provider error is not a Ctrl-C. Exit 130 used to be handed out for the
+	// bare word "interrupted" anywhere in the message, so a wrapper script
+	// could not tell an upstream hiccup from a user pressing Ctrl-C.
+	for _, msg := range []string{
+		"upstream request interrupted by the model server",
+		"stream interrupted after 3 tokens",
+		"HTTP 502: connection interrupted",
+	} {
+		if got := exitCodeFor(errString(msg)); got == 130 {
+			t.Errorf("%q exits 130 — that claims the user interrupted a run they never touched", msg)
+		}
+	}
 	if got := exitCodeFor(errString("unknown flag: --nope")); got != 2 {
 		t.Fatalf("usage exit=%d", got)
 	}
@@ -276,5 +338,63 @@ func TestAtomicReplace(t *testing.T) {
 	data, _ := os.ReadFile(dst)
 	if string(data) != "new" {
 		t.Fatalf("dst=%q", data)
+	}
+}
+
+// TestNoBannerFlagActuallySuppressesTheBanner is a regression test for a flag
+// that was accepted, documented and inert: --no-banner was bound to a variable
+// nothing read, so `slmcode --no-banner --help` printed the ASCII logo anyway.
+func TestNoBannerFlagActuallySuppressesTheBanner(t *testing.T) {
+	t.Cleanup(func() { cli.SetBannerEnabled(true) })
+
+	cli.SetBannerEnabled(true)
+	if cli.Banner() == "" {
+		t.Fatal("the banner is empty with banners enabled")
+	}
+	cli.SetBannerEnabled(false)
+	if got := cli.Banner(); got != "" {
+		t.Fatalf("SetBannerEnabled(false) still rendered %q", got)
+	}
+
+	// And the root help body has to survive the swap: stripping the banner must
+	// not take the usage text with it.
+	body := strings.TrimLeft(rootLongBody, "\n")
+	for _, want := range []string{"Designed for local SLMs", "deterministic exit codes"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the banner-free help body lost %q", want)
+		}
+	}
+	if strings.Contains(body, "███") {
+		t.Error("the banner-free help body still contains the ASCII logo")
+	}
+}
+
+// TestEveryGroupRejectsAnUnknownSubcommand pins the contract the root comment
+// claims: `slmcode <group> <typo>` is a usage error, not a cheerful listing.
+//
+// The guard used to skip any group that had its own default action, which was
+// most of them — `slmcode blocks nosuchthing` printed the block listing and
+// exited 0, so a script could not tell a typo from a success.
+func TestEveryGroupRejectsAnUnknownSubcommand(t *testing.T) {
+	groups := []*cobra.Command{
+		agentCmd(), authCmd(), blockCmd(), configCmd(), contextCmd(), docsCmd(),
+		evolveCmd(), hooksCmd(), memoryCmd(), metricsCmd(), sessionCmd(),
+		skillsCmd(), stackCmd(), taskCmd(),
+	}
+	for _, g := range groups {
+		rejectUnknownSubcommands(g)
+		if g.Args == nil {
+			t.Errorf("%q has no Args policy — an unknown subcommand would be accepted", g.Name())
+			continue
+		}
+		if err := g.Args(g, []string{"definitely-not-a-subcommand"}); err == nil {
+			t.Errorf("%q accepts an unknown subcommand", g.Name())
+		} else if got := exitCodeFor(err); got != 2 {
+			t.Errorf("%q rejects with exit %d, want the documented 2 (%v)", g.Name(), got, err)
+		}
+		// The bare form must still be allowed — these groups list something.
+		if err := g.Args(g, nil); err != nil {
+			t.Errorf("bare `slmcode %s` was rejected: %v", g.Name(), err)
+		}
 	}
 }

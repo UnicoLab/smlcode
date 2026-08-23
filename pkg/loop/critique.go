@@ -341,6 +341,9 @@ func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) stri
 			"NOTHING — the focus files are byte-identical to their last committed state. " +
 			"Your previous answer did not reach disk. Make a real ws_edit/ws_patch this time.\n\n")
 	}
+	if led := attemptLogSection(t); led != "" {
+		b.WriteString(strings.TrimLeft(led, "\n") + "\n")
+	}
 	if tried := r.attempts.list(t.ID); len(tried) > 0 {
 		b.WriteString("## Already tried and FAILED — do not repeat these verbatim\n- " +
 			strings.Join(tried, "\n- ") + "\n" +

@@ -219,11 +219,16 @@ KV-cache prefix reuse is not hitting. Anything you add to a prompt must be byte-
 stable-prefix-first. A per-turn timestamp, a randomly ordered map, or a shuffled skill list is
 enough to break it for every call.
 
-### `max_task_calls=6 used=6 blocked=review`
+### `max_task_calls=10 used=10 blocked=review`
 
-The per-task LLM call budget is exhausted. This replaced an unbounded worst case; raise
-`max_task_calls` if your tasks genuinely need more round-trips, or split the task.
-`slmcode task show <id>` names this gate under **Gate**, with the number of times it fired.
+The per-task LLM call budget is exhausted. It replaced an unbounded worst case (~16 calls for one
+task), and it is **derived from `max_retries`**, not picked: worker + self-critique +
+`max_retries` × (review + correct), which is 1 + 1 + 8 = 10 at the shipped `max_retries: 4`.
+
+So raising `max_retries` without raising `max_task_calls` does nothing — the budget caps the
+retries first, and the run warns when you have configured that combination. Raise both together,
+or split the task. `slmcode task show <id>` names this gate under **Gate**, with the number of
+times it fired and the `used=` / `llm_requests=` counters behind it.
 
 ---
 

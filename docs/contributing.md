@@ -20,9 +20,14 @@ make check            # the one gate — same as CI
 make install-user     # → ~/.local/bin/slmcode
 ```
 
-`make check` runs `tidy` → `lint` (gofmt, `go vet`, golangci-lint, embedded-UI smoke) →
-`test` (`go test ./...`) → `race` (`go test -race ./pkg/...`) → `npm run lint && npm run build`
-in `web/`. CI's lint-test job and `.pre-commit-config.yaml` run exactly this.
+`make check` runs `tidy-check` (`go mod tidy -diff`) → `lint` (gofmt, `go vet`, golangci-lint,
+embedded-UI smoke) → `cover` (`go test ./...` with coverage, against the floor) →
+`race` (`go test -race ./pkg/...`) → `web-check` (`npm run lint && npm run build` in `web/`).
+CI's lint-test job and `.pre-commit-config.yaml` run exactly this.
+
+The two steps that need the outside world — the Go module proxy and the npm registry — **skip
+with a named reason** rather than failing, so `make check` is genuinely runnable everywhere. CI
+has both and runs them for real.
 
 ## Docs site
 
@@ -45,13 +50,17 @@ overstates what the code does is worse than a missing one.
 - [ ] Human commit messages — no tool trailers, no ANSI art
 - [ ] No secrets (keys go in `.slmcode/auth.json` or the environment, never committed YAML)
 
-## The lint ratchet
+## The lint ratchet — finished
 
-`make lint` runs golangci-lint **non-blocking** against a captured baseline recorded at the top of
-`.golangci.yml`. Fix findings and **lower the baseline numbers**; use `make lint-strict` while
-working a category. Do not add exclusion presets to get a green run — `.golangci.yml` sets none
-deliberately, because with them on errcheck alone drops from 29 findings to 5, which is a
-pre-filtered view rather than progress. `gofmt` and `go vet` are always blocking.
+The ratchet reached zero. `make lint` now runs golangci-lint **blocking**: any finding fails the
+build. `make lint-strict` is an alias for `make lint`, kept because CI and muscle memory both
+still say it.
+
+Fix the finding — that is almost always right. If it is genuinely a false positive, add
+`//nolint:<linter> // <why this site is a false positive>`; a bare `//nolint` is not accepted.
+Do not add exclusion presets to get a green run: `.golangci.yml` sets none deliberately, because
+with them on `errcheck` alone drops from 29 findings to 5, which is a pre-filtered view rather
+than progress. `gofmt` and `go vet` are blocking too.
 
 ## Good first contributions
 

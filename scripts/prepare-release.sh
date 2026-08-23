@@ -23,7 +23,11 @@ if git tag -l "v${VERSION}" | grep -q .; then
   echo "error: tag v${VERSION} already exists" >&2
   exit 1
 fi
-for f in cmd/slmcode/version.go Makefile README.md docs/changelog.md; do
+# README.md is NOT in this list any more: its release badge is
+# shields.io/github/v/release, which resolves at render time, so there is
+# nothing in it to bump. The step that used to rewrite `label=vX.Y.Z` had been
+# a silent no-op ever since the badge changed.
+for f in cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md; do
   if ! git diff --quiet -- "$f"; then
     echo "error: $f has uncommitted changes — commit or stash first" >&2
     exit 1
@@ -48,8 +52,11 @@ perl -0pi -e 's/Version    = "[^"]*"/Version    = "'"$VERSION"'"/' cmd/slmcode/v
 # 2. Makefile VERSION
 perl -0pi -e 's/^VERSION \?= .*/VERSION ?= '"$VERSION"'/m' Makefile
 
-# 3. README release badge
-perl -0pi -e 's/label=v[0-9]+\.[0-9]+\.[0-9]+/label=v'"$VERSION"'/' README.md
+# 3. Homebrew formula version. The sha256 values are synced separately by
+#    scripts/update-formula.sh from the release workflow, once the binaries
+#    exist; bumping the version here keeps the two from drifting a release
+#    apart in the meantime.
+perl -0pi -e 's/^  version "[^"]*"/  version "'"$VERSION"'"/m' Formula/slmcode.rb
 
 # 4. Changelog entry from conventional commits since the previous tag.
 {
@@ -66,24 +73,26 @@ perl -0pi -e 's/label=v[0-9]+\.[0-9]+\.[0-9]+/label=v'"$VERSION"'/' README.md
 perl -0pi -e 'my $entry = do { local $/; open my $fh, "<", "/tmp/slmcode-changelog-entry.txt" or die $!; <$fh> };
   s/(# Changelog\n\n)/$1$entry/' docs/changelog.md
 
-changed="$(git diff --name-only -- cmd/slmcode/version.go Makefile README.md docs/changelog.md)"
+changed="$(git diff --name-only -- cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md)"
 if [[ -z "$changed" ]]; then
   echo "error: no changes produced — nothing to release" >&2
   exit 1
 fi
 
 echo "Changed files:"
-git --no-pager diff --stat -- cmd/slmcode/version.go Makefile README.md docs/changelog.md
+git --no-pager diff --stat -- cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md
 
-run make lint
-run make test
+# The one gate, not two thirds of it: `make check` is what CONTRIBUTING tells
+# contributors to run and what CI runs, and it degrades with a named skip where
+# a step genuinely cannot run here.
+run make check
 
-run git add cmd/slmcode/version.go Makefile README.md docs/changelog.md
+run git add cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md
 run git commit -m "chore: release v${VERSION}"
 run git tag "v${VERSION}"
 
 if [[ "$DRY" == 1 ]]; then
-  git checkout -- cmd/slmcode/version.go Makefile README.md docs/changelog.md
+  git checkout -- cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md
   echo "  [dry-run] working tree restored — nothing committed"
 fi
 

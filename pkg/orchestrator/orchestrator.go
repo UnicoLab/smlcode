@@ -257,6 +257,12 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Credentials the workspace cannot discover for itself. It scans the
+	// environment and .slmcode/auth.json, but a key that arrived as `--api-key`
+	// or as `api_key:` in a user-level config file lives ONLY in the resolved
+	// Config — and an agent that runs `env` or `cat` in a repo that happens to
+	// contain it would have got it back verbatim.
+	ws.AddSecrets(cfg.APIKey, cfg.EmbeddingAPIKey)
 	if err := models.RegisterFindModelsTool(toolReg, cfg); err != nil {
 		return nil, err
 	}
@@ -274,16 +280,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 				o.emitFull("init", stream.KindDebug, "mcp", "", fmt.Sprintf(f, a...), "", "")
 			}
 		}}
-		for _, sc := range cfg.MCPServers {
-			ro := true
-			if sc.ReadOnly != nil {
-				ro = *sc.ReadOnly
-			}
-			mcpMgr.Servers = append(mcpMgr.Servers, mcp.ServerConfig{
-				Name: sc.Name, Command: sc.Command, Args: sc.Args, Env: sc.Env,
-				URL: sc.URL, ReadOnly: ro,
-			})
-		}
+		mcpMgr.Servers = mcpServerConfigs(cfg.MCPServers)
 		infos, _ := mcpMgr.Connect(context.Background())
 		_ = mcpMgr.RegisterTools(toolReg, infos)
 	}
@@ -637,6 +634,31 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	return o.runSLM(ctx, runID, query, skillPack, start)
 }
 
+// mcpServerConfigs translates the config's MCP server list into mcp.ServerConfig.
+//
+// Both halves of the read-only decision are set from the one input. Writable is
+// the field mcp.ServerConfig.IsReadOnly() actually consults — it reads
+// `ReadOnly || !Writable`, so a zero-valued config is read-only and a config
+// that set only `ReadOnly: false` stayed read-only anyway. A user's explicit
+// `read_only: false` was therefore inert, and their MCP server's write tools
+// were silently dropped.
+func mcpServerConfigs(servers []config.MCPServerConfig) []mcp.ServerConfig {
+	out := make([]mcp.ServerConfig, 0, len(servers))
+	for _, sc := range servers {
+		// Read-only unless the user says otherwise: an MCP server is arbitrary
+		// third-party code holding tools this harness will call unattended.
+		ro := true
+		if sc.ReadOnly != nil {
+			ro = *sc.ReadOnly
+		}
+		out = append(out, mcp.ServerConfig{
+			Name: sc.Name, Command: sc.Command, Args: sc.Args, Env: sc.Env,
+			URL: sc.URL, ReadOnly: ro, Writable: !ro,
+		})
+	}
+	return out
+}
+
 // skillPackFor builds a role-targeted skill pack (pins + @skill + agent defaults
 // + composer-selected skills for this role), prefixed with the project
 // instructions and any memory worth saying.
@@ -646,6 +668,17 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 // keeps the provider's KV-cache prefix reusable. Memory and the matched skills
 // vary per role and come after.
 func (o *Orchestrator) skillPackFor(role, query string) string {
+	return o.skillPackForScoped(role, query, o.runFileScope())
+}
+
+// skillPackForScoped is skillPackFor with an explicit file scope.
+//
+// scope gates skills carrying `paths:` frontmatter (pkg/skills/scope.go): a
+// Rust skill must not load into a Python project just because its description
+// matched a word in the query. An empty scope disables gating, which is what
+// every phase before the board exists passes, so nothing regresses where no
+// scope is available.
+func (o *Orchestrator) skillPackForScoped(role, query string, scope []string) string {
 	if o == nil {
 		return ""
 	}
@@ -673,13 +706,44 @@ func (o *Orchestrator) skillPackFor(role, query string) string {
 		// Progressive disclosure, not the pre-disclosure dump: RenderMatches
 		// honors skill_disclosure (auto | cards | full) and skill_max_expanded,
 		// which RenderPack ignored — so both knobs were inert in production.
-		matches := o.skills.ResolveMatches(query, role, pins, 4)
+		matches := o.skills.ResolveMatchesScoped(query, role, pins, 4, scope)
 		if rendered := strings.TrimSpace(
 			skills.RenderMatches(matches, skillPackOptions(o.cfg, 1600))); rendered != "" {
 			parts = append(parts, rendered)
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// maxRunScopePaths bounds the scope list handed to the skill gate. It is a
+// matcher input, not a manifest: a 900-task board does not need every path to
+// decide whether a Rust skill applies.
+const maxRunScopePaths = 200
+
+// runFileScope is the union of the live board's task files — the paths this run
+// is actually about. It is empty before the board exists (plan/split), and an
+// empty scope disables path gating.
+func (o *Orchestrator) runFileScope() []string {
+	if o == nil || o.boardStore == nil {
+		return nil
+	}
+	board := o.boardStore.Snapshot()
+	seen := make(map[string]bool)
+	out := make([]string, 0, 16)
+	for _, t := range board.AllTasks() {
+		for _, f := range t.Files {
+			f = strings.TrimSpace(f)
+			if f == "" || seen[f] {
+				continue
+			}
+			seen[f] = true
+			out = append(out, f)
+			if len(out) >= maxRunScopePaths {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // memoryBlockFor renders the evolve memory block for a role, budgeted from the
@@ -794,7 +858,9 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	}
 	// Accept built-in and custom agents from the factory registry.
 	if !o.knownAgent(role) {
-		return nil, fmt.Errorf("unknown specialist %q — use: slmcode agents / Studio → Agents", role)
+		// `slmcode agent`, singular. The plural does not exist, so the one
+		// remedy this error offered was a command that fails.
+		return nil, fmt.Errorf("unknown specialist %q — run `slmcode agent list` to see the registered ones", role)
 	}
 
 	o.emit("init", fmt.Sprintf("specialist mode · %s", role), "")
@@ -1336,14 +1402,21 @@ func (o *Orchestrator) resolveExecRole(role string) string {
 // (reviewer, context, memory, coordinator, escalate — short structured outputs,
 // never implementation) run on the configured fast model or on the main one.
 //
-// It runs ONCE per run, before any agent is built, because agents.Factory
-// resolves the effective model at construction time and mutating FastModel
-// while workers are running would be a data race on a shared field.
+// It runs ONCE per run, before any agent is built. That is not a style choice:
+// Factory.BuildRegistry resolves each role's effective model into an agent
+// DEFINITION at construction time, ggagent's AgentRegistry has no way to
+// replace a registered definition, and mutating FastModel while workers are
+// running would be a data race on a shared field. So the model a role uses
+// cannot change mid-run — which is why the escalate gate's retry does not
+// "escalate the model" for the reopened task, however tempting that is: doing
+// it honestly needs a registry rebuild plus an executor swap under the running
+// wave, and a per-run decision is not worth that.
 //
-// LIMITATION: agents.Factory keys the fast model off isLightAgent(spec.ID), so
-// this is a per-RUN choice for the whole light set, not per role. A per-role
-// `Factory.SetPreferFast(role string, fast bool)` upstream would make the arm
-// per-role; the decision key is already recorded per role-class.
+// agents.Factory.SetPreferFast now makes the arm expressible PER ROLE (it
+// overrides isLightAgent(spec.ID) in both directions). This function still
+// pulls one arm for the whole light set, because the DecRoleModel decision key
+// is recorded per role-CLASS: making the arm per-role means recording it per
+// role first, otherwise several roles credit and blame one shared statistic.
 func (o *Orchestrator) applyRoleModelPolicy() {
 	if o == nil || o.evolve == nil || o.cfg == nil || o.factory == nil {
 		return
@@ -2372,85 +2445,73 @@ func ResetLangCache(root string) {
 	langCache.Delete(root)
 }
 
+// detectProjectLangUncached names the project language.
+//
+// It is a THIN wrapper over pkg/blocks, which is where the language markers
+// live, because that is where the packs that consume them are defined. The
+// previous version was an independent marker list — the fourth copy in the
+// tree — and it disagreed with the packs: it returned "" for Kotlin, Ruby, PHP,
+// Swift and .NET (so the evolve bandit keyed every one of those runs as
+// `…|*` and lost all cross-run learning for them) and "C/Make" for a CMake
+// project, a label no pack answers to.
+//
+// Two disambiguations stay here because the block registry genuinely cannot
+// make them:
+//
+//   - Gradle. The kotlin (priority 16) and java (15) packs claim the same
+//     build files, so a Java project with build.gradle.kts scores as Kotlin.
+//     The source layout is the only unambiguous signal and it is not a marker.
+//   - tsconfig.json. One pack ("typescript") covers both TS and JS, and the
+//     orchestrator's specialist routing splits them (ts-worker vs web-worker).
 func detectProjectLangUncached(root string) string {
 	if root == "" {
 		return ""
 	}
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+	if isGradleProject(root) {
+		return gradleLang(root)
+	}
+	switch blocks.DetectPack(root, root) {
+	case "go":
 		return "Go"
-	}
-	// Lone .go files (single-file/script) still indicate Go.
-	if entries, err := os.ReadDir(root); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
-				return "Go"
-			}
-		}
-	}
-	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
+	case "python":
 		return "Python"
-	}
-	if _, err := os.Stat(filepath.Join(root, "setup.py")); err == nil {
-		return "Python"
-	}
-	if _, err := os.Stat(filepath.Join(root, "requirements.txt")); err == nil {
-		return "Python"
-	}
-	if _, err := os.Stat(filepath.Join(root, "package.json")); err == nil {
-		// Check for TypeScript vs JavaScript.
+	case "typescript", "react":
+		// The typescript pack claims a bare package.json too; tsconfig.json is
+		// what makes it TypeScript rather than JavaScript.
 		if _, err := os.Stat(filepath.Join(root, "tsconfig.json")); err == nil {
 			return "TypeScript"
 		}
 		return "JavaScript"
-	}
-	if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err == nil {
+	case "web":
+		return "HTML"
+	case "rust":
 		return "Rust"
-	}
-	if _, err := os.Stat(filepath.Join(root, "pom.xml")); err == nil {
+	case "java":
 		return "Java"
-	}
-	if _, err := os.Stat(filepath.Join(root, "build.gradle")); err == nil {
-		return gradleLang(root)
-	}
-	if _, err := os.Stat(filepath.Join(root, "build.gradle.kts")); err == nil {
-		return gradleLang(root)
-	}
-	if _, err := os.Stat(filepath.Join(root, "Gemfile")); err == nil {
+	case "kotlin":
+		return "Kotlin"
+	case "dotnet":
+		return "C#"
+	case "ruby":
 		return "Ruby"
-	}
-	if _, err := os.Stat(filepath.Join(root, "composer.json")); err == nil {
+	case "php":
 		return "PHP"
-	}
-	if _, err := os.Stat(filepath.Join(root, "Package.swift")); err == nil {
+	case "swift":
 		return "Swift"
-	}
-	// .NET and Kotlin projects are named by their project file, which is not at
-	// a fixed path — a *.csproj / *.sln beside the root, or a settings.gradle.kts
-	// next to a Kotlin source tree. Without these the six language packs the
-	// repo ships (dotnet, kotlin, ruby, php, swift, ts) were unreachable through
-	// project detection: only a query keyword could select them.
-	if lang := scanRootProjectFiles(root); lang != "" {
-		return lang
-	}
-	if _, err := os.Stat(filepath.Join(root, "Makefile")); err == nil {
-		return "C/Make"
-	}
-	if _, err := os.Stat(filepath.Join(root, "CMakeLists.txt")); err == nil {
+	case "cpp":
 		return "C++"
 	}
-	// Static browser project (HTML entrypoint, no build marker files).
-	if entries, err := os.ReadDir(root); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if strings.HasSuffix(name, ".html") || strings.HasSuffix(name, ".htm") {
-				return "HTML"
-			}
+	return ""
+}
+
+// isGradleProject reports whether the root carries a Gradle build description.
+func isGradleProject(root string) bool {
+	for _, f := range []string{"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
+		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // gradleLang disambiguates a Gradle project. The .kts build DSL is used by Java
@@ -2461,33 +2522,6 @@ func gradleLang(root string) string {
 		return "Kotlin"
 	}
 	return "Java"
-}
-
-// scanRootProjectFiles names a language from a project file whose NAME, not
-// path, is the marker: *.csproj / *.sln / *.fsproj (.NET) and *.kts (Kotlin
-// Gradle DSL).
-func scanRootProjectFiles(root string) string {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return ""
-	}
-	kotlin := false
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		switch name := strings.ToLower(e.Name()); {
-		case strings.HasSuffix(name, ".csproj"), strings.HasSuffix(name, ".sln"),
-			strings.HasSuffix(name, ".fsproj"), strings.HasSuffix(name, ".vbproj"):
-			return "C#"
-		case strings.HasSuffix(name, ".kt"), strings.HasSuffix(name, ".kts") && name != "build.gradle.kts":
-			kotlin = true
-		}
-	}
-	if kotlin {
-		return "Kotlin"
-	}
-	return ""
 }
 
 func looksLikeJSONBlob(s string) bool {

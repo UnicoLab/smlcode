@@ -62,6 +62,12 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	// The acceptance test builds a real slmcode + fakemodel into a temp dir;
+	// clean it up here rather than leaving ~40MB behind per `go test` run.
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
+	}
+
 	// Restore os.Stderr before closing the pipe so anything running after
 	// m.Run() (e.g. test binary teardown) writes to the real stderr again.
 	os.Stderr = origStderr

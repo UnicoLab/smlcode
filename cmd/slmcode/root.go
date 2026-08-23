@@ -17,6 +17,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/server"
 )
@@ -53,18 +54,7 @@ var (
 	flagStructuredDecoding string
 )
 
-func main() {
-	// Keep CLI UX clean — GoLangGraph registries are chatty at Info.
-	// NOTE: this only tames the *standard* logrus logger; the dependency also
-	// builds private loggers with logrus.New(), which is why noisy construction
-	// is additionally wrapped in cli.QuietStderr (see openHarnessQuiet).
-	logrus.SetLevel(logrus.WarnLevel)
-	server.Version = Version
-
-	root := &cobra.Command{
-		Use:   "slmcode",
-		Short: "SLM-first coding harness (any OpenAI-compat LLM · atomic tasks · live kanban)",
-		Long: cli.Banner() + `
+var rootLongBody = `
 ` + cli.Dim(`Designed for local SLMs: scoped context packs, markdown memory, multi-pass
 thinking, parallel specialists, and a live kanban you can edit while agents run.
 
@@ -80,7 +70,20 @@ Point at any OpenAI-compatible endpoint (oMLX, Ollama, LM Studio, cloud OpenAI, 
 Non-interactive: --json (status/doctor/readiness/board/version/apply/config/blocks),
 --color=never, --log-level, --on-gate-timeout=stop (never auto-approves a plan),
 and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachable
-· 5 failing tasks · 130 interrupted.`),
+· 5 failing tasks · 130 interrupted.`)
+
+func main() {
+	// Keep CLI UX clean — GoLangGraph registries are chatty at Info.
+	// NOTE: this only tames the *standard* logrus logger; the dependency also
+	// builds private loggers with logrus.New(), which is why noisy construction
+	// is additionally wrapped in cli.QuietStderr (see openHarnessQuiet).
+	logrus.SetLevel(logrus.WarnLevel)
+	server.Version = Version
+
+	root := &cobra.Command{
+		Use:   "slmcode",
+		Short: "SLM-first coding harness (any OpenAI-compat LLM · atomic tasks · live kanban)",
+		Long:  cli.Banner() + rootLongBody,
 		Example: `  slmcode init                     # start here: scaffolds .slmcode/ in this project
   slmcode doctor                   # provider, model, endpoint, workspace
   slmcode run "add JWT auth"       # full pipeline; pauses at the plan gate for one keystroke
@@ -118,9 +121,23 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 				return fmt.Errorf("invalid --log-level %q (want error|warn|info|debug)", flagLogLevel)
 			}
 			cli.SetLogLevel(parsed)
+			// One switch, every render site: `studio`, the TUI and `version`
+			// all call cli.Banner(). The flag used to be parsed into a variable
+			// that nothing ever read, so `--no-banner` was documented, accepted
+			// and inert. The help path is handled separately below, because
+			// cobra prints help before PersistentPreRunE runs.
+			cli.SetBannerEnabled(!flagNoBanner)
 			return nil
 		},
 	}
+
+	// `slmcode --version` is what people type first; without this it was
+	// "unknown flag: --version" and exit 2. Cobra adds the flag (not the -v
+	// shorthand, which --verbose already owns) and prints this template. The
+	// `version` subcommand stays the detailed one.
+	root.Version = Version
+	root.SetVersionTemplate("slmcode {{.Version}}\n" +
+		cli.Dim("  commit / build time / update check: slmcode version\n"))
 
 	root.PersistentFlags().StringVar(&flagRoot, "root", "", "project root (default: cwd)")
 	root.PersistentFlags().StringVar(&flagModel, "model", "", "model id (any id your provider serves)")
@@ -136,7 +153,8 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 	root.PersistentFlags().IntVar(&flagMaxParallel, "parallel", 0, "max parallel workers")
 	root.PersistentFlags().IntVar(&flagMaxRetries, "retries", 0, "review/correct retries")
 	root.PersistentFlags().IntVar(&flagThink, "think-passes", 0, "multi-pass think loops")
-	root.PersistentFlags().BoolVar(&flagNoBanner, "no-banner", false, "hide ASCII banner on help")
+	root.PersistentFlags().BoolVar(&flagNoBanner, "no-banner", false,
+		"hide the ASCII banner (help, studio, TUI, version)")
 	root.PersistentFlags().StringVar(&flagGateTimeout, "on-gate-timeout", "stop",
 		"approve|reject|stop — what a HITL gate does with no TTY attached")
 	root.PersistentFlags().BoolVar(&flagNoExplore, "no-explore", false,
@@ -171,7 +189,7 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 	var all []*cobra.Command
 	all = append(all, inGroup("run", tuiCmd(), initCmd(), runCmd(), chatCmd(), studioCmd(), watchCmd())...)
 	all = append(all, inGroup("review", applyCmd(), rejectCmd(), diffCmd(), commitCmd())...)
-	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), updateCmd())...)
+	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), hooksCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
 		memoryCmd(), evolveCmd(), metricsCmd(), versionCmd())...)
@@ -180,6 +198,19 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 		rejectUnknownSubcommands(c)
 	}
 	root.AddCommand(all...)
+
+	// Cobra resolves --help right after ParseFlags and BEFORE PersistentPreRunE,
+	// so the banner has to be stripped here rather than in the pre-run hook.
+	// root.Long was built with the banner already concatenated, hence the swap
+	// rather than a call to cli.SetBannerEnabled.
+	baseHelp := root.HelpFunc()
+	root.SetHelpFunc(func(c *cobra.Command, args []string) {
+		if flagNoBanner {
+			cli.SetBannerEnabled(false)
+			root.Long = strings.TrimLeft(rootLongBody, "\n")
+		}
+		baseHelp(c, args)
+	})
 
 	defer cli.RestoreAllRaw()
 	// Drop the dependency's per-agent Info records for the whole command, not
@@ -215,9 +246,18 @@ func exitCodeFor(err error) int {
 	if ec, ok := err.(exitCoder); ok {
 		return ec.ExitCode()
 	}
+	// 130 is decided by ONE definition, shared with the engine:
+	// loop.IsContextCancelErr is errors.Is(context.Canceled) plus the exact
+	// provider phrase. This used to be an inline substring test that also
+	// matched the bare word "interrupted", so a provider replying
+	// "upstream request interrupted" exited 130 on a run nobody had touched
+	// and every wrapper script read it as a Ctrl-C. Commands that know
+	// whether their own run context was canceled classify it themselves and
+	// return a coded error, which the branch above honors first — see
+	// runFailure in cmd_core.go.
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "context canceled"), strings.Contains(msg, "interrupted"):
+	case loop.IsContextCancelErr(err):
 		return 130
 	// Every shape cobra uses to say "you typed the command wrong" maps to 2.
 	// "unknown command" and "requires at least N arg(s)" used to return 1, so a
@@ -472,17 +512,35 @@ func rejectUnknownSubcommands(c *cobra.Command) {
 	for _, sub := range c.Commands() {
 		rejectUnknownSubcommands(sub)
 	}
-	if !c.HasSubCommands() || c.RunE != nil || c.Run != nil || c.Args != nil {
+	if !c.HasSubCommands() {
+		return
+	}
+	// An explicit Args policy is the author's decision and is left alone — a
+	// parent that deliberately takes free text (or a fixed arity) has already
+	// said so.
+	//
+	// The `c.RunE != nil` bail this used to carry defeated the whole point:
+	// every group whose bare form does something useful — `skills`, `blocks`,
+	// `hooks`, `stack`, `agent`, `docs`, `context` — was skipped, so
+	// `slmcode blocks nosuchthing` printed a block listing and exited 0. Half
+	// the groups rejected a typo and half congratulated you on it.
+	if c.Args != nil {
 		return
 	}
 	c.Args = func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return nil
 		}
+		// Cobra resolves a real subcommand before the parent ever runs, so
+		// anything still here is a name this command does not have.
 		return fmt.Errorf("unknown command %q for %q — try `%s --help`",
 			args[0], cmd.CommandPath(), cmd.CommandPath())
 	}
-	c.RunE = func(cmd *cobra.Command, args []string) error {
-		return cmd.Help()
+	// Only supply a default action when the group has none; a group whose bare
+	// form lists something keeps doing that.
+	if c.RunE == nil && c.Run == nil {
+		c.RunE = func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		}
 	}
 }

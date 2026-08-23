@@ -20,6 +20,10 @@ type SpecSlot struct {
 }
 
 // SpecResult is the outcome of one speculative slot.
+//
+// Skipped means "this slot produced no verdict": it never started, or the race
+// canceled it on purpose once a winner was in. A Skipped slot carries neither
+// an error nor a body — see the tail of speculate for why that matters.
 type SpecResult struct {
 	Role    string
 	Output  string
@@ -29,6 +33,22 @@ type SpecResult struct {
 
 // speculate races slots (capped by maxParallel), canceling optional losers when
 // required slots succeed — or on first optional success when none are required.
+//
+// Losers the race cancels ITSELF are reported as Skipped with no error and no
+// body. Both halves of that are load-bearing:
+//
+//   - the error a canceled racer returns is the provider's own
+//     "chat failed: …: context canceled". Handed back to a caller it walks up
+//     through RunBoard into the orchestrator's interrupt checkpoint and the run
+//     aborts with "interrupted at execute" and exit 130 — a phantom interrupt
+//     nobody asked for;
+//   - a canceled STREAMING racer can also return a partial body. A truncated
+//     `{"approved":true,"score":92,"summary":"…` is not a verdict; letting it
+//     stand as one is how the winner's complete JSON got dropped and the task
+//     was sent round a correction the model never asked for.
+//
+// A cancellation that came from the CALLER's context (a real interrupt) is
+// still reported: the race only swallows what it caused.
 func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 	if len(slots) == 0 {
 		return nil
@@ -65,6 +85,9 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// raceWon records that THIS race canceled gctx, as opposed to the caller's
+	// ctx going away underneath it.
+	raceWon := false
 
 	var wg sync.WaitGroup
 	for w := 0; w < maxP; w++ {
@@ -117,11 +140,13 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 				if j.slot.Required && err == nil && strings.TrimSpace(out) != "" {
 					requiredLeft--
 					if requiredLeft == 0 {
+						raceWon = true
 						cancel()
 					}
 				}
 				if requiredLeft < 0 && err == nil && strings.TrimSpace(out) != "" {
 					requiredLeft = 0
+					raceWon = true
 					cancel()
 				}
 				mu.Unlock()
@@ -130,8 +155,15 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 	}
 	wg.Wait()
 
+	// selfCanceled: this race cut the losers short and the caller's context is
+	// still good, so every cancellation below is the harness's own doing.
+	selfCanceled := raceWon && ctx.Err() == nil
 	for i := range results {
 		if results[i].Role == "" {
+			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
+			continue
+		}
+		if selfCanceled && IsContextCancelErr(results[i].Err) {
 			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
 		}
 	}

@@ -116,8 +116,8 @@ var schemaFields = map[string]schemaMeta{
 	"tool_guidance":        {"Tool guidance", "Inject per-turn tool skill cards", "tools", nil, false, false, false, false},
 	"knowledge_inject":     {"Knowledge injection", "Inject keyword-matched knowledge cards", "tools", nil, false, false, false, false},
 	"auto_text_tools":      {"Recover prose tool calls", "Recover valid tool calls from JSON embedded in prose", "tools", nil, false, false, false, false},
-	"hooks_enabled":        {"Hooks", "Load .slmcode/hooks.json PreToolUse / PostToolUse", "tools", nil, false, false, false, false},
-	"mcp_servers":          {"MCP servers", "Read-only MCP connections (stdio or HTTP)", "tools", nil, false, true, false, true},
+	"hooks_enabled":        {"Hooks", "Load .slmcode/hooks.json PreToolUse / PostToolUse. Off by default: hooks.json ships with the repository and runs shell commands; it also needs `slmcode hooks trust`", "tools", nil, false, false, false, false},
+	"mcp_servers":          {"MCP servers", "Read-only MCP connections (stdio or HTTP). Honored ONLY from the user config — a project file cannot make the harness spawn processes", "tools", nil, false, true, false, true},
 	"disable_syntax_check": {"Disable syntax check", "Turn off post-edit syntax verification", "tools", nil, false, false, false, false},
 
 	// ── quality ──

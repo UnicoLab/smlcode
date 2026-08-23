@@ -356,6 +356,13 @@ type Config struct {
 	// FileCheckpoints snapshots each file before first write/edit (first-write-wins).
 	FileCheckpoints bool `yaml:"file_checkpoints" json:"file_checkpoints"`
 	// HooksEnabled loads .slmcode/hooks.json Pre/PostToolUse.
+	//
+	// Defaults to FALSE. hooks.json is a repository-supplied file that makes
+	// the harness run shell commands on every tool call; pkg/hooks.Load now
+	// fails closed on an unapproved file, so a `true` default was harmless in
+	// practice, but it advertised the wrong intent in every generated config.
+	// Opting in is the operator's decision, and it takes an explicit
+	// `hooks_enabled: true` plus `slmcode hooks trust`.
 	HooksEnabled bool `yaml:"hooks_enabled" json:"hooks_enabled"`
 
 	// SLM harness invariants (little-coder ports). Defaults ON.
@@ -528,7 +535,6 @@ func Default(root string) *Config {
 		ReactCompactAtPercent: 80,
 		WaveSnapshots:         true,
 		FileCheckpoints:       true,
-		HooksEnabled:          true,
 		WriteGuard:            true,
 		ReadBeforeEdit:        true,
 		ShellWriteGuard:       true,
@@ -721,6 +727,9 @@ func Load(root string) (*Config, error) {
 	// Everything up to here is what a project file inherits; Save diffs
 	// against it so an inherited value is never copied into a project.
 	baseline := cfg.clone()
+	// Snapshot the user layer's MCP servers: they are the ONLY ones that may
+	// be spawned. See mcptrust.go.
+	userMCP := append([]MCPServerConfig(nil), cfg.MCPServers...)
 
 	// ── project layer ──
 	raw, fromBackup, err := readDocument(cfg.ConfigPath())
@@ -751,6 +760,11 @@ func Load(root string) (*Config, error) {
 	}
 	for _, k := range applied {
 		prov.Mark(k, LayerProject, "")
+	}
+	// A repository must not be able to make the harness spawn processes.
+	if w := dropProjectMCPServers(cfg, userMCP, raw, prov.ProjectPath); w != "" {
+		prov.Warnings = append(prov.Warnings, w)
+		prov.clearProjectMark("mcp_servers")
 	}
 
 	cfg.Root = root

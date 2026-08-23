@@ -135,6 +135,27 @@ func evolveDecisionNames() []string {
 	return out
 }
 
+// evolveModelFor names the model this workspace talks to.
+//
+// The bandit splits its posterior by model FAMILY, so "which arm wins here" is
+// only answerable once the model is known. `slmcode evolve why` runs outside a
+// run and therefore has no run context; the project config is the same answer
+// the next run will use.
+func evolveModelFor(eng *evolve.Engine) string {
+	if eng != nil {
+		if mem := eng.Memory(); mem != nil {
+			if m := strings.TrimSpace(mem.RunContext().Model); m != "" {
+				return m
+			}
+		}
+	}
+	ws, err := openWorkspace()
+	if err != nil || ws == nil || ws.Config == nil {
+		return ""
+	}
+	return ws.Config.Model
+}
+
 func evolveWhyCmd() *cobra.Command {
 	var asJSON bool
 	c := &cobra.Command{
@@ -177,16 +198,59 @@ func evolveWhyCmd() *cobra.Command {
 					"keys":        stats,
 				})
 			}
-			cli.Header("Why: " + string(decision))
-			fmt.Println("  " + strings.ReplaceAll(explanation, "\n", "\n  "))
-			fmt.Println()
-			shownAny := false
+			// The explanation and the table answer two DIFFERENT questions,
+			// and printing them adjacently made the command contradict
+			// itself: "no evidence yet — using the shipped defaults" sat
+			// directly above a table showing 10 pulls and three separated
+			// means. evolve.Engine.Why() explains the key for the CURRENT run
+			// context — model family and language — and outside a run there
+			// is no run context, so the key degrades to decision|*|* and
+			// genuinely has no evidence. The snapshot, meanwhile, lists every
+			// key ever recorded for the decision. Both are true; which is
+			// which is the part that was missing.
+			family := memory.ModelFamily(evolveModelFor(eng))
+			var here, elsewhere []evolve.KeyStats
 			for _, ks := range eng.Bandit().Snapshot() {
 				if ks.Key.Decision != decision {
 					continue
 				}
+				if family != "" && ks.Key.Normalize().ModelFamily == family {
+					here = append(here, ks)
+				} else {
+					elsewhere = append(elsewhere, ks)
+				}
+			}
+
+			cli.Header("Why: " + string(decision))
+			cli.KeyVal("model family", orDash(family)+cli.Dim("   (policy keys are decision | model family | language)"))
+			fmt.Println()
+			switch {
+			case len(here) > 0:
+				fmt.Println("  " + cli.Dim(fmt.Sprintf(
+					"%d recorded context(s) for this model — the leader in each is what the harness picks:",
+					len(here))))
+			case len(elsewhere) > 0:
+				// The old bug, stated honestly instead of contradicted.
+				fmt.Println("  " + cli.Warn("no evidence for this model yet — the harness uses the shipped default"))
+				fmt.Println("  " + cli.Dim(fmt.Sprintf(
+					"%d table(s) below were learned under a different model and do not apply here.",
+					len(elsewhere))))
+			default:
+				fmt.Println("  " + strings.ReplaceAll(explanation, "\n", "\n  "))
+			}
+			fmt.Println()
+			shownAny := false
+			ordered := append(append([]evolve.KeyStats{}, here...), elsewhere...)
+			for i, ks := range ordered {
+				if i == len(here) && len(here) > 0 && len(elsewhere) > 0 {
+					fmt.Println("  " + cli.Dim("— other models (recorded, not used here) —"))
+				}
 				shownAny = true
-				fmt.Println("  " + cli.Bold(ks.Key.String()) + cli.Dim(fmt.Sprintf("  %d pulls", ks.Pulls)))
+				label := cli.Bold(ks.Key.String())
+				if i >= len(here) {
+					label = cli.Dim(ks.Key.String())
+				}
+				fmt.Println("  " + label + cli.Dim(fmt.Sprintf("  %d pulls", ks.Pulls)))
 				best, bestMean := "", -1.0
 				for _, arm := range ks.Arms {
 					if arm.Mean() > bestMean {

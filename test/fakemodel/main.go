@@ -88,12 +88,15 @@ func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &req)
 
 	var all strings.Builder
+	var toolOut strings.Builder
 	sawToolResult := false
 	for _, m := range req.Messages {
 		all.WriteString(m.Content)
 		all.WriteByte('\n')
 		if m.Role == "tool" {
 			sawToolResult = true
+			toolOut.WriteString(m.Content)
+			toolOut.WriteByte('\n')
 		}
 	}
 	system := ""
@@ -114,7 +117,7 @@ func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.logf("call %d role=%s stream=%v tools=%d", n, role, req.Stream, len(req.Tools))
 	}
 
-	content, call := f.answerFor(role, len(req.Tools) > 0, sawToolResult)
+	content, call := f.answerFor(role, len(req.Tools) > 0, sawToolResult, transcriptState(toolOut.String(), f.file))
 	if req.Stream {
 		writeStreamedCompletion(w, content, call)
 		return
@@ -149,7 +152,49 @@ func roleOf(system, all string) string {
 	return "prose"
 }
 
-func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool) (string, map[string]any) {
+// editState is what the transcript proves has already happened to the target
+// file in THIS conversation.
+//
+// The harness refuses a blind ws_write onto an existing file ("already exists
+// and has not been read in this session") — a deliberate guard against a model
+// clobbering code it has never seen. The original fake ignored that refusal and
+// re-sent the identical write, so every full-pipeline drive of this fake ended
+// in the same place: quality monitor "repeated tool call", six-call budget
+// exhausted, evidence gate rejection, escalation, and a workspace in which
+// nothing had changed. That made the fake useless for testing the paths that
+// matter most — the ones where an edit actually lands.
+//
+// A fake model that cannot follow the tool contract only ever tests the
+// failure path, so this one follows it: read, then write.
+type editState struct {
+	didRead  bool // a ws_read observation for the target file is in the transcript
+	didWrite bool // a successful ws_write/ws_edit observation is in the transcript
+}
+
+// transcriptState infers the edit state from the TOOL RESULTS so far.
+//
+// Only tool results are evidence. Matching against the whole conversation does
+// not work: the harness's own tool guidance names every tool in the system
+// prompt, so "ws_read appears in the transcript" is true before the model has
+// done anything at all.
+func transcriptState(toolOut, file string) editState {
+	if strings.TrimSpace(toolOut) == "" {
+		return editState{}
+	}
+	var st editState
+	// The workspace's own success line, e.g. "wrote calc.go (98 bytes)".
+	for _, verb := range []string{"wrote " + file, "overwrote " + file, "edited " + file} {
+		if strings.Contains(toolOut, verb) {
+			st.didWrite = true
+		}
+	}
+	// A tool result that is neither a refusal nor a write receipt is the read
+	// coming back with the file body.
+	st.didRead = !strings.Contains(toolOut, "refused") && !st.didWrite
+	return st
+}
+
+func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool, st editState) (string, map[string]any) {
 	file, src := f.file, f.source
 	switch role {
 	case "explorer":
@@ -164,7 +209,12 @@ func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool) (string
 			`"role":"worker","files":["` + file + `"],` +
 			`"acceptance":"` + file + ` contains func Divide","depends_on":[]}]}`, nil
 	case "worker", "deep", "corrector", "editor":
-		if hasTools && !sawToolResult {
+		// Read before write: the harness refuses a blind overwrite of a file
+		// this session has never read, and it is right to.
+		if hasTools && !st.didWrite {
+			if !st.didRead {
+				return "", toolCall("ws_read", map[string]any{"path": file})
+			}
 			return "", toolCall("ws_write", map[string]any{"path": file, "content": src})
 		}
 		return `{"status":"done","summary":"added Divide to ` + file +

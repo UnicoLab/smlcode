@@ -8,6 +8,7 @@ import (
 	"time"
 
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -22,6 +23,10 @@ type SpecSlot struct {
 }
 
 // SpecResult is the outcome of one speculative slot.
+//
+// Skipped means the slot produced NO verdict: it never started, or the race
+// canceled it once a winner was in. A Skipped slot carries neither an error
+// nor a body — see the tail of speculate.
 type SpecResult struct {
 	Role    string
 	Output  string
@@ -69,6 +74,8 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// raceWon records that THIS race canceled gctx, not the caller's context.
+	raceWon := false
 
 	var wg sync.WaitGroup
 	for w := 0; w < maxP; w++ {
@@ -103,12 +110,14 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 				if j.slot.Required && err == nil && strings.TrimSpace(out) != "" {
 					requiredLeft--
 					if requiredLeft == 0 {
+						raceWon = true
 						cancel() // cancel optional losers
 					}
 				}
 				if requiredLeft < 0 && err == nil && strings.TrimSpace(out) != "" {
 					// First optional winner cancels peers.
 					requiredLeft = 0
+					raceWon = true
 					cancel()
 				}
 				mu.Unlock()
@@ -117,9 +126,19 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 	}
 	wg.Wait()
 
-	// Mark unfinished as skipped.
+	// Mark unfinished as skipped — and, when THIS race did the canceling,
+	// every loser it cut short too. Neither the provider's
+	// "chat failed: …: context canceled" nor the partial body a cut-short
+	// stream leaves behind is a result: the first is what turned a healthy run
+	// into a phantom "interrupted at execute", the second is a truncated JSON
+	// that beat the winner's complete verdict.
+	selfCanceled := raceWon && ctx.Err() == nil
 	for i := range results {
 		if results[i].Role == "" {
+			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
+			continue
+		}
+		if selfCanceled && loop.IsContextCancelErr(results[i].Err) {
 			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
 		}
 	}
@@ -175,11 +194,11 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		case plan.RoleExplorer:
 			exploreOut, err = r.Output, r.Err
 		case "docs":
-			if !r.Skipped && strings.TrimSpace(r.Output) != "" {
+			if !r.Skipped && r.Err == nil && strings.TrimSpace(r.Output) != "" {
 				docsOut = r.Output
 			}
 		case "architect":
-			if !r.Skipped && strings.TrimSpace(r.Output) != "" {
+			if !r.Skipped && r.Err == nil && strings.TrimSpace(r.Output) != "" {
 				archOut = r.Output
 			}
 		}
@@ -252,12 +271,14 @@ func (o *Orchestrator) speculateTester(ctx context.Context, query string, board 
 				diskOut = r.Output
 			}
 		case plan.RoleTester:
-			testerOut, testerErr = r.Output, r.Err
-			if r.Skipped {
-				testerErr = r.Err
+			// Only a slot that ran to completion has a verdict; a racer this
+			// race canceled is Skipped and its partial body is not one.
+			testerErr = r.Err
+			if !r.Skipped && r.Err == nil {
+				testerOut = r.Output
 			}
 		case "tester-strict":
-			if !r.Skipped && strings.TrimSpace(r.Output) != "" {
+			if !r.Skipped && r.Err == nil && strings.TrimSpace(r.Output) != "" {
 				strictOut = r.Output
 			}
 		}

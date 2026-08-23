@@ -30,7 +30,10 @@ func TestReviewJSONNestedAndWrappedApprovals(t *testing.T) {
 // literally calling ws_shell must still count as having evidence.
 func TestTesterEvidenceShapes(t *testing.T) {
 	cases := map[string]bool{
-		"Observation: all tests pass":                        true,
+		// A bare Observation frame proves a tool call happened, not that a
+		// SHELL ran — and a tester with no tool calls can type it verbatim.
+		"Observation: all tests pass":                        false,
+		"Observation: ws_shell `pytest -q` exit status 0":    true,
 		"ws_shell -> ok":                                     true,
 		"## Deterministic smoke\nPASSED":                     true,
 		"exit status 0":                                      true,

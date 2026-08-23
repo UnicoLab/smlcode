@@ -1031,8 +1031,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	)
 
 	// Explore errors are fatal; context errors are non-blocking warnings.
-	if err := canceledPhase(parResults); err != nil {
-		return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+	if err := canceledPhase(ctx, parResults); err != nil {
+		return o.checkpointInterrupt(ctx, &plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
 	}
 	if r, ok := parResults["explore"]; ok && r.err != nil {
 		return nil, r.err
@@ -1095,8 +1095,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	)
 
 	// Architect errors are fatal.
-	if err := canceledPhase(archClarifyResults); err != nil {
-		return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+	if err := canceledPhase(ctx, archClarifyResults); err != nil {
+		return o.checkpointInterrupt(ctx, &plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
 	}
 	if r, ok := archClarifyResults["architect"]; ok && r.err != nil {
 		return nil, r.err
@@ -1143,7 +1143,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if !o.phaseEnabled("execute") {
 		o.emit("execute", "phase disabled — skipping board execution", "")
 	} else if err := runner.RunBoard(ctx, board); err != nil {
-		return o.checkpointInterrupt(board, session.PhaseExecute, err)
+		return o.checkpointInterrupt(ctx, board, session.PhaseExecute, err)
 	}
 	o.recordLatency("execute", time.Since(execStart))
 	o.emitFull("execute", stream.KindLatency, "worker", "",
@@ -2019,15 +2019,20 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	// Auto-detect and apply language pack based on project files.
 	reg, err := blocks.Load(root)
 	if err == nil {
-		if q := reg.DetectQuality(root); q != nil {
-			// Find matching pack for this quality block's language
-			for _, p := range reg.Packs {
-				if p.Spec.Quality == q.ID {
-					if _, err := blocks.ApplyPack(cfg, reg, p.ID, blocks.ApplyOptions{MaterializeAgents: true}); err == nil {
-						fmt.Printf("  ✓ auto-applied %s pack (%s)\n", p.Language, p.ID)
-					}
-					break
+		// reg.DetectPack, not a range over reg.Packs: Go randomizes map
+		// iteration, so when two packs referenced the same quality block —
+		// react and typescript both point at the TS toolchain — which one a
+		// fresh workspace got was decided by the runtime, differently on every
+		// `slmcode init` of the same directory. DetectPack resolves it in a
+		// defined order (the pack whose own id matches the quality id wins,
+		// then sorted ids).
+		if packID := reg.DetectPack(root); packID != "" {
+			if _, err := blocks.ApplyPack(cfg, reg, packID, blocks.ApplyOptions{MaterializeAgents: true}); err == nil {
+				lang := packID
+				if p, ok := reg.Packs[packID]; ok && strings.TrimSpace(p.Language) != "" {
+					lang = p.Language
 				}
+				fmt.Printf("  ✓ auto-applied %s pack (%s)\n", lang, packID)
 			}
 		}
 	}
@@ -2405,10 +2410,27 @@ func detectProjectLangUncached(root string) string {
 		return "Java"
 	}
 	if _, err := os.Stat(filepath.Join(root, "build.gradle")); err == nil {
-		return "Java"
+		return gradleLang(root)
 	}
 	if _, err := os.Stat(filepath.Join(root, "build.gradle.kts")); err == nil {
-		return "Java"
+		return gradleLang(root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Gemfile")); err == nil {
+		return "Ruby"
+	}
+	if _, err := os.Stat(filepath.Join(root, "composer.json")); err == nil {
+		return "PHP"
+	}
+	if _, err := os.Stat(filepath.Join(root, "Package.swift")); err == nil {
+		return "Swift"
+	}
+	// .NET and Kotlin projects are named by their project file, which is not at
+	// a fixed path — a *.csproj / *.sln beside the root, or a settings.gradle.kts
+	// next to a Kotlin source tree. Without these the six language packs the
+	// repo ships (dotnet, kotlin, ruby, php, swift, ts) were unreachable through
+	// project detection: only a query keyword could select them.
+	if lang := scanRootProjectFiles(root); lang != "" {
+		return lang
 	}
 	if _, err := os.Stat(filepath.Join(root, "Makefile")); err == nil {
 		return "C/Make"
@@ -2427,6 +2449,43 @@ func detectProjectLangUncached(root string) string {
 				return "HTML"
 			}
 		}
+	}
+	return ""
+}
+
+// gradleLang disambiguates a Gradle project. The .kts build DSL is used by Java
+// projects too, so the source layout decides: src/main/kotlin is Kotlin's
+// standard and unambiguous.
+func gradleLang(root string) string {
+	if st, err := os.Stat(filepath.Join(root, "src", "main", "kotlin")); err == nil && st.IsDir() {
+		return "Kotlin"
+	}
+	return "Java"
+}
+
+// scanRootProjectFiles names a language from a project file whose NAME, not
+// path, is the marker: *.csproj / *.sln / *.fsproj (.NET) and *.kts (Kotlin
+// Gradle DSL).
+func scanRootProjectFiles(root string) string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	kotlin := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch name := strings.ToLower(e.Name()); {
+		case strings.HasSuffix(name, ".csproj"), strings.HasSuffix(name, ".sln"),
+			strings.HasSuffix(name, ".fsproj"), strings.HasSuffix(name, ".vbproj"):
+			return "C#"
+		case strings.HasSuffix(name, ".kt"), strings.HasSuffix(name, ".kts") && name != "build.gradle.kts":
+			kotlin = true
+		}
+	}
+	if kotlin {
+		return "Kotlin"
 	}
 	return ""
 }

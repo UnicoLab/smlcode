@@ -494,6 +494,15 @@ slmcode metrics compare 12             # newest 12 runs vs the 12 before them
 
 Every one of these takes `--json`.
 
+`evolve why` answers two questions and labels which is which. The bandit keys its posterior on
+`decision | model family | language`, so the tables it has learned are not all about *this*
+project. The command names the model family it is answering for, prints the tables recorded under
+that family first, and puts anything learned under a different model below a
+`— other models (recorded, not used here) —` divider. When the current family has no evidence it
+says exactly that — `no evidence for this model yet — the harness uses the shipped default` —
+instead of printing "no evidence yet" directly above a table of ten pulls, which is what it used
+to do.
+
 ### From the shell
 
 ```bash

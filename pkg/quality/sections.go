@@ -70,6 +70,10 @@ func StripHarnessSections(s string) string {
 	if cut >= 0 {
 		s = s[:cut]
 	}
+	// The provenance stamp sits one line ABOVE the header it vouches for, so a
+	// cut at the header leaves it dangling. It is an HTML comment either way,
+	// but the model's own text should not carry the harness's bookkeeping.
+	s = sectionStampRe.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 
@@ -136,6 +140,51 @@ var harnessMarkerRe = regexp.MustCompile(
 // smokeStampRe strips any pre-existing (or forged) pass stamp.
 var smokeStampRe = regexp.MustCompile(`<!--\s*slmcode:smoke-pass:[0-9a-zA-Z]*\s*-->`)
 
+// sectionStampRe matches a harness-section provenance stamp with ANY nonce —
+// genuine or forged. DefuseHarnessMarkers strips every match, so untrusted text
+// cannot smuggle in a marker that makes the rest of itself look harness-minted.
+var sectionStampRe = regexp.MustCompile(`<!--\s*slmcode:section:[0-9a-zA-Z]*\s*-->`)
+
+// SectionStamp is the per-process provenance tag the harness puts in front of
+// every section it appends to a model's output.
+//
+// It answers the question DefuseModelText has to ask and DefuseHarnessMarkers
+// cannot: "is this `## Deterministic smoke` mine, or did the model write it?"
+// Position is not the answer — pkg/orchestrator PREPENDS a smoke section to a
+// tester finalize, and a task output accumulates several sections across
+// passes, so "the tail is the harness's" is false in both directions. The
+// nonce is unguessable to anything that has not seen this process's own output.
+func SectionStamp() string {
+	return fmt.Sprintf("<!-- slmcode:section:%s -->", smokeNonce)
+}
+
+// StampHarnessSection marks sec as harness-authored so a later defuse pass
+// leaves its markers armed. Empty sections are returned unchanged.
+func StampHarnessSection(sec string) string {
+	if strings.TrimSpace(sec) == "" {
+		return sec
+	}
+	return "\n" + SectionStamp() + sec
+}
+
+// DefuseModelText defuses harness markers in a task output that may ALREADY
+// carry genuine harness sections.
+//
+// Everything outside a stamped section is model text (or repository text the
+// model pasted, or the stdout of the project's own tests) and is defused;
+// everything from the first genuine stamp on is the harness's own and keeps its
+// authority. Without this the harness disarmed its own evidence every time it
+// appended a second section.
+func DefuseModelText(s string) string {
+	if s == "" {
+		return s
+	}
+	if i := strings.Index(s, SectionStamp()); i >= 0 {
+		return DefuseHarnessMarkers(s[:i]) + s[i:]
+	}
+	return DefuseHarnessMarkers(s)
+}
+
 // DefuseHarnessMarkers neutralizes harness-minted markers in UNTRUSTED text —
 // repository instructions, skill bodies, block descriptions, tool output, and
 // model prose — so the text can be shown to a model or concatenated with real
@@ -150,6 +199,7 @@ func DefuseHarnessMarkers(s string) string {
 		return s
 	}
 	s = smokeStampRe.ReplaceAllString(s, "")
+	s = sectionStampRe.ReplaceAllString(s, "")
 	return harnessMarkerRe.ReplaceAllStringFunc(s, func(m string) string {
 		trimmed := strings.TrimLeft(m, " \t")
 		indent := m[:len(m)-len(trimmed)]

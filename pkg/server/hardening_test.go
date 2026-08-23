@@ -159,35 +159,119 @@ func TestNoAuthEscapeHatch(t *testing.T) {
 	}
 }
 
-func TestTokenInjectedIntoIndexHTML(t *testing.T) {
-	ui := fstest.MapFS{
-		"index.html": &fstest.MapFile{Data: []byte("<!DOCTYPE html><html><head><title>t</title></head><body></body></html>")},
+// studioUI is a stand-in for the embedded SPA build.
+func studioUI() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<!DOCTYPE html><html><head><title>t</title></head><body>SPA</body></html>")},
+		"app.js":     &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
-	s := NewWithOptions(newHarness(t), ui, Options{GenerateToken: true})
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/", nil))
-	if rec.Code != 200 {
-		t.Fatalf("status=%d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `name="`+TokenMetaName+`"`) || !strings.Contains(body, s.Token()) {
-		t.Fatalf("token meta not injected: %s", body)
-	}
-	// The rest of the document must survive the rewrite, and Content-Length must
-	// be dropped — it described the pre-injection body.
-	if !strings.Contains(body, "</html>") || !strings.Contains(body, "<title>t</title>") {
-		t.Fatalf("document truncated by injection: %s", body)
-	}
-	if cl := rec.Header().Get("Content-Length"); cl != "" {
-		t.Fatalf("stale Content-Length %q after injection", cl)
+}
+
+// REGRESSION: `GET /` with no credentials used to return 200 with the real
+// session token in `<meta name="slmcode-token">`, so any local process could
+// curl the shell, scrape the token and drive the agent. The HTML shell is now
+// behind the same token as /api/*, and no response ever carries the token.
+func TestHTMLShellIsAuthenticatedAndNeverLeaksToken(t *testing.T) {
+	s := NewWithOptions(newHarness(t), studioUI(), Options{GenerateToken: true})
+	tok := s.Token()
+	if tok == "" {
+		t.Fatal("no token generated")
 	}
 
-	// With auth off the document is served untouched.
-	plain := New(newHarness(t), ui)
+	for _, p := range []string{"/", "/index.html", "/app.js"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("UNAUTH %s -> %d, want 401", p, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), tok) {
+			t.Fatalf("TOKEN LEAKED in unauthenticated response for %s", p)
+		}
+		if strings.Contains(rec.Body.String(), "SPA") {
+			t.Errorf("SPA served unauthenticated for %s", p)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.Value == tok {
+				t.Fatal("cookie minted for an unauthenticated request")
+			}
+		}
+	}
+	// The gate page names the remedy without naming the secret.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "Session token required") {
+		t.Errorf("gate page missing: %s", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("gate page content-type=%q", ct)
+	}
+}
+
+// The `?t=` bootstrap mints an HttpOnly SameSite=Strict cookie, and the cookie
+// alone then authenticates the SPA — including EventSource, which cannot set
+// headers.
+func TestTokenBootstrapMintsSessionCookie(t *testing.T) {
+	s := NewWithOptions(newHarness(t), studioUI(), Options{GenerateToken: true})
+	tok := s.Token()
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/?t="+tok, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "SPA") {
+		t.Fatalf("SPA not served after bootstrap: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<meta name=\"slmcode-token\"") {
+		t.Fatal("token meta tag is back in the served document")
+	}
+	var jar *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == TokenCookieName {
+			jar = c
+		}
+	}
+	if jar == nil {
+		t.Fatal("no session cookie issued by the ?t= bootstrap")
+	}
+	if !jar.HttpOnly {
+		t.Error("session cookie is not HttpOnly — script-readable token")
+	}
+	if jar.SameSite != http.SameSiteStrictMode {
+		t.Errorf("session cookie SameSite=%v, want Strict", jar.SameSite)
+	}
+	if jar.Path != "/" {
+		t.Errorf("session cookie Path=%q, want /", jar.Path)
+	}
+
+	// Cookie alone authenticates the SPA, the assets and the API.
+	for _, p := range []string{"/", "/app.js", "/api/health"} {
+		r := newAPIRequest(http.MethodGet, p, nil)
+		r.AddCookie(jar)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Errorf("cookie-authenticated %s -> %d %s", p, rec.Code, rec.Body.String())
+		}
+	}
+	// A wrong cookie is still unauthorized.
+	r := newAPIRequest(http.MethodGet, "/api/health", nil)
+	r.AddCookie(&http.Cookie{Name: TokenCookieName, Value: "nope"})
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("bogus cookie accepted -> %d", rec.Code)
+	}
+
+	// With auth disabled the shell is served and no cookie is minted.
+	plain := New(newHarness(t), studioUI())
 	rec = httptest.NewRecorder()
 	plain.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/", nil))
-	if strings.Contains(rec.Body.String(), TokenMetaName) {
-		t.Fatal("meta injected with auth disabled")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "SPA") {
+		t.Fatalf("no-auth shell status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("cookie minted with auth disabled")
 	}
 }
 

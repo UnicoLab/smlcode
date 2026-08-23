@@ -60,86 +60,83 @@ shareable: true           # marketplace-ready flag (default: true)
 
 ## Predefined Language Packs (Builtin)
 
-SLMCode ships with **three production-ready language packs:**
+SLMCode ships **thirteen** language packs. Each one is a `pack` block composing a pipeline, a
+quality block and language-aware agents; `slmcode init` picks one automatically (see
+[Detection](#detection-how-a-pack-is-chosen)).
 
-### 🐹 Go
+| Pack | Language | Agents | Smoke | QA gate (`qa_gate_command`) |
+|---|---|---|---|---|
+| 🐹 `go` | go | `go-worker` `go-tester` `go-reviewer` | `go test ./... -short` | `go test ./... -race -count=1` |
+| 🐍 `python` | python | `python-worker` `python-tester` `python-reviewer` | `python -m pytest -q` | `python -m pytest -q` |
+| ⚛️ `react` | typescript | `react-worker` `react-tester` `react-reviewer` | `npm test --silent` | `npm test --silent` |
+| 🟦 `typescript` | typescript | `ts-worker` `ts-tester` `ts-reviewer` | `npm test --silent` | `npm test --silent` |
+| 🌐 `web` | html | `web-worker` `web-tester` | `test -s index.html \|\| test -s index.htm` | same |
+| 🦀 `rust` | rust | `rust-worker` `rust-tester` `rust-reviewer` | `cargo check --quiet` | `cargo test --quiet` |
+| ☕ `java` | java | `java-worker` `java-tester` `java-reviewer` | `mvn -q -B -DskipTests compile` | `mvn -q -B test` |
+| 🟪 `kotlin` | kotlin | `kotlin-worker` `kotlin-tester` | `./gradlew compileKotlin --console=plain` | `./gradlew test --console=plain` |
+| 🟣 `dotnet` | csharp | `dotnet-worker` `dotnet-tester` `dotnet-reviewer` | `dotnet build --nologo --verbosity quiet` | `dotnet test --nologo --verbosity quiet` |
+| 💎 `ruby` | ruby | `ruby-worker` `ruby-tester` | `bundle exec rspec --no-color` | `bundle exec rspec --no-color` |
+| 🐘 `php` | php | `php-worker` `php-tester` | `vendor/bin/phpunit --colors=never` | `vendor/bin/phpunit --colors=never` |
+| 🕊️ `swift` | swift | `swift-worker` `swift-tester` | `swift build` | `swift test` |
+| ⚙️ `cpp` | cpp | `cpp-worker` `cpp-tester` | `cmake --build build` | `ctest --test-dir build --output-on-failure` |
 
-```
-Pipeline: go     | Agents: go-worker, go-tester     | Quality: go
-```
+`slmcode blocks list` prints the live set; this table is a snapshot of it.
 
-- **Pipeline**: Go-aware execute phase with `go-tester` agent
-- **Worker**: Module-aware, uses `go test ./<pkg> -short` after edits
-- **Tester**: Full verify chain — `gofmt` → `go vet` → `go test -race` → `go build`
-- **QA Gate**: `go test ./... -race -count=1`
-
-### 🐍 Python
-
-```
-Pipeline: python | Agents: python-worker, python-tester | Quality: python
-```
-
-- **Pipeline**: Python-aware with `python-tester` agent
-- **Worker**: PyProject-aware, smokes with `py_compile` + `pytest`
-- **Tester**: `ruff check` → `mypy` → `pytest` (uv-aware)
-- **QA Gate**: `python -m pytest -q` (or `uv run pytest -q`)
-
-### ⚛️ React / TypeScript
-
-```
-Pipeline: react  | Agents: react-worker, react-tester   | Quality: react
-```
-
-- **Pipeline**: Frontend-aware with `react-tester` agent
-- **Worker**: Vite/Next-aware, smokes with `tsc --noEmit`
-- **Tester**: `npm run lint` → `tsc --noEmit` → `npm test` → `npm run build`
-- **QA Gate**: `npm test --silent`
-
-### 🌐 Static Web (HTML/CSS/JS)
-
-```
-Pipeline: web  | Agents: web-worker, web-tester   | Quality: web
-```
-
-- **Pipeline**: Static-browser-aware with `web-tester` agent
-- **Worker**: Always produces a usable `index.html` entrypoint + referenced assets
-- **Tester**: Verifies a non-empty HTML entrypoint, resolved asset refs, `node --check` each `.js`
-- **QA Gate**: non-empty `.html` entrypoint exists (no pytest / npm test forced)
-
-### 🦀 Rust
-
-```
-Pipeline: rust  | Agents: rust-worker, rust-tester   | Quality: rust
-```
-
-- **Worker**: cargo module-aware, smokes with `cargo build --quiet`
-- **Tester**: `cargo build` → `cargo test` → `cargo clippy` (optional)
-- **QA Gate**: `cargo test --quiet`
-
-### ☕ Java
-
-```
-Pipeline: java  | Agents: java-worker, java-tester   | Quality: java
-```
-
-- **Worker**: Maven/Gradle-aware, smokes with `mvn -q -DskipTests compile`
-- **Tester**: `mvn -q test` (or `./gradlew test`)
-- **QA Gate**: `mvn -q test`
-
-### ⚙️ C/C++
-
-```
-Pipeline: cpp  | Agents: cpp-worker, cpp-tester   | Quality: cpp
-```
-
-- **Worker**: CMake/Make-aware, smokes with `cmake --build build`
-- **Tester**: `cmake --build build` → `ctest` (when present)
-- **QA Gate**: `cmake --build build`
+Every pack also pins skills (`pin_skills: true`) — always `atomic-coding`, `specialist-worker`
+and `specialist-tester`, plus language-specific ones: `go` adds `go-table-tests` and
+`go-concurrency`, `typescript` adds `typescript-strict`, `react` adds `react-hooks` and
+`typescript-strict`.
 
 ### 🐚 Shell (agents only)
 
 `shell-worker` / `shell-tester` — for Bash/shell scripts (`bash -n` + `shellcheck`).
 No standalone pack; the generic pipeline selects them when the workspace is shell.
+
+---
+
+## Detection — how a pack is chosen
+
+`slmcode init` calls `blocks.DetectPack(root, root)`, and that is the **only** detection answer in
+the codebase. It is deterministic and precedence-ranked, and it scores each quality block's
+`detect` stanza:
+
+| Signal | Score | Meaning |
+|---|---|---|
+| `detect.contains` satisfied | **+25** each | strongest: proof from a marker file's *content* |
+| `detect.files` marker present in the root | +12 each | strong |
+| a source file with a `detect.extensions` suffix | +2 each, capped at 3 | weak tiebreak |
+| `detect.priority` | added as-is | the pack author's ranking |
+
+Two rules make it correct on real repositories:
+
+- **Nested sub-projects are skipped.** The extension walk does not descend into a directory that
+  carries its own project marker (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`,
+  `pom.xml`, `build.gradle{,.kts}`, …). A Go module with a Vite app in `web/` is a Go project;
+  the frontend's `.ts` files no longer out-vote the backend's `go.mod`.
+- **Markers outweigh stray files.** "This repo has a `pyproject.toml`" is worth much more than
+  "some `.py` file exists somewhere".
+
+### `detect.contains` — proving a language from file content
+
+`package.json` alone cannot tell `react` from `typescript`, and a filename-only rule got it wrong
+in both directions. `contains` maps a root file onto substrings that prove the language; any one
+match satisfies the entry:
+
+```yaml
+spec:
+  detect:
+    files: [package.json]
+    extensions: [.tsx, .jsx]
+    contains:
+      package.json: ['"react"', '"next"', '"preact"', '"react-dom"']
+    priority: 14
+```
+
+At most 256 KB of each named file is read. A `contains` entry that is declared but not satisfied
+scores nothing — it never counts against the block.
+
+So: a `package.json` that declares React resolves to the `react` pack; one that does not resolves
+to `typescript`; a directory of `index.html` and `.css` with no `package.json` resolves to `web`.
 
 ---
 
@@ -162,12 +159,22 @@ slmcode blocks apply go --materialize-agents
 slmcode blocks validate
 ```
 
-In the interactive chat REPL:
+Create, edit and delete project blocks (written to `.slmcode/blocks/`):
+
+```bash
+slmcode blocks new agent my-agent --file agent.yaml
+slmcode blocks new agent my-agent --name "My Agent"
+slmcode blocks edit agent my-agent --file agent.yaml
+slmcode blocks delete agent my-agent
+slmcode blocks apply go --force        # overwrite existing agent files
+```
+
+In the TUI or the chat REPL:
 
 ```
-/pack go       — apply the Go language pack
-/pack python   — apply the Python language pack
-/blocks        — list all available blocks
+/pack <pack-id>   — apply a language pack (any of the thirteen)
+/blocks           — list all available blocks
+/skills           — list loaded skills
 ```
 
 ---
@@ -264,9 +271,11 @@ version: "1.0.0"
 language: rust
 spec:
   detect:
-    files: [Cargo.toml]
-    extensions: [.rs]
-    priority: 20
+    files: [Cargo.toml]           # root marker files (+12 each; globs allowed)
+    extensions: [.rs]             # source suffixes (+2 each, capped at 3)
+    contains:                     # content proof (+25 each) — any substring matches
+      Cargo.toml: ['[package]']
+    priority: 20                  # author ranking, added to the score
   lint:
     - {cmd: cargo clippy -- -D warnings, label: clippy}
   test:
@@ -315,7 +324,7 @@ The **BlockManager** page (navigate to Blocks in the sidebar) provides a visual 
 
 The **PackSelector** in Settings lets you switch language packs directly from the settings page, alongside the Stack Selector.
 
-The **PipelineEditor** includes a preset selector that lets you switch between predefined pipeline configurations (Go, Python, React) with one click.
+The **PipelineEditor** includes a preset selector listing every pipeline block the registry can see — the thirteen builtins plus anything under `.slmcode/blocks/pipelines/` — with one-click switching.
 
 ---
 

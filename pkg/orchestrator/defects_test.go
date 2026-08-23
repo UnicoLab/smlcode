@@ -326,7 +326,7 @@ func TestRunPhaseParallelCancellation(t *testing.T) {
 		if ran {
 			t.Fatal("a phase must not start on an already-canceled context")
 		}
-		if err := canceledPhase(res); err == nil {
+		if err := canceledPhase(ctx, res); err == nil {
 			t.Fatal("cancellation must surface in the result set")
 		}
 	})
@@ -337,7 +337,7 @@ func TestRunPhaseParallelCancellation(t *testing.T) {
 			cancel()
 			return phaseResult{name: "a"}
 		})
-		if err := canceledPhase(res); err == nil {
+		if err := canceledPhase(ctx, res); err == nil {
 			t.Fatal("a phase that finished after cancellation must report it")
 		}
 	})
@@ -350,7 +350,7 @@ func TestRunPhaseParallelCancellation(t *testing.T) {
 		if len(res) != 2 || res["a"].output != "1" || res["b"].output != "2" {
 			t.Fatalf("res=%+v", res)
 		}
-		if err := canceledPhase(res); err != nil {
+		if err := canceledPhase(context.Background(), res); err != nil {
 			t.Fatalf("unexpected cancellation: %v", err)
 		}
 	})

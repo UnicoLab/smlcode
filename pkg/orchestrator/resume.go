@@ -133,7 +133,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	if !o.phaseEnabled("execute") {
 		o.emit("execute", "phase disabled — skipping board execution", "")
 	} else if err := runner.RunBoard(ctx, board); err != nil {
-		return o.checkpointInterrupt(board, session.PhaseExecute, err)
+		return o.checkpointInterrupt(ctx, board, session.PhaseExecute, err)
 	}
 	if runner.ResumedReact {
 		o.emit("execute", "continued from ReAct message checkpoint (no cold replan)", "")
@@ -144,7 +144,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	o.persistBoard(board)
 
 	if err := ctx.Err(); err != nil {
-		return o.checkpointInterrupt(board, session.PhaseExecute, err)
+		return o.checkpointInterrupt(ctx, board, session.PhaseExecute, err)
 	}
 
 	return o.finalizeAfterExecute(ctx, runID, query, skillPack, board, runner, start)
@@ -196,7 +196,7 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 	o.recordGate("tester", !testerRejected, firstSentence(testOut))
 
 	if err := ctx.Err(); err != nil {
-		return o.checkpointInterrupt(board, session.PhaseTest, err)
+		return o.checkpointInterrupt(ctx, board, session.PhaseTest, err)
 	}
 
 	gate := o.runQualityGates(ctx, query, board, runner, testerRejected)
@@ -370,7 +370,14 @@ func (o *Orchestrator) runTesterPhase(ctx context.Context, query string, board *
 			OK: true, Ran: true, Command: pre.Cmd, Output: truncate(pre.Output, 1200),
 		})
 		if sec != "" {
-			v.Output = strings.TrimSpace(sec) + "\n\n" + strings.TrimSpace(v.Output)
+			// Model text and harness text become one string here and the tester
+			// gates scan the result. Stamp the harness's half so it keeps its
+			// authority, defuse the model's half so it never gains any: this
+			// branch runs precisely when the tester produced NO execution
+			// frame, so anything frame-shaped in v.Output is the model's own
+			// prose or something it pasted out of the repository.
+			v.Output = strings.TrimSpace(quality.StampHarnessSection(sec)) + "\n\n" +
+				strings.TrimSpace(quality.DefuseModelText(v.Output))
 			o.emit("test", "attached pre-test smoke evidence for tester finalize", "")
 		}
 	}
@@ -414,7 +421,7 @@ func (o *Orchestrator) correctiveTesterWave(ctx context.Context, query string, b
 	}
 	if err != nil {
 		if isCancelErr(err) {
-			res, cerr := o.checkpointInterrupt(board, session.PhaseExecute, err)
+			res, cerr := o.checkpointInterrupt(ctx, board, session.PhaseExecute, err)
 			return board, testOut, testerRejected, res, cerr
 		}
 		o.emit("execute", "corrective wave warning: "+err.Error(), "")
@@ -682,11 +689,23 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	return res, nil
 }
 
-func (o *Orchestrator) checkpointInterrupt(board *plan.Board, phase string, err error) (*Result, error) {
+// checkpointInterrupt saves the board and, when the run was really interrupted,
+// turns that into a resumable Result.
+//
+// The authority on "was this run interrupted" is the RUN CONTEXT, not the text
+// of err. It used to be the text, and the text lies: pkg/loop races several
+// reviewers against each other and cancels the losers on purpose, so a healthy
+// run routinely produced errors reading
+// `chat failed: …: context canceled`. Every one of those was checkpointed as a
+// user interrupt — the run stopped with "interrupted at execute" and exit 130
+// while the user was watching it work. ctx.Err() cannot be wrong about this:
+// it is non-nil exactly when the caller (SIGINT, /stop, a parent timeout) went
+// away.
+func (o *Orchestrator) checkpointInterrupt(ctx context.Context, board *plan.Board, phase string, err error) (*Result, error) {
 	if board != nil {
 		o.persistBoard(board)
 	}
-	if o.currentTurn != nil && board != nil && isCancelErr(err) {
+	if o.currentTurn != nil && board != nil && ctx != nil && ctx.Err() != nil && isCancelErr(err) {
 		_ = session.MarkInterrupted(o.cfg.SlmDir(), o.currentTurn, *board, phase)
 		msg := fmt.Sprintf("interrupted at %s — board saved; /resume %s", phase, o.currentTurn.ID)
 		if session.HasReactHistory(o.cfg.SlmDir(), o.currentTurn.ID) {
@@ -712,15 +731,13 @@ func isCancelErr(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	lower := strings.ToLower(err.Error())
-	// Both spellings are deliberate: this matches provider error TEXT, and some
-	// backends use the British double-l spelling. That literal is DATA (a
-	// substring of somebody else's error message), not prose — hence the
-	// concatenation below, which keeps the spelling linter out of the way.
-	return strings.Contains(lower, "context canceled") ||
-		strings.Contains(lower, "context cancel"+"led") ||
-		strings.Contains(lower, "canceled") ||
-		strings.Contains(lower, "cancel"+"led")
+	// The text arm lives in ONE place (loop.IsContextCancelErr) so the harness
+	// cannot end up with two different opinions about what a cancellation looks
+	// like. The bare word "canceled" is deliberately NOT enough and used to be:
+	// any message that merely contained it — a provider reporting an upstream
+	// job cancellation, a model quoting the harness's own prompt back — read as
+	// a context cancellation and could abort a healthy run.
+	return loop.IsContextCancelErr(err)
 }
 
 func renameDiskOK(root, query string, board *plan.Board) bool {

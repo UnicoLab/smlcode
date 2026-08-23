@@ -368,8 +368,10 @@ export async function getLatestRun(): Promise<LatestRunResponse> {
 }
 
 // SSE stream — use EventSource directly, not fetch.
-// The session token travels as a query parameter because EventSource cannot
-// set headers; `lastEventId` asks the server to replay only what was missed.
+// EventSource is same-origin, so the HttpOnly session cookie authenticates it;
+// withToken() only appends a `t=` parameter in the cookie-less fallback,
+// because EventSource cannot set headers. `lastEventId` asks the server to
+// replay only what was missed.
 export function createEventSource(lastEventId?: number): EventSource {
   let url = `${BASE}/events`;
   if (lastEventId && lastEventId > 0) {

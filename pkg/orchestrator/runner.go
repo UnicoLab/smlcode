@@ -107,9 +107,21 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 		o.shared.SetGlobal("retry_ladder", o.choose(evolve.DecRetryLadder, "correct_first", "retry_first"))
 	}
 
+	// max_task_calls and max_retries are one setting in two halves, and the
+	// budget wins. worker + self-critique + max_retries × (review + correct) is
+	// what a task needs to spend its retries; a budget below that caps
+	// max_retries without saying so. Say so.
+	budget := o.maxTaskCalls()
+	if need := loop.MaxTaskCallsFor(o.cfg.MaxRetries); budget < need {
+		o.emitProblem("init", fmt.Sprintf(
+			"max_task_calls=%d caps max_retries=%d — a task gets %d correction round(s), not %d "+
+				"(worker + self-critique + max_retries × (review + correct) needs %d)",
+			budget, o.cfg.MaxRetries, maxCorrectionRounds(budget), o.cfg.MaxRetries, need), "")
+	}
+
 	contract := loopContract{
 		ContextLimitTokens: o.contextLimitTokens(),
-		MaxTaskCalls:       o.maxTaskCalls(),
+		MaxTaskCalls:       budget,
 		ResolveRole:        o.resolveExecRole,
 		MemoryTokens:       o.memoryTokens(),
 		Evolve:             o.evolve,
@@ -265,4 +277,13 @@ func (o *Orchestrator) refreshRepoMap() {
 	if o.packer != nil {
 		o.setPackerRepoMap(rm)
 	}
+}
+
+// maxCorrectionRounds reports how many review+correct rounds a per-task call
+// budget actually pays for after the worker and self-critique passes.
+func maxCorrectionRounds(budget int) int {
+	if n := (budget - 2) / 2; n > 0 {
+		return n
+	}
+	return 0
 }

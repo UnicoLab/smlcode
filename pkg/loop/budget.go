@@ -19,7 +19,34 @@ import (
 // `passes` was escalated to min(max(MaxRetries,3),4) whenever smoke/static/
 // acceptance failed) + reviewAndCorrect (up to 5 reviewer + 4 corrector). At
 // 30-60s per call on a local 30B that is 10-20 minutes for a single task.
-const DefaultMaxTaskCalls = 6
+//
+// The value is DERIVED from MaxRetries rather than picked: the budget exists to
+// stop runaway ladders, not to quietly overrule the retry setting the operator
+// chose. One task's honest floor on the shipped defaults is
+//
+//	worker (1) + self-critique (1) + MaxRetries × (review + correct)
+//
+// which at the default MaxRetries=4 is 1 + 1 + 8 = 10. The old default of 6
+// bought exactly TWO correction rounds no matter what MaxRetries said, so a
+// legitimately hard task escalated to a human with half its retries unspent and
+// nothing in the log connecting the two numbers. Keep this in step with
+// config.Config.MaxRetries: MaxTaskCallsFor is the relationship.
+const DefaultMaxTaskCalls = 10
+
+// MaxTaskCallsFor returns the per-task budget that lets maxRetries correction
+// rounds actually happen: worker + self-critique + maxRetries × (review +
+// correct). Callers that let an operator raise max_retries should raise
+// max_task_calls with it, or the budget silently caps the retries instead.
+func MaxTaskCallsFor(maxRetries int) int {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	n := 2 + 2*maxRetries
+	if n < DefaultMaxTaskCalls {
+		return DefaultMaxTaskCalls
+	}
+	return n
+}
 
 // callBudget tracks LLM calls per task. Waves run tasks in parallel, so every
 // method is safe for concurrent use.
@@ -27,13 +54,43 @@ type callBudget struct {
 	mu   sync.Mutex
 	max  int
 	used map[string]int
+	// requests counts REAL LLM round-trips, which is not the same number as
+	// `used`. One speculative review costs a single budget unit but fans out to
+	// the reviewer AND reviewer-strict whenever max_parallel >= 3 (the default),
+	// so a "10-call budget" can be ~13 requests at a server that runs inference
+	// serially. The budget bounds the correction LADDER; this counter is what
+	// makes the wall-clock cost of that ladder visible instead of surprising.
+	requests map[string]int
 }
 
 func newCallBudget(max int) *callBudget {
 	if max <= 0 {
 		max = DefaultMaxTaskCalls
 	}
-	return &callBudget{max: max, used: map[string]int{}}
+	return &callBudget{max: max, used: map[string]int{}, requests: map[string]int{}}
+}
+
+// note records n real LLM round-trips against a task without spending budget.
+func (b *callBudget) note(taskID string, n int) {
+	if b == nil || taskID == "" || n <= 0 {
+		return
+	}
+	b.mu.Lock()
+	if b.requests == nil {
+		b.requests = map[string]int{}
+	}
+	b.requests[taskID] += n
+	b.mu.Unlock()
+}
+
+// sentRequests reports how many real LLM round-trips a task has issued.
+func (b *callBudget) sentRequests(taskID string) int {
+	if b == nil || taskID == "" {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requests[taskID]
 }
 
 // reset clears a task's spend — called once when the task starts executing.
@@ -43,6 +100,7 @@ func (b *callBudget) reset(taskID string) {
 	}
 	b.mu.Lock()
 	delete(b.used, taskID)
+	delete(b.requests, taskID)
 	b.mu.Unlock()
 }
 
@@ -57,6 +115,10 @@ func (b *callBudget) take(taskID string) bool {
 		return false
 	}
 	b.used[taskID]++
+	if b.requests == nil {
+		b.requests = map[string]int{}
+	}
+	b.requests[taskID]++
 	return true
 }
 
@@ -123,14 +185,26 @@ func (r *Runner) spend(taskID, what string) bool {
 	if r.budget().take(taskID) {
 		return true
 	}
-	r.logf("%s call budget exhausted (%d/%d) — refusing %s; escalating instead of looping",
-		taskID, r.budget().spent(taskID), r.budget().max, what)
+	// Report BOTH numbers. `used` is budget units; `llm_requests` is the real
+	// round-trip count, which is higher whenever a speculative review fanned
+	// out — and the round-trips, not the units, are what the operator waited on.
+	r.logf("%s call budget exhausted (%d/%d units, %d LLM requests) — refusing %s; escalating instead of looping",
+		taskID, r.budget().spent(taskID), r.budget().max, r.budget().sentRequests(taskID), what)
 	r.fireIntervention(taskID, "call_budget",
 		fmt.Sprintf("%s hit its %d-call budget — escalating instead of another %s round-trip",
 			taskID, r.budget().max, what),
-		fmt.Sprintf("max_task_calls=%d used=%d blocked=%s",
-			r.budget().max, r.budget().spent(taskID), what))
+		fmt.Sprintf("max_task_calls=%d used=%d llm_requests=%d blocked=%s",
+			r.budget().max, r.budget().spent(taskID), r.budget().sentRequests(taskID), what))
 	return false
+}
+
+// noteExtraRequests records LLM round-trips a task issued beyond the budget
+// units it spent — the extra speculative slots of a review race.
+func (r *Runner) noteExtraRequests(taskID string, n int) {
+	if r == nil {
+		return
+	}
+	r.budget().note(taskID, n)
 }
 
 // budgetExhausted reports whether a task has no calls left.

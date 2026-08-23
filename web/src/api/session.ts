@@ -3,19 +3,25 @@
 // Studio is a local agent that can read the repo, rewrite config, store API
 // keys and start runs. The server therefore refuses non-loopback hosts, emits
 // no permissive CORS headers, and (when started with a token) requires a
-// session secret on every /api/* call.
+// session secret on EVERY request — the HTML shell included.
 //
-// The SPA obtains that secret from, in order:
-//   1. the `?t=` query parameter of the URL the CLI printed,
-//   2. `sessionStorage` (survives in-tab navigation and reloads),
-//   3. the `<meta name="slmcode-token">` tag the server injects into index.html
-//      (so a tab opened at the bare URL still works).
+// How the browser gets authenticated:
 //
-// The parameter is stripped from the address bar immediately so the token does
-// not linger in history, bookmarks or screenshots.
+//   1. The CLI prints `http://127.0.0.1:7420/?t=<token>`. The server validates
+//      `?t=` and replies with an HttpOnly, SameSite=Strict session cookie.
+//   2. From then on the cookie authenticates everything: `fetch` sends it
+//      (credentials: 'same-origin') and so does EventSource, which is
+//      same-origin. Nothing in the page needs to hold the secret.
+//
+// The server no longer injects `<meta name="slmcode-token">` into index.html:
+// that made `GET /` an unauthenticated token dispenser for any other process
+// on the machine. There is no meta fallback here any more, by design.
+//
+// The token is still cached in memory + sessionStorage as a belt-and-braces
+// fallback for a browser that refuses cookies, and is still stripped from the
+// address bar immediately so it does not linger in history or screenshots.
 
 const STORAGE_KEY = 'slmcode:token';
-const META_NAME = 'slmcode-token';
 export const TOKEN_HEADER = 'X-SLMCode-Token';
 
 let cached: string | null = null;
@@ -36,12 +42,6 @@ function writeStorage(token: string): void {
   }
 }
 
-function readMeta(): string {
-  if (typeof document === 'undefined') return '';
-  const el = document.querySelector(`meta[name="${META_NAME}"]`);
-  return el?.getAttribute('content')?.trim() || '';
-}
-
 function readQueryParam(): string {
   if (typeof window === 'undefined') return '';
   try {
@@ -57,7 +57,10 @@ function readQueryParam(): string {
   }
 }
 
-/** Resolve the session token, caching the result for the tab. */
+/**
+ * Resolve the session token, caching the result for the tab.
+ * Returns '' once the cookie has taken over — that is the normal steady state.
+ */
 export function studioToken(): string {
   if (cached !== null) return cached;
   const fromQuery = readQueryParam();
@@ -71,12 +74,9 @@ export function studioToken(): string {
     cached = stored;
     return cached;
   }
-  const meta = readMeta();
-  if (meta) {
-    writeStorage(meta);
-    cached = meta;
-    return cached;
-  }
+  // No token in hand: the session cookie the server set during the `?t=`
+  // bootstrap is what authenticates us. An empty string means "send nothing
+  // extra", not "unauthenticated".
   cached = '';
   return cached;
 }
@@ -87,20 +87,24 @@ export function setStudioToken(token: string): void {
   writeStorage(token);
 }
 
-/** Clear the cached token — next call re-reads the URL/meta/storage. */
+/** Clear the cached token — next call re-reads the URL / sessionStorage. */
 export function resetStudioToken(): void {
   cached = null;
 }
 
-/** Headers to attach to an /api/* fetch. */
+/**
+ * Headers to attach to an /api/* fetch. Empty once the cookie authenticates
+ * the tab; `fetch` is called with credentials: 'same-origin'.
+ */
 export function authHeaders(): Record<string, string> {
   const token = studioToken();
   return token ? { [TOKEN_HEADER]: token } : {};
 }
 
 /**
- * Append the token to a URL. Required for EventSource, which cannot set
- * request headers.
+ * Append the token to a URL when we still hold one. EventSource cannot set
+ * headers, but it is same-origin and therefore sends the session cookie, so
+ * this is only the fallback for a cookie-less browser.
  */
 export function withToken(url: string): string {
   const token = studioToken();

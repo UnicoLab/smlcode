@@ -52,8 +52,15 @@ func runPhaseParallel(ctx context.Context, phases ...func() phaseResult) map[str
 	return results
 }
 
-// canceledPhase returns the first cancellation error in a parallel result set.
-func canceledPhase(results map[string]phaseResult) error {
+// canceledPhase returns the first cancellation error in a parallel result set —
+// but only when the RUN's context is actually gone. A phase that failed with an
+// error whose text mentions a cancellation, while the run itself is healthy, is
+// a phase failure and belongs to the caller's own error handling, not to the
+// interrupt checkpoint.
+func canceledPhase(ctx context.Context, results map[string]phaseResult) error {
+	if ctx == nil || ctx.Err() == nil {
+		return nil
+	}
 	for _, r := range results {
 		if r.err != nil && isCancelErr(r.err) {
 			return r.err

@@ -55,7 +55,14 @@ slmcode tui
 !!! tip "⚖ Escalate banner"
     When a task hits max review retries, the TUI shows an **ESCALATE** banner and the
     pipeline pauses that task. Answer with `/escalate retry` (etc.), or wait for the
-    timeout — then **@escalate** (SLM) decides. Same modal exists in Studio.
+    timeout — then **@escalate** (SLM) decides. Same modal exists in Studio, and
+    `slmcode run` draws the same card inline and takes a single keystroke.
+
+    Before you answer, `slmcode task show <id>` in another terminal prints the scope, the
+    reviewer's verdict and issues, the gate that refused the task, and the diff of its focus
+    files. `mark_done` (`[d]one`) **overrides** the gate that refused the work: the task is
+    recorded as a human override, `slmcode board` marks it `⚑ forced done`, and the run summary
+    counts it separately from a verified pass.
 
 !!! tip "💪 Keyboard muscle memory"
     **Ctrl+C** mid-run checkpoints board + ReAct history under

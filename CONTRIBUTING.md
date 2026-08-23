@@ -119,6 +119,16 @@ header (`api_version: blocks/v1`, `kind`, `id`, `version`, …). Validate with
 To add a new block **kind**: `pkg/blocks/meta.go` → a schema struct in `pkg/blocks/schema.go`
 → the `ingest()` switch in `pkg/blocks/registry.go`.
 
+**Language detection has exactly one implementation.** A new language pack is picked up by
+`blocks.DetectPack(root, root)` as soon as its quality block carries a `detect` stanza — do not
+add a marker list anywhere else. Three call sites once kept their own (`slmcode init`, the smoke
+package, the orchestrator) and they disagreed on six of thirteen languages, so `init` wrote
+`active_pack: java` next to `./gradlew test`. Score with `detect.files` (+12 per present marker),
+`detect.contains` (+25 per satisfied content proof — this is what separates `react` from
+`typescript`), `detect.extensions` (+2 each, capped at 3) and `detect.priority`.
+`TestDetectPackPerLanguageFixtures` (pkg/blocks) and `TestInitPackAgreesWithTheAppliedQualityBlock`
+(cmd/slmcode) both need a fixture for the new language.
+
 ### A new agent (built-in role)
 
 1. Add the prompt to `pkg/agents/prompts.go`. Tool-using roles must embed `AntiWanderCore`.
@@ -141,6 +151,7 @@ as a card. See [docs/skills.md](docs/skills.md).
 ### A new stack
 
 `stacks/<name>.yaml` with provider/model/endpoint (and optional per-role `agents:` defaults).
+`slmcode stack list` shows what resolves; extra search paths come from `$SLMCODE_STACKS`.
 
 ### A new CLI command
 
@@ -148,6 +159,18 @@ Add a Cobra command in `cmd/slmcode/`, register it in `root.go` under the right 
 (`run` / `review` / `config` / `inspect`). Honour the non-interactive contract in
 `cmd/slmcode/doc.go`: no prompting without a TTY, `--json` writes one document to stdout with
 colour off, failures return a `codedError` with the documented exit code.
+
+Two rules that are easy to miss because they are about the END of a command:
+
+- **Never leave the reader without a next step.** Anything that reports a stopped, refused or
+  empty state names the command that resolves it. `slmcode board` points at `slmcode task show`;
+  a run that changed nothing says so and offers `task show` / `--vv`; an unknown task id lists
+  the ids that exist.
+- **Engine-authored text is translated at the renderer, not printed raw.** `pkg/orchestrator`,
+  `pkg/loop` and `pkg/plan` write one event stream for the TUI, Studio and `slmcode run`, and
+  their advice is phrased for the richest client ("decide in Studio", "/resume run-…").
+  `cli.TranslateEngineAdvice` rewrites those into commands this binary has; extend its table
+  rather than teaching users a remedy they cannot use.
 
 ### A new config field
 
@@ -178,10 +201,10 @@ normalize it in `Normalize()` → handle it in `ApplyPatch()` → document it in
 | `pkg/memory` | working / episodic / semantic / procedural memory |
 | `pkg/evolve` | fingerprints, repair rules, bandit, reflection, regressions |
 | `pkg/eval`, `pkg/eval/metrics` | eval harness, per-run metrics, `Compare`, replay |
-| `pkg/blocks`, `pkg/pipeline`, `pkg/stacks` | YAML building blocks, phase graph, presets |
+| `pkg/blocks`, `pkg/pipeline`, `pkg/stacks` | YAML building blocks, phase graph, presets, **language detection** (`DetectPack` / `DetectAll` — the only implementation) |
 | `pkg/permissions`, `pkg/hitl`, `pkg/hooks` | write/shell policy, human gates, lifecycle hooks |
 | `pkg/server` | Studio HTTP/SSE API, security policy, review API |
-| `pkg/cli` | terminal rendering: diffs, gates, REPL input, colour, width |
+| `pkg/cli` | terminal rendering: diffs, gates, REPL input, colour, width, engine-advice translation |
 | `web/` | Studio SPA |
 
 ## Pull requests

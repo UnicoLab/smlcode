@@ -28,10 +28,11 @@ spec:
     3) ctest --test-dir build --output-on-failure   (when tests are registered)
     Single file syntax check: g++ -fsyntax-only -std=c++20 <file>
 
-    This harness REFUSES `cmake --build` and `make`: both delegate to a build
-    description in the repository that the command whitelist cannot inspect.
-    Drive the generator directly, or report that the build needs operator
-    approval — a skipped build is never a pass.
+    `cmake --build build` is allowed — it runs the project's own build, like
+    `go build`. This harness REFUSES `make` (it runs whatever a Makefile recipe
+    says), `cmake -P` / `cmake -C` (run a CMake script) and `cmake -E` (file
+    mutator). Build directories must be relative and inside the project.
+    A skipped build is never a pass.
 
     Read the OUTPUT: "No tests were found!!!" from ctest is a FAILURE for a task
     that asked for tests. A new test needs add_executable + add_test and

@@ -413,15 +413,19 @@ shareable: true
 spec:
   # ── Auto-detection ──
   detect:
-    files:                     # Files that indicate this quality pack applies
-      - package.json           # Each match adds +10 to detection score
+    files:                     # Root marker files. Each present one adds +12.
+      - package.json           # Globs are allowed ("*.csproj", "*.gemspec").
       - tsconfig.json
       - eslint.config.js
-    extensions:                # File extensions that score matches
-      - .ts                    # Each file found adds +2 (up to 3 extensions)
+    extensions:                # Source suffixes. Each matching file adds +2,
+      - .ts                    # capped at 3 files — a weak tiebreak, not a vote.
       - .tsx
       - .js
-    priority: 20               # Bonus score (higher = preferred when multiple match)
+    contains:                  # CONTENT proof. +25 per satisfied entry — the
+      package.json:            # strongest signal there is. Any one substring
+        - '"typescript"'       # in the list satisfies the entry; a declared but
+        - '"vitest"'           # unsatisfied entry simply scores nothing.
+    priority: 20               # Author ranking, added to the score.
 
   # ── Formatting checks (optional) ──
   format:
@@ -474,6 +478,21 @@ spec:
     Typecheck: npx tsc --noEmit when tsconfig.json exists.
     Lint: npx eslint . when eslint config present.
 ```
+
+!!! note "How detection actually resolves"
+    `blocks.DetectPack(root, root)` is the single detection answer in the codebase — `slmcode
+    init` calls it, and nothing else keeps a private marker list any more. Two rules beyond the
+    scoring table matter in practice:
+
+    - The extension walk **skips any directory that carries its own project marker**
+      (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, `pom.xml`, `build.gradle{,.kts}`).
+      A Go module with a Vite app in `web/` stays Go however big the frontend gets.
+    - `contains` is what separates packs that share a marker file. `package.json` +
+      `'"react"'` → the `react` pack; `package.json` without it → `typescript`.
+
+    Verify what a directory resolves to before committing a custom block:
+    `slmcode init` prints `pack: <id> (detected)`, and `slmcode config show --all` shows the
+    `active_pack` / `qa_gate_command` pair it wrote.
 
 ### Complete Example: Rust Quality Pack
 
@@ -531,6 +550,12 @@ spec:
 ## Language Packs
 
 A pack composes a pipeline, quality block, agents, and skills into one apply-able unit.
+
+Thirteen ship built in — `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
+`dotnet`, `ruby`, `php`, `swift`, `cpp` — alongside 35 language agent blocks, 29 skills and 13
+provider stacks. `slmcode blocks list` prints the live set; the tables in
+[Blocks](blocks.md#predefined-language-packs-builtin) name each pack's agents, smoke command and
+QA gate.
 
 ### Pack Schema
 

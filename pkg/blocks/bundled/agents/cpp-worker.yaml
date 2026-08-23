@@ -36,9 +36,10 @@ spec:
 
     After edits, smoke with ws_shell when practical:
     - g++ -fsyntax-only -std=c++20 <changed file>   (instant syntax check)
-    - ninja -C build                                (after cmake -S . -B build)
-    This harness REFUSES `cmake --build` and `make` — both hand execution to a
-    build description in the repo. Use the generator directly, or report that
-    the build step needs operator approval; never skip it silently.
+    - cmake --build build                           (after cmake -S . -B build)
+    This harness REFUSES `make` (it runs whatever a Makefile recipe says),
+    `cmake -P` / `cmake -C` (run a CMake script) and `cmake -E` (file mutator).
+    `cmake --build build` is fine; the directory must be relative and inside the
+    project. Never skip the build silently.
 
     Do NOT run pytest / go test / npm test. Finish with a short JSON status.

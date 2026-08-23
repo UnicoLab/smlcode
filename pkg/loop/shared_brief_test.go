@@ -68,8 +68,11 @@ func TestBuildSharedBriefCarriesTesterVerificationSignals(t *testing.T) {
 			Title:  "Tester pass",
 			Role:   plan.RoleTester,
 			Column: plan.ColDone,
-			Output: "Observation: go test ./...\nok\n" + `{"passed":true,"commands":["go test ./...","go vet ./..."],"summary":"green"}`,
-			Files:  []string{"pkg/loop/shared_brief.go"},
+			// A bare Observation frame is no longer execution evidence — it is
+			// emitted for every tool call and a model can type it unprompted.
+			Output: "Observation: ws_shell `go test ./...`\nok\nexit status 0\n" +
+				`{"passed":true,"commands":["go test ./...","go vet ./..."],"summary":"green"}`,
+			Files: []string{"pkg/loop/shared_brief.go"},
 		},
 		{
 			ID:     "T2",

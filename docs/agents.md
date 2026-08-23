@@ -1,6 +1,7 @@
 # 🧩 Agents
 
-Twenty built-in specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
+Twenty built-in specialist roles, plus 35 language-aware agent blocks that override three of
+them per language pack. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
 <div class="slm-banner" markdown>
 <span class="slm-banner__emoji">🧬</span>
@@ -51,6 +52,44 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 curl -s localhost:7420/api/agents | jq '.[].id'
 # TUI: /agents
 ```
+
+---
+
+## Language agent blocks 🌍
+
+The twenty above are the **roles**. A language pack substitutes language-aware agents for some of
+them: `override_worker` sets `execute.default_role`, `override_tester` sets the test phase's
+agent, and the pack's pipeline block names the reviewer directly (`execute.reviewer:`). Those
+substitutes ship as `agent` blocks (`pkg/blocks/bundled/agents/`), **35 of them**;
+`slmcode blocks list` prints the live set.
+
+| Pack | worker | tester | reviewer |
+|---|---|---|---|
+| `go` | `go-worker` | `go-tester` | `go-reviewer` |
+| `python` | `python-worker` | `python-tester` | `python-reviewer` |
+| `typescript` | `ts-worker` | `ts-tester` | `ts-reviewer` |
+| `react` | `react-worker` | `react-tester` | `react-reviewer` |
+| `web` | `web-worker` | `web-tester` | — |
+| `rust` | `rust-worker` | `rust-tester` | `rust-reviewer` |
+| `java` | `java-worker` | `java-tester` | `java-reviewer` |
+| `kotlin` | `kotlin-worker` | `kotlin-tester` | — |
+| `dotnet` | `dotnet-worker` | `dotnet-tester` | `dotnet-reviewer` |
+| `ruby` | `ruby-worker` | `ruby-tester` | — |
+| `php` | `php-worker` | `php-tester` | — |
+| `swift` | `swift-worker` | `swift-tester` | — |
+| `cpp` | `cpp-worker` | `cpp-tester` | — |
+| *(no pack)* | `shell-worker` | `shell-tester` | — |
+
+A pack whose pipeline does not name a reviewer uses the generic `reviewer`. `shell-worker` /
+`shell-tester` belong to no pack; the generic pipeline picks them up for a shell workspace.
+
+```bash
+slmcode blocks show agent go-tester    # its prompt, tools, temperature, skills
+slmcode blocks apply go --materialize-agents   # copy them into .slmcode/agents/ to edit
+```
+
+Materializing is the supported way to customise one: the copy in `.slmcode/agents/` wins over the
+builtin (see [Blocks → Discovery Order](blocks.md#discovery-order)).
 
 ---
 

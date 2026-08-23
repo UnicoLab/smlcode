@@ -532,15 +532,23 @@ func TestQueryLanguageSpecialistsJavaVsJavaScript(t *testing.T) {
 
 func TestProjectLanguageSpecialists(t *testing.T) {
 	cases := map[string]string{
-		"Go":         "go-worker",
-		"Python":     "python-worker",
-		"TypeScript": "react-worker",
+		"Go":     "go-worker",
+		"Python": "python-worker",
+		// A tsconfig.json says TypeScript, not React — the ts-* pack exists for
+		// exactly this. React is selected by query keyword, which runs first.
+		"TypeScript": "ts-worker",
 		"JavaScript": "web-worker",
 		"HTML":       "web-worker",
 		"Rust":       "rust-worker",
 		"Java":       "java-worker",
 		"C++":        "cpp-worker",
 		"C/Make":     "cpp-worker",
+		// The six packs the repo ships that nothing could route to.
+		"Kotlin": "kotlin-worker",
+		"C#":     "dotnet-worker",
+		"Ruby":   "ruby-worker",
+		"PHP":    "php-worker",
+		"Swift":  "swift-worker",
 	}
 	for lang, want := range cases {
 		got, _ := projectLanguageSpecialists(lang)

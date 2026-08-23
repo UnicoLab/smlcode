@@ -178,7 +178,7 @@ func ApplyTransform(name, args string) (string, bool) {
 		}
 		return fixed, true
 	case TransformStripLineNumbers:
-		return mutateStringFields(args, []string{"old_str", "new_str", "content", "body"}, stripLineNumberPrefix)
+		return stripLineNumbersInArgs(args)
 	case TransformTrimTrailingWS:
 		return mutateStringFields(args, []string{"old_str", "new_str"}, trimTrailingWS)
 	case TransformUnfence:
@@ -193,6 +193,45 @@ func ApplyTransform(name, args string) (string, bool) {
 }
 
 var reLineNumPrefix = regexp.MustCompile(`(?m)^[ \t]*\d+[ \t]*\|[ \t]?`)
+
+// stripLineNumbersInArgs applies the gutter strip only where a ws_read gutter
+// can legitimately BE.
+//
+// It used to run over `old_str`, `new_str`, `content` and `body` alike — i.e.
+// over the FILE THE HARNESS WAS ABOUT TO WRITE. `^[ \t]*\d+[ \t]*\|` is not
+// only a ws_read gutter; it is an ordinary line of pipe-delimited data. A
+// markdown table row `1 | Alpha`, a CSV dump, an ASCII table, a changelog
+// column — every one of them lost its first field, silently, in the file that
+// reached disk, and nothing downstream could tell that from the model having
+// written it that way.
+//
+// What remains:
+//
+//   - old_str and patch/diff hunks: text the model COPIED out of a ws_read, so
+//     a gutter there is provably transcription, not content;
+//   - new_str, but ONLY when old_str in the same call also carries a gutter.
+//     That is the evidence that this model is mirroring a ws_read block into
+//     both halves of the edit. Without that evidence a pipe-prefixed new_str is
+//     just a table row being inserted, and stripping it is the corruption.
+//
+// content/body — whole-file writes — are never touched.
+func stripLineNumbersInArgs(args string) (string, bool) {
+	fields := []string{"old_str", "patch", "diff", "hunk"}
+	if oldStr, ok := stringField(args, "old_str"); ok && reLineNumPrefix.MatchString(oldStr) {
+		fields = append(fields, "new_str")
+	}
+	return mutateStringFields(args, fields, stripLineNumberPrefix)
+}
+
+// stringField reads one string field out of a tool call's raw JSON arguments.
+func stringField(args, name string) (string, bool) {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		return "", false
+	}
+	s, ok := parsed[name].(string)
+	return s, ok
+}
 
 // stripLineNumberPrefix removes ws_read's "   42|" gutter, the single most
 // common reason an old_str can never match.

@@ -44,16 +44,39 @@ const MaxAdvertisedTools = 12
 
 // ServerConfig describes one MCP server (stdio or HTTP).
 type ServerConfig struct {
-	Name     string            `yaml:"name" json:"name"`
-	Command  string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Args     []string          `yaml:"args,omitempty" json:"args,omitempty"`
-	Env      map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	URL      string            `yaml:"url,omitempty" json:"url,omitempty"` // HTTP JSON-RPC
-	ReadOnly bool              `yaml:"read_only" json:"read_only"`         // default true
+	Name    string            `yaml:"name" json:"name"`
+	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	URL     string            `yaml:"url,omitempty" json:"url,omitempty"` // HTTP JSON-RPC
+
+	// Writable is the blanket opt-OUT of read-only mode. It is spelled as the
+	// unsafe direction on purpose: the zero value of a ServerConfig — one built
+	// by a helper, a decoder, a test, or any future call site that forgets a
+	// field — is then read-only, which is the safe answer.
+	//
+	// ReadOnly used to carry this decision as `ReadOnly bool`, so
+	// `ServerConfig{Name: "x"}` meant "this server may call any tool it
+	// advertises, mutating or not". Only pkg/orchestrator ever set it, and only
+	// there was the default computed correctly (via a *bool); every other path
+	// was open by default.
+	Writable bool `yaml:"writable,omitempty" json:"writable,omitempty"`
+
+	// ReadOnly forces read-only mode. Retained for the existing orchestrator
+	// wiring, which sets it from the config's `read_only` key. It can only ever
+	// make a server MORE restricted — clearing it does not grant write access,
+	// Writable does. See IsReadOnly.
+	ReadOnly bool `yaml:"read_only" json:"read_only"`
+
 	// AllowTools optionally pins the exact tool names callable on this server.
-	// When set it wins over the read-only annotation heuristic.
+	// When set it wins over the read-only annotation heuristic, and it is the
+	// precise way to grant a mutating tool: name it.
 	AllowTools []string `yaml:"allow_tools,omitempty" json:"allow_tools,omitempty"`
 }
+
+// IsReadOnly reports the effective policy. Read-only unless explicitly made
+// Writable, and always read-only when ReadOnly is set.
+func (c ServerConfig) IsReadOnly() bool { return c.ReadOnly || !c.Writable }
 
 // ToolInfo is a discovered MCP tool.
 type ToolInfo struct {
@@ -451,26 +474,27 @@ func IsToolAllowed(cfg ServerConfig, info ToolInfo, known bool) (bool, string) {
 			"tool %q is not in this server's allow_tools list (%s). Use one of those, or ws_* tools.",
 			info.Name, strings.Join(cfg.AllowTools, ", "))
 	}
-	if !cfg.ReadOnly {
+	if !cfg.IsReadOnly() {
 		return true, ""
 	}
 	if !known {
 		return false, fmt.Sprintf(
 			"tool %q was not advertised by server %q, so the harness cannot tell whether it mutates state. "+
-				"Server %q is configured read_only. Call a tool listed in mcp_call's description.",
+				"Server %q is read-only. Call a tool listed in mcp_call's description.",
 			info.Name, cfg.Name, cfg.Name)
 	}
 	if info.DestructiveHint != nil && *info.DestructiveHint {
 		return false, fmt.Sprintf(
-			"tool %q is annotated destructive and server %q is configured read_only. "+
+			"tool %q is annotated destructive and server %q is read-only. "+
 				"Make changes with ws_edit/ws_write instead.", info.Name, cfg.Name)
 	}
 	if info.ReadOnlyHint != nil && *info.ReadOnlyHint {
 		return true, ""
 	}
 	return false, fmt.Sprintf(
-		"tool %q is not annotated read-only and server %q is configured read_only, so it is refused. "+
-			"Use a read-only tool from this server, or ask the operator to add %q to allow_tools.",
+		"tool %q is not annotated read-only and server %q is read-only, so it is refused. "+
+			"Use a read-only tool from this server, or ask the operator to add %q to this "+
+			"server's allow_tools.",
 		info.Name, cfg.Name, info.Name)
 }
 

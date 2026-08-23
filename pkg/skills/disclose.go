@@ -163,13 +163,7 @@ func (l *Loader) ExpandBody(name string) (string, bool) {
 // ResolveMatches is ResolveForRun with the scores retained, so a caller can
 // decide what to expand.
 func (l *Loader) ResolveMatches(query, agent string, pins []string, limit int) []Match {
-	scores, explicit, ranked := l.resolveScored(query, agent, pins, limit)
-	out := make([]Match, 0, len(ranked))
-	for _, s := range ranked {
-		key := strings.ToLower(s.Name)
-		out = append(out, Match{Skill: s, Score: scores[key], Explicit: explicit[key]})
-	}
-	return out
+	return l.ResolveMatchesScoped(query, agent, pins, limit, nil)
 }
 
 // PackForAgentTiered renders the two-stage pack for one specialist.

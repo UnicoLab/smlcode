@@ -24,12 +24,17 @@ var DevOrigins = []string{
 //     config write, API-key write and run-start capability. It therefore
 //     refuses any request that is not loopback and emits no permissive CORS
 //     headers, so no third-party web page can read a response or drive a run.
-//   - A random session Token adds defense in depth against other local
-//     processes/users. It is accepted as `X-SLMCode-Token`, as
-//     `Authorization: Bearer …` or as the `t` query parameter (EventSource
-//     cannot set headers). The token is handed to the SPA either through the
-//     `?t=` parameter of the URL the CLI prints or through the
-//     `<meta name="slmcode-token">` tag injected into the served index.html.
+//   - A random session Token gates EVERY request, the HTML shell included. It
+//     is accepted as `X-SLMCode-Token`, as `Authorization: Bearer …`, as the
+//     `t` query parameter of the URL the CLI prints, or as the HttpOnly
+//     SameSite=Strict cookie the server sets once one of those validates.
+//     Nothing is ever embedded in the served HTML: `GET /` without a token
+//     returns a static "open the URL the CLI printed" page, so another local
+//     process cannot curl the shell and read the secret out of it.
+//     Residual risk: the token still lives in the CLI's stdout and in this
+//     process's memory, so a process running as the SAME user can obtain it.
+//     Loopback + same-origin + token is a boundary against other machines,
+//     other origins and unprivileged local listeners — not against the user.
 //   - NoAuth is the escape hatch for embedded use; loopback enforcement stays.
 type Options struct {
 	// Token is the shared session secret. Empty means "no token required"
@@ -114,7 +119,7 @@ func NewToken() string {
 // The CLI must surface it, e.g. `http://127.0.0.1:7420/?t=<token>`.
 func (s *Server) Token() string { return s.opts.Token }
 
-// AuthEnabled reports whether a session token is required for /api/* calls.
+// AuthEnabled reports whether a session token is required (on every request).
 func (s *Server) AuthEnabled() bool { return s.opts.Token != "" && !s.opts.NoAuth }
 
 // URL builds the address a user should open, including the session token when

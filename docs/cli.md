@@ -35,7 +35,7 @@ Every command is safe to call from a script, a CI job or another agent.
 | 1 | generic failure |
 | 2 | usage error / invalid argument / a TTY was required |
 | 3 | workspace not initialized |
-| 4 | provider endpoint unreachable (pre-flight refused to start the run) |
+| 4 | provider check failed — `run` pre-flight found nothing listening, or `doctor` found an unreachable endpoint, a rejected key or a missing model |
 | 5 | the run completed but tasks failed |
 | 6 | a human-in-the-loop gate could not be answered |
 | 130 | interrupted (SIGINT/SIGTERM); a second interrupt force-quits |
@@ -125,7 +125,8 @@ path is embedded in a file that may be committed. Older files are migrated forwa
 | Command | Purpose |
 |---|---|
 | `status` | Query, provider, board counts, plan gate, connection probe, pending count |
-| `board` | Kanban snapshot |
+| `board` | Kanban snapshot; flags tasks that need a human and names the one to inspect |
+| `task show <id>` | **Why a task stopped** — scope, acceptance, last output, review verdict and issues, the gate that blocked it, and the diff of its focus files (`--json`, `--no-diff`) |
 | `compose [query…]` | Preview the dynamic pipeline — no LLM call, no writes |
 | `readiness` / `ready` | Score local-SLM readiness; `--fix` applies safe defaults |
 | `task` | `add` · `show` · `edit` · `move` · `delegate` · `check` · `uncheck` · `promote` · `rm` |
@@ -165,6 +166,57 @@ slmcode run --on-gate-timeout=approve "…"     # headless: approve the plan
 
 `dynamic_pipeline` defaults on: the composer selects a task-specific subset of phases, agents,
 slots and execute-loop roles before workers run.
+
+### What a run prints at the end
+
+The last block of every run — successful or not — answers "what changed and what do I do now".
+
+When files changed:
+
+```
+  duration        41.2s
+  tasks           2/3 done  ·  1 awaiting a human
+  board           .slmcode/board.json
+
+Changes
+  3 files · +47 −12
+    pkg/auth/jwt.go                     +31 -2  ++++++++++++++++
+    pkg/auth/jwt_test.go                +14 -0  +++++++
+    README.md                           +2 -10  ++--------
+
+Next
+  slmcode diff             the full patch, file by file
+  slmcode commit -m "…"    keep it
+  slmcode task show T3     why T3 stopped: verdict, gate and diff
+```
+
+When nothing changed — the most common outcome of a small local model, and the one the CLI used
+to be silent about:
+
+```
+Changes
+  ⚠ no files changed — nothing was created, modified or deleted on disk
+  the model's edits were refused before they reached the tree (usually: an edit was claimed but never made)
+
+Next
+  slmcode task show T1    why T1 stopped: verdict, gate and diff
+  slmcode run --vv "…"    re-run with the full agent transcript
+```
+
+Details worth knowing:
+
+- The change set is what **this run** did. Files that were already dirty when the run started and
+  that the run did not touch are excluded, and `.slmcode/` harness state never counts.
+- `permission: review` stages edits instead of writing them, so the block says
+  `N proposed edit(s) are held for review and have NOT been written yet` and offers
+  `slmcode apply` first.
+- `tasks` separates *verified* done from **human overrides**: answering `[d]one` at the escalate
+  gate closes a task the evidence gate refused, and the summary says
+  `1 human override — you answered [d]one at the escalate gate` rather than folding it into the
+  done count. `slmcode board` marks the same task `⚑ forced done`.
+- `errors  .slmcode/errors/errors.md` appears only when that file actually holds something.
+- The same block prints when a run fails, dies at a gate or is interrupted — "did my files
+  change?" is a more urgent question after a failure than after a success.
 
 ## `compose`
 
@@ -215,6 +267,36 @@ slmcode reject --all
 
 Without a TTY, `slmcode apply` exits 2 and names the three non-interactive options.
 
+## `task show`
+
+The answer to "why did T1 stop?". `T1 needs human review` is the most common terminal state of a
+local-SLM run, and this is where it stops being a dead end.
+
+```bash
+slmcode task show T1            # scope, verdict, gate, and the diff of its focus files
+slmcode task show T1 --no-diff  # skip the diff
+slmcode task show T1 --json     # task, verdict, gate, gate reason, answer
+```
+
+It renders, in the order a human needs them:
+
+| Section | What it answers |
+|---|---|
+| header | the column, the role, retry count, focus files — and `← forced done by a human` when someone overrode the evidence gate |
+| **Scope** | what the task was asked to do |
+| **Acceptance criteria** | how it was going to be judged |
+| **Last output** | the agent's final JSON, with `files_changed` labeled as a *claim* |
+| **Review verdict** | approved/rejected, score, summary, and each issue |
+| **Gate** | which gate refused it, how many times, the escalate question and how it was answered |
+| **Diff of focus files** | what those files actually look like now — or an explicit "no change on disk" |
+| **Next** | the commands that move it forward from this terminal |
+
+Repeated engine notes are collapsed (`… ×200`), and Studio-only advice in engine-authored text is
+rewritten into a command this binary has.
+
+`slmcode board` flags the tasks worth opening (`⚑ needs you`, `⚑ blocked`, `⚑ forced done`) and
+names one in its tip.
+
 ## `studio`
 
 ```bash
@@ -246,8 +328,10 @@ slmcode agent edit worker model=… provider=…     # pin; empty = inherit the 
 slmcode agent clear-llm worker
 ```
 
-Shipped stacks: `omlx-local`, `ollama-local`, `openai`, `openrouter`, `deepseek`, `groq`,
-`google`, `qwen` (`stacks/*.yaml`). Details → [Providers](providers.md).
+Shipped stacks (13, `stacks/*.yaml`): `omlx-local`, `mlx-qwen-coder`, `ollama-local`,
+`ollama-qwen-coder`, `ollama-qwen3-coder`, `lmstudio-local`, `vllm-local`, `openai`,
+`openrouter`, `deepseek`, `groq`, `google`, `qwen`. `slmcode stack list` prints the live set.
+Details → [Providers](providers.md).
 
 ## `blocks`
 
@@ -306,8 +390,9 @@ All take `--json`. Details → [Self-improvement & memory](self-improvement.md).
 ## `doctor`
 
 Reports the active provider / model / endpoint, reachability with latency, the embedding mode,
-and workspace / board / skills sanity. `--json` for scripts. Exit code 4 means the endpoint is
-unreachable.
+and workspace / board / skills sanity. `--json` for scripts. Exit code 4 means the provider check
+failed — an unreachable endpoint, a rejected or missing API key, or a model the endpoint does not
+serve; the message names which.
 
 ## Completions
 
@@ -355,9 +440,10 @@ a sticky status footer (it does not clear the screen on repaint).
 | `Ctrl-A/E/K/U/W` | line editing |
 | `Ctrl-C` | cancel; twice to quit |
 
-Slash commands: `/help` `/run` `/stop` `/resume` `/plan` `/planner` `/board` `/status` `/diff`
+Slash commands: `/help` `/run` `/stop` `/resume` `/plan` `/board` `/status` `/diff`
 `/apply` `/reject` `/rewind` `/compact` `/agents` `/agent` `/model` `/models` `/provider`
 `/permission` `/auth` `/schema` `/mcp` `/skills` `/blocks` `/pack` `/sessions` `/history`
-`/stats` `/errors` `/feedback` `/escalate` `/doctor` `/studio` `/refresh` `/clear` `/q`.
+`/stats` `/errors` `/feedback` `/escalate` `/doctor` `/studio` `/refresh` `/clear` `/q`
+(aliases `/quit`, `/exit`).
 
 → [TUI & chat](tui.md)

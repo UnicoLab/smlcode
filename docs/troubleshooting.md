@@ -223,6 +223,7 @@ enough to break it for every call.
 
 The per-task LLM call budget is exhausted. This replaced an unbounded worst case; raise
 `max_task_calls` if your tasks genuinely need more round-trips, or split the task.
+`slmcode task show <id>` names this gate under **Gate**, with the number of times it fired.
 
 ---
 
@@ -230,8 +231,35 @@ The per-task LLM call budget is exhausted. This replaced an unbounded worst case
 
 ### A run finishes but nothing changed
 
-Check `permission` — in `review` mode the changes are in `.slmcode/pending/`
-(`slmcode apply --list`). In `dry-run` nothing is ever written.
+The run says so now — the closing block reads
+`⚠ no files changed — nothing was created, modified or deleted on disk` and gives a reason. Three
+reasons, in order of likelihood:
+
+1. **The edit was refused for lack of evidence.** The model returned
+   `{"status":"done","files_changed":["x.go"]}` without ever writing `x.go`. The line under the
+   warning says so, and `slmcode task show <id>` prints the reviewer's verdict, the gate that
+   refused the task, and the (unchanged) diff of its focus files. Shrink the scope and sharpen the
+   acceptance line — `slmcode task edit T1 --acceptance "…"` then `slmcode run "…"` again.
+2. **`permission: review`.** The edits exist as proposals in `.slmcode/pending/`; the block says
+   `N proposed edit(s) are held for review` and offers `slmcode apply`.
+3. **`permission: dry-run`.** Nothing is ever written.
+
+The change set is what *this run* did: files that were already modified before the run started and
+that the run did not touch are excluded, and `.slmcode/` harness state never counts.
+
+### `slmcode board` says a task is done but the work is not there
+
+Look for `⚑ forced done` next to it. That marks a task closed because a human answered `[d]one` at
+the escalate gate, which **overrides** the evidence gate that refused it. The run summary counts
+those separately (`1 human override — you answered [d]one at the escalate gate`) and
+`slmcode task show <id>` says so in the header.
+
+### `T1 needs human review` and you do not know why
+
+`slmcode task show T1`. It renders the scope, the acceptance criteria, the agent's last output
+(with its `files_changed` claim labeled as a claim), the reviewer's verdict and issues, the gate
+that refused the task, and the diff of the task's focus files — then lists what you can do from
+the terminal. `slmcode board` flags the tasks worth opening and names one in its tip.
 
 ### The reviewer approves work that is not there
 

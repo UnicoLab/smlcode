@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
@@ -42,6 +42,11 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 			if err != nil {
 				return err
 			}
+			// A brand-new workspace has no previous config.yaml/pipeline.yaml to
+			// back up. Remember that so the ".bak of a file that never existed"
+			// left behind by pack application can be cleaned up below.
+			fresh := freshWorkspaceFiles(ws.Config.SlmDir())
+
 			// Always run InitWorkspace (idempotent): empty scaffolds + skills + board.json.
 			// Agents populate CONTEXT/PLAN/TASKS on the first real run — nothing is seeded.
 			h := &harness.Harness{Config: ws.Config}
@@ -59,13 +64,23 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 			if ws.Config.Endpoint != config.DefaultEndpointFor(ws.Config.Provider) {
 				detected = append(detected, "endpoint")
 			}
-			if pack := detectLanguagePack(ws.Config.Root); pack != "" {
+			// Detection lives in pkg/blocks, next to the pack definitions: it is
+			// deterministic, precedence-ranked, proves a language from file
+			// CONTENT (Detect.Contains) and skips nested sub-projects. The CLI
+			// used to keep a third, weaker marker list here and run it AFTER
+			// InitWorkspace, overwriting the right answer — a Kotlin repo got
+			// active_pack: java next to ./gradlew test, a TypeScript repo got
+			// active_pack: web next to npm test.
+			if pack := blocks.DetectPack(ws.Config.Root, ws.Config.Root); pack != "" {
 				ws.Config.ActivePack = pack
 				detected = append(detected, "active_pack")
 			}
 			if err := ws.Config.SaveInitial(detected...); err != nil {
 				return err
 			}
+			// After the LAST write of this init, not before: pack application
+			// and SaveInitial each rewrite config.yaml/pipeline.yaml.
+			dropPhantomBackups(fresh)
 
 			fmt.Println(cli.Success("workspace ready"))
 			cli.KeyVal("path", ws.Config.SlmDir())
@@ -103,62 +118,37 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 	return cmd
 }
 
-// languageMarkers maps a bundled block-pack id onto the files that prove a
-// project uses it. Ordered most specific first, and restricted to the packs
-// that actually ship in pkg/blocks/bundled/packs — writing an active_pack that
-// does not exist would be worse than writing none.
-var languageMarkers = []struct {
-	Pack  string
-	Files []string
-}{
-	{"go", []string{"go.mod"}},
-	{"rust", []string{"Cargo.toml"}},
-	{"python", []string{"pyproject.toml", "requirements.txt", "setup.py", "Pipfile"}},
-	{"java", []string{"pom.xml", "build.gradle", "build.gradle.kts"}},
-	{"cpp", []string{"CMakeLists.txt", "meson.build"}},
-	{"react", []string{"next.config.js", "next.config.ts", "next.config.mjs",
-		"vite.config.ts", "vite.config.js"}},
-	{"web", []string{"package.json"}},
-}
+// initBackupCandidates are the workspace files that pack application rewrites
+// during `slmcode init`, each of which grows a ".bak" sibling on the second
+// write.
+var initBackupCandidates = []string{"config.yaml", "pipeline.yaml"}
 
-// detectLanguagePack picks the building-block pack for a project root, or "".
-func detectLanguagePack(root string) string {
-	if root == "" {
-		return ""
+// freshWorkspaceFiles returns the candidates that do NOT exist yet.
+//
+// On a brand-new workspace init writes config.yaml and pipeline.yaml, then
+// applies the detected language pack, which rewrites both — and the atomic
+// writer dutifully saves a backup of a file that is seconds old and that the
+// user has never seen. The result was a first-run workspace containing
+// config.yaml.bak and pipeline.yaml.bak: two files that look like evidence of
+// a botched upgrade. Backups of files that predate this init are kept.
+func freshWorkspaceFiles(slmDir string) []string {
+	if slmDir == "" {
+		return nil
 	}
-	for _, m := range languageMarkers {
-		for _, name := range m.Files {
-			path := filepath.Join(root, name)
-			if _, err := os.Stat(path); err != nil {
-				continue
-			}
-			// A plain package.json is "web" unless it actually depends on
-			// React, in which case the react pack's agents and gates fit better.
-			if m.Pack == "web" && dependsOnReact(path) {
-				return "react"
-			}
-			return m.Pack
+	var fresh []string
+	for _, name := range initBackupCandidates {
+		if _, err := os.Stat(filepath.Join(slmDir, name)); os.IsNotExist(err) {
+			fresh = append(fresh, filepath.Join(slmDir, name))
 		}
 	}
-	return ""
+	return fresh
 }
 
-// dependsOnReact reports whether a package.json lists react as a dependency.
-func dependsOnReact(path string) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // path is inside the user's own project root
-	if err != nil {
-		return false
+// dropPhantomBackups removes the .bak siblings of files this init created.
+func dropPhantomBackups(fresh []string) {
+	for _, path := range fresh {
+		_ = os.Remove(path + ".bak")
 	}
-	var pkg struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
-	}
-	if json.Unmarshal(data, &pkg) != nil {
-		return false
-	}
-	_, prod := pkg.Dependencies["react"]
-	_, dev := pkg.DevDependencies["react"]
-	return prod || dev
 }
 
 func runCmd() *cobra.Command {
@@ -250,9 +240,20 @@ func runCmd() *cobra.Command {
 				}
 			})
 
+			// What the tree looks like BEFORE the engine runs, so the closing
+			// summary can say what this run changed rather than what the
+			// working tree happens to contain.
+			before := fingerprintDirty(h.Config.Root)
+
 			res, err := h.Run(ctx, query)
 			if err != nil {
-				return runFailure(ctx, err, gates)
+				return runFailure(ctx, err, gates, outcomeOptions{
+					root:      h.Config.Root,
+					slmDir:    h.Config.SlmDir(),
+					before:    before,
+					board:     boardSnapshot(h.Config.SlmDir()),
+					overrides: gates.overrides,
+				})
 			}
 			fmt.Println()
 			fmt.Println(status.Footer())
@@ -263,13 +264,27 @@ func runCmd() *cobra.Command {
 				fmt.Println(cli.Warn(res.Summary))
 			}
 			cli.KeyVal("duration", res.Duration.Round(time.Millisecond).String())
-			cli.KeyVal("failed", fmt.Sprintf("%d", res.FailedTasks))
-			cli.KeyVal("board", h.Config.SlmDir()+"/board.json")
-			cli.KeyVal("errors", h.Config.SlmDir()+"/errors/errors.md")
-			if n := pendingCount(h.Config.SlmDir()); n > 0 {
-				fmt.Println(cli.Warn(fmt.Sprintf("%d change(s) awaiting review — slmcode apply", n)))
+			tally := tallyBoard(res.Board)
+			if n := len(gates.overrides); n > tally.forced {
+				tally.forced = n
 			}
+			printTaskTally(tally)
+			cli.KeyVal("board", h.Config.SlmDir()+"/board.json")
+			// Only when it holds something: a path printed on every run,
+			// successful ones included, teaches the reader to ignore it.
+			if p := errorsLogPath(h.Config.SlmDir()); p != "" {
+				cli.KeyVal("errors", p)
+			}
+			printRunOutcome(outcomeOptions{
+				root:      h.Config.Root,
+				slmDir:    h.Config.SlmDir(),
+				before:    before,
+				board:     res.Board,
+				success:   res.Success,
+				overrides: gates.overrides,
+			})
 			if !res.Success {
+				fmt.Println()
 				if gates.interrupted {
 					fmt.Println(cli.Dim("  interrupted at a gate — `slmcode session resume` picks the board back up"))
 					return failf(130, "interrupted")
@@ -717,10 +732,14 @@ func versionCmd() *cobra.Command {
 // Two failures used to surface as raw Go error text with no next step: an
 // interrupt ("context canceled") and a gate nobody could answer ("plan not
 // approved"). Both now carry the documented exit code and say what to do.
-func runFailure(ctx context.Context, err error, gates *gateAudit) error {
+func runFailure(ctx context.Context, err error, gates *gateAudit, opt outcomeOptions) error {
 	if err == nil {
 		return nil
 	}
+	// A run that died still usually touched the tree, and "did my files
+	// change?" is a MORE urgent question after a failure than after a success.
+	opt.failure = err
+	printRunOutcome(opt)
 	msg := strings.ToLower(err.Error())
 	// Both spellings: this matches provider error TEXT, and some backends use
 	// the British double-l form. The literal is DATA, not prose, hence the

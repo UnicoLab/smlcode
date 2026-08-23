@@ -106,7 +106,12 @@ func TestTesterHasShellEvidence(t *testing.T) {
 		want bool
 	}{
 		{"smoke section", SmokeSectionHeader + "\nPASSED\ncmd: go test ./...", true},
-		{"react observation", "Observation: ok  slmcode/pkg/plan  0.01s", true},
+		{"react observation naming the tool", "Observation: ws_shell `go test ./...`\nok  slmcode/pkg/plan  0.01s", true},
+		{"react observation with an exit line", "Observation: go test ./... exit status 0", true},
+		// A bare Observation frame is emitted for ANY tool call — ws_read
+		// included — and the model can type it with no tool call at all.
+		{"bare react observation", "Observation: ok  slmcode/pkg/plan  0.01s", false},
+		{"prose observation", "Observation: all tests pass", false},
 		{"ws_shell frame", `{"tool":"ws_shell","args":{"command":"go test ./..."}}`, true},
 		{"exit status line", "go test ./...\nexit status 1", true},
 		{"exit code colon", "npm test\nexit code: 0", true},

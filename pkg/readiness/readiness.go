@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/models"
 )
 
@@ -52,12 +53,7 @@ func Build(cfg *config.Config, skillCount int) Report {
 			Message:  boolMessage(cfg.DynamicPipeline, "Composer adapts phases and specialists per task", "Static pipeline only; adaptive composition is disabled"),
 			FixLabel: "Enable dynamic pipeline", FixPatch: fixPatchIf(!cfg.DynamicPipeline, "dynamic_pipeline", true),
 		},
-		{
-			ID: "context_compaction", Label: "Context Compaction", OK: cfg.ContextCompact && cfg.ReactCompact, Severity: "warning",
-			Message:  boolMessage(cfg.ContextCompact && cfg.ReactCompact, "Document and ReAct compaction are enabled", "Long local-model runs may exceed useful context"),
-			FixLabel: "Enable compaction", FixPatch: fixPatchIf(!cfg.ContextCompact || !cfg.ReactCompact,
-				"context_compact", true, "react_compact", true, "react_compact_at_percent", 80),
-		},
+		compactionCheck(cfg),
 		{
 			ID: "session_events", Label: "Run Event Log", OK: cfg.SessionEventLog, Severity: "warning",
 			Message:  boolMessage(cfg.SessionEventLog, "Runs persist events for replay and debugging", "Archived runs will have weak traceability"),
@@ -415,4 +411,28 @@ func fixPatchIf(cond bool, kv ...interface{}) map[string]interface{} {
 		return nil
 	}
 	return out
+}
+
+// compactionCheck reports what compaction the harness actually PERFORMS, not
+// what the config asked for.
+//
+// It used to say "Document and ReAct compaction are enabled" whenever
+// context_compact and react_compact were both on. Only one of the two ReAct
+// call sites exists: the resume path compacts a restored checkpoint, and
+// nothing compacts a live 16-iteration worker mid-call (loop.CompactLiveMessages
+// has no caller — see loop.LiveReactCompactionWired). An operator reading a
+// green "Context Compaction" check concluded a long agent call could not
+// exhaust the window, which is the one thing this check did not cover.
+func compactionCheck(cfg *config.Config) Check {
+	on := cfg.ContextCompact && cfg.ReactCompact
+	msg := boolMessage(on,
+		"Document compaction is on; "+loop.ReactCompactionStatus(cfg.ReactCompact),
+		"Long local-model runs may exceed useful context")
+	return Check{
+		ID: "context_compaction", Label: "Context Compaction", OK: on, Severity: "warning",
+		Message:  msg,
+		FixLabel: "Enable compaction",
+		FixPatch: fixPatchIf(!cfg.ContextCompact || !cfg.ReactCompact,
+			"context_compact", true, "react_compact", true, "react_compact_at_percent", 80),
+	}
 }

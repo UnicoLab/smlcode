@@ -90,7 +90,14 @@ func AcceptCompaction(input, output string) GateFailure {
 	if len(output) < before/MinRetentionDivisor {
 		return GateTooShort
 	}
-	if !strings.Contains(output, "## ") && !strings.HasPrefix(output, "## ") {
+	// The heading gate is a STRUCTURE-PRESERVED check, not a house style. It
+	// exists because a small model asked to compress a sectioned CONTEXT.md
+	// answers with three loose bullets; it must not fire on a document that
+	// legitimately has no `## ` headings to preserve — a plain-prose PRD, a
+	// flat notes file, a transcript. Demanding a heading the input never had
+	// rejected every correct summary of those and silently demoted them to the
+	// heuristic.
+	if hasMarkdownHeading(input) && !hasMarkdownHeading(output) {
 		return GateNoHeading
 	}
 	want := PathTokens(input)
@@ -106,4 +113,9 @@ func AcceptCompaction(input, output string) GateFailure {
 		}
 	}
 	return GateOK
+}
+
+// hasMarkdownHeading reports whether s carries a `## ` section heading.
+func hasMarkdownHeading(s string) bool {
+	return strings.HasPrefix(s, "## ") || strings.Contains(s, "\n## ")
 }

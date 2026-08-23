@@ -250,14 +250,31 @@ func ContinueGate(id, reason, summary string, gaps, escalated []string) Gate {
 }
 
 // EscalateGate builds the per-task escalate gate.
+//
+// This gate is where most local-SLM runs end, so its card carries more than a
+// question. The engine's own text for this moment said "decide in Studio (or
+// wait for timeout)" — advice that is false in a terminal and, worse, is the
+// only advice the user got. The card now says what each key DOES (in
+// particular that [d]one overrides a gate that refused the work, and is
+// recorded as an override) and names the command that shows the evidence.
 func EscalateGate(id, taskID, title, detail string, files []string) Gate {
 	body := []string{Dim("task   ") + Accent(taskID) + "  " + Clip(title, 140)}
 	if len(files) > 0 {
 		body = append(body, Dim("files  ")+Cyan(strings.Join(files, ", ")))
 	}
 	if detail != "" {
-		body = append(body, Dim("why    ")+Clip(detail, 400))
+		body = append(body, Dim("why    ")+Clip(TranslateEngineAdvice(detail), 400))
 	}
+	body = append(body,
+		"",
+		Dim("[r]etry ")+"another wave on the same task, unchanged",
+		Dim("[s]cope ")+"park it for you to fix or re-scope by hand",
+		Dim("[d]one  ")+Yellow("force done — overrides the gate that refused it; recorded as your override"),
+		Dim("[a]bort ")+"block the task and move on",
+		"",
+		Dim("see the evidence: ")+Accent("slmcode task show "+taskID)+
+			Dim("  (another terminal — verdict, gate and diff)"),
+	)
 	return Gate{
 		ID:    id,
 		Kind:  "escalate",

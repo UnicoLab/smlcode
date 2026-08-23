@@ -38,6 +38,26 @@ func nonInteractivePolicy() cli.GateTimeoutPolicy {
 type gateAudit struct {
 	unanswered  []string // gate kinds resolved by policy instead of a human
 	interrupted bool     // the user aborted AT a gate (Ctrl-C / Esc)
+	// overrides names the tasks a human force-marked done at the escalate
+	// gate. Answering [d]one moves a task the evidence gate REFUSED into the
+	// done column, and the run summary then reported "1/1 tasks done, 0
+	// failed" with no trace that a human had waved it through. A summary that
+	// cannot distinguish "the harness verified this" from "you told the
+	// harness to stop asking" is not a summary of the run.
+	overrides []string
+}
+
+// noteOverride records a human forcing one task done.
+func (a *gateAudit) noteOverride(taskID string) {
+	if a == nil || taskID == "" {
+		return
+	}
+	for _, id := range a.overrides {
+		if id == taskID {
+			return
+		}
+	}
+	a.overrides = append(a.overrides, taskID)
 }
 
 func (a *gateAudit) note(kind string) {
@@ -201,10 +221,20 @@ func registerGates(h *harness.Harness, host gateHost) *gateAudit {
 	o.OnEscalate(func(ctx context.Context, ask plan.EscalateAsk) (plan.EscalateAnswer, error) {
 		g := cli.EscalateGate(ask.ID, ask.TaskID, ask.Title, ask.Detail, ask.Files)
 		ans := askGate(ctx, audit, host, g)
+		action := plan.NormalizeEscalateAction(ans.Value)
+		notes := ans.Notes
+		if action == plan.EscalateActionMarkDone {
+			audit.noteOverride(ask.TaskID)
+			// Stamp the board too, so `slmcode task show` and every later
+			// `slmcode board` still say who closed this task — the audit
+			// above only lives as long as this process.
+			notes = strings.TrimSpace("HUMAN OVERRIDE: forced done at the escalate gate " +
+				"(the evidence gate had refused this task)\n" + notes)
+		}
 		return plan.EscalateAnswer{
 			AskID:      ask.ID,
-			Action:     plan.NormalizeEscalateAction(ans.Value),
-			Notes:      ans.Notes,
+			Action:     action,
+			Notes:      notes,
 			AnsweredAt: time.Now().UTC().Format(time.RFC3339),
 		}, nil
 	})

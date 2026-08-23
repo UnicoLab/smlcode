@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,12 +12,37 @@ import (
 // TokenHeader is the canonical header carrying the Studio session token.
 const TokenHeader = "X-SLMCode-Token" //nolint:gosec // header name, not a credential value
 
-// TokenQueryParam carries the token for clients that cannot set headers
-// (EventSource / <img> style loads).
+// TokenQueryParam is the bootstrap parameter of the URL the CLI prints
+// (`http://127.0.0.1:7420/?t=…`). Presenting it once mints TokenCookieName;
+// after that the SPA needs no token of its own.
 const TokenQueryParam = "t"
 
-// TokenMetaName is the <meta> tag the SPA reads on first load.
-const TokenMetaName = "slmcode-token" //nolint:gosec // meta-tag name, not a credential value
+// TokenCookieName carries the session token after a successful `?t=` bootstrap.
+//
+// The cookie replaces the old `<meta name="slmcode-token">` injection. That
+// tag made `GET /` an unauthenticated token-dispenser: any other local process
+// could `curl http://127.0.0.1:7420/`, scrape the token out of the HTML and
+// then drive the agent, so the token provided exactly zero of the
+// "defense in depth against other local processes" it was documented to give.
+//
+// HttpOnly keeps it out of `document.cookie` (so an XSS in a rendered diff
+// cannot exfiltrate it), SameSite=Strict keeps it off every cross-site
+// request, and Path=/ makes it cover the SPA and /api/ alike. It is a session
+// cookie: closing the browser drops it, and the CLI's tokenised URL re-issues.
+const TokenCookieName = "slmcode_studio" //nolint:gosec // cookie name, not a credential value
+
+// tokenSource names where a valid token arrived from.
+type tokenSource int
+
+const (
+	tokenNone tokenSource = iota
+	// tokenFromBootstrap is a header / bearer / `?t=` presentation — the form
+	// the CLI's printed URL and a non-browser client use. Seeing one is what
+	// mints the cookie.
+	tokenFromBootstrap
+	// tokenFromCookie is the already-bootstrapped browser tab.
+	tokenFromCookie
+)
 
 // secure wraps the mux with the Studio security policy:
 //
@@ -24,7 +50,9 @@ const TokenMetaName = "slmcode-token" //nolint:gosec // meta-tag name, not a cre
 //  2. same-origin enforcement (blocks any cross-site page from driving the
 //     agent), with an opt-in allowance for the Vite dev origins,
 //  3. no permissive CORS headers at all unless --dev-cors is on,
-//  4. a session token on every /api/* request when auth is enabled.
+//  4. a session token on EVERY request when auth is enabled — the HTML shell
+//     included. An unauthenticated navigation gets a static "open the URL the
+//     CLI printed" page instead of the SPA, and never a token.
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.opts.AllowNonLoopback && !isLoopbackHost(r.Host) {
@@ -47,6 +75,9 @@ func (s *Server) secure(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		w.Header().Add("Vary", "Origin")
+		// The response body now depends on the session cookie (SPA vs gate
+		// page), so it must never be cached as if it did not.
+		w.Header().Add("Vary", "Cookie")
 		// Studio must never be framed, and must never leak its URL (which can
 		// carry ?t=<token>) to third parties.
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -58,7 +89,19 @@ func (s *Server) secure(next http.Handler) http.Handler {
 			return
 		}
 
-		if strings.HasPrefix(r.URL.Path, "/api/") && !s.tokenOK(r) {
+		switch s.tokenSourceOf(r) {
+		case tokenFromBootstrap:
+			// A valid token arrived out of band (the CLI's `?t=` URL, a header,
+			// a bearer). Hand the browser a cookie so the token can stop
+			// traveling in URLs — and so nothing has to be embedded in HTML.
+			s.setSessionCookie(w)
+		case tokenFromCookie:
+			// Already bootstrapped.
+		case tokenNone:
+			if isDocumentRequest(r) {
+				writeTokenGate(w)
+				return
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="slmcode-studio"`)
 			http.Error(w, "unauthorized: missing or invalid studio session token", http.StatusUnauthorized)
 			return
@@ -66,6 +109,70 @@ func (s *Server) secure(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// setSessionCookie issues the HttpOnly session cookie.
+//
+// Not Secure: Studio is plain HTTP on loopback, and a Secure cookie would be
+// dropped outright. Loopback is the trust boundary here, not TLS.
+func (s *Server) setSessionCookie(w http.ResponseWriter) {
+	if !s.AuthEnabled() {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     TokenCookieName,
+		Value:    s.opts.Token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// isDocumentRequest reports whether this is a browser navigation to an HTML
+// page, so an unauthenticated hit can be answered with readable instructions
+// instead of a bare 401 body.
+func isDocumentRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		return false
+	}
+	return r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, ".html")
+}
+
+// tokenGatePage is served for an unauthenticated navigation. It is a complete,
+// self-contained document on purpose: every asset is behind the same token, so
+// it can reference nothing. It must never contain the token.
+//
+//nolint:gosec // G101 false positive: static HTML, contains no credential
+const tokenGatePage = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SLMCode Studio — session token required</title>
+<style>
+ body{font:15px/1.6 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      margin:0;display:grid;place-items:center;min-height:100vh;background:#0f1115;color:#e6e8ee}
+ main{max-width:34rem;padding:2rem}
+ h1{font-size:1.15rem;margin:0 0 .75rem}
+ code{background:#1b1f27;padding:.15rem .4rem;border-radius:4px}
+ p{color:#aeb4c2}
+</style></head><body><main>
+<h1>Session token required</h1>
+<p>Studio can read this repository, rewrite its configuration, store provider
+API keys and start agent runs, so it will not open without the session token.</p>
+<p>Open the tokenised URL the CLI printed when it started Studio — it looks like
+<code>http://127.0.0.1:7420/?t=&hellip;</code>. Scroll back in that terminal, or
+restart with <code>slmcode studio</code> to print a fresh one.</p>
+</main></body></html>
+`
+
+// writeTokenGate answers an unauthenticated navigation.
+func writeTokenGate(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = io.WriteString(w, tokenGatePage)
 }
 
 // checkOrigin validates the Origin header. It returns the origin to echo in
@@ -128,10 +235,12 @@ func sameOrigin(r *http.Request, origin string) bool {
 	return strings.EqualFold(u.Host, r.Host)
 }
 
-// tokenOK validates the session token when auth is enabled.
-func (s *Server) tokenOK(r *http.Request) bool {
+// tokenSourceOf validates the session token and reports how it was presented.
+// With auth disabled every request counts as already-bootstrapped, so no
+// cookie is minted for a token that does not exist.
+func (s *Server) tokenSourceOf(r *http.Request) tokenSource {
 	if !s.AuthEnabled() {
-		return true
+		return tokenFromCookie
 	}
 	want := s.opts.Token
 	got := strings.TrimSpace(r.Header.Get(TokenHeader))
@@ -145,10 +254,17 @@ func (s *Server) tokenOK(r *http.Request) bool {
 	if got == "" {
 		got = strings.TrimSpace(r.URL.Query().Get(TokenQueryParam))
 	}
-	if got == "" {
-		return false
+	if got != "" {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+			return tokenFromBootstrap
+		}
+		return tokenNone
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	if c, err := r.Cookie(TokenCookieName); err == nil &&
+		subtle.ConstantTimeCompare([]byte(strings.TrimSpace(c.Value)), []byte(want)) == 1 {
+		return tokenFromCookie
+	}
+	return tokenNone
 }
 
 // isLoopbackHost reports whether an HTTP Host header targets the local machine.

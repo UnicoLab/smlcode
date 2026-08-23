@@ -35,12 +35,18 @@ describe('studio session token', () => {
     expect(studioToken()).toBe('abc123');
   });
 
-  it('falls back to the meta tag the server injects into index.html', () => {
+  // REGRESSION: the server used to inject <meta name="slmcode-token"> into
+  // index.html, which made GET / an unauthenticated token dispenser for any
+  // local process. The shell is now behind the token and hands out a cookie
+  // instead, so the SPA must NOT read a token out of the document.
+  it('ignores a slmcode-token meta tag in the document', () => {
     const meta = document.createElement('meta');
     meta.setAttribute('name', 'slmcode-token');
     meta.setAttribute('content', 'from-meta');
     document.head.appendChild(meta);
-    expect(studioToken()).toBe('from-meta');
+    expect(studioToken()).toBe('');
+    expect(authHeaders()).toEqual({});
+    meta.remove();
   });
 
   it('prefers the URL parameter over a stale stored token', () => {

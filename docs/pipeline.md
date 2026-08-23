@@ -26,7 +26,7 @@ curl -s localhost:7420/api/pipeline | jq .
 
 Or switch presets from the Studio:
 
-- **Pipeline tab**: Use the preset selector (Go, Python, React) for one-click switching
+- **Pipeline tab**: Use the preset selector (every pipeline block the registry sees) for one-click switching
 - **Blocks tab**: Browse all pipeline presets and apply any
 - **Settings**: Use the Pack Selector to switch the entire language workflow
 
@@ -151,17 +151,23 @@ Specialist mode also accepts custom agent IDs.
 
 ## Predefined pipeline presets
 
-SLMCode ships with seven built-in pipeline presets, each optimized for a specific language:
+SLMCode ships with **thirteen** built-in pipeline presets, each optimized for a specific language:
 
 | Preset | Language | Tester Agent | Worker Agent | QA Gate |
 |--------|----------|-------------|-------------|---------|
 | `go` | 🐹 Go | `go-tester` | `go-worker` | `go test ./... -race -count=1` |
 | `python` | 🐍 Python | `python-tester` | `python-worker` | `python -m pytest -q` |
-| `react` | ⚛️ React/TS | `react-tester` | `react-worker` | `npm test --silent` |
+| `react` | ⚛️ React | `react-tester` | `react-worker` | `npm test --silent` |
+| `typescript` | 🟦 TypeScript / Node | `ts-tester` | `ts-worker` | `npm test --silent` |
 | `web` | 🌐 Static HTML/CSS/JS | `web-tester` | `web-worker` | non-empty `index.html` entrypoint |
 | `rust` | 🦀 Rust | `rust-tester` | `rust-worker` | `cargo test --quiet` |
-| `java` | ☕ Java | `java-tester` | `java-worker` | `mvn -q test` |
-| `cpp` | ⚙️ C/C++ | `cpp-tester` | `cpp-worker` | `cmake --build build` |
+| `java` | ☕ Java | `java-tester` | `java-worker` | `mvn -q -B test` |
+| `kotlin` | 🟪 Kotlin | `kotlin-tester` | `kotlin-worker` | `./gradlew test --console=plain` |
+| `dotnet` | 🟣 C# / .NET | `dotnet-tester` | `dotnet-worker` | `dotnet test --nologo --verbosity quiet` |
+| `ruby` | 💎 Ruby | `ruby-tester` | `ruby-worker` | `bundle exec rspec --no-color` |
+| `php` | 🐘 PHP | `php-tester` | `php-worker` | `vendor/bin/phpunit --colors=never` |
+| `swift` | 🕊️ Swift | `swift-tester` | `swift-worker` | `swift test` |
+| `cpp` | ⚙️ C/C++ | `cpp-tester` | `cpp-worker` | `ctest --test-dir build --output-on-failure` |
 
 Each preset:
 - Sets the **test phase agent** to a language-specific verifier

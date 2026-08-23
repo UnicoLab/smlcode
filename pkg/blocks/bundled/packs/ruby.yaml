@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: ruby
+name: Ruby Language Pack
+description: >-
+  Ruby pack — pipeline, quality (Bundler-scoped RSpec/Minitest and RuboCop)
+  and Ruby-aware worker and tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: ruby
+tags: [ruby, rails, rspec, rubocop, pack, marketplace]
+icon: "💎"
+shareable: true
+spec:
+  pipeline: ruby
+  quality: ruby
+  agents: [ruby-worker, ruby-tester]
+  skills: [atomic-coding, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: ruby-tester
+  override_worker: ruby-worker

@@ -31,7 +31,11 @@ steering. Type ? for the command list.`,
 }
 
 func sessionCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "session", Short: "List / show / resume saved runs"}
+	cmd := &cobra.Command{
+		Use:     "session",
+		Short:   "List / show / resume saved runs",
+		Example: "  slmcode session list\n  slmcode session show run-1234\n  slmcode session resume        # pick the interrupted run back up",
+	}
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: php
+name: PHP Language Pack
+description: >-
+  PHP pack — pipeline, quality (PHPUnit, optional PHPStan/PHPCS through
+  vendor/bin) and PSR-4-aware worker and tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: php
+tags: [php, composer, phpunit, phpstan, pack, marketplace]
+icon: "🐘"
+shareable: true
+spec:
+  pipeline: php
+  quality: php
+  agents: [php-worker, php-tester]
+  skills: [atomic-coding, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: php-tester
+  override_worker: php-worker

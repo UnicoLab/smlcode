@@ -103,9 +103,11 @@ a plan — whether or not anyone was watching.
 
 - **A human is attached** (TTY, or a Studio client subscribed to the event stream): the gate
   renders and **blocks until answered**. It does not expire. A gate that silently auto-approves
-  after two minutes is worse than no gate, because you believed you had one.
+  after two minutes is worse than no gate, because you believed you had one. `slmcode run` on a
+  terminal prompts inline and takes a single keystroke — it does not need the TUI.
 - **No human attached**: the gate resolves immediately using the new `--on-gate-timeout` flag,
-  which defaults to **`stop`** — a plan is never auto-approved in a headless run.
+  which defaults to **`stop`** — a plan is never auto-approved in a headless run. A stopped run
+  exits **6** and prints the flag or config key that lets it proceed unattended.
 
 **If your CI relied on the old permissive behaviour:**
 

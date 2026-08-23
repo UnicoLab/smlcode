@@ -1,31 +1,38 @@
 api_version: blocks/v1
 kind: quality
 id: react
-name: React/TypeScript Quality Pack
+name: React Quality Pack
 description: >-
-  Production React/TS verify pack for Vite or Next — eslint/lint, tsc --noEmit,
-  unit tests (vitest/jest/npm test), and production build.
-version: "1.0.0"
+  React verify pack for Vite, Next or CRA — lint, tsc --noEmit, unit tests
+  (vitest/jest) and a production build, with pnpm/yarn/bun detection.
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: typescript
-tags: [react, typescript, vite, next, eslint, vitest]
+tags: [react, typescript, vite, next, eslint, vitest, jest]
 icon: "⚛️"
 shareable: true
 spec:
   detect:
-    files: [package.json, tsconfig.json, vite.config.ts, vite.config.js, next.config.js, next.config.mjs, next.config.ts]
-    extensions: [.tsx, .ts, .jsx, .js]
-    priority: 18
+    # A package.json alone does NOT make a project React — that is what the
+    # typescript pack is for. React has to be a declared dependency.
+    files: [package.json]
+    extensions: [.tsx, .jsx]
+    contains:
+      package.json: ['"react"', '"next"', '"preact"', '"react-dom"']
+    priority: 14
   format:
     - cmd: npm run format --if-present
       label: format
       optional: true
   lint:
-    - cmd: npm run lint
-      label: lint
+    - cmd: npm run lint --if-present
+      label: eslint
       optional: true
   typecheck:
+    - cmd: npm run typecheck --if-present
+      label: typecheck script
+      optional: true
     - cmd: npx tsc --noEmit
       label: tsc
       optional: true
@@ -33,20 +40,39 @@ spec:
     - cmd: npm test --silent
       label: npm test
   build:
-    - cmd: npm run build
+    - cmd: npm run build --if-present
       label: build
   smoke: npm test --silent
   qa_gate: npm test --silent
   safe_prefixes:
     - npm test
     - npm run
+    - npm ci
+    - npm install
     - npx tsc
     - npx vitest
-    - yarn test
+    - npx jest
+    - npx eslint
     - pnpm test
+    - pnpm run
+    - pnpm install
+    - yarn test
+    - yarn run
+    - yarn install
+    - bun test
+    - bun run
+    - bun install
     - node --check
   tester_hints: |
-    Prefer: npm test (vitest/jest) then npm run build.
-    Typecheck: npx tsc --noEmit when tsconfig.json exists.
-    Lint: npm run lint when script present.
-    node --check alone is weak — prefer real tests.
+    Use the package manager the LOCKFILE names, not npm by reflex:
+      pnpm-lock.yaml → pnpm · yarn.lock → yarn · bun.lockb → bun · package-lock.json → npm
+    Verify in this order:
+    1) npx tsc --noEmit          (only when tsconfig.json exists)
+    2) npm run lint --if-present (eslint; react-hooks/exhaustive-deps matters)
+    3) npm test --silent         (vitest or jest — read package.json "scripts")
+    4) npm run build --if-present
+    A component that only renders is not a passing test. If `npm test` reports
+    "no tests found", say so — that is a FAIL for a task that asked for tests,
+    not a pass.
+    `node --check` on a .tsx/.jsx file is meaningless (it is not JS) — never
+    substitute it for tsc.

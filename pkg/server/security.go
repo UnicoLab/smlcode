@@ -163,7 +163,14 @@ func isLoopbackHost(hostport string) bool {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+	// Only the exact name "localhost" and literal loopback IPs.
+	//
+	// A wildcard `*.localhost` used to be accepted. RFC 6761 says resolvers
+	// SHOULD map it to loopback, but nothing stops a public resolver from
+	// answering for `evil.localhost`, and a page served from that name is
+	// same-origin with Studio — which turns the two outer rings of the policy
+	// (loopback host + same origin) into no-ops and leaves only the token.
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

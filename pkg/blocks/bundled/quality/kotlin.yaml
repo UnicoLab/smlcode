@@ -1,0 +1,61 @@
+api_version: blocks/v1
+kind: quality
+id: kotlin
+name: Kotlin Quality Pack
+description: >-
+  Kotlin verify pack — Gradle (Kotlin DSL or Groovy) test and build, with
+  optional ktlint and detekt. Falls back to Maven for kotlin-maven-plugin repos.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: kotlin
+tags: [kotlin, gradle, ktlint, detekt, junit, jvm, android]
+icon: "🟪"
+shareable: true
+spec:
+  detect:
+    files:
+      - build.gradle.kts
+      - settings.gradle.kts
+      - build.gradle
+      - settings.gradle
+      - gradlew
+    extensions: [.kt, .kts]
+    priority: 16
+  format:
+    - cmd: ./gradlew ktlintCheck --console=plain
+      label: ktlint
+      optional: true
+  lint:
+    - cmd: ./gradlew detekt --console=plain
+      label: detekt
+      optional: true
+  test:
+    - cmd: ./gradlew test --console=plain
+      label: gradle test
+  build:
+    - cmd: ./gradlew build -x test --console=plain
+      label: gradle build
+      optional: true
+  smoke: ./gradlew compileKotlin --console=plain
+  qa_gate: ./gradlew test --console=plain
+  safe_prefixes:
+    - ./gradlew
+    - gradle
+    - ./mvnw
+    - mvn
+    - kotlinc
+  tester_hints: |
+    Always use the WRAPPER (./gradlew), never a system `gradle` — the wrapper
+    pins the Gradle version the build actually needs.
+    Verify: ./gradlew test --console=plain
+    Compile only:  ./gradlew compileKotlin --console=plain
+    Android module: ./gradlew :app:testDebugUnitTest --console=plain
+    Optional when configured: ./gradlew ktlintCheck ; ./gradlew detekt
+    Ecosystem facts:
+    - `--console=plain` matters: the rich console emits ANSI progress bars that
+      swamp the captured output and hide the failure.
+    - Gradle caches aggressively. If a change appears to have no effect, add
+      `--rerun-tasks` ONCE rather than concluding the code is fine.
+    - `./gradlew build` runs tests too; `-x test` skips them for a compile check.
+    Do NOT run pytest / go test / npm test.

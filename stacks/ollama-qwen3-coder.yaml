@@ -1,0 +1,82 @@
+# ── SLMCode Stack: Ollama · Qwen3-Coder 30B-A3B (MoE) ──
+# Qwen3-Coder-30B-A3B is a mixture-of-experts model: 30B total parameters but
+# ~3B active per token, so it runs at roughly 7B speed while coding at a much
+# higher level. The best single local coding model most machines can host.
+#
+#   ollama pull qwen3-coder:30b
+#   ollama pull qwen2.5-coder:3b      # fast model for the light roles
+#
+# Apply: slmcode stack apply ollama-qwen3-coder
+
+label: Ollama · Qwen3-Coder 30B-A3B
+description: MoE coder — 30B quality at ~3B active-parameter speed
+icon: "🦙"
+
+provider: ollama
+endpoint: http://127.0.0.1:11434
+model: qwen3-coder:30b
+fast_model: qwen2.5-coder:3b
+backend: slmcode
+temperature: 0.12
+max_tokens: 4096
+max_parallel: 2
+max_retries: 4
+max_context_kb: 64
+think_passes: 1
+task_timeout_sec: 900
+dynamic_pipeline: true
+pinned_skills:
+  - atomic-coding
+
+# The model's own context is much larger than this; 65536 is a deliberately
+# conservative budget that fits in the KV cache of a typical 32-64GB machine.
+# Raise it only after confirming your server is actually serving that many
+# tokens — a context_limit larger than the server's window silently truncates.
+model_profiles:
+  default:
+    context_limit: 65536
+    max_tokens: 4096
+    thinking_budget_tokens: 4096
+    skill_token_budget: 400
+    knowledge_token_budget: 300
+    temperature: 0.12
+    max_turns: 28
+
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+scope_judge: true
+placeholder_pass: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+thinking_budget_tokens: 4096
+worker_critique: true
+require_smoke: true
+claims_gate: true
+over_edit_guard: true
+finalize_warn: true
+auto_text_tools: true
+
+write_guard: true
+read_before_edit: true
+shell_write_guard: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+react_compact: true
+react_compact_at_percent: 80
+wave_snapshots: true
+file_checkpoints: true
+hooks_enabled: true
+read_head_lines: 80
+
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+shell_permission: allow
+shell_whitelist: true
+
+price_preset: local

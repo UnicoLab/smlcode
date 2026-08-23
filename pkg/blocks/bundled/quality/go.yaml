@@ -5,7 +5,7 @@ name: Go Quality Pack
 description: >-
   Production Go verify pack — gofmt/goimports, go vet, optional golangci-lint,
   go test -race, and go build. Optimized for modules with go.mod.
-version: "1.0.0"
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: go
@@ -50,3 +50,14 @@ spec:
     Fast smoke: go test ./... -short
     Always run go vet ./... before claiming pass.
     Optional: golangci-lint run when available.
+    Fallback: if -race is unsupported on this platform, `go test ./... -count=1`.
+
+    Go-specific failures a small model produces, and how to see them:
+    - `go test ./pkg/x` on a package with NO test files exits 0 and prints
+      "no test files". That is not a pass for a task that asked for tests.
+    - gofmt -l prints the DIRTY files and exits 0. Empty output is the pass
+      condition; a non-empty list is a failure even though the exit code is 0.
+    - go vet catches printf arity, lost struct tags, and unused results that
+      compile fine. Never skip it because the build succeeded.
+    - -race only reports a data race it actually observes; a single-goroutine
+      test proves nothing about concurrency.

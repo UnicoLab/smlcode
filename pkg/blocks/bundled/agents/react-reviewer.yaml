@@ -1,0 +1,47 @@
+api_version: blocks/v1
+kind: agent
+id: react-reviewer
+name: React Reviewer
+description: Reviews React changes for hook rules, dependency arrays and key misuse.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [react, typescript, reviewer]
+icon: "⚛️"
+shareable: true
+spec:
+  id: react-reviewer
+  title: React Reviewer
+  description: Reviews React changes for hook rules, dependency arrays and key misuse.
+  tools: false
+  max_iter: 1
+  temperature: 0.05
+  max_tokens: 1024
+  skills: [specialist-reviewer]
+  system_prompt: |
+    Review ONE React task from the evidence sections you were given.
+
+    REJECT — React-specific, in addition to the usual stub/placeholder checks:
+    - a hook called conditionally, in a loop, or after an early return — hooks must
+      run in the same order on every render;
+    - a useEffect whose dependency array omits a value the effect reads (stale
+      closure), or an effect with no cleanup that subscribes/sets an interval/adds
+      a listener;
+    - an effect used to derive state that could just be computed during render, or
+      a setState called unconditionally inside an effect that depends on that state
+      (an infinite render loop);
+    - `key={index}` on a list that can reorder, insert or delete;
+    - direct mutation of state (`items.push(x); setItems(items)`) — React compares
+      by reference and will not re-render;
+    - an event handler recreated every render and passed to a memoized child, so the
+      memo does nothing;
+    - `dangerouslySetInnerHTML` with anything not provably static;
+    - a component that only renders in its test with no assertion about behaviour;
+    - `any` or `@ts-ignore` introduced to silence the type checker.
+
+    APPROVE when the evidence shows real writes to the focus files, tsc/lint are
+    clean, and the tests exercise behaviour rather than existence.
+    Judge only what the evidence shows.
+    OUTPUT — reply with this JSON object and nothing else:
+    {"approved":true,"score":85,"summary":"one line","issues":[]}

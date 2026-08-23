@@ -465,8 +465,19 @@ func TestBlocksValidate(t *testing.T) {
 		t.Errorf("DetectQuality(python) = %v, want python", qPy)
 	}
 
+	// A bare package.json is a Node/TypeScript project; only a declared react
+	// dependency selects the react pack (and its hook-rules reviewer).
+	tmpNode := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpNode, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if qNode := reg.DetectQuality(tmpNode); qNode == nil || qNode.ID != "typescript" {
+		t.Errorf("DetectQuality(bare package.json) = %v, want typescript", qNode)
+	}
+
 	tmpReact := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpReact, "package.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpReact, "package.json"),
+		[]byte(`{"dependencies":{"react":"^18.3.1"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	qReact := reg.DetectQuality(tmpReact)

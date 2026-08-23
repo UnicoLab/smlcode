@@ -4,10 +4,9 @@ id: web
 name: Static Web (HTML/CSS/JS) Quality Pack
 description: >-
   Verify pack for static browser projects (vanilla HTML/CSS/JS, no build step).
-  Detects .html/.htm/.css/.js files and gates on a usable, non-empty HTML
-  entrypoint rather than a test runner — so a plain "build an HTML game" request
-  never gets pytest or npm test forced on it.
-version: "1.0.0"
+  Gates on a usable, non-empty HTML entrypoint rather than a test runner — so a
+  plain "build an HTML game" request never gets pytest or npm test forced on it.
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: html
@@ -17,19 +16,29 @@ shareable: true
 spec:
   detect:
     files: [index.html, index.htm]
-    extensions: [.html, .htm, .css, .js]
-    priority: 25
+    extensions: [.html, .htm, .css]
+    priority: 18
   test:
-    - cmd: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
+    # `test -s` is the whole gate: exists AND is non-empty. The previous gate
+    # used $(find …), which the shell layer now refuses outright (command
+    # substitution hides a nested command from every guard) — a gate the
+    # harness refuses to run is strictly worse than no gate.
+    - cmd: test -s index.html || test -s index.htm
       label: html-entrypoint-present
-  smoke: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
-  qa_gate: test -n "$(find . -name '*.html' -not -path '*/node_modules/*' -type f -size +0c | head -1)"
+  smoke: test -s index.html || test -s index.htm
+  qa_gate: test -s index.html || test -s index.htm
   safe_prefixes:
     - node --check
-    - node
+    - test -s
+    - test -f
   tester_hints: |
-    Static browser project. Verify with:
-    - An index.html (or other .html) entrypoint exists and is non-empty.
-    - Every <script src> / <link rel=stylesheet> reference resolves on disk.
-    - node --check on each .js file (skip ESM false failures: import/export).
-    Do NOT run pytest / go test / npm test unless package.json exists.
+    Static browser project — no bundler, no test runner.
+    Verify, in this order:
+    1) index.html exists at the project root and is non-empty (`test -s index.html`).
+       Some other .html entrypoint is acceptable only if index.html links to it.
+    2) Every <script src> and <link rel="stylesheet"> path resolves on disk
+       (ws_read the referenced file — a 404 asset is a broken page).
+    3) `node --check <file>.js` on each classic script. SKIP this for modules:
+       node --check reports a false failure on `import`/`export` in a plain .js
+       file, so only run it on files the page loads WITHOUT type="module".
+    Do NOT run pytest / go test / npm test unless a package.json exists.

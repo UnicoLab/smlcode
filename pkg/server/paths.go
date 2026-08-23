@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // ErrPathEscape is returned when a requested path resolves outside the
@@ -100,4 +102,25 @@ func withinRoot(root, target string) bool {
 // workspacePath resolves rel against the server's configured workspace root.
 func (s *Server) workspacePath(rel string) (string, error) {
 	return resolveWorkspacePath(s.rootDir(), rel)
+}
+
+// ErrSecretPath is returned for a workspace path that names harness credential
+// state. The Studio file browser sits behind loopback + same-origin + a session
+// token, but "authenticated" is not a reason to serve the operator's provider
+// API keys over HTTP: any other local process holding the token, any --no-auth
+// deployment, and the SPA's own file tree would all render them.
+var ErrSecretPath = errors.New("path names harness credential state")
+
+// workspaceReadPath is workspacePath plus the credential-file refusal. Use it
+// for every endpoint that returns FILE CONTENT.
+func (s *Server) workspaceReadPath(rel string) (string, error) {
+	full, err := s.workspacePath(rel)
+	if err != nil {
+		return "", err
+	}
+	root := s.rootDir()
+	if r, rerr := filepath.Rel(root, full); rerr == nil && workspace.IsHarnessSecretPath(r) {
+		return "", ErrSecretPath
+	}
+	return full, nil
 }

@@ -168,9 +168,12 @@ via --all (apply everything), --list, or --json.`,
 			}
 			if all || !cli.IsInteractive() {
 				if !all {
-					fmt.Println(cli.Warn("not a terminal — pass --all to apply, --list to inspect, or --json"))
+					// Show WHAT is pending, then fail once. The warning that
+					// used to precede this said the same thing as the error —
+					// the CLI contract is that a failure is reported exactly
+					// once, on stderr.
 					printPendingList(root, patches)
-					return failf(2, "interactive review needs a TTY (use --all / --list / --json)")
+					return failf(2, "interactive review needs a terminal — use --all to apply, --list to inspect, or --json")
 				}
 				return applyAll(ws.Config.SlmDir(), root, patches)
 			}
@@ -305,7 +308,7 @@ func reviewInteractive(slmDir, root string, patches []pendingPatch, contextN int
 				cli.Dim(" / ") + cli.Bold("[e]dit") + cli.Dim(" / ") + cli.Bold("[v]iew full") +
 				cli.Dim(" / ") + cli.Bold("[r]eject") + cli.Dim(" / ") + cli.Bold("[A]pply all") +
 				cli.Dim(" / ") + cli.Bold("[q]uit") + " " + cli.Accent("› "))
-			line, err := in.ReadString('\n')
+			choice, err := readReviewChoice(in)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					fmt.Println()
@@ -313,7 +316,6 @@ func reviewInteractive(slmDir, root string, patches []pendingPatch, contextN int
 				}
 				return err
 			}
-			choice := strings.TrimSpace(line)
 			switch choice {
 			case "a", "y", "apply":
 				if err := writePatch(root, p); err != nil {
@@ -374,6 +376,41 @@ func reviewInteractive(slmDir, root string, patches []pendingPatch, contextN int
 	}
 	fmt.Println()
 	return summarizeReview(applied, skipped, rejected, len(patches))
+}
+
+// readReviewChoice reads one answer to the per-file review prompt.
+//
+// The prompt advertises single-letter accelerators ("[a]pply / [s]kip / …"),
+// but it used to read a whole LINE: pressing "a" did nothing until the user
+// also pressed Enter, and a run of impatient keystrokes echoed as "vsaq" with
+// no reaction at all. On a terminal this now answers on the keystroke; with a
+// piped stdin it still reads a line, so `printf 'a\ns\n' | slmcode apply`
+// keeps working.
+func readReviewChoice(in *bufio.Reader) (string, error) {
+	rm, err := cli.EnterRaw(os.Stdin)
+	if err != nil || rm == nil {
+		line, lerr := in.ReadString('\n')
+		return strings.TrimSpace(line), lerr
+	}
+	defer rm.Restore()
+	kr := cli.NewKeyReader(os.Stdin)
+	for {
+		k, kerr := kr.ReadKey()
+		if kerr != nil {
+			return "", kerr
+		}
+		switch k.Type {
+		case cli.KeyEnter:
+			fmt.Println()
+			return "", nil // the documented default: skip
+		case cli.KeyCtrlC, cli.KeyCtrlD, cli.KeyEscape:
+			fmt.Println()
+			return "q", nil
+		case cli.KeyRune:
+			fmt.Println(string(k.Rune))
+			return string(k.Rune), nil
+		}
+	}
 }
 
 func maxDiffPreview(height int, noPager bool) int {

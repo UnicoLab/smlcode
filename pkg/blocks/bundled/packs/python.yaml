@@ -15,8 +15,8 @@ shareable: true
 spec:
   pipeline: python
   quality: python
-  agents: [python-worker, python-tester]
-  skills: [atomic-coding, specialist-tester, specialist-worker]
+  agents: [python-worker, python-tester, python-reviewer]
+  skills: [atomic-coding, specialist-tester, specialist-worker, pytest-fixtures, python-typing]
   pin_skills: true
   override_tester: python-tester
   override_worker: python-worker

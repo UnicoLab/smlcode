@@ -113,7 +113,16 @@ func (r *Runner) applyResumeRequest(req *ggagent.SubAgentRequest, taskID string)
 		remaining := maxIter - cp.Iteration
 		steer := quality.FinalizeSteerMessage(remaining)
 		req.Input = strings.TrimSpace(req.Input) + "\n\n" + steer
-		req.Messages = append(req.Messages, llm.Message{Role: "user", Content: steer})
+		// A checkpoint is saved precisely when tool calls are still pending, so
+		// the restored transcript routinely ENDS on an assistant tool_calls
+		// message. A user message may not sit between that and the tool results
+		// the executor is about to append — every OpenAI-compatible server
+		// answers HTTP 400. The steer still reaches the model through req.Input.
+		if trailingUnansweredToolCalls(msgs) {
+			r.logf("%s finalize-steer kept out of the transcript: tool calls still pending", taskID)
+		} else {
+			req.Messages = append(req.Messages, llm.Message{Role: "user", Content: steer})
+		}
 		if r.Log != nil {
 			r.logf("%s finalize-steer: ~%d turns left", taskID, remaining)
 		}
@@ -223,6 +232,19 @@ func reactKeepLast(iteration int) int {
 // reactUsagePercent estimates context usage for a transcript.
 func reactUsagePercent(msgs []session.ReactMessage, window int) float64 {
 	return compact.UsagePercent(compact.EstimateTokens(compact.MessagesBytes(sessionToChat(msgs))), window)
+}
+
+// trailingUnansweredToolCalls reports whether a restored transcript ends with an
+// assistant message whose tool calls have not been answered yet.
+func trailingUnansweredToolCalls(msgs []session.ReactMessage) bool {
+	return compact.TrailingUnansweredToolCallsFunc(msgs, func(m session.ReactMessage) compact.MsgKind {
+		k := compact.MsgKind{Role: m.Role, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			k.ToolCallIDs = append(k.ToolCallIDs, tc.ID)
+		}
+		k.HasToolCall = len(m.ToolCalls) > 0
+		return k
+	})
 }
 
 // elideReactToolResults replaces the content of all but the last keepLast tool

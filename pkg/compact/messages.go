@@ -125,6 +125,57 @@ func orphanFree(kinds []MsgKind, start int) bool {
 	return true
 }
 
+// TrailingUnansweredToolCallsFunc reports whether the transcript ends with an
+// assistant message whose tool_calls are not all answered by tool results.
+//
+// This is the OTHER half of the tool-pair invariant. orphanFree guards the
+// FRONT of a kept window (a tool result with no preceding call); this guards
+// the BACK. Every OpenAI-compatible server rejects a request in which an
+// assistant `tool_calls` message is followed by anything other than the tool
+// messages answering it — so appending a user message to such a transcript
+// (the compaction resume notice, the finalize-steer nudge) turns a recoverable
+// interrupted ReAct checkpoint into a permanent HTTP 400 on resume.
+func TrailingUnansweredToolCallsFunc[T any](msgs []T, kind func(T) MsgKind) bool {
+	answered := map[string]bool{}
+	var pending map[string]bool
+	for i := len(msgs) - 1; i >= 0; i-- {
+		k := kind(msgs[i])
+		k.Role = strings.ToLower(strings.TrimSpace(k.Role))
+		if k.Role == RoleTool {
+			if k.ToolCallID != "" {
+				answered[k.ToolCallID] = true
+			}
+			continue
+		}
+		if k.Role != RoleAssistant {
+			// A user/system message closes the trailing tool region: whatever
+			// came before it is already part of a completed exchange.
+			return false
+		}
+		if !k.HasToolCall && len(k.ToolCallIDs) == 0 {
+			return false
+		}
+		pending = map[string]bool{}
+		for _, id := range k.ToolCallIDs {
+			if id != "" && !answered[id] {
+				pending[id] = true
+			}
+		}
+		// An assistant tool call with no usable ids counts as unanswered only
+		// when no tool result followed it at all.
+		if len(k.ToolCallIDs) == 0 && len(answered) == 0 {
+			return true
+		}
+		return len(pending) > 0
+	}
+	return false
+}
+
+// TrailingUnansweredToolCalls is TrailingUnansweredToolCallsFunc for []ChatMsg.
+func TrailingUnansweredToolCalls(msgs []ChatMsg) bool {
+	return TrailingUnansweredToolCallsFunc(msgs, kindOf)
+}
+
 // SafeKeepStart is SafeKeepStartFunc for []ChatMsg.
 func SafeKeepStart(msgs []ChatMsg, keepLast int) int {
 	return SafeKeepStartFunc(msgs, keepLast, kindOf)

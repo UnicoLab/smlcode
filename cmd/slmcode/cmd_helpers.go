@@ -10,7 +10,24 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/harness"
 )
+
+// noteUninitialized prints a one-line "there is no workspace here" banner.
+//
+// The read-only commands answer from built-in defaults when .slmcode/ does not
+// exist, which is right — but they said nothing about it, so `slmcode plan` in
+// the wrong directory printed a header and a blank line, and `slmcode status`
+// described a configuration that has never been saved anywhere. It returns
+// true when it printed, so callers can skip an empty body.
+func noteUninitialized(root string) bool {
+	if harness.Initialized(root) {
+		return false
+	}
+	fmt.Println(cli.Warn("no .slmcode/ workspace in " + root + " — showing built-in defaults"))
+	fmt.Println(cli.Dim("  slmcode init      scaffold memory, board and config here"))
+	return true
+}
 
 // slmGitignore is written into .slmcode/ on init so secrets and scratch state
 // never reach a commit. `slmcode commit` runs `git add -A`, and auth.json holds

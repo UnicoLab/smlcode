@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 )
 
 // Defaults for Load.
@@ -106,7 +107,14 @@ func Load(opts Options) string {
 		}
 		seen[key] = true
 
-		body := GateSections(string(data), opts.ScopePaths)
+		// Instruction files are REPOSITORY CONTENT. AGENTS.md is the classic
+		// prompt-injection surface, and the most valuable thing it can inject
+		// is not persuasion but a harness-minted marker — a `## Deterministic
+		// smoke` / `PASSED` block, an `Observation:` frame, an `exit status 0`
+		// line — which the review and tester gates read back as ground truth.
+		// Neutralize those before the text goes anywhere near a prompt.
+		body := quality.DefuseHarnessMarkers(string(data))
+		body = GateSections(body, opts.ScopePaths)
 		body = strings.TrimSpace(body)
 		if body == "" {
 			continue

@@ -321,11 +321,17 @@ func setUserConfigValue(field config.FieldSchema, value string) error {
 }
 
 func configUnsetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "unset [key]",
-		Short: "Reset a config value to what it would inherit (user config, else default)",
-		Args:  cobra.ExactArgs(1),
+	// --json here is not decoration: the CLI contract says every `config`
+	// subcommand takes it, and `unset` was the one that did not, so a script
+	// that walked the whole surface with --json failed on exactly one command.
+	var asJSON bool
+	c := &cobra.Command{
+		Use:     "unset [key]",
+		Short:   "Reset a config value to what it would inherit (user config, else default)",
+		Example: "  slmcode config unset max_parallel\n  slmcode config unset model --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
@@ -341,11 +347,21 @@ func configUnsetCmd() *cobra.Command {
 				return err
 			}
 			v, _ := ws.Config.Get(key)
+			if asJSON {
+				return emitJSON(map[string]any{
+					"key":    key,
+					"value":  v,
+					"origin": ws.Config.Provenance().Describe(key),
+					"unset":  true,
+				})
+			}
 			fmt.Println(cli.Success(fmt.Sprintf("%s reset to %s (%s)",
 				key, formatConfigValue(v), ws.Config.Provenance().Describe(key))))
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	return c
 }
 
 func configSchemaCmd() *cobra.Command {

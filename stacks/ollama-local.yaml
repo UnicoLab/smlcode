@@ -10,6 +10,10 @@ icon: "🦙"
 provider: ollama
 endpoint: http://127.0.0.1:11434
 model: qwen2.5-coder:7b
+# Light JSON-only roles (reviewer, coordinator, splitter, planner, context,
+# architect, clarifier) run on the smaller model — most of a run's turns are
+# these, and a 1.5B answers them as well as the 7B at a fraction of the latency.
+fast_model: qwen2.5-coder:1.5b
 backend: slmcode
 temperature: 0.1
 max_tokens: 2048

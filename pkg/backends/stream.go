@@ -63,9 +63,11 @@ type sinkKey struct {
 }
 
 var tokenSinks = struct {
-	mu sync.RWMutex
-	m  map[sinkKey]TokenSink
-}{m: map[sinkKey]TokenSink{}}
+	mu  sync.RWMutex
+	m   map[sinkKey]TokenSink
+	gen map[sinkKey]uint64
+	seq uint64
+}{m: map[sinkKey]TokenSink{}, gen: map[sinkKey]uint64{}}
 
 func normalizeSinkKey(role, task string) sinkKey {
 	return sinkKey{role: strings.TrimSpace(role), task: strings.TrimSpace(task)}
@@ -83,13 +85,24 @@ func RegisterTokenSink(role, task string, fn TokenSink) func() {
 		return func() {}
 	}
 	tokenSinks.mu.Lock()
+	tokenSinks.seq++
+	gen := tokenSinks.seq
 	tokenSinks.m[k] = fn
+	tokenSinks.gen[k] = gen
 	tokenSinks.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			tokenSinks.mu.Lock()
-			delete(tokenSinks.m, k)
+			// Delete only OUR registration. Two overlapping registrations for
+			// one (role, task) — a role that resolves to the same agent twice
+			// in a speculative race, a nested round-trip on the same pair —
+			// used to end with the first unregister deleting the second one's
+			// sink, silently killing live streaming for the rest of that call.
+			if tokenSinks.gen[k] == gen {
+				delete(tokenSinks.m, k)
+				delete(tokenSinks.gen, k)
+			}
 			tokenSinks.mu.Unlock()
 		})
 	}
@@ -134,6 +147,7 @@ func TokenSinkCount() int {
 func ResetTokenSinks() {
 	tokenSinks.mu.Lock()
 	tokenSinks.m = map[sinkKey]TokenSink{}
+	tokenSinks.gen = map[sinkKey]uint64{}
 	tokenSinks.mu.Unlock()
 }
 

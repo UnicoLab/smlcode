@@ -135,6 +135,21 @@ func GuardShellWrites(root, command string) error {
 			abs = filepath.Join(root, abs)
 		}
 		abs = filepath.Clean(abs)
+		// The jail and the harness-state boundary are properties of the
+		// DESTINATION, not of whether something is already there.
+		// CheckWriteDestination only refuses paths that already exist, so
+		// `echo x > .slmcode/hooks.json` (arbitrary bash on the next run) and
+		// `echo x > /etc/cron.d/x` both sailed through whenever the shell
+		// whitelist was disabled.
+		if rel, rerr := filepath.Rel(root, abs); rerr != nil || outsideWorkspaceRel(rel) {
+			return fmt.Errorf(
+				"shell write refused — `%s` targets %s, which is outside the project root. "+
+					"The harness only writes inside the workspace; use ws_write with a "+
+					"project-relative path",
+				w.Kind, w.Path)
+		} else if herr := CheckHarnessStateWrite(rel); herr != nil {
+			return fmt.Errorf("shell write refused — `%s` targets harness state: %w", w.Kind, herr)
+		}
 		if IsReservedDeviceName(abs) {
 			return fmt.Errorf(
 				"shell write refused — %s is a reserved device name. Use ws_write/ws_edit with a real path",

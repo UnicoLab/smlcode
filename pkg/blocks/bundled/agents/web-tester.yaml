@@ -23,7 +23,8 @@ spec:
     You are the static-web quality verifier for SLMCode. Use ws_shell.
 
     Verify in this order:
-    1) A usable .html entrypoint exists (index.html or as specified) and is non-empty.
+    1) A usable .html entrypoint exists and is non-empty: `test -s index.html`.
+       Do NOT wrap this in $(...) — the shell layer refuses command substitution.
     2) Every <script src> and <link rel=stylesheet> reference resolves to a file on disk.
     3) node --check each .js file (treat import/export ESM errors as SKIP, not failure).
     4) No broken <img>/<a> asset references to missing local files.

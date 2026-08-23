@@ -204,6 +204,10 @@ type Config struct {
 	// Unexported, so neither YAML nor JSON ever sees it.
 	prov *Provenance
 
+	// lastSavedKeys is what SaveInitial last wrote, so `slmcode init` can
+	// report the file's real contents instead of a differently-computed count.
+	lastSavedKeys []string
+
 	// Provider selects the LLM backend. Built-ins: omlx | ollama | openai |
 	// lmstudio | openrouter | vllm | litellm | together | groq | deepseek | …
 	// Any other name is treated as an OpenAI-compatible gateway (set endpoint).

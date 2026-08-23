@@ -34,19 +34,49 @@ type Runner struct {
 }
 
 // Load reads .slmcode/hooks.json (or path). Missing file → empty config.
+//
+// Load FAILS CLOSED for a hooks file the operator has not approved: it returns
+// an EMPTY config together with an ErrUntrusted error naming the commands that
+// were not run. `.slmcode/hooks.json` is inside the project, so `git clone`
+// must not equal `bash -c <whatever the repo shipped>`. See trust.go.
+//
+// Callers that ignore the error therefore run no hooks, which is the safe
+// default; callers that surface it give the operator the approval prompt.
 func Load(path string) (Config, error) {
+	c, _, err := LoadUnchecked(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if len(c.Hooks) == 0 {
+		return c, nil
+	}
+	data, rerr := os.ReadFile(path) //nolint:gosec // path is our own <slmDir>/hooks.json (via DefaultPath)
+	if rerr != nil {
+		return Config{}, rerr
+	}
+	if !IsTrusted(path, data) {
+		return Config{}, UntrustedError(path, c)
+	}
+	return c, nil
+}
+
+// LoadUnchecked parses a hooks file WITHOUT consulting the trust store, and
+// reports whether the file exists. It is for the approval UI (which must show
+// the operator what they are about to trust) and for diagnostics — never for
+// deciding what to execute.
+func LoadUnchecked(path string) (cfg Config, exists bool, err error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is our own <slmDir>/hooks.json (via DefaultPath), not external input
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Config{}, nil
+			return Config{}, false, nil
 		}
-		return Config{}, err
+		return Config{}, false, err
 	}
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
-		return Config{}, err
+		return Config{}, true, err
 	}
-	return c, nil
+	return c, true, nil
 }
 
 // DefaultPath returns <slmDir>/hooks.json.

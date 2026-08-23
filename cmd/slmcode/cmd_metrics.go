@@ -114,6 +114,13 @@ func metricsShowCmd() *cobra.Command {
 				fmt.Println(cli.Bold(fmt.Sprintf("  Aggregate over the last %d runs", last)))
 				fmt.Println("  " + strings.ReplaceAll(strings.TrimRight(summary.Render(), "\n"), "\n", "\n  "))
 			}
+			if reading := metricsReading(latest); len(reading) > 0 {
+				fmt.Println()
+				fmt.Println(cli.Bold("  What this says"))
+				for _, line := range reading {
+					fmt.Println("  " + line)
+				}
+			}
 			fmt.Println()
 			fmt.Println(cli.Dim("  slmcode metrics compare 10   older half vs newer half"))
 			return nil
@@ -197,4 +204,62 @@ func pct(rate float64) string {
 		return "–"
 	}
 	return fmt.Sprintf("%.0f%%", rate*100)
+}
+
+// metricsReading turns the number dump into sentences.
+//
+// `slmcode metrics show` printed twelve ratios and stopped. Every one of them
+// exists to answer a question ("is the model's edit format working?", "is the
+// repair ladder carrying it?"), and none of them said so — which made the
+// self-improvement engine's shop window unreadable to anyone who had not read
+// the source. Each line below states what the number means AND the command
+// that acts on it.
+func metricsReading(m metrics.Metrics) []string {
+	var out []string
+	switch {
+	case m.Tasks > 0 && m.TasksPassed == 0:
+		out = append(out, cli.Warn("no task passed — the board holds why")+
+			cli.Dim("  ·  slmcode board  ·  slmcode apply"))
+	case m.Tasks > 0 && m.TasksPassed < m.Tasks:
+		out = append(out, cli.Warn(fmt.Sprintf("%d of %d tasks did not pass",
+			m.Tasks-m.TasksPassed, m.Tasks))+cli.Dim("  ·  slmcode board"))
+	}
+	if m.EditsAttempted > 0 {
+		switch rate := m.EditApplyRate(); {
+		case rate < 0.6:
+			out = append(out, cli.Warn(fmt.Sprintf(
+				"only %s of this model's edits landed — the edit format is a poor fit", pct(rate)))+
+				cli.Dim("  ·  slmcode evolve why edit_format"))
+		case m.FirstAttemptApplyRate() < rate-0.25:
+			out = append(out, cli.Dim(fmt.Sprintf(
+				"the repair ladder is carrying this model: %s of edits land, but only %s land first try",
+				pct(rate), pct(m.FirstAttemptApplyRate()))))
+		default:
+			out = append(out, cli.Dim(fmt.Sprintf(
+				"edits are landing (%s, %s first try) — this model fits the %s format",
+				pct(rate), pct(m.FirstAttemptApplyRate()), orDash(m.EditFormat))))
+		}
+	}
+	if m.ToolCalls > 0 && m.ToolErrorRate() > 0.25 {
+		out = append(out, cli.Warn(fmt.Sprintf(
+			"%s of tool calls errored — usually a context/prompt fit problem", pct(m.ToolErrorRate())))+
+			cli.Dim("  ·  slmcode readiness"))
+	}
+	if m.RedundantCallRate() > 0.2 {
+		out = append(out, cli.Warn(fmt.Sprintf(
+			"%s of calls repeated an earlier one — the model is looping", pct(m.RedundantCallRate())))+
+			cli.Dim("  ·  lower max_task_calls, or raise think_passes"))
+	}
+	if m.Failures > 0 {
+		if m.RepairHits == 0 {
+			out = append(out, cli.Dim(fmt.Sprintf(
+				"%d failure(s), none matched a learned repair rule — they cost a full model round-trip",
+				m.Failures))+cli.Dim("  ·  slmcode evolve rules"))
+		} else {
+			out = append(out, cli.Dim(fmt.Sprintf(
+				"%d of %d failures were repaired from stored rules (no model call)",
+				m.RepairHits, m.Failures)))
+		}
+	}
+	return out
 }

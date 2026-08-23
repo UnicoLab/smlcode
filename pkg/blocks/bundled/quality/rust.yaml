@@ -4,7 +4,7 @@ id: rust
 name: Rust Quality Pack
 description: >-
   Production Rust verify pack — cargo fmt/clippy, cargo test, cargo build.
-version: "1.0.0"
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: rust
@@ -13,7 +13,7 @@ icon: "🦀"
 shareable: true
 spec:
   detect:
-    files: [Cargo.toml]
+    files: [Cargo.toml, Cargo.lock, rust-toolchain.toml, rust-toolchain]
     extensions: [.rs]
     priority: 16
   format:
@@ -30,7 +30,7 @@ spec:
   build:
     - cmd: cargo build --quiet
       label: cargo build
-  smoke: cargo build --quiet
+  smoke: cargo check --quiet
   qa_gate: cargo test --quiet
   safe_prefixes:
     - cargo test
@@ -38,7 +38,21 @@ spec:
     - cargo run
     - cargo clippy
     - cargo fmt
+    - cargo check
+    - cargo metadata
   tester_hints: |
-    Prefer: cargo test --quiet, then cargo build --quiet.
-    Lint: cargo clippy -- -D warnings when available.
+    Fast compile check: cargo check --quiet  (type-checks without codegen —
+    use it as the edit loop's smoke, it is several times faster than a build).
+    Full verify: cargo test --quiet, then cargo build --quiet.
+    Lint: cargo clippy -- -D warnings ; format: cargo fmt --check
+
+    Rust-specific facts that decide pass/fail:
+    - cargo test also compiles and runs doc-tests; a broken example in a ///
+      comment fails the suite even though the crate builds.
+    - A #[cfg(test)] mod that is never `mod tests;`-declared in the parent is
+      not compiled at all — "0 tests" means the module is unreachable.
+    - clippy findings are warnings by default; only `-- -D warnings` makes them
+      fail, so run it that way or the gate proves nothing.
+    - A workspace needs `cargo test --workspace`; plain `cargo test` at the root
+      of a virtual manifest tests nothing.
     Do NOT run pytest / go test / npm test.

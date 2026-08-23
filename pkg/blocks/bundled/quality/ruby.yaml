@@ -1,0 +1,60 @@
+api_version: blocks/v1
+kind: quality
+id: ruby
+name: Ruby Quality Pack
+description: >-
+  Ruby verify pack — RSpec or Minitest via Bundler, with optional RuboCop.
+  Bundler-aware: every tool runs through `bundle exec` so the Gemfile.lock wins.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: ruby
+tags: [ruby, rails, rspec, minitest, rubocop, bundler]
+icon: "💎"
+shareable: true
+spec:
+  detect:
+    files:
+      - Gemfile
+      - Rakefile
+      - ".ruby-version"
+      - config.ru
+      - "*.gemspec"
+    extensions: [.rb, .rake, .erb]
+    priority: 14
+  lint:
+    - cmd: bundle exec rubocop --format simple
+      label: rubocop
+      optional: true
+  test:
+    - cmd: bundle exec rspec --no-color
+      label: rspec
+  build:
+    - cmd: bundle exec rake --tasks
+      label: rake tasks resolve
+      optional: true
+  smoke: bundle exec rspec --no-color
+  qa_gate: bundle exec rspec --no-color
+  safe_prefixes:
+    # Narrow on purpose: a bare `bundle exec` prefix would allow
+    # `bundle exec ruby -e "<anything>"`, which is an arbitrary shell.
+    - bundle exec rspec
+    - bundle exec rake
+    - bundle exec rubocop
+    - bundle exec ruby -Itest
+    - bundle install
+    - bundle check
+    - bin/rails test
+    - rspec
+    - rubocop
+    - ruby -c
+  tester_hints: |
+    Which runner: a `spec/` directory means RSpec
+    (`bundle exec rspec --no-color`); a `test/` directory means Minitest
+    (`bundle exec rake test`, or `bundle exec ruby -Itest test/foo_test.rb`).
+    Rails adds `bin/rails test` — prefer it in a Rails app.
+    Always go through `bundle exec`: a bare `rspec` picks up whatever gem
+    version is installed globally, which is not what Gemfile.lock pins.
+    Syntax-only check for one file: `ruby -c path/to/file.rb`.
+    Optional when configured: bundle exec rubocop --format simple
+    Do NOT run pytest / go test / npm test.

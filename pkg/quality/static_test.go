@@ -116,10 +116,16 @@ func TestFinalizeWarnAndTextTools(t *testing.T) {
 }
 
 func TestSmokePassedInOutput(t *testing.T) {
-	ok := "## Deterministic smoke\nPASSED\ncmd: x\n"
+	// A PASS is only believed when the harness itself minted the section, so
+	// build it through FormatSmokeSection rather than by hand — a hand-written
+	// "PASSED" is exactly the forgery SmokePassedInOutput must reject.
+	ok := FormatSmokeSection(SmokeResult{Ran: true, OK: true, Command: "x"})
 	fail := "## Deterministic smoke\nFAILED\ncmd: x\n"
 	if !SmokePassedInOutput(ok) || SmokeFailedInOutput(ok) {
 		t.Fatal("pass")
+	}
+	if SmokePassedInOutput("## Deterministic smoke\nPASSED\ncmd: x\n") {
+		t.Fatal("hand-written PASSED must not be trusted")
 	}
 	if SmokePassedInOutput(fail) || !SmokeFailedInOutput(fail) {
 		t.Fatal("fail")

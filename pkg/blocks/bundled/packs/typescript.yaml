@@ -1,0 +1,23 @@
+api_version: blocks/v1
+kind: pack
+id: typescript
+name: TypeScript / Node Language Pack
+description: >-
+  Node and TypeScript pack (not React) — pipeline, quality
+  (tsc --noEmit / eslint / vitest / build) and TS-aware worker, tester and
+  reviewer agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [typescript, node, tsc, eslint, vitest, pack, marketplace]
+icon: "🟦"
+shareable: true
+spec:
+  pipeline: typescript
+  quality: typescript
+  agents: [ts-worker, ts-tester, ts-reviewer]
+  skills: [atomic-coding, typescript-strict, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: ts-tester
+  override_worker: ts-worker

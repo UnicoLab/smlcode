@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: kotlin
+name: Kotlin Language Pack
+description: >-
+  Kotlin pack — pipeline, quality (Gradle wrapper test/build, optional
+  ktlint and detekt) and Kotlin-aware worker and tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: kotlin
+tags: [kotlin, gradle, jvm, junit, pack, marketplace]
+icon: "🟪"
+shareable: true
+spec:
+  pipeline: kotlin
+  quality: kotlin
+  agents: [kotlin-worker, kotlin-tester]
+  skills: [atomic-coding, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: kotlin-tester
+  override_worker: kotlin-worker

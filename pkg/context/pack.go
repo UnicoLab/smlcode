@@ -69,6 +69,31 @@ const (
 	// MaxPriorityTokens caps first-class run handoff/context.
 	MaxPriorityTokens = 600
 
+	// MaxQueryTokens caps the user query carried inside a pack.
+	//
+	// The query used to be copied into the pack verbatim and rendered into the
+	// prompt without ever being counted against the budget, so a long request
+	// (a pasted spec, a stack trace, a multi-paragraph brief) added its whole
+	// length ON TOP of a budget the packer believed it had honored. Measured
+	// on an 8192-token profile: a 4.4K-token query turned a 4269-token budget
+	// into an 8746-token prompt — the entire window, before the system prompt,
+	// the tool schemas and the response reserve had taken their share.
+	MaxQueryTokens = 1024
+
+	// MaxTaskTitleTokens caps the task title rendered in the pack footer.
+	MaxTaskTitleTokens = 64
+
+	// RenderSectionOverheadTokens is the structural cost Render() adds per
+	// packed doc/file: a `## File: path` heading, a fenced block and the blank
+	// lines around them. Bodies are budgeted, the scaffolding around them was
+	// not; reserving it keeps the ASSEMBLED prompt inside the budget rather
+	// than only the sum of its parts.
+	RenderSectionOverheadTokens = 14
+
+	// RenderBaseOverheadTokens is the fixed part of Render(): the role header
+	// and the identifiers/user-query section titles.
+	RenderBaseOverheadTokens = 24
+
 	// FileFloorPercent is pre-reserved for files before any doc is packed, so
 	// one bloated PROJECT.md can never consume the whole budget and leave the
 	// specialist with zero code. Applies to every role, not just lean ones.
@@ -376,12 +401,10 @@ func (p *Packer) BuildPack(req BuildRequest) (*TaskPack, error) {
 	}
 
 	pack := &TaskPack{
-		Query:     req.Query,
-		Role:      req.Role,
-		TaskID:    req.TaskID,
-		TaskTitle: req.TaskTitle,
-		Docs:      map[string]string{},
-		Files:     map[string]string{},
+		Role:   req.Role,
+		TaskID: req.TaskID,
+		Docs:   map[string]string{},
+		Files:  map[string]string{},
 	}
 
 	count := p.opts.count
@@ -413,7 +436,34 @@ func (p *Packer) BuildPack(req BuildRequest) (*TaskPack, error) {
 		fileCap = 128
 	}
 
-	remaining := func() int { return budget - used }
+	// Structural reserve: Render() wraps every body in headings and fences, and
+	// the pack carries the query and task title that Render() also emits. None
+	// of that was ever charged to the budget, so the assembled prompt could be
+	// twice the budget the packer reported honoring.
+	structural := RenderBaseOverheadTokens +
+		RenderSectionOverheadTokens*(len(sortedUnique(req.Docs))+len(sortedUnique(req.Files)))
+	if lim := budget / 5; structural > lim {
+		structural = lim
+	}
+
+	// The query is the request itself, so it is packed FIRST (it can never be
+	// starved by a doc) — but it is clipped and charged like everything else.
+	if q := strings.TrimSpace(req.Query); q != "" {
+		pack.Query = clipToTokens(q, minInt(MaxQueryTokens, budget/2), count)
+		used += count(pack.Query)
+	}
+	if tt := strings.TrimSpace(req.TaskTitle); tt != "" {
+		pack.TaskTitle = clipToTokens(tt, MaxTaskTitleTokens, count)
+		used += count(pack.TaskTitle)
+	}
+
+	remaining := func() int {
+		n := budget - used - structural
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
 
 	// --- priority (run collaboration contract) ---
 	if priorityMarkdown != "" && remaining() > MinRemainingTokens {
@@ -570,7 +620,17 @@ func (p *Packer) excerptFor(content string, terms []string, capTokens int, count
 	return clipToTokens(out, capTokens, count)
 }
 
+// truncationMarker is appended to every clipped body so the model can tell a
+// short section from a cut one.
+const truncationMarker = "\n...[truncated]"
+
 // clipToTokens trims text so count(text) <= capTokens, on a rune boundary.
+//
+// The marker is part of the returned text, so its cost is subtracted from the
+// cap BEFORE the search. Adding it afterwards made every clipped section
+// overshoot its cap by the marker's tokens — small per section, but the packer
+// clips the priority block, every doc, every file excerpt and the skills pack,
+// and the overshoots add up against a model window that has no slack.
 func clipToTokens(s string, capTokens int, count TokenCounter) string {
 	s = strings.TrimSpace(s)
 	if s == "" || capTokens <= 0 {
@@ -581,6 +641,10 @@ func clipToTokens(s string, capTokens int, count TokenCounter) string {
 	}
 	if count(s) <= capTokens {
 		return s
+	}
+	capTokens -= count(truncationMarker)
+	if capTokens <= 0 {
+		return ""
 	}
 	// Binary search on bytes: token counts are monotonic in prefix length.
 	// Seeded from the observed chars-per-token ratio so a big file converges
@@ -609,7 +673,7 @@ func clipToTokens(s string, capTokens int, count TokenCounter) string {
 	if out == "" {
 		return ""
 	}
-	return strings.TrimRight(out, " \t\n") + "\n...[truncated]"
+	return strings.TrimRight(out, " \t\n") + truncationMarker
 }
 
 func packedBytes(p *TaskPack) int {

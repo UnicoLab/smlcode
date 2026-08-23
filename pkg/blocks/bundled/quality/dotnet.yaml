@@ -1,0 +1,63 @@
+api_version: blocks/v1
+kind: quality
+id: dotnet
+name: C# / .NET Quality Pack
+description: >-
+  .NET verify pack — dotnet format --verify-no-changes, dotnet build, and
+  dotnet test. Works for solutions, single projects and Directory.Build layouts.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: csharp
+tags: [csharp, dotnet, fsharp, nunit, xunit, msbuild]
+icon: "🟣"
+shareable: true
+spec:
+  detect:
+    # .NET has no fixed project filename — the project file is <Name>.csproj,
+    # so the marker has to be a glob.
+    files:
+      - "*.sln"
+      - "*.slnx"
+      - "*.csproj"
+      - "*.fsproj"
+      - "*.vbproj"
+      - global.json
+      - Directory.Build.props
+      - nuget.config
+    extensions: [.cs, .fs, .vb, .csx, .razor]
+    priority: 16
+  format:
+    - cmd: dotnet format --verify-no-changes
+      label: dotnet format
+      optional: true
+  build:
+    - cmd: dotnet build --nologo --verbosity quiet
+      label: dotnet build
+  test:
+    - cmd: dotnet test --nologo --verbosity quiet
+      label: dotnet test
+  smoke: dotnet build --nologo --verbosity quiet
+  qa_gate: dotnet test --nologo --verbosity quiet
+  safe_prefixes:
+    - dotnet build
+    - dotnet test
+    - dotnet format
+    - dotnet restore
+    - dotnet list
+    - dotnet --version
+    - dotnet --info
+  tester_hints: |
+    Prefer, in order:
+    1) dotnet build --nologo --verbosity quiet
+    2) dotnet test  --nologo --verbosity quiet
+    3) dotnet format --verify-no-changes   (only when the SDK provides it)
+    Ecosystem facts that change what "passing" means:
+    - `dotnet test` on a solution with NO test project exits 0 having run
+      nothing. That is NOT a pass for a task that asked for tests — check the
+      "Passed!/Failed!" summary line and the test count, not just the exit code.
+    - Warnings are not errors unless <TreatWarningsAsErrors> is set; a build
+      with CS86xx nullable warnings still "succeeds". Read the warning list.
+    - A new test project must be added to the .sln (`dotnet sln add`) or it is
+      silently never built.
+    Do NOT run pytest / go test / npm test.

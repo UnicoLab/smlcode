@@ -3,6 +3,7 @@ package repomap
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -43,24 +44,20 @@ type File struct {
 	Language string   `json:"-"` // alias kept for readability in callers
 }
 
-// LangForPath maps a file extension to an extractor language id.
+// LangForPath maps a file extension to an extractor language id. The table
+// lives in extract_lang.go so a new language is one entry, not three edits.
 func LangForPath(rel string) string {
-	switch strings.ToLower(filepath.Ext(rel)) {
-	case ".go":
-		return "go"
-	case ".py", ".pyi":
-		return "python"
-	case ".js", ".jsx", ".mjs", ".cjs":
-		return "javascript"
-	case ".ts", ".tsx", ".mts", ".cts":
-		return "typescript"
-	case ".rs":
-		return "rust"
-	case ".java":
-		return "java"
-	default:
-		return ""
+	return langByExt[strings.ToLower(filepath.Ext(rel))]
+}
+
+// Languages lists every language id with a symbol extractor, sorted.
+func Languages() []string {
+	out := make([]string, 0, len(langSpecs))
+	for _, spec := range langSpecs {
+		out = append(out, spec.id)
 	}
+	sort.Strings(out)
+	return out
 }
 
 var (
@@ -70,30 +67,50 @@ var (
 	goTypeRe    = regexp.MustCompile(`^type\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\[[^\]]*\])?\s+(\w+)?`)
 	goConstRe   = regexp.MustCompile(`^(const|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s`)
 	goImportRe  = regexp.MustCompile(`^\s*(?:[A-Za-z_.][A-Za-z0-9_]*\s+)?"([^"]+)"`)
+	// Grouped `const ( … )` / `var ( … )` / `type ( … )` declarations.
+	goGroupOpenRe = regexp.MustCompile(`^(const|var|type)\s*\($`)
+	// A member line inside such a block is `Name = v`, `Name Type = v`,
+	// `Name Type`, or a bare `Name` continuing an iota run.
+	goGroupMemberRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\b`)
 
 	// Python
-	pyDefRe    = regexp.MustCompile(`^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	pyClassRe  = regexp.MustCompile(`^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:(]`)
-	pyImportRe = regexp.MustCompile(`^\s*(?:from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import|import\s+([A-Za-z_][A-Za-z0-9_.]*))`)
+	pyDefRe   = regexp.MustCompile(`^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	pyClassRe = regexp.MustCompile(`^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:(]`)
+	// `from .models import User` and `from ..pkg import x` are the intra-package
+	// edges the repo graph is built from; the leading dots must be accepted.
+	pyImportRe = regexp.MustCompile(`^\s*(?:from\s+(\.*[A-Za-z_][A-Za-z0-9_.]*|\.+)\s+import|import\s+([A-Za-z_][A-Za-z0-9_.]*))`)
+	// Module-level constant: UPPER_SNAKE, optionally annotated.
+	pyConstRe = regexp.MustCompile(`^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=`)
 
 	// JS / TS
-	jsFuncRe   = regexp.MustCompile(`^\s*(export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(`)
-	jsClassRe  = regexp.MustCompile(`^\s*(export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)`)
-	jsConstFn  = regexp.MustCompile(`^\s*(export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>`)
-	tsTypeRe   = regexp.MustCompile(`^\s*(export\s+)?(?:declare\s+)?(interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)`)
+	jsFuncRe  = regexp.MustCompile(`^\s*(export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(`)
+	jsClassRe = regexp.MustCompile(`^\s*(export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)`)
+	// The `<T,>(x: T) =>` generic-arrow form is idiomatic in .tsx (the trailing
+	// comma disambiguates it from JSX) and the old pattern could not match it.
+	jsConstFn  = regexp.MustCompile(`^\s*(export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:<[^>]*>\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]*)?=>`)
+	tsTypeRe   = regexp.MustCompile(`^\s*(export\s+)?(?:declare\s+)?(?:const\s+)?(interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)`)
 	jsImportRe = regexp.MustCompile(`(?:^\s*import\b[^'"]*['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\))`)
+	// `export const X = 1` (a value, not an arrow function) and class members.
+	jsConstValRe = regexp.MustCompile(`^\s*(export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=`)
+	jsMemberRe   = regexp.MustCompile(`^\s*(?:(?:public|private|protected|static|readonly|abstract|override|declare|async|get|set)\s+)*\*?\s*([#A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>(]*>)?\s*\(`)
 
 	// Rust
 	rustFnRe   = regexp.MustCompile(`^\s*(pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	rustTypeRe = regexp.MustCompile(`^\s*(pub(?:\([^)]*\))?\s+)?(struct|enum|trait|type|impl)\s+(?:<[^>]*>\s*)?([A-Za-z_][A-Za-z0-9_]*)`)
 	rustUseRe  = regexp.MustCompile(`^\s*(?:pub\s+)?use\s+([A-Za-z_][A-Za-z0-9_:]*)`)
 	rustModRe  = regexp.MustCompile(`^\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	// impl [<generics>] Trait for Type  |  impl [<generics>] Type
+	rustImplRe  = regexp.MustCompile(`^\s*(?:unsafe\s+)?impl\s*(?:<[^>]*>)?\s*([A-Za-z_][A-Za-z0-9_:]*)(?:<[^>]*>)?\s*(?:for\s+([A-Za-z_][A-Za-z0-9_:]*))?`)
+	rustConstRe = regexp.MustCompile(`^\s*(pub(?:\([^)]*\))?\s+)?(const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)`)
+	rustMacroRe = regexp.MustCompile(`^\s*macro_rules!\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 	// Java
 	javaPkgRe   = regexp.MustCompile(`^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
 	javaImpRe   = regexp.MustCompile(`^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_.*]*)\s*;`)
 	javaTypeRe  = regexp.MustCompile(`^\s*(?:public\s+|protected\s+|private\s+|abstract\s+|final\s+|static\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	javaMethRe  = regexp.MustCompile(`^\s+(?:public|protected|private)\s+(?:static\s+|final\s+|synchronized\s+|abstract\s+|native\s+)*[A-Za-z_<>\[\],.\s?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	javaMethRe  = regexp.MustCompile(`^\s+(?:public|protected|private)\s+(?:static\s+|final\s+|synchronized\s+|abstract\s+|native\s+|default\s+)*(?:<[^>]*>\s*)?[A-Za-z_<>\[\],.\s?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	javaCtorRe  = regexp.MustCompile(`^\s*(?:public\s+|protected\s+|private\s+)?([A-Z][A-Za-z0-9_]*)\s*\(`)
+	javaFieldRe = regexp.MustCompile(`^\s*(?:public|protected|private)\s+(?:static\s+|final\s+|volatile\s+|transient\s+)*[A-Za-z_][A-Za-z0-9_<>\[\],.?\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)`)
 	identifierR = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]{2,}`)
 )
 
@@ -107,17 +124,8 @@ func ExtractSource(rel, src string) File {
 		return f
 	}
 	lines := strings.Split(src, "\n")
-	switch lang {
-	case "go":
-		extractGo(&f, lines)
-	case "python":
-		extractPython(&f, lines)
-	case "javascript", "typescript":
-		extractJS(&f, lines)
-	case "rust":
-		extractRust(&f, lines)
-	case "java":
-		extractJava(&f, lines)
+	if extract := extractorByID[lang]; extract != nil {
+		extract(&f, lines)
 	}
 	f.Refs = collectRefs(lines, f)
 	return f
@@ -138,6 +146,7 @@ func isExportedGo(name string) bool {
 
 func extractGo(f *File, lines []string) {
 	inImport := false
+	group := "" // "const" | "var" | "type" while inside a grouped declaration
 	for i, raw := range lines {
 		line := raw
 		trimmed := strings.TrimSpace(line)
@@ -200,6 +209,37 @@ func extractGo(f *File, lines []string) {
 				Name: m[2], Kind: kind, Signature: trimSig(line),
 				Line: i + 1, Exported: isExportedGo(m[2]),
 			})
+			continue
+		}
+		// Grouped declarations. Go's idiom for a package's exported constants
+		// is `const ( … )`, and the single-line regexes above see none of it —
+		// so a package whose entire public surface is a const block used to
+		// contribute zero symbols to the repo map.
+		if m := goGroupOpenRe.FindStringSubmatch(trimmed); m != nil {
+			group = m[1]
+			continue
+		}
+		if group != "" {
+			if trimmed == ")" {
+				group = ""
+				continue
+			}
+			if m := goGroupMemberRe.FindStringSubmatch(trimmed); m != nil {
+				kind := KindConst
+				switch group {
+				case "var":
+					kind = KindVar
+				case "type":
+					kind = KindType
+					if strings.Contains(trimmed, " interface") {
+						kind = KindInterface
+					}
+				}
+				f.Symbols = append(f.Symbols, Symbol{
+					Name: m[1], Kind: kind, Signature: trimSig(line),
+					Line: i + 1, Exported: isExportedGo(m[1]),
+				})
+			}
 		}
 	}
 }
@@ -219,7 +259,29 @@ func recvType(recv string) string {
 }
 
 func extractPython(f *File, lines []string) {
+	// Python scopes by indentation, so the enclosing class is tracked with a
+	// stack of (name, indent) frames. Three things the line-local scanner got
+	// wrong and this fixes: methods had no receiver (so a repo map named
+	// `save` with no hint of which class owns it), a helper `def` nested inside
+	// a FUNCTION was reported as a method, and relative imports — the very
+	// edges that make the repo graph useful — were dropped entirely.
+	type frame struct {
+		name   string
+		indent int
+	}
+	var classes []frame
+	funcIndent := -1
+	owner := func() string {
+		if len(classes) == 0 {
+			return ""
+		}
+		return classes[len(classes)-1].name
+	}
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
 		if m := pyImportRe.FindStringSubmatch(line); m != nil {
 			mod := m[1]
 			if mod == "" {
@@ -230,35 +292,61 @@ func extractPython(f *File, lines []string) {
 			}
 			continue
 		}
-		if m := pyClassRe.FindStringSubmatch(line); m != nil {
-			if len(m[1]) > 0 {
-				continue // nested class: skip
+		isClass := pyClassRe.MatchString(line)
+		isDef := pyDefRe.MatchString(line)
+		if !isClass && !isDef {
+			if funcIndent < 0 && len(classes) == 0 {
+				if m := pyConstRe.FindStringSubmatch(line); m != nil {
+					f.Symbols = append(f.Symbols, Symbol{
+						Name: m[1], Kind: KindConst, Signature: trimSig(line),
+						Line: i + 1, Exported: !strings.HasPrefix(m[1], "_"),
+					})
+				}
 			}
-			f.Symbols = append(f.Symbols, Symbol{
-				Name: m[2], Kind: KindClass, Signature: trimSig(strings.TrimSuffix(strings.TrimSpace(line), ":")),
-				Line: i + 1, Exported: !strings.HasPrefix(m[2], "_"),
-			})
 			continue
 		}
-		if m := pyDefRe.FindStringSubmatch(line); m != nil {
-			indent := len(m[1])
-			kind := KindFunc
-			if indent > 0 {
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		for len(classes) > 0 && classes[len(classes)-1].indent >= indent {
+			classes = classes[:len(classes)-1]
+		}
+		if funcIndent >= 0 && indent > funcIndent {
+			continue // helper defined inside a function body: not API
+		}
+		if funcIndent >= 0 && indent <= funcIndent {
+			funcIndent = -1
+		}
+		name := ""
+		kind := KindClass
+		if isClass {
+			name = pyClassRe.FindStringSubmatch(line)[2]
+		} else {
+			name = pyDefRe.FindStringSubmatch(line)[2]
+			kind = KindFunc
+			if owner() != "" {
 				kind = KindMethod
 			}
-			if indent > 4 {
-				continue // nested helper
-			}
-			f.Symbols = append(f.Symbols, Symbol{
-				Name: m[2], Kind: kind, Signature: trimSig(strings.TrimSuffix(strings.TrimSpace(line), ":")),
-				Line: i + 1, Exported: !strings.HasPrefix(m[2], "_"),
-			})
+		}
+		f.Symbols = append(f.Symbols, Symbol{
+			Name: name, Kind: kind,
+			Signature: trimSig(strings.TrimSuffix(trimmed, ":")),
+			Line:      i + 1, Exported: !strings.HasPrefix(name, "_"), Receiver: owner(),
+		})
+		if isClass {
+			classes = append(classes, frame{name: name, indent: indent})
+		} else {
+			funcIndent = indent
 		}
 	}
 }
 
 func extractJS(f *File, lines []string) {
+	var sc scopeTracker
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			sc.advance(line)
+			continue
+		}
 		if m := jsImportRe.FindStringSubmatch(line); m != nil {
 			mod := m[1]
 			if mod == "" {
@@ -271,13 +359,16 @@ func extractJS(f *File, lines []string) {
 		switch {
 		case jsClassRe.MatchString(line):
 			m := jsClassRe.FindStringSubmatch(line)
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[2], Kind: KindClass, Signature: trimSig(line),
 				Line: i + 1, Exported: m[1] != "",
 			})
+			sc.enter(m[2])
+			sc.advance(line)
+			continue
 		case jsFuncRe.MatchString(line):
 			m := jsFuncRe.FindStringSubmatch(line)
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[2], Kind: KindFunc, Signature: trimSig(line),
 				Line: i + 1, Exported: m[1] != "",
 			})
@@ -287,62 +378,143 @@ func extractJS(f *File, lines []string) {
 			if m[2] == "interface" {
 				kind = KindInterface
 			}
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[3], Kind: kind, Signature: trimSig(line),
 				Line: i + 1, Exported: m[1] != "",
 			})
 		case jsConstFn.MatchString(line):
+			// `export const Card: React.FC<P> = ({x}) => …` and the generic
+			// `export const useThing = <T,>(x: T) => …` are both extremely
+			// common in real TS and neither is a `function` declaration.
 			m := jsConstFn.FindStringSubmatch(line)
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[2], Kind: KindFunc, Signature: trimSig(line),
 				Line: i + 1, Exported: m[1] != "",
 			})
+		case jsConstValRe.MatchString(line) && sc.depth == 0:
+			m := jsConstValRe.FindStringSubmatch(line)
+			addSymbol(f, Symbol{
+				Name: m[2], Kind: KindConst, Signature: trimSig(line),
+				Line: i + 1, Exported: m[1] != "",
+			})
+		case sc.atMemberLevel():
+			// Class members. Without these a repo map of an OO TypeScript file
+			// names the class and nothing you can actually call on it.
+			if m := jsMemberRe.FindStringSubmatch(line); m != nil && !isControlWord(m[1]) {
+				addSymbol(f, Symbol{
+					Name: m[1], Kind: KindMethod, Signature: trimSig(line),
+					Line: i + 1, Exported: !strings.HasPrefix(m[1], "#") && !hasPrivateModifier(trimmed, m[1]),
+					Receiver: sc.owner,
+				})
+			}
 		}
+		sc.advance(line)
 	}
 }
 
 func extractRust(f *File, lines []string) {
+	var sc scopeTracker
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			sc.advance(line)
+			continue
+		}
 		if m := rustUseRe.FindStringSubmatch(line); m != nil {
 			f.Imports = append(f.Imports, m[1])
+			sc.advance(line)
 			continue
 		}
 		if m := rustModRe.FindStringSubmatch(line); m != nil {
 			f.Imports = append(f.Imports, "crate::"+m[1])
 		}
-		if m := rustFnRe.FindStringSubmatch(line); m != nil {
-			f.Symbols = append(f.Symbols, Symbol{
-				Name: m[2], Kind: KindFunc, Signature: trimSig(line),
-				Line: i + 1, Exported: strings.TrimSpace(m[1]) != "",
+		pub := strings.HasPrefix(trimmed, "pub")
+		// `impl<T: Send> Config<T>` and `impl Store for Config<u8>` are the
+		// shapes the old single regex could not read: the first because the
+		// generics follow `impl` with no space, the second because it recorded
+		// the TRAIT as the type. Both matter — an impl block is where a Rust
+		// crate's methods live.
+		if m := rustImplRe.FindStringSubmatch(line); m != nil {
+			// `impl Trait for Type` names the TYPE; the trait it satisfies is
+			// recorded as the receiver so a search for either finds this block.
+			target, trait := m[1], ""
+			if m[2] != "" {
+				target, trait = m[2], m[1]
+			}
+			addSymbol(f, Symbol{
+				Name: target, Kind: KindClass, Signature: trimSig(line),
+				Line: i + 1, Exported: true, Receiver: trait,
 			})
+			sc.enter(target)
+			sc.advance(line)
+			continue
+		}
+		if m := rustFnRe.FindStringSubmatch(line); m != nil {
+			kind := KindFunc
+			if sc.owner != "" {
+				kind = KindMethod
+			}
+			addSymbol(f, Symbol{
+				Name: m[2], Kind: kind, Signature: trimSig(line),
+				Line: i + 1, Exported: strings.TrimSpace(m[1]) != "", Receiver: sc.owner,
+			})
+			sc.advance(line)
 			continue
 		}
 		if m := rustTypeRe.FindStringSubmatch(line); m != nil {
 			kind := KindType
-			switch m[2] {
-			case "trait":
+			if m[2] == "trait" {
 				kind = KindInterface
-			case "struct", "enum":
-				kind = KindType
-			case "impl":
-				kind = KindClass
 			}
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[3], Kind: kind, Signature: trimSig(line),
-				Line: i + 1, Exported: strings.TrimSpace(m[1]) != "" || m[2] == "impl",
+				Line: i + 1, Exported: strings.TrimSpace(m[1]) != "",
+			})
+			if m[2] == "trait" && strings.Contains(line, "{") {
+				sc.enter(m[3])
+			}
+			sc.advance(line)
+			continue
+		}
+		switch {
+		case rustConstRe.MatchString(line):
+			m := rustConstRe.FindStringSubmatch(line)
+			kind := KindConst
+			if m[2] == "static" {
+				kind = KindVar
+			}
+			addSymbol(f, Symbol{
+				Name: m[3], Kind: kind, Signature: trimSig(line),
+				Line: i + 1, Exported: strings.TrimSpace(m[1]) != "",
+			})
+		case rustMacroRe.MatchString(line):
+			m := rustMacroRe.FindStringSubmatch(line)
+			addSymbol(f, Symbol{
+				Name: m[1], Kind: KindFunc, Signature: trimSig(line),
+				Line: i + 1, Exported: pub || strings.Contains(trimmed, "#[macro_export]"),
 			})
 		}
+		sc.advance(line)
 	}
 }
 
 func extractJava(f *File, lines []string) {
+	var sc scopeTracker
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+			strings.HasPrefix(trimmed, "@") {
+			sc.advance(line)
+			continue
+		}
 		if m := javaPkgRe.FindStringSubmatch(line); m != nil {
 			f.Package = m[1]
+			sc.advance(line)
 			continue
 		}
 		if m := javaImpRe.FindStringSubmatch(line); m != nil {
 			f.Imports = append(f.Imports, m[1])
+			sc.advance(line)
 			continue
 		}
 		if m := javaTypeRe.FindStringSubmatch(line); m != nil {
@@ -350,18 +522,42 @@ func extractJava(f *File, lines []string) {
 			if m[1] == "interface" {
 				kind = KindInterface
 			}
-			f.Symbols = append(f.Symbols, Symbol{
+			addSymbol(f, Symbol{
 				Name: m[2], Kind: kind, Signature: trimSig(line),
-				Line: i + 1, Exported: strings.Contains(line, "public"),
+				Line: i + 1, Exported: strings.Contains(line, "public"), Receiver: sc.memberOwner(),
 			})
+			sc.enter(m[2])
+			sc.advance(line)
 			continue
 		}
-		if m := javaMethRe.FindStringSubmatch(line); m != nil {
-			f.Symbols = append(f.Symbols, Symbol{
+		public := strings.Contains(line, "public")
+		switch {
+		// A constructor has no return type, so the method regex never saw it —
+		// and a constructor is exactly what a caller needs to know about.
+		case sc.owner != "" && javaCtorRe.MatchString(line) &&
+			javaCtorRe.FindStringSubmatch(line)[1] == sc.owner:
+			addSymbol(f, Symbol{
+				Name: sc.owner, Kind: KindMethod, Signature: trimSig(line),
+				Line: i + 1, Exported: public, Receiver: sc.owner,
+			})
+		case javaMethRe.MatchString(line):
+			m := javaMethRe.FindStringSubmatch(line)
+			addSymbol(f, Symbol{
 				Name: m[1], Kind: KindMethod, Signature: trimSig(line),
-				Line: i + 1, Exported: strings.Contains(line, "public"),
+				Line: i + 1, Exported: public, Receiver: sc.owner,
+			})
+		case sc.atMemberLevel() && javaFieldRe.MatchString(line):
+			m := javaFieldRe.FindStringSubmatch(line)
+			kind := KindVar
+			if strings.Contains(line, "final") {
+				kind = KindConst
+			}
+			addSymbol(f, Symbol{
+				Name: m[1], Kind: kind, Signature: trimSig(line),
+				Line: i + 1, Exported: public, Receiver: sc.owner,
 			})
 		}
+		sc.advance(line)
 	}
 }
 

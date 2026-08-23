@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: dotnet
+name: C# / .NET Language Pack
+description: >-
+  .NET pack — pipeline, quality (dotnet format / build / test) and C#-aware
+  worker, tester and reviewer agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: csharp
+tags: [csharp, dotnet, msbuild, xunit, pack, marketplace]
+icon: "🟣"
+shareable: true
+spec:
+  pipeline: dotnet
+  quality: dotnet
+  agents: [dotnet-worker, dotnet-tester, dotnet-reviewer]
+  skills: [atomic-coding, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: dotnet-tester
+  override_worker: dotnet-worker

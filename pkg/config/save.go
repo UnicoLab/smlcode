@@ -211,6 +211,7 @@ func (c *Config) SaveInitial(keys ...string) error {
 	add("config_version", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: itoa(CurrentConfigVersion)})
 
 	seen := map[string]bool{}
+	var written []string
 	for _, key := range keys {
 		key = CanonicalKey(key)
 		f, ok := fields()[key]
@@ -227,6 +228,7 @@ func (c *Config) SaveInitial(keys ...string) error {
 			return err
 		}
 		add(key, val)
+		written = append(written, key)
 	}
 	// Anything the user already changed by flag/env before init still belongs
 	// in the file — otherwise `slmcode init --provider ollama` loses the choice
@@ -245,6 +247,7 @@ func (c *Config) SaveInitial(keys ...string) error {
 			return err
 		}
 		add(key, val)
+		written = append(written, key)
 	}
 	m.HeadComment = SaveHeader
 	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{m}}
@@ -252,5 +255,23 @@ func (c *Config) SaveInitial(keys ...string) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.WriteWithBackup(c.ConfigPath(), data, 0o644)
+	if err := atomicfile.WriteWithBackup(c.ConfigPath(), data, 0o644); err != nil {
+		return err
+	}
+	c.lastSavedKeys = written
+	return nil
+}
+
+// SavedKeys reports the config keys the most recent SaveInitial actually wrote,
+// excluding the config_version stamp.
+//
+// `slmcode init` used to report len(Diff()) as "N key(s)", which counts only
+// the keys that differ from the baseline — but the file also carries the keys
+// init was explicitly told to record, so a fresh Go project was described as
+// "4 key(s)" over a file holding six.
+func (c *Config) SavedKeys() []string {
+	if c == nil {
+		return nil
+	}
+	return append([]string(nil), c.lastSavedKeys...)
 }

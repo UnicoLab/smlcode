@@ -1,0 +1,81 @@
+# ── SLMCode Stack: Ollama · Qwen2.5-Coder (14B worker + 3B fast) ──
+# Two-model local setup on Ollama. The 14B does the coding; the 3B runs the
+# light JSON-only roles (reviewer, coordinator, splitter, planner, context,
+# architect, clarifier), which is where most of the turn count goes.
+#
+#   ollama pull qwen2.5-coder:14b
+#   ollama pull qwen2.5-coder:3b
+#
+# Apply: slmcode stack apply ollama-qwen-coder
+
+label: Ollama · Qwen2.5-Coder 14B
+description: Qwen2.5-Coder 14B worker with a 3B fast model for light roles
+icon: "🦙"
+
+provider: ollama
+endpoint: http://127.0.0.1:11434
+model: qwen2.5-coder:14b
+fast_model: qwen2.5-coder:3b
+backend: slmcode
+temperature: 0.1
+max_tokens: 3072
+max_parallel: 2
+max_retries: 4
+max_context_kb: 32
+think_passes: 1
+task_timeout_sec: 900
+dynamic_pipeline: true
+pinned_skills:
+  - atomic-coding
+
+# Qwen2.5-Coder is trained at 32K. Ollama's own default num_ctx is far lower —
+# set it on the server side too (a Modelfile `PARAMETER num_ctx 32768`, or
+# OLLAMA_CONTEXT_LENGTH=32768) or the model silently truncates the prompt.
+model_profiles:
+  default:
+    context_limit: 32768
+    max_tokens: 3072
+    thinking_budget_tokens: 2048
+    skill_token_budget: 300
+    knowledge_token_budget: 220
+    temperature: 0.1
+    max_turns: 22
+
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+scope_judge: true
+placeholder_pass: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+thinking_budget_tokens: 2048
+worker_critique: true
+require_smoke: true
+claims_gate: true
+over_edit_guard: true
+finalize_warn: true
+auto_text_tools: true
+
+write_guard: true
+read_before_edit: true
+shell_write_guard: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+react_compact: true
+react_compact_at_percent: 80
+wave_snapshots: true
+file_checkpoints: true
+hooks_enabled: true
+read_head_lines: 80
+
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+shell_permission: allow
+shell_whitelist: true
+
+price_preset: local

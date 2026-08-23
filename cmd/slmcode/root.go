@@ -81,15 +81,15 @@ Non-interactive: --json (status/doctor/readiness/board/version/apply/config/bloc
 --color=never, --log-level, --on-gate-timeout=stop (never auto-approves a plan),
 and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachable
 · 5 failing tasks · 130 interrupted.`),
-		Example: `  slmcode                          # premium TUI (default)
-  slmcode init
-  slmcode run "add JWT auth"
-  slmcode apply                    # review agent changes hunk by hunk
+		Example: `  slmcode init                     # start here: scaffolds .slmcode/ in this project
+  slmcode doctor                   # provider, model, endpoint, workspace
+  slmcode run "add JWT auth"       # full pipeline; pauses at the plan gate for one keystroke
+  slmcode                          # premium TUI (the default with no subcommand)
+  slmcode apply                    # review agent changes file by file
   slmcode diff
   slmcode board
   slmcode status --json
-  slmcode studio
-  slmcode doctor`,
+  slmcode studio                   # web UI + SSE API`,
 		SilenceUsage: true,
 		// Cobra printed "Error: …" and main printed "✖ …" for the same failure.
 		SilenceErrors: true,
@@ -165,6 +165,9 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 		return cmds
 	}
 
+	// A parent command given an unrecognized subcommand printed its help and
+	// exited 0: `slmcode memory nosuchthing` looked like a success. Make every
+	// group command reject unknown arguments.
 	var all []*cobra.Command
 	all = append(all, inGroup("run", tuiCmd(), initCmd(), runCmd(), chatCmd(), studioCmd(), watchCmd())...)
 	all = append(all, inGroup("review", applyCmd(), rejectCmd(), diffCmd(), commitCmd())...)
@@ -173,13 +176,24 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
 		memoryCmd(), evolveCmd(), metricsCmd(), versionCmd())...)
 	all = append(all, completionCmd())
+	for _, c := range all {
+		rejectUnknownSubcommands(c)
+	}
 	root.AddCommand(all...)
 
 	defer cli.RestoreAllRaw()
-	if err := root.Execute(); err != nil {
+	// Drop the dependency's per-agent Info records for the whole command, not
+	// just for engine construction: GoLangGraph builds a private logrus logger
+	// (bound to whatever os.Stderr is at the time) for every agent it creates,
+	// so without this a run's transcript is interleaved with ~40 "Executing
+	// node" lines and the TUI's boxes are shredded. --log-level=debug and
+	// SLMCODE_NO_QUIET=1 turn the filter off and show every line.
+	var execErr error
+	cli.FilterStderr(func() { execErr = root.Execute() })
+	if execErr != nil {
 		cli.RestoreAllRaw()
-		fmt.Fprintln(os.Stderr, cli.Error(err.Error()))
-		os.Exit(exitCodeFor(err))
+		fmt.Fprintln(os.Stderr, cli.Error(execErr.Error()))
+		os.Exit(exitCodeFor(execErr))
 	}
 }
 
@@ -205,8 +219,15 @@ func exitCodeFor(err error) int {
 	switch {
 	case strings.Contains(msg, "context canceled"), strings.Contains(msg, "interrupted"):
 		return 130
+	// Every shape cobra uses to say "you typed the command wrong" maps to 2.
+	// "unknown command" and "requires at least N arg(s)" used to return 1, so a
+	// script could not tell a typo from a real failure.
 	case strings.Contains(msg, "unknown flag"), strings.Contains(msg, "invalid argument"),
-		strings.Contains(msg, "accepts "), strings.Contains(msg, "required flag"):
+		strings.Contains(msg, "accepts "), strings.Contains(msg, "required flag"),
+		strings.Contains(msg, "unknown command"), strings.Contains(msg, "unknown shorthand"),
+		strings.Contains(msg, "requires at least"), strings.Contains(msg, "requires exactly"),
+		strings.Contains(msg, "arg(s), received"), strings.Contains(msg, "invalid value"),
+		strings.Contains(msg, "flag needs an argument"):
 		return 2
 	}
 	return 1
@@ -418,15 +439,18 @@ func signalContext() (context.Context, context.CancelFunc) {
 		case <-ch:
 		}
 		cli.RestoreAllRaw()
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, cli.Warn("interrupted — board preserved in .slmcode/board.json; press Ctrl-C again to force quit"))
+		// cli.Stderr(), not os.Stderr: while FilterStderr is active os.Stderr
+		// is a pipe drained by a goroutine, and os.Exit below would kill the
+		// process before the drain ran — the force-quit line would vanish.
+		_, _ = fmt.Fprintln(cli.Stderr())
+		_, _ = fmt.Fprintln(cli.Stderr(), cli.Warn("interrupted — board preserved in .slmcode/board.json; press Ctrl-C again to force quit"))
 		cancel()
 		select {
 		case <-stop:
 			return
 		case <-ch:
 			cli.RestoreAllRaw()
-			fmt.Fprintln(os.Stderr, cli.Error("force quit"))
+			_, _ = fmt.Fprintln(cli.Stderr(), cli.Error("force quit"))
 			os.Exit(130)
 		}
 	}()
@@ -435,5 +459,30 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return ctx, func() {
 		once.Do(func() { close(stop) })
 		cancel()
+	}
+}
+
+// rejectUnknownSubcommands makes a group command fail on an argument it does
+// not recognize instead of printing help and exiting 0.
+//
+// It only applies to commands that have subcommands and no RunE of their own —
+// `slmcode config` is a group, `slmcode run "…"` takes a free-text argument
+// and must keep it.
+func rejectUnknownSubcommands(c *cobra.Command) {
+	for _, sub := range c.Commands() {
+		rejectUnknownSubcommands(sub)
+	}
+	if !c.HasSubCommands() || c.RunE != nil || c.Run != nil || c.Args != nil {
+		return
+	}
+	c.Args = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+		return fmt.Errorf("unknown command %q for %q — try `%s --help`",
+			args[0], cmd.CommandPath(), cmd.CommandPath())
+	}
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
 	}
 }

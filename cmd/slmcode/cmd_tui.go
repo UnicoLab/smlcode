@@ -152,7 +152,7 @@ func runInteractiveSession(plain bool) error {
 	sess.SetProbe(preflight(h.Config))
 
 	// HITL gates render inline instead of pointing at a REST endpoint.
-	registerGates(h, sess)
+	_ = registerGates(h, sess)
 	h.Orchestrator.OnEvent(func(e orchestrator.Event) {
 		if cli.ShouldRender(e) {
 			sess.Observe(e)
@@ -165,7 +165,7 @@ func runInteractiveSession(plain bool) error {
 	var cancelRun func()
 
 	rebindOrchestrator := func() {
-		registerGates(h, sess)
+		_ = registerGates(h, sess)
 		h.Orchestrator.OnEvent(func(e orchestrator.Event) {
 			if cli.ShouldRender(e) {
 				sess.Observe(e)

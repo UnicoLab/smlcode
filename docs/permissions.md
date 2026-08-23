@@ -197,12 +197,17 @@ Each takes `off` / `auto` / `ask`. `auto_approve: true` bypasses all of them.
 renders and **blocks until answered**. It does not expire into an automatic decision — a gate that
 silently auto-approves after two minutes is worse than no gate, because you believed you had one.
 
+This holds for `slmcode run` as well as the TUI and Studio: on a terminal, `run` draws the same
+gate card and takes a **single keystroke** (`y` / `n` / `r`, or type free text to answer with
+notes). `[n]o` stops the run; `[r]eplan` sends the planner back for another attempt — they are
+different answers.
+
 **Without a human attached**, gates resolve immediately using `--on-gate-timeout`:
 
 | Value | Effect |
 |---|---|
-| `stop` *(default)* | take the gate's non-TTY default; a plan is never auto-approved headless |
-| `approve` | auto-approve (the old permissive behaviour) |
+| `stop` *(default)* | stop at the gate, once. The run ends with exit code **6** and prints the flag or config key that would let it proceed unattended. |
+| `approve` | answer every gate affirmatively (the old permissive behaviour) |
 | `reject` | fail closed |
 
 `plan_approve_on_timeout` (`approve` / `reject` / `auto`) covers the plan gate specifically;

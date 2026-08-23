@@ -3,6 +3,7 @@ package skills
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 )
 
 // Skill is a Claude Code–compatible SKILL.md pack.
@@ -308,13 +310,30 @@ func RenderPack(list []Skill, maxChars int) string {
 	return b.String()
 }
 
+// MaxSkillFileBytes caps ONE SKILL.md. Project skills live in the repository
+// (.slmcode/skills/), so their size is attacker-chosen; os.ReadFile on a
+// multi-gigabyte file is a one-line denial of service.
+const MaxSkillFileBytes = 512 * 1024
+
 // ParseFile reads SKILL.md with optional YAML-ish front matter.
+//
+// The file is REPOSITORY CONTENT and its body is rendered straight into a
+// specialist's prompt, so it is bounded and its harness-minted markers are
+// defused before anything else looks at it (see quality.DefuseHarnessMarkers).
 func ParseFile(path string) (Skill, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path comes from WalkDir over our own bundled/project skills dirs, not external input
+	f, err := os.Open(path) //nolint:gosec // path comes from WalkDir over our own bundled/project skills dirs
 	if err != nil {
 		return Skill{}, err
 	}
-	text := string(data)
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, MaxSkillFileBytes+1))
+	if err != nil {
+		return Skill{}, err
+	}
+	if len(data) > MaxSkillFileBytes {
+		return Skill{}, fmt.Errorf("skill file %s exceeds %d bytes and was not loaded", path, MaxSkillFileBytes)
+	}
+	text := quality.DefuseHarnessMarkers(string(data))
 	sk := Skill{Path: path, Metadata: map[string]string{}, UserInvocable: true}
 	if strings.HasPrefix(text, "---") {
 		rest := text[3:]

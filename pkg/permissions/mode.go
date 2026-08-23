@@ -62,9 +62,41 @@ func RecordPending(slmDir, path, kind, content string) (string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil { // pending proposals, owner-only
 		return "", err
 	}
-	safe := strings.ReplaceAll(path, string(os.PathSeparator), "__")
-	name := fmt.Sprintf("%d_%s_%s.patch.json", time.Now().UnixNano(), kind, safe)
+	name := fmt.Sprintf("%d_%s_%s.patch.json", time.Now().UnixNano(), sanitizeComponent(kind), sanitizeComponent(path))
 	full := filepath.Join(dir, name)
 	body := fmt.Sprintf("{\n  \"path\": %q,\n  \"kind\": %q,\n  \"content\": %q\n}\n", path, kind, content)
 	return full, atomicfile.Write(full, []byte(body), 0o644)
+}
+
+// maxPendingNameBytes bounds the flattened path inside a queue file name so a
+// model-supplied path cannot blow past the filesystem's NAME_MAX.
+const maxPendingNameBytes = 120
+
+// sanitizeComponent flattens an arbitrary caller-supplied string into one safe
+// file-name component.
+//
+// The old version replaced only os.PathSeparator, so on Windows a forward
+// slash survived and `../../x` became a real relative path escaping the queue
+// directory; `kind` was interpolated with no sanitizing at all. Everything
+// outside [A-Za-z0-9._-] now collapses to "_", and the result is bounded.
+func sanitizeComponent(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), ".")
+	if out == "" {
+		out = "file"
+	}
+	if len(out) > maxPendingNameBytes {
+		out = out[len(out)-maxPendingNameBytes:]
+	}
+	return out
 }

@@ -15,8 +15,8 @@ shareable: true
 spec:
   pipeline: rust
   quality: rust
-  agents: [rust-worker, rust-tester]
-  skills: [atomic-coding, specialist-tester, specialist-worker]
+  agents: [rust-worker, rust-tester, rust-reviewer]
+  skills: [atomic-coding, specialist-tester, specialist-worker, rust-errors]
   pin_skills: true
   override_tester: rust-tester
   override_worker: rust-worker

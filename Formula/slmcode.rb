@@ -9,9 +9,13 @@
 class Slmcode < Formula
   desc "Coding harness for SLMs and any OpenAI-compatible LLM — building blocks, language packs, Studio UI"
   homepage "https://unicolab.ai"
-  version "0.16.0"
+  version "0.17.0"
   license "MIT"
 
+  # The sha256 values below are synced by scripts/update-formula.sh from the
+  # release workflow AFTER the binaries are built and uploaded. Between a
+  # version bump and that sync they belong to the previous release and this
+  # formula will not install — that is expected and the pipeline fixes it.
   on_macos do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"

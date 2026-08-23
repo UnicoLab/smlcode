@@ -107,6 +107,8 @@ slmcode doctor
 ```
 
 You want: binary on `PATH`, a provider/model listed, and a model server that answers the phone.
+`doctor` exits **4** when the provider check fails — an unreachable endpoint, a rejected or
+missing API key, or a model the endpoint does not serve — and the message says which.
 
 <div class="slm-cmd" markdown>
 <div class="slm-cmd__bar" markdown><span>next up</span><span>quick start 🚀</span></div>
@@ -173,6 +175,12 @@ cd smlcode
 make install-system
 # or make install
 ```
+
+**Node is optional.** The install script builds the Studio SPA when `npm` is available and the
+registry is reachable; when it is not, it says so and installs anyway with the checked-in
+placeholder page. The CLI, the API and every command are unaffected — only the Studio *web page*
+is missing, and `slmcode studio` tells you that on startup. Build it later with `make ui-react`
+(or `make bootstrap`).
 
 Optional: `GOLANGGRAPH=/path/to/GoLangGraph` for local framework hacking. Bring snacks.
 

@@ -97,12 +97,19 @@ often than a bigger model does.
 **🕹️ Open a cockpit**
 
 ```bash
-slmcode studio    # http://127.0.0.1:7420 — clicky mode
+slmcode studio    # clicky mode — open the URL it PRINTS
 # and/or
 slmcode           # premium TUI — keyboard mode
 ```
 
 Pick your fighter. Both talk to the same harness. 🥊
+
+!!! warning "Open the URL Studio prints, not `http://127.0.0.1:7420`"
+    Studio can read this repo, rewrite its config, store your API keys and start runs, so it is
+    behind a per-launch session token: the URL it prints looks like
+    `http://127.0.0.1:7420/?t=8f3c…`. A bare `http://127.0.0.1:7420/` gets a 401 page telling you
+    to go back to the terminal. Opening the tokenised URL once mints a cookie and the token stops
+    appearing in the address bar. → [Studio security model](studio.md#security-model)
 
 </li>
 

@@ -5,9 +5,9 @@ Go, SLM-first coding harness. Deeper: `CONTRIBUTING.md`, `docs/`.
 ## Build & test
 
 - `make bootstrap` — build Studio UI once per clone. `go build` alone embeds a **placeholder**.
-- `make check` — the single gate: gofmt, vet, lint, `go test ./...`, `-race ./pkg/...`, web lint+build. CI runs this.
+- `make check` — the single gate: `tidy-check`, gofmt, vet, lint, `cover` (`go test ./...` + the coverage floor), `-race ./pkg/...`, web lint+build. CI runs this. The two steps that need the network (module proxy, npm registry) **skip with a named reason** instead of failing, so it runs offline.
 - Lint baseline is **zero**: `make lint` (and `make lint-strict`, its alias) fail on any finding. Fix it, or add `//nolint:<linter> // <why this site is a false positive>`.
-- `make e2e` offline; `RUN_E2E=1 make e2e` adds live-model tests. `test/e2e/harness_smoke_test.go` drives the whole harness against a fake OpenAI server and runs under plain `make test` — keep it green.
+- `make e2e` offline; `RUN_E2E=1 make e2e` adds live-model tests. Two suites run under plain `make test` and are the ones to keep green: `test/e2e/harness_smoke_test.go` drives the harness in-process against a fake OpenAI server, and `test/e2e/binary_acceptance_test.go` builds the **real binary** plus `test/fakemodel` and drives `init → doctor → run → task show → diff → apply` against a Go and a TypeScript fixture, asserting the bytes on disk.
 
 ## Layout
 

@@ -659,7 +659,7 @@ knowledge_inject: true         # Keyword knowledge injection
 context_compact: true          # Mid-run CONTEXT.md summarization
 react_compact: true            # Mid-run ReAct conversation compaction
 wave_snapshots: true           # Per-wave file rewind points
-hooks_enabled: true            # Load .slmcode/hooks.json
+hooks_enabled: false           # Load .slmcode/hooks.json (off: repo-supplied shell)
 
 # ── Interaction Modes ──
 clarify_mode: ask              # auto | ask | off
@@ -960,7 +960,7 @@ auto_refine_max_rounds: 2      # Max refine passes
 # ── Safety ──
 wave_snapshots: true           # Per-wave file rewind points
 file_checkpoints: true         # Snapshot files before first write
-hooks_enabled: true            # Load .slmcode/hooks.json
+hooks_enabled: false           # Load .slmcode/hooks.json (off: repo-supplied shell)
 
 # ── SLM Harness Invariants ──
 write_guard: true              # ws_write refuses existing files

@@ -43,11 +43,14 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Lint & test
+      # The same gate contributors run and the same one CI's lint-test job runs:
+      # gofmt, vet, golangci-lint (blocking), the coverage floor, -race, and the
+      # web build. A release used to go out on `make lint && make test` alone,
+      # which skipped the race detector, the coverage floor and the web lint.
+      - name: Build the Studio UI and run the full gate
         run: |
           make ui-react
-          make lint
-          make test
+          make check
 
       - name: Build release binaries
         env:

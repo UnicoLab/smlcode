@@ -19,6 +19,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/server"
@@ -84,7 +85,8 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 
 			fmt.Println(cli.Success("workspace ready"))
 			cli.KeyVal("path", ws.Config.SlmDir())
-			cli.KeyVal("gitignore", ".slmcode/.gitignore (auth.json, pending/, sessions/, …)")
+			cli.KeyVal("gitignore", fmt.Sprintf(".slmcode/.gitignore — %d rules (auth.json, sessions/, memory/, metrics/, …)",
+				len(config.SlmIgnoreEntries)))
 			cli.KeyVal("provider", ws.Config.Provider)
 			cli.KeyVal("model", ws.Config.Model)
 			cli.KeyVal("endpoint", ws.Config.Endpoint)
@@ -494,10 +496,16 @@ and mints a random session token per launch — the printed URL carries it as
 
 			// Studio can read files, write config, store API keys and start
 			// runs. It is loopback-only and emits no permissive CORS headers,
-			// and by default it also mints a random per-session token that the
-			// printed URL carries as ?t=… — defense in depth against other
-			// local processes. --no-auth drops the token; --dev-cors lets the
-			// Vite dev server talk to it.
+			// and by default it also mints a random per-launch token that the
+			// printed URL carries as ?t=…; presenting it once mints an
+			// HttpOnly SameSite=Strict cookie and EVERY later request — the
+			// HTML shell included — is checked against it.
+			//
+			// Be precise about what that token buys: it bounds other ORIGINS
+			// and a local listener that is not this user. It does NOT bound a
+			// process running as this user, because the token is printed to
+			// this terminal's stdout and lives in this process's memory.
+			// --no-auth drops it; --dev-cors lets the Vite dev server talk.
 			opts := server.DefaultOptions()
 			if noAuth {
 				opts.NoAuth = true
@@ -740,12 +748,11 @@ func runFailure(ctx context.Context, err error, gates *gateAudit, opt outcomeOpt
 	// change?" is a MORE urgent question after a failure than after a success.
 	opt.failure = err
 	printRunOutcome(opt)
-	msg := strings.ToLower(err.Error())
-	// Both spellings: this matches provider error TEXT, and some backends use
-	// the British double-l form. The literal is DATA, not prose, hence the
-	// concatenation that keeps the spelling linter out of the way.
-	canceled := strings.Contains(msg, "context canceled") ||
-		strings.Contains(msg, "context cancel"+"led")
+	// One definition of "this was a cancellation", shared with the engine:
+	// errors.Is(context.Canceled) plus the exact provider phrase in either
+	// spelling. The CLI used to re-implement it inline and got the answer from
+	// substring matching alone.
+	canceled := loop.IsContextCancelErr(err)
 	switch {
 	case gates != nil && gates.interrupted:
 		fmt.Println()

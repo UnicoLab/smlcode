@@ -100,7 +100,24 @@ func Warn(s string) string    { return Yellow("⚠ " + s) }
 func Error(s string) string   { return Red("✖ " + s) }
 func Info(s string) string    { return Cyan("→ " + s) }
 
+// bannerEnabled gates the ASCII wordmark. `--no-banner` (and anything else
+// that wants quiet output) turns it off through SetBannerEnabled, so the flag
+// reaches every render site — help, `studio`, the TUI, `version` — instead of
+// only the one the flag's owner remembered.
+var bannerEnabled atomic.Bool
+
+func init() { bannerEnabled.Store(true) }
+
+// SetBannerEnabled turns the ASCII banner on or off process-wide.
+func SetBannerEnabled(on bool) { bannerEnabled.Store(on) }
+
+// BannerEnabled reports the current setting.
+func BannerEnabled() bool { return bannerEnabled.Load() }
+
 func Banner() string {
+	if !bannerEnabled.Load() {
+		return ""
+	}
 	logo := `
    ███████╗██╗     ███╗   ███╗ ██████╗ ██████╗ ██████╗ ███████╗
    ██╔════╝██║     ████╗ ████║██╔════╝██╔═══██╗██╔══██╗██╔════╝

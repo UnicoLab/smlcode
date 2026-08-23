@@ -36,6 +36,67 @@ func TestEvalHarnessOffline(t *testing.T) {
 	}
 }
 
+// TestEvalOfflineThroughTheRealBinary drives `slmcode eval --offline` — the
+// mode that is supposed to prove a harness change helped without a model.
+//
+// pkg/eval's own tests assert the replay maths. This one asserts that the
+// COMMAND a person actually types reaches them: that the fixtures are embedded
+// in the shipped binary (a `go:embed` that silently loses a fixture is exactly
+// the kind of break a library test cannot see), that the report names every
+// fixture including the control arm, that the A/B moves the metrics the repair
+// ladder is meant to move, and that the verdict comes out as a documented exit
+// code rather than as prose.
+func TestEvalOfflineThroughTheRealBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary under test")
+	}
+	dir := t.TempDir()
+	home := filepath.Join(t.TempDir(), "home")
+
+	out, code := slm(t, dir, home, "eval", "--offline")
+	if code != 0 {
+		t.Fatalf("eval --offline exited %d (0 = the current arm beat the baseline):\n%s", code, out)
+	}
+
+	// Every embedded fixture must be replayed and named, the control arm
+	// included — an A/B with no control cannot support a claim.
+	for _, want := range []string{
+		"no model called",
+		"repair-ladder-go",
+		"edit-format-fallback-py",
+		"unrepairable-js",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("eval --offline output does not mention %q:\n%s", want, out)
+		}
+	}
+	// The metrics the repair ladder exists to move, and the verdict.
+	for _, want := range []string{
+		"repair-rule hit rate",
+		"failures fixed from memory",
+		"LLM calls per task",
+		"Verdict: improved",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("eval --offline did not report %q — the A/B proves nothing:\n%s", want, out)
+		}
+	}
+	// Deterministic: a replay that moves between runs cannot support a claim
+	// about a change, and the CLI is where anyone would notice.
+	second, code2 := slm(t, dir, home, "eval", "--offline")
+	if code2 != 0 {
+		t.Fatalf("second eval --offline exited %d", code2)
+	}
+	if second != out {
+		t.Errorf("eval --offline is not byte-identical between runs:\n--- first ---\n%s\n--- second ---\n%s", out, second)
+	}
+	// It must not have needed (or invented) a workspace: --offline is the mode
+	// you can run in a bare checkout.
+	if _, err := os.Stat(filepath.Join(dir, ".slmcode", "config.yaml")); err == nil {
+		t.Error("eval --offline scaffolded a workspace — it is supposed to touch nothing")
+	}
+}
+
 // TestLiveEvalHarness runs DefaultCases against local oMLX when RUN_E2E=1.
 func TestLiveEvalHarness(t *testing.T) {
 	if os.Getenv("RUN_E2E") != "1" {

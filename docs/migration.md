@@ -56,14 +56,20 @@ open could read its responses and start runs.
 - **Same-origin only** — no permissive CORS headers at all; a cross-origin `Origin` or
   `Sec-Fetch-Site: cross-site` is refused. When an origin is allowed, only that exact origin is
   echoed, never `*`.
-- **Session token** — `slmcode studio` now mints a random 256-bit token per run and prints it in
-  the URL (`http://127.0.0.1:7420/?t=…`). Every `/api/*` request must carry it as
-  `X-SLMCode-Token`, `Authorization: Bearer …`, or `?t=…` (for `EventSource`, which cannot set
-  headers). The SPA reads it from the URL or from the injected `<meta name="slmcode-token">` tag
-  and strips it from the address bar.
+- **Session token** — `slmcode studio` now mints a random 256-bit token per launch and prints it
+  in the URL (`http://127.0.0.1:7420/?t=…`). **Every** request must carry it — including `GET /`,
+  the HTML shell — as `X-SLMCode-Token`, `Authorization: Bearer …`, or `?t=…` (for `EventSource`,
+  which cannot set headers). Presenting it once mints an HttpOnly, `SameSite=Strict` session
+  cookie (`slmcode_studio`), and the SPA strips `?t=` from the address bar.
 
-**Open the URL the CLI prints**, not a bare `http://127.0.0.1:7420` — the latter now returns 401
-on every API call.
+**Open the URL the CLI prints**, not a bare `http://127.0.0.1:7420` — the latter now returns 401:
+a static "open the URL the CLI printed" page for a navigation, a bare 401 for `/api/*`.
+
+!!! warning "`<meta name="slmcode-token">` is gone"
+    Studio used to serve `GET /` unauthenticated and inject the token into `index.html` for the SPA
+    to read, which made the shell an unauthenticated token dispenser for any other local process.
+    The tag and the fallback that read it were both removed. A client that scraped it must read the
+    token from the CLI output or set `SLMCODE_STUDIO_TOKEN`.
 
 **If you script against the Studio API**, reuse the printed `?t=` value, set
 `SLMCODE_STUDIO_TOKEN` to a fixed value, or pass `--no-auth`.
@@ -170,7 +176,7 @@ project predates it, since `slmcode commit` runs `git add -A`.
 | Every tool result is capped at 8000 chars | Tune with `max_tool_chars`. |
 | `ws_shell` has a 2-minute timeout and kills the process group | Tune with `shell_timeout`; per-call ceiling 15m. |
 | `.slmcode/` is not tool-writable (except `.slmcode/scratch/`) | An agent can no longer write `hooks.json` or `config.yaml`. |
-| A per-task LLM call budget (`max_task_calls`, default 6) | Replaces an unbounded worst case. Raise it if tasks genuinely need more round-trips. |
+| A per-task LLM call budget (`max_task_calls`, default 10) | Replaces an unbounded worst case. It is derived from `max_retries` (1 + 1 + `max_retries` × 2), so raise the two together — the budget caps the retries otherwise. |
 | Colour is disabled outside a TTY | `slmcode status \| cat` is plain text. Force with `--color=always` / `FORCE_COLOR=1`. |
 | Documented exit codes | `2` usage/TTY · `3` no workspace · `4` provider unreachable · `5` failing tasks · `6` unanswerable gate · `130` interrupted. |
 | `slmcode update` verifies a SHA-256 checksum | The release's `SHA256SUMS` is fetched and checked before the binary is replaced; a mismatch installs nothing. Replaces `curl \| bash` for updates. |

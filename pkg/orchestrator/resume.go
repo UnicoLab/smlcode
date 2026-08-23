@@ -649,7 +649,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		if testerRejected {
 			res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
 		} else if escalatedLeft {
-			res.Summary = res.Summary + " (escalated tasks need human review in Studio)"
+			res.Summary = res.Summary + " (escalated tasks need human review)"
 		}
 	} else if qaGreen && weakQA && !success {
 		res.Summary = res.Summary + " (qa_gate is syntax-only — need pytest/tests for success)"
@@ -707,15 +707,22 @@ func (o *Orchestrator) checkpointInterrupt(ctx context.Context, board *plan.Boar
 	}
 	if o.currentTurn != nil && board != nil && ctx != nil && ctx.Err() != nil && isCancelErr(err) {
 		_ = session.MarkInterrupted(o.cfg.SlmDir(), o.currentTurn, *board, phase)
-		msg := fmt.Sprintf("interrupted at %s — board saved; /resume %s", phase, o.currentTurn.ID)
+		// `/resume <id>` is a REPL slash command, and this string is persisted:
+		// it reaches a CLI run, a headless JSON consumer and a saved session
+		// summary, none of which have a REPL to type it into. Emit the run id
+		// as DATA and let each renderer phrase its own instruction.
+		saved := "board saved"
 		if session.HasReactHistory(o.cfg.SlmDir(), o.currentTurn.ID) {
-			msg = fmt.Sprintf("interrupted at %s — ReAct history + board saved; /resume %s", phase, o.currentTurn.ID)
+			saved = "ReAct history + board saved"
 		}
-		o.emitFull("stop", stream.KindPhase, "", "", msg, "", "")
+		msg := fmt.Sprintf("interrupted at %s — %s", phase, saved)
+		o.emitFullDataL("stop", stream.KindPhase, "", "", msg, "", "", stream.LevelWarn,
+			map[string]any{"resume_id": o.currentTurn.ID, "phase": phase, "saved": saved})
 		res := &Result{
 			ID: o.currentTurn.ID, Query: o.currentTurn.Query, Board: *board,
 			Success: false, FailedTasks: board.FailedCount(),
-			Summary: fmt.Sprintf("interrupted at %s — resume with /resume", phase),
+			Summary: fmt.Sprintf("interrupted at %s — %s, resumable as %s",
+				phase, saved, o.currentTurn.ID),
 			Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
 			Usage: o.snapshotUsage(),
 		}

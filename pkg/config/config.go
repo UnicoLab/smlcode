@@ -39,11 +39,24 @@ const (
 	// call in the timeout arbitrator. 30s was far too short for a mode named
 	// "ask".
 	DefaultEscalateAskTimeout = 5 * time.Minute
+	// DefaultEscalateMaxRetries mirrors plan.DefaultMaxGateRetries — kept as a
+	// literal here because pkg/plan must not depend on pkg/config, and pinned
+	// to it by TestEscalateRetryCapDefaultsAgree in pkg/orchestrator.
+	DefaultEscalateMaxRetries = 2
 	DefaultShellAskTimeout    = 2 * time.Minute
 
 	// Self-improvement / budget defaults.
 	DefaultMemoryTokens = 300
-	DefaultMaxTaskCalls = 6
+	// DefaultMaxTaskCalls is the per-task LLM call budget that actually reaches
+	// the loop (loop.DefaultMaxTaskCalls is only the fallback for a zero-valued
+	// Runner). It is DERIVED from MaxRetries, not picked: a task's honest floor
+	// is worker + self-critique + MaxRetries × (review + correct), which at the
+	// default MaxRetries=4 is 1 + 1 + 8 = 10. At the old value of 6 a task got
+	// exactly TWO correction rounds no matter what max_retries said, and
+	// escalated to a human with half its retries unspent. Keep in step with
+	// MaxRetries — loop.MaxTaskCallsFor is the relationship, and buildRunner
+	// warns when a configured budget caps the configured retries.
+	DefaultMaxTaskCalls = 10
 
 	// Context-engineering defaults. These mirror the package-level defaults in
 	// pkg/context, pkg/repomap and pkg/skills so a zero config behaves exactly
@@ -309,8 +322,21 @@ type Config struct {
 	ContinueAskTimeout time.Duration `yaml:"continue_ask_timeout" json:"continue_ask_timeout"`
 	// EscalateAsk: ask | auto | off — pause on max-retry escalate for HITL.
 	EscalateAsk string `yaml:"escalate_ask" json:"escalate_ask"`
-	// EscalateAskTimeout for ask mode (timeout → @escalate SLM decides; default 30s).
+	// EscalateAskTimeout for ask mode (timeout → @escalate SLM decides).
+	// The default is DefaultEscalateAskTimeout (5 minutes), not the 30s this
+	// comment used to claim — a human has to notice the prompt, read the task
+	// and choose, and every expiry costs an extra LLM call in the arbitrator.
 	EscalateAskTimeout time.Duration `yaml:"escalate_ask_timeout" json:"escalate_ask_timeout"`
+	// EscalateMaxRetries caps how many times ONE task may be reopened by
+	// answering "retry" at the escalate gate before retry is refused and
+	// downgraded to re_scope.
+	//
+	// Without a cap, "retry" is a loop rather than a decision: the reopened
+	// task re-enters the same ladder, fails on the same evidence, escalates
+	// again, and the timeout arbitrator's own heuristic default is retry. Each
+	// granted retry costs a full ladder (up to MaxTaskCalls), so the ceiling
+	// one task can spend is (1 + escalate_max_retries) × max_task_calls.
+	EscalateMaxRetries int `yaml:"escalate_max_retries" json:"escalate_max_retries"`
 	// EscalateTimeoutAgent is the specialist that decides on HITL timeout
 	// (empty = auto: escalate → reviewer → coordinator).
 	EscalateTimeoutAgent string `yaml:"escalate_timeout_agent" json:"escalate_timeout_agent"`
@@ -340,7 +366,12 @@ type Config struct {
 	ContextCompact bool `yaml:"context_compact" json:"context_compact"`
 	// ContextCompactEngine: heuristic | llm | auto (LLM with heuristic fallback).
 	ContextCompactEngine string `yaml:"context_compact_engine" json:"context_compact_engine"`
-	// ReactCompact enables mid-run ReAct conversation compaction (context watchdog).
+	// ReactCompact enables ReAct conversation compaction at CHECKPOINT and
+	// RESUME — it does NOT compact a live agent call between its iterations.
+	// loop.LiveReactCompactionWired is the constant of record (it is false, and
+	// nothing an operator sets changes it); loop.ReactCompactionStatus renders
+	// the honest one-line claim. This setting says what was asked for, not what
+	// the harness does.
 	ReactCompact bool `yaml:"react_compact" json:"react_compact"`
 	// ReactCompactAtPercent triggers ReAct compaction at this % of MaxContextKB
 	// (little-coder default 80). <=0 or >=100 disables.
@@ -397,7 +428,9 @@ type Config struct {
 	// ActivePipeline is the last applied named pipeline block id (may match pack pipeline).
 	ActivePipeline string `yaml:"active_pipeline,omitempty" json:"active_pipeline,omitempty"`
 
-	// MCPServers are thin read-only MCP connections (stdio or HTTP).
+	// MCPServers are thin MCP connections (stdio or HTTP). They are read-only
+	// unless a server sets `read_only: false`, which the orchestrator now
+	// honors (see mcpServerConfigs) — it used to be inert.
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 
 	// ── Context engineering ──
@@ -498,6 +531,7 @@ func Default(root string) *Config {
 		ContinueAskTimeout:   DefaultContinueAskTimeout,
 		EscalateAsk:          "ask",
 		EscalateAskTimeout:   DefaultEscalateAskTimeout,
+		EscalateMaxRetries:   DefaultEscalateMaxRetries,
 		EscalateTimeoutAgent: "", // auto-pick @escalate
 		PlanApproveOnTimeout: DefaultPlanApproveOnTimeout,
 		QABootstrap:          DefaultQABootstrap,
@@ -875,6 +909,12 @@ func normalize(c *Config) {
 	if c.EscalateAskTimeout <= 0 {
 		c.EscalateAskTimeout = DefaultEscalateAskTimeout
 	}
+	if c.EscalateMaxRetries < 0 {
+		c.EscalateMaxRetries = 0
+	}
+	if c.EscalateMaxRetries == 0 {
+		c.EscalateMaxRetries = DefaultEscalateMaxRetries
+	}
 	if c.ShellAskTimeout <= 0 {
 		c.ShellAskTimeout = DefaultShellAskTimeout
 	}
@@ -1034,6 +1074,7 @@ type Patch struct {
 	EscalateAsk            *string                  `json:"escalate_ask,omitempty"`
 	EscalateAskTimeoutSec  *int                     `json:"escalate_ask_timeout_sec,omitempty"`
 	EscalateTimeoutAgent   *string                  `json:"escalate_timeout_agent,omitempty"`
+	EscalateMaxRetries     *int                     `json:"escalate_max_retries,omitempty"`
 	AutoApprove            *bool                    `json:"auto_approve,omitempty"`
 	ShellPermission        *string                  `json:"shell_permission,omitempty"`
 	ShellWhitelist         *bool                    `json:"shell_whitelist,omitempty"`
@@ -1210,6 +1251,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.EscalateAsk != nil {
 		c.EscalateAsk = strings.TrimSpace(*p.EscalateAsk)
+	}
+	if p.EscalateMaxRetries != nil && *p.EscalateMaxRetries > 0 {
+		c.EscalateMaxRetries = *p.EscalateMaxRetries
 	}
 	if p.EscalateAskTimeoutSec != nil && *p.EscalateAskTimeoutSec > 0 {
 		c.EscalateAskTimeout = time.Duration(*p.EscalateAskTimeoutSec) * time.Second

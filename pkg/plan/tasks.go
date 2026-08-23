@@ -67,10 +67,22 @@ type Task struct {
 	Checklist   []ChecklistItem `json:"checklist,omitempty"`
 	Output      string          `json:"output,omitempty"`
 	Review      string          `json:"review,omitempty"`
-	Retries     int             `json:"retries"`
-	Error       string          `json:"error,omitempty"`
-	UpdatedAt   string          `json:"updated_at,omitempty"`
-	Notes       string          `json:"notes,omitempty"`
+	// Retries counts correction rounds WITHIN one review ladder. It restarts
+	// at zero every time the task is dispatched to a wave, so it is not — and
+	// never was — a bound on how many times a task may be attempted overall.
+	Retries int `json:"retries"`
+	// GateRetries counts how many times the escalate gate answered "retry" for
+	// this task. Unlike Retries it accumulates for the life of the board, and
+	// it is what bounds the gate loop: answering "retry" forever used to
+	// re-enter an identical ladder until RunBoard's 200-round guard tripped.
+	GateRetries int `json:"gate_retries,omitempty"`
+	// AttemptLog is the "attempt N failed because X" ledger carried across gate
+	// retries. A retry that changes nothing is an infinite loop with extra
+	// steps; this is the state the next attempt is told not to repeat.
+	AttemptLog []string `json:"attempt_log,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	UpdatedAt  string   `json:"updated_at,omitempty"`
+	Notes      string   `json:"notes,omitempty"`
 }
 
 // Plan is the high-level strategy before task splitting.
@@ -198,6 +210,18 @@ func (b *Board) Get(id string) (Task, bool) {
 	return Task{}, false
 }
 
+// AllTasks returns a copy of every task, taken under the board lock.
+//
+// Callers that only need to READ the whole board — progress detectors,
+// renderers, reporters — must use this rather than ranging over b.Tasks
+// directly: UpdateTask appends, and an append can reallocate the backing array
+// under a concurrent range.
+func (b *Board) AllTasks() []Task {
+	boardMu.RLock()
+	defer boardMu.RUnlock()
+	return append([]Task(nil), b.Tasks...)
+}
+
 // AllDone reports whether agents have nothing left in the pipeline.
 // Human backlog (to_scope / scoped) does not block completion.
 func (b *Board) AllDone() bool {
@@ -303,7 +327,13 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 			task.ID, escapePipe(task.Title), task.Column, task.Role, check, deps))
 	}
 	t.WriteString("\n## Details\n\n")
-	t.WriteString("_Lean view for SLM context. Full outputs live in `board.json` / Studio task drawer._\n")
+	// Name a command every renderer has, not one UI's panel: TASKS.md is
+	// persisted and read by people who never open Studio. The Studio drawer is
+	// still mentioned, but as an alternative rather than the only route — and
+	// deliberately not as the phrase "Studio task drawer", which the terminal
+	// renderer rewrites wholesale.
+	t.WriteString("_Lean view for SLM context. Full outputs live in `board.json` — " +
+		"run `slmcode task show <id>`, or open the task in Studio._\n")
 	for _, task := range b.Tasks {
 		task.Normalize()
 		t.WriteString(fmt.Sprintf("\n### %s — %s\n\n", task.ID, task.Title))

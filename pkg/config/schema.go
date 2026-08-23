@@ -92,7 +92,8 @@ var schemaFields = map[string]schemaMeta{
 	"max_context_kb":         {"Max context KB", "Legacy prompt budget in KB, used when a model profile declares no real context window", "context", nil, false, false, false, false},
 	"context_compact":        {"CONTEXT compaction", "Summarize CONTEXT.md mid-run when it outgrows the budget", "context", nil, false, false, false, false},
 	"context_compact_engine": {"Compaction engine", "How CONTEXT.md is compacted", "context", []string{"heuristic", "llm", "auto"}, false, false, false, false},
-	"react_compact":          {"ReAct compaction", "Compact the in-flight agent conversation when it approaches the window", "context", nil, false, false, false, false},
+	"react_compact": {"ReAct compaction", "Compact the agent conversation at checkpoint and resume when it approaches the window. A single long agent call is NOT compacted mid-flight",
+		"context", nil, false, false, false, false},
 	"react_compact_at_percent": {"ReAct compaction threshold", "Percentage of the context budget at which the conversation is compacted (0 disables)",
 		"context", nil, false, false, false, false},
 	"repo_map_tokens":      {"Repo map tokens", "Token allowance for the ranked repo-symbol map inside a context pack. 0 disables the map", "context", nil, false, false, false, false},
@@ -151,8 +152,10 @@ var schemaFields = map[string]schemaMeta{
 	"escalate_ask":           {"Escalate ask", "Pause for a human when a task hits max retries", "hitl", []string{"ask", "auto", "off"}, false, false, false, false},
 	"escalate_ask_timeout":   {"Escalate timeout", "How long the escalate gate waits before the arbitrator decides. A human has to notice, read and choose", "hitl", nil, false, false, false, false},
 	"escalate_timeout_agent": {"Escalate arbitrator", "Specialist that decides on escalate timeout (empty = escalate → reviewer → coordinator)", "hitl", nil, false, false, false, false},
-	"auto_approve":           {"Auto approve", "Skip every HITL wait, taking the recommended answer", "hitl", nil, false, false, false, false},
-	"shell_ask_timeout":      {"Shell approval timeout", "How long an interactive shell approval waits when shell_permission=ask", "hitl", nil, false, false, false, false},
+	"escalate_max_retries": {"Escalate retry cap", "How many times one task may be reopened by answering retry at the escalate gate before retry is refused and the task is re-scoped",
+		"hitl", nil, false, false, false, false},
+	"auto_approve":      {"Auto approve", "Skip every HITL wait, taking the recommended answer", "hitl", nil, false, false, false, false},
+	"shell_ask_timeout": {"Shell approval timeout", "How long an interactive shell approval waits when shell_permission=ask", "hitl", nil, false, false, false, false},
 
 	// ── safety ──
 	"permission":        {"Permission", "Write policy for agent file changes", "safety", []string{"auto", "dry-run", "review"}, false, false, false, false},

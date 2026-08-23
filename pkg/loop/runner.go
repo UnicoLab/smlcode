@@ -106,6 +106,17 @@ type Runner struct {
 	// prompts (see feedbackSection).
 	Feedback   func() string
 	MaxRetries int
+	// MaxTaskAttempts caps how many times ONE task may be dispatched to a wave
+	// before the board parks it in the human backlog; 0 =>
+	// DefaultMaxTaskAttempts. This is the board-level companion to
+	// MaxTaskCalls, which only bounds a SINGLE attempt: startTask resets the
+	// call budget every dispatch, so without this a task reopened by the
+	// escalate gate got a fresh 10-call budget forever.
+	MaxTaskAttempts int
+	// MaxStallRounds is how many consecutive rounds may complete with nothing
+	// changing — no column move, no new output, no file changed on disk —
+	// before RunBoard gives up; 0 => DefaultMaxStallRounds.
+	MaxStallRounds int
 	// MaxWaves caps post-test/QA corrective RunBoard re-entry waves.
 	// Zero means unlimited legacy behavior.
 	MaxWaves       int
@@ -188,6 +199,10 @@ type Runner struct {
 	// attempts remembers what the corrector was already told, per task.
 	attempts attemptLedger
 
+	// waveAttempts counts how many times each task has been dispatched to a
+	// wave — the board-level attempt ceiling. See progress.go.
+	waveAttempts attemptTracker
+
 	// evo accumulates evolve failure events + bandit decisions for the
 	// orchestrator to drain at the end of a run.
 	evo evolveState
@@ -236,15 +251,29 @@ func (r *Runner) WithFailureHandler(fh *EnhancedFailureHandler) *Runner {
 
 // RunBoard processes executable tasks; reloads LiveStore each wave so humans
 // can add / move / edit tasks while agents work.
+//
+// Three bounds, in the order they fire:
+//
+//  1. the per-task attempt ceiling (MaxTaskAttempts) — a task that has been
+//     dispatched too many times is parked in the human backlog, so the rest of
+//     the board can still finish;
+//  2. the stall detector (MaxStallRounds) — consecutive rounds in which no
+//     task changed column, no output changed and no file changed on disk;
+//  3. the derived round guard, a backstop that should never be the thing that
+//     fires. It used to be the ONLY bound, at a fixed 200 rounds, which on a
+//     one-task board whose gate kept answering "retry" cost ~2,000 model calls
+//     before it said anything.
 func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 	guard := 0
 	idleRounds := 0
+	stallRounds := 0
+	lastSig := ""
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		guard++
-		if guard > 200 {
+		if guard > r.roundGuard(board) {
 			return r.giveUp(board, ErrSafetyGuard, guard)
 		}
 
@@ -308,6 +337,12 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		if len(wave) > maxP {
 			wave = wave[:maxP]
 		}
+		// Park anything that has spent its board-level attempt ceiling BEFORE
+		// spending another worker call on it.
+		if wave = r.admitWave(board, wave); len(wave) == 0 {
+			continue
+		}
+		before := r.progressSignature(board)
 		r.logf("wave: %d ready task(s)", len(wave))
 		ids := make([]string, len(wave))
 		for i, t := range wave {
@@ -317,6 +352,13 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 			return err
 		}
 		r.persist(board)
+		// A task that reached done has made progress: forget its attempts so a
+		// later reopen (tester, QA gate, human) starts from a full ceiling.
+		for _, id := range ids {
+			if t, ok := board.Get(id); ok && t.Column == plan.ColDone {
+				r.waveAttempts.clear(id)
+			}
+		}
 		if r.AfterWave != nil {
 			var finished []plan.Task
 			for _, id := range ids {
@@ -327,6 +369,22 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 			r.AfterWave(ctx, board, finished)
 			r.persist(board)
 		}
+
+		// A round that changed nothing cannot become a round that changes
+		// something by being repeated. The signature is compared against the
+		// state this round started from AND against the previous round's, so a
+		// board oscillating between two identical states counts as stalled too.
+		after := r.progressSignature(board)
+		if after == before || after == lastSig {
+			stallRounds++
+			r.logf("no progress in round %d (%d consecutive stall round(s))", guard, stallRounds)
+			if stallRounds >= r.maxStallRounds() {
+				return r.noteStall(board, guard)
+			}
+		} else {
+			stallRounds = 0
+		}
+		lastSig = before
 	}
 }
 
@@ -401,6 +459,9 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 		// including the project's language-appropriate smoke command.
 		prompt = fallbackTaskPromptWithLang(t, detectProjectLangHint(r.rootDir()))
 	}
+	if led := attemptLogSection(t); led != "" {
+		prompt += led
+	}
 	if brief := r.sharedBriefSection(board, t); brief != "" {
 		prompt += brief
 	}
@@ -414,6 +475,32 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 		prompt += fmtHint
 	}
 	return prompt + r.feedbackSection()
+}
+
+// attemptLogSection renders the cross-attempt "do not repeat this" ledger a
+// gate retry carries forward (plan.Task.AttemptLog).
+//
+// Without it, answering "retry" at the escalate gate sent the worker back with
+// a byte-identical prompt: same task text, same scope, same acceptance, and no
+// record that this exact attempt had already been made and rejected. A small
+// model given the same prompt returns the same answer, which is why the gate
+// loop never converged.
+func attemptLogSection(t plan.Task) string {
+	if len(t.AttemptLog) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Previous attempts at THIS task failed — do not repeat them\n")
+	for _, line := range t.AttemptLog {
+		if s := strings.TrimSpace(line); s != "" {
+			b.WriteString("- " + s + "\n")
+		}
+	}
+	b.WriteString("This task has been reopened " + fmt.Sprintf("%d", t.GateRetries) +
+		" time(s) after failing review. Repeating the previous approach will fail again: " +
+		"re-read the target files first, make a smaller and more precise change, " +
+		"and prove it with a tool call rather than a claim.\n")
+	return b.String()
 }
 
 func (r *Runner) adaptiveLessonsSection() string {
@@ -1736,9 +1823,12 @@ func (r *Runner) escalateTask(current plan.Task, review plan.ReviewResult, attem
 	if detail == "" {
 		detail = current.Error
 	}
+	// No remedy in the message. This string is persisted into task notes and
+	// TASKS.md, so it outlives the renderer that produced it: naming Studio
+	// here is wrong for every CLI, TUI and headless run that reads the board
+	// back. Each renderer supplies its own "how to answer this".
 	r.fireIntervention(current.ID, "escalate",
-		fmt.Sprintf("%s needs human review — decide in Studio (or wait for timeout)", current.ID),
-		detail)
+		fmt.Sprintf("%s needs human review", current.ID), detail)
 	return current, &escalation{detail: detail, attempt: attempt}, nil
 }
 

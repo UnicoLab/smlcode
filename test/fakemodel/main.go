@@ -8,7 +8,9 @@
 //	SLMCODE_ENDPOINT=http://127.0.0.1:8099/v1 slmcode run "…"
 //
 // Flags let a caller reproduce the failure modes `slmcode doctor` is supposed
-// to explain: -mode=401, -mode=404, -mode=garbage, -mode=slow.
+// to explain: -mode=401, -mode=404, -mode=garbage, -mode=slow. -reject
+// reproduces the OTHER failure a harness has to survive: a task that can never
+// satisfy its gate, with an escalate arbitrator that answers "retry" forever.
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -41,7 +44,24 @@ type fakeModel struct {
 	delay  time.Duration
 	file   string
 	source string
-	logf   func(string, ...any)
+	// reject makes the reviewer refuse every attempt and the escalate
+	// arbitrator answer "retry" every time — the permanently-failing task the
+	// convergence bound has to terminate. Without it this fake can only
+	// exercise the happy path.
+	reject bool
+	// rejectFirst rejects only the first N reviews and approves afterwards —
+	// the task that CANNOT pass its gate at first but CAN after the escalate
+	// gate reopens it. A convergence bound that also breaks this case is not a
+	// fix, it is a different bug.
+	rejectFirst int
+	reviews     int
+	// badFirst makes the first N worker writes land deliberately broken source,
+	// so the deterministic smoke gate fails and the review ladder actually
+	// runs. It is how the rig reproduces "fails, escalates, is retried, and
+	// THEN succeeds" without a real model.
+	badFirst int
+	writes   int
+	logf     func(string, ...any)
 }
 
 func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +147,11 @@ func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func roleOf(system, all string) string {
 	switch {
+	// The escalate arbitrator's contract is stated in the USER prompt
+	// (formatEscalateDecidePrompt), not the system one, so it is matched
+	// against the whole conversation.
+	case strings.Contains(all, `"action":"retry|re_scope|abort|mark_done"`):
+		return "escalate"
 	case strings.Contains(system, `"passed"`):
 		return "tester"
 	case strings.Contains(system, `{"approved"`), strings.Contains(system, "never approved"):
@@ -215,12 +240,40 @@ func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool, st edit
 			if !st.didRead {
 				return "", toolCall("ws_read", map[string]any{"path": file})
 			}
-			return "", toolCall("ws_write", map[string]any{"path": file, "content": src})
+			body := src
+			if f.badFirst > 0 {
+				f.mu.Lock()
+				f.writes++
+				n := f.writes
+				f.mu.Unlock()
+				if n <= f.badFirst {
+					body = "package calc\n\nfunc Divide( {\n" // deliberately unparsable
+				}
+			}
+			return "", toolCall("ws_write", map[string]any{"path": file, "content": body})
 		}
 		return `{"status":"done","summary":"added Divide to ` + file +
 			`","files_changed":["` + file + `"],"notes":""}`, nil
 	case "reviewer", "reviewer-strict":
+		if f.rejectFirst > 0 {
+			f.mu.Lock()
+			f.reviews++
+			n := f.reviews
+			f.mu.Unlock()
+			if n <= f.rejectFirst {
+				return `{"approved":false,"score":10,"summary":"` + file +
+					` still does not satisfy the acceptance","issues":["not done"]}`, nil
+			}
+			return `{"approved":true,"score":92,"summary":"` + file + ` contains func Divide","issues":[]}`, nil
+		}
+		if f.reject {
+			return `{"approved":false,"score":10,"summary":"` + file +
+				` still does not satisfy the acceptance","issues":["not done"]}`, nil
+		}
 		return `{"approved":true,"score":92,"summary":"` + file + ` contains func Divide","issues":[]}`, nil
+	case "escalate":
+		// Always retry: the answer that used to make the board spin forever.
+		return `{"action":"retry","reason":"try again","confidence":0.9}`, nil
 	case "tester", "verifier":
 		if hasTools && !sawToolResult {
 			return "", toolCall("ws_shell", map[string]any{"command": "cat " + file})
@@ -319,6 +372,12 @@ func main() {
 	file := flag.String("file", targetFile, "file the fake worker writes")
 	srcFile := flag.String("source-file", "", "read the fake worker's file content from this path")
 	verbose := flag.Bool("v", false, "log each call")
+	reject := flag.Bool("reject", false,
+		"reviewer refuses every attempt and @escalate always answers retry (permanently-failing task)")
+	badFirst := flag.Int("bad-first", 0,
+		"the first N worker writes land unparsable source, so the smoke gate fails and the review ladder runs")
+	rejectFirst := flag.Int("reject-first", 0,
+		"reject the first N reviews, then approve (a task that succeeds after an escalate retry)")
 	flag.Parse()
 
 	src := targetSource
@@ -329,13 +388,23 @@ func main() {
 		}
 		src = string(b)
 	}
-	f := &fakeModel{mode: *mode, delay: *delay, file: *file, source: src}
+	f := &fakeModel{mode: *mode, delay: *delay, file: *file, source: src, reject: *reject, rejectFirst: *rejectFirst, badFirst: *badFirst}
 	if *verbose {
 		f.logf = func(format string, a ...any) { log.Printf(format, a...) }
 	}
-	srv := &http.Server{Addr: *addr, Handler: f, ReadHeaderTimeout: 10 * time.Second}
-	fmt.Printf("fakemodel listening on http://%s (mode=%s, model=%s)\n", *addr, *mode, fakeModelID)
-	if err := srv.ListenAndServe(); err != nil {
+	// Listen first, then announce the address we actually got. `-addr
+	// 127.0.0.1:0` therefore works and prints the chosen port, which is what a
+	// parallel CI job needs — a hardcoded 8099 collides with whatever else the
+	// runner has open, and the failure looks like a harness bug.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", *addr, err)
+	}
+	srv := &http.Server{Handler: f, ReadHeaderTimeout: 10 * time.Second}
+	// One line, stable format, flushed before the first request can arrive: a
+	// supervising test reads it to learn the port.
+	fmt.Printf("fakemodel listening on http://%s (mode=%s, model=%s)\n", ln.Addr().String(), *mode, fakeModelID)
+	if err := srv.Serve(ln); err != nil {
 		log.Fatal(err)
 	}
 }

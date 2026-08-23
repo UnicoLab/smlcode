@@ -192,12 +192,25 @@ func (o *Orchestrator) buildTaskInput(query string) func(plan.Task) string {
 			Acceptance:      t.Acceptance,
 			Docs:            contextstore.LeanDocsForRole(t.Role),
 			Files:           t.Files,
-			SkillsMarkdown:  o.skillPackFor(t.Role, query),
-			FocusTerms:      focusTermsFor(t),
+			// The TASK's own files are the sharpest scope available — sharper
+			// than the whole board — so a task that only touches *.py cannot
+			// pull in a skill declared `paths: ["**/*.rs"]`.
+			SkillsMarkdown: o.skillPackForScoped(t.Role, query, o.taskFileScope(t)),
+			FocusTerms:     focusTermsFor(t),
 		})
 		t.Description = tp.Render() + "\n## Task instructions\n\n" + lean
 		return o.formatWorkerPrompt(query, t)
 	}
+}
+
+// taskFileScope is the path scope for one task's skill gate: its own files,
+// falling back to the run's scope when the task declares none (a scope of
+// nothing would disable gating rather than tighten it).
+func (o *Orchestrator) taskFileScope(t plan.Task) []string {
+	if len(t.Files) > 0 {
+		return t.Files
+	}
+	return o.runFileScope()
 }
 
 // focusTermsFor gives the excerpt engine the identifiers the task already

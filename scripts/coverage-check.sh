@@ -2,19 +2,22 @@
 # Run the full test suite with coverage instrumentation and fail if TOTAL
 # coverage (across all packages combined) drops below the floor.
 #
-# The floor is today's measured total, not a per-package target — several
-# packages sit well below it (pkg/mcp's client.go, which spawns
-# subprocesses, has zero tests; pkg/orchestrator is the 8.8k-LOC execution
-# core at ~38%) and are tracked separately for follow-up, not gated here.
+# The floor is today's measured total, not a per-package target — the lowest
+# package is pkg/orchestrator, the 8.8k-LOC execution core, at ~42%, and it is
+# tracked for follow-up rather than gated here. (pkg/mcp used to be the other
+# offender at zero; it is at ~73% now.)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Measured 2026-08-23 on a clean build: total coverage was 51.6%. Floor set
-# a hair below that measurement to absorb harmless rounding/ordering noise
-# between runs, not to grant real headroom to regress.
-FLOOR="${COVERAGE_FLOOR:-51.0}"
+# Measured 2026-08-23 on a clean build: total coverage is 64.5%, up from the
+# 51.6% this floor was first set against. The floor sits a hair below the
+# measurement to absorb rounding and package-ordering noise between runs — not
+# to grant headroom to regress. Raise it with the number, never leave it
+# trailing by ten points: a floor that far under reality stops being a ratchet
+# and starts being decoration.
+FLOOR="${COVERAGE_FLOOR:-63.0}"
 
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT

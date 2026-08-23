@@ -28,11 +28,8 @@ slmcode doctor
 mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
 printf 'package main\n\nfunc Hello() string { return "hi" }\n' > hello.go
 printf '# Agents\n\nPrefer tiny Go edits and godoc comments.\n' > AGENTS.md
-slmcode init
-# Apply the Go language pack: tuned pipeline, go-worker/go-tester agents,
-# and quality gate (go vet + go test). Always run this after init so the
-# pipeline is configured for your language before the first run.
-slmcode blocks apply go
+slmcode init   # detects Go from go.mod + .go content and applies the go pack for you —
+               # watch for "✓ auto-applied go pack" and "pack   go (detected)"
 slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting. Keep it tiny."
 cat hello.go && slmcode board && slmcode session list
 ```
@@ -44,9 +41,14 @@ cat hello.go && slmcode board && slmcode session list
 ## Studio / API 🎨
 
 ```bash
-slmcode studio   # note the URL it prints — it carries ?t=<token> when auth is on
-curl -s http://127.0.0.1:7420/api/health | jq .
-curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # 20 built-ins + registry blocks
+slmcode studio            # open the URL it prints — it carries ?t=<token>
+T=<the token from that URL>
+curl -s -H "X-SLMCode-Token: $T" http://127.0.0.1:7420/api/health | jq .
+curl -s -H "X-SLMCode-Token: $T" http://127.0.0.1:7420/api/agents | jq 'length'   # 20 built-ins + registry blocks
+
+# Auth is on by default and covers the HTML shell too, so both of these are 401:
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7420/api/health   # 401
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7420/            # 401 + "open the URL the CLI printed"
 ```
 
 Checklist: Run → pipeline moves → Live shows `@agent` → drag a card → Settings loads models.
@@ -73,7 +75,7 @@ slmcode apply
 
 ```bash
 make bootstrap           # build the Studio UI first (e2e checks the embedded assets)
-make check               # the one gate: fmt, vet, lint, tests, race, web lint+build
+make check               # the one gate: tidy-check, fmt, vet, lint, tests+coverage, race, web
 make e2e                 # offline e2e + prime CLI/API smoke
 RUN_E2E=1 make e2e       # also live oMLX / multi-agent
 make cover               # coverage against the floor in scripts/coverage-check.sh
@@ -82,8 +84,27 @@ make cover               # coverage against the floor in scripts/coverage-check.
 
 Frontend tests live in `web/`: `npm run lint && npm test` (Vitest + Testing Library).
 
+### The two suites that stand in for a real run
+
+Both need no model, no network and no API key, and both run under plain `make test`:
+
+| Suite | What it proves |
+|---|---|
+| `test/e2e/harness_smoke_test.go` | the harness **in-process** — harness → orchestrator → loop → workspace against a fake OpenAI server: the file lands on disk, the board completes, an episode and a metrics row are written with real edit accounting |
+| `test/e2e/binary_acceptance_test.go` | the **shipped binary** — builds `./cmd/slmcode` and `./test/fakemodel`, then drives `init → doctor → run → task show → diff → apply` against a Go fixture (`permission: auto`) and a TypeScript fixture (`permission: review`), asserting the bytes on disk, the pack `init` detected, the `.gitignore` it wrote (via real `git check-ignore`), and that the run summary's claims match the tree |
+
+`test/fakemodel` is also usable by hand — it follows the tool contract (reads a file before
+writing it), so a full pipeline against it lands real edits:
+
+```bash
+go run ./test/fakemodel -addr 127.0.0.1:0        # prints the port it got
+go run ./test/fakemodel -mode=401                # reproduce the failures doctor explains
+```
+
 Offline prime-port coverage: `TestPrimePortsEndToEnd` (stacks apply, auth.json,
-find_models allowlist, compact, events, Studio APIs).
+find_models allowlist, compact, events, Studio APIs). `scripts/e2e_prime_smoke.sh` drives the
+same surface over HTTP against a live Studio **with** its session token, and asserts that an
+untokenised request is refused.
 
 ---
 

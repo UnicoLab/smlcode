@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.17.0 — 2026-08-23
+
+### Security
+
+- **Repository-supplied hooks fail closed.** `.slmcode/hooks.json` lives inside the project, so a
+  clone could ship one and `slmcode run` would execute it. Now `hooks_enabled` defaults to
+  **false**, and even with it on the file's exact contents must be approved per user via the new
+  `slmcode hooks list | trust | untrust`. Approvals are keyed on a SHA-256 of the file and stored
+  in the user's config directory, so a repo cannot ship its own approval and any edit revokes it.
+  `slmcode hooks list` prints every command that would run before anything is approved.
+  `SLMCODE_TRUST_HOOKS=1` remains the CI escape hatch.
+- **`mcp_servers` is honoured only from the user config layer.** Each entry is spawned as a child
+  process at startup; a project file can no longer add, replace or clear the list. Whatever it
+  declared is named in a warning that `status`, `doctor` and `config show` all print.
+  `SLMCODE_TRUST_PROJECT_MCP=1` opts back in.
+- **Studio authenticates the HTML shell.** The `<meta name="slmcode-token">` injection is gone —
+  it made `GET /` an unauthenticated token dispenser for any other local process. Presenting the
+  token (`?t=`, `X-SLMCode-Token`, or `Authorization: Bearer`) once mints an HttpOnly,
+  `SameSite=Strict` session cookie; an unauthenticated navigation now gets a 401 page telling the
+  user to open the URL the CLI printed.
+
+### Fixed
+
+- **Exit code 130 no longer guesses.** Any error whose text contained the word "interrupted" —
+  including a provider replying "upstream request interrupted" — exited 130 on a run nobody had
+  touched. Cancellation is now decided by one definition shared with the engine
+  (`loop.IsContextCancelErr`: `errors.Is(context.Canceled)` plus the exact phrase), and commands
+  that know their own run context classify it themselves.
+- **`slmcode init` writes the full ignore list.** The CLI kept its own six-entry copy of
+  `.slmcode/.gitignore` while the workspace had grown to 26 paths, so `slmcode commit`
+  (`git add -A`) staged `memory/`, `evolve/`, `metrics/`, `summaries/`, `capabilities.json` and
+  more. The list now lives in `pkg/config` and is the same one `slmcode doctor` probes.
+- **Every command group rejects a typo.** `slmcode blocks nosuchthing` printed a block listing and
+  exited 0; the guard skipped any group with its own default action, which was most of them. All
+  fourteen groups now exit 2.
+- **`--no-banner` does something.** It was bound to a variable nothing read. It now suppresses the
+  ASCII banner in help, `studio`, the TUI and `version`.
+- **`scripts/e2e_prime_smoke.sh` runs again**, and drives Studio's real session token instead of
+  opting out of auth. It had been aborting on a `SIGPIPE` from `head` under `set -o pipefail`
+  before it reached a single Studio assertion.
+- **`make check` is honest.** It no longer depends on `go mod tidy` (which rewrote `go.mod` as a
+  side effect and needed the module proxy); `tidy-check` and `web-check` now skip with a named
+  reason when the proxy or the npm registry is unreachable. `make build` no longer runs `tidy`
+  either, so it works offline. `scripts/install.sh` no longer aborts when the Studio UI cannot be
+  built — it installs with the placeholder page and says so.
+
+### Added
+
+- **`slmcode hooks list | trust | untrust`** — the supported path for an operator with legitimate
+  repository hooks.
+- **`test/e2e/binary_acceptance_test.go`** — the acceptance test for the product: it builds the
+  real binary and `test/fakemodel`, then drives `init → doctor → run → task show → diff → apply`
+  against a Go fixture and a TypeScript fixture, asserting the bytes on disk, the language pack
+  `init` detected, and that the run summary's claims match the tree. No model, no network.
+- **`test/fakemodel -addr 127.0.0.1:0`** picks a free port and prints it, so parallel CI jobs
+  cannot collide.
+
+### Changed
+
+- `max_task_calls` now defaults to **10**, derived from `max_retries` (worker + self-critique +
+  `max_retries` × (review + correct)) rather than picked. At the old 6 a task got two correction
+  rounds no matter what `max_retries` said.
+- Skills support `paths:` — a glob list that keeps a skill out of prompts whose scope it cannot
+  apply to. An explicit `@skill:name` or a config pin still wins.
+- `slmcode init` drives language detection from `blocks.DetectPack` across 13 packs, proving the
+  language from file content rather than from a marker file alone.
+
 ## v0.16.0 — 2026-08-19
 
 - Add self-evolving harness memory

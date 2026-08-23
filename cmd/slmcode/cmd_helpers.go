@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/cli"
+	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 )
 
@@ -29,19 +30,14 @@ func noteUninitialized(root string) bool {
 	return true
 }
 
-// slmGitignore is written into .slmcode/ on init so secrets and scratch state
-// never reach a commit. `slmcode commit` runs `git add -A`, and auth.json holds
-// provider API keys — correctly 0600, but that does not stop `git add`.
-const slmGitignore = `# Written by slmcode init — keeps secrets and scratch state out of git.
-auth.json
-pending/
-sessions/
-queries/
-archives/
-errors/
-checkpoints/
-*.log
-`
+// The `.slmcode/.gitignore` body is NOT defined here. pkg/config owns the
+// authoritative list (config.SlmIgnoreEntries) because every path on it is
+// created by a package under pkg/ — a copy maintained next to `init` drifted
+// the moment a package started writing somewhere new, and that is exactly what
+// happened: this file used to carry six patterns while the workspace had
+// grown to twenty-six. `slmcode commit` runs `git add -A`, so the gap was
+// memory/, evolve/, metrics/, summaries/ and provider metadata landing in the
+// user's history.
 
 // ensureSlmGitignore writes .slmcode/.gitignore when it is missing.
 func ensureSlmGitignore(slmDir string) error {
@@ -55,7 +51,7 @@ func ensureSlmGitignore(slmDir string) error {
 	if err := os.MkdirAll(slmDir, 0o750); err != nil { // project state dir, owner-only
 		return err
 	}
-	return os.WriteFile(path, []byte(slmGitignore), 0o644) //nolint:gosec // conventional .gitignore perms, not secret state
+	return os.WriteFile(path, []byte(config.RenderSlmGitignore()), 0o644) //nolint:gosec // conventional .gitignore perms, not secret state
 }
 
 // gitIgnores reports whether git would ignore the given repo-relative path.

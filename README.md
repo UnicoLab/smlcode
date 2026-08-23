@@ -92,7 +92,7 @@ slmcode doctor                        # provider, model, endpoint, workspace —
                                       # reported that nothing answered at your endpoint
 slmcode run -v "add JWT validation"   # full pipeline, live stream
 slmcode                               # or: interactive TUI
-slmcode studio                        # or: web UI on http://127.0.0.1:7420
+slmcode studio                        # or: web UI — open the tokenised URL it prints
 ```
 
 `init` is first on purpose: every other command answers from built-in defaults until a workspace
@@ -236,6 +236,13 @@ them, by design rather than by oversight:
   build.** If you would not run `npm install && npm test` in that checkout by hand, do not point
   an agent at it either.
 
+What is *not* on that list, because it is closed: a repository cannot make `slmcode run` execute
+code of its own choosing before the model says anything. `.slmcode/hooks.json` fails closed — it
+needs `hooks_enabled: true` **and** an explicit per-content approval (`slmcode hooks trust`,
+recorded in your user config, never in the repo) — and `mcp_servers` is honoured only from your
+user config layer, because each entry is spawned as a child process at startup. Both refusals name
+the exact command that did not run.
+
 These are inherent to what the tool does; no addition to the allowlist removes them. The
 enforcing boundary, if you need one, is the operating system's: run slmcode as a user that can
 only reach the project (container, VM, dedicated account), or set `shell_permission: ask` to
@@ -258,11 +265,17 @@ headless run; pass `approve` to opt into the old behaviour, `reject` to fail clo
 
 ### Studio
 
-`slmcode studio` → the URL it prints, `http://127.0.0.1:7420/?t=<token>`. Live SSE feed with
+`slmcode studio` → **the URL it prints**, `http://127.0.0.1:7420/?t=<token>`. Live SSE feed with
 resumable event ids, kanban board, pending-change review with per-file diffs and apply/reject,
 run traces, pipeline and agent editors, file inspector, skills, markdown memory, settings.
-Loopback-only, same-origin enforced, no permissive CORS, and a per-run session token.
-→ **[docs/studio.md](docs/studio.md)**
+
+Loopback-only, same-origin enforced, no permissive CORS, and a per-launch session token that
+guards **everything, the HTML shell included** — a bare `http://127.0.0.1:7420/` gets a 401 page
+telling you to go back to the terminal. Presenting the token once mints an HttpOnly,
+`SameSite=Strict` cookie, so it stops travelling in URLs. Being honest about what that buys: the
+token is printed to your stdout and lives in the server process, so it bounds other origins and
+local listeners that are **not you** — it is not a sandbox against something already running as
+your user. `--no-auth` drops it entirely. → **[docs/studio.md](docs/studio.md)**
 
 ### Self-improvement
 
@@ -281,16 +294,18 @@ readable JSON; `rm -rf` on any of it is supported. → **[docs/self-improvement.
 | `run` · `chat` · `tui` (bare `slmcode`) | Full pipeline · classic REPL · interactive TUI |
 | `apply` · `reject` · `diff` · `commit` | Review and land agent changes |
 | `status` · `board` · `watch` · `compose` · `task` · `plan` | Inspect a run |
-| `config` · `stack` · `agent` · `blocks` · `skills` | Configure |
+| `config` · `stack` · `agent` · `blocks` · `skills` · `hooks` | Configure (`hooks list/trust/untrust` approves `.slmcode/hooks.json`) |
 | `studio` | Web UI + SSE API |
 | `session` · `context` · `docs` | Sessions and markdown memory |
 | `memory` · `evolve` · `metrics` | Inspect what the harness has learned |
 | `update` · `version` · `completion` | Maintenance |
 
-`--json` on `status`, `doctor`, `readiness`, `board`, `version`, `apply`, `compose`,
-`blocks list`, and every `config` / `memory` / `evolve` / `metrics` subcommand. Colour is off outside a TTY. Exit codes: `0` ok · `1` failure · `2` usage or
+`--json` on `status`, `doctor`, `readiness`, `board`, `version`, `apply`, `compose`, `task show`,
+`blocks list`, `hooks list`, `auth list`, and every `config` (except `set`) / `memory` / `evolve` /
+`metrics` subcommand. Colour is off outside a TTY. Exit codes: `0` ok · `1` failure · `2` usage or
 missing TTY · `3` no workspace · `4` provider unreachable · `5` failing tasks · `6` unanswerable
-gate · `130` interrupted. → **[docs/cli.md](docs/cli.md)**
+gate · `130` interrupted (a genuine cancellation — a provider error that merely says "interrupted"
+does not get 130). → **[docs/cli.md](docs/cli.md)**
 
 TUI: `/help`, `/compact`, `/models`, `/permission`, `/apply`, `/reject`, `/diff`, `/rewind`,
 `/sessions`, `/stats`, `/stop`, `/resume` — `/` opens a fuzzy picker; ↑/↓ and Ctrl-R search

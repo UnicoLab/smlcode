@@ -40,7 +40,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	}
 	timeout := o.escalateAskTimeout()
 	timeoutSec := int(timeout / time.Second)
-	ask := plan.BuildEscalateAsk(t, detail, timeoutSec)
+	ask := plan.BuildEscalateAskWithCap(t, detail, timeoutSec, o.maxGateRetries())
 	payload := plan.MarshalEscalateAskJSON(ask)
 	_ = o.store.Append(contextstore.DocScratch, "Escalate ask",
 		ask.Summary+"\n"+ask.Detail)
@@ -48,22 +48,26 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	if mode == plan.EscalateAskOff {
 		o.emit("execute", fmt.Sprintf("escalate_ask=off — %s left in to_scope", t.ID), "")
 		ans.Action = plan.EscalateActionReScope
-		plan.ApplyEscalateAction(board, t.ID, ans.Action, "")
+		o.applyEscalate(board, t.ID, ans.Action, "")
 		o.persistBoard(board)
 		return ans
 	}
 	if mode == plan.EscalateAskAuto {
+		ans.Action = plan.EscalateActionRetry
+		// The cap applies to auto exactly as it does to a human answer.
+		// Unattended runs are precisely where an uncapped "retry" turned into
+		// 200 rounds of identical work.
+		applied := o.applyEscalate(board, t.ID, ans.Action, "auto escalate → retry")
 		o.emitFull("execute", stream.KindOutput, "escalate", t.ID,
-			"auto-escalate: retry "+t.ID, "", truncate(payload, 600))
+			"auto-escalate: "+applied+" "+t.ID+" "+retryBudgetSuffix(ask), "", truncate(payload, 600))
 		o.emitLoop("execute", LoopEvent{
 			Action: "escalate_auto",
-			Reason: "auto-retry after escalate — " + t.ID,
+			Reason: "auto-" + applied + " after escalate — " + t.ID,
 			From:   "execute",
 			To:     "execute",
 			Wave:   o.waveCounter,
 		})
-		ans.Action = plan.EscalateActionRetry
-		plan.ApplyEscalateAction(board, t.ID, ans.Action, "auto escalate → retry")
+		ans.Action = applied
 		o.persistBoard(board)
 		return ans
 	}
@@ -83,7 +87,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	if err := ctx.Err(); err != nil {
 		ans.Action = plan.EscalateActionReScope
 		ans.Notes = "run canceled while queued for escalate"
-		plan.ApplyEscalateAction(board, t.ID, ans.Action, ans.Notes)
+		o.applyEscalate(board, t.ID, ans.Action, ans.Notes)
 		o.persistBoard(board)
 		return ans
 	}
@@ -92,7 +96,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		o.emitWarn("execute", "escalate ask unavailable — re-scoping task", err.Error())
 		ans.Action = plan.EscalateActionReScope
 		ans.Notes = "escalate ask could not be written: " + err.Error()
-		plan.ApplyEscalateAction(board, t.ID, ans.Action, ans.Notes)
+		o.applyEscalate(board, t.ID, ans.Action, ans.Notes)
 		o.persistBoard(board)
 		return ans
 	}
@@ -105,8 +109,8 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		Wave:     o.waveCounter,
 	})
 	o.emitFull("execute", stream.KindAsk, "escalate", t.ID,
-		fmt.Sprintf("%s escalated — choose re-scope / retry / mark done / abort (timeout %s → @%s decides)",
-			t.ID, timeout, o.escalateDecideRole()),
+		fmt.Sprintf("%s escalated — choose %s %s (timeout %s → @%s decides)",
+			t.ID, strings.Join(ask.Options, " / "), retryBudgetSuffix(ask), timeout, o.escalateDecideRole()),
 		"", payload)
 	o.emitFull("execute", stream.KindIntervention, "harness", t.ID,
 		ask.Summary+" — waiting for your decision",
@@ -129,7 +133,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 			hitl.Clear(o.cfg.SlmDir(), "escalate")
 			// Context canceled (user stop) — leave in backlog, do not spend an LLM turn.
 			ans.Action = plan.EscalateActionReScope
-			plan.ApplyEscalateAction(board, t.ID, ans.Action, "escalate wait canceled")
+			o.applyEscalate(board, t.ID, ans.Action, "escalate wait canceled")
 			o.persistBoard(board)
 			return ans
 		}
@@ -152,16 +156,44 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		o.emitFull("execute", stream.KindOutput, "escalate", t.ID,
 			"escalate answer: "+ans.Action, "", strings.TrimSpace(ans.Notes))
 	}
-	plan.ApplyEscalateAction(board, t.ID, ans.Action, ans.Notes)
+	applied := o.applyEscalate(board, t.ID, ans.Action, ans.Notes)
+	if applied != ans.Action {
+		o.emitWarn("execute", fmt.Sprintf(
+			"%s: retry refused — the escalate retry cap (%d) is spent; re-scoping instead",
+			t.ID, ask.MaxGateRetries),
+			"Answering retry again cannot change the outcome: the task has already been reopened "+
+				"the maximum number of times with the same scope and the same acceptance. "+
+				"Narrow the acceptance or fix the blocking evidence, then promote it back to ready_to_dev.")
+		ans.Action = applied
+	}
 	o.persistBoard(board)
 	o.emitLoop("execute", LoopEvent{
 		Action: "escalate_resolved",
-		Reason: t.ID + " → " + ans.Action,
+		Reason: t.ID + " → " + applied,
 		From:   "execute",
 		To:     "execute",
 		Wave:   o.waveCounter,
 	})
 	return ans
+}
+
+// applyEscalate applies an escalate answer under the gate-retry cap and returns
+// the action that was actually applied.
+func (o *Orchestrator) applyEscalate(board *plan.Board, taskID, action, notes string) string {
+	return plan.ApplyEscalateActionCapped(board, taskID, action, notes, o.maxGateRetries())
+}
+
+// maxGateRetries is the escalate-gate retry cap in force for this run.
+func (o *Orchestrator) maxGateRetries() int {
+	if o != nil && o.cfg != nil && o.cfg.EscalateMaxRetries > 0 {
+		return o.cfg.EscalateMaxRetries
+	}
+	return plan.DefaultMaxGateRetries
+}
+
+// retryBudgetSuffix renders "(retry 1 of 2)" for the gate card and its events.
+func retryBudgetSuffix(ask plan.EscalateAsk) string {
+	return fmt.Sprintf("(gate retries used %d of %d)", ask.GateRetries, ask.MaxGateRetries)
 }
 
 // escalateDecideRole picks the specialist that arbitrates escalate timeouts.

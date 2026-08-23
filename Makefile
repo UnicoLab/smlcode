@@ -1,6 +1,6 @@
 MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.16.0
+VERSION ?= 0.17.0
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -19,7 +19,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
+.PHONY: help tidy tidy-check web-check lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -42,7 +42,7 @@ help: ## Show this help
 	@echo "    make studio          Build & launch Studio UI"
 	@echo "    make lint            Format-check + vet + golangci-lint (blocking) + UI smoke"
 	@echo "    make lint-strict     Alias for lint (both blocking — the lint baseline is zero)"
-	@echo "    make check           Full local gate — same as CI (fmt, vet, lint, test, race, web)"
+	@echo "    make check           Full local gate — same as CI (fmt, vet, lint, tests+coverage, race, web)"
 	@echo "    make govulncheck     Scan dependencies for known vulnerabilities"
 	@echo "    make doctor          Run system health check"
 	@echo ""
@@ -184,8 +184,30 @@ ui-react: ## Build React/Vite Studio UI and sync to embed directory
 	cp -r web/dist/* cmd/slmcode/ui/
 	@echo "✔ React Studio UI synced to cmd/slmcode/ui/"
 
-tidy: ## Tidy Go modules
+tidy: ## Tidy Go modules (rewrites go.mod/go.sum — needs the module proxy)
 	go mod tidy
+
+# The non-mutating form, for `make check`.
+#
+# `check` used to depend on `tidy`, which meant two things it should not: the
+# one command CONTRIBUTING tells people to run REWROTE go.mod as a side effect,
+# and it hard-failed anywhere the module proxy is unreachable — a plane, an
+# air-gapped runner, a sandboxed agent. A tree is still worth verifying when
+# the proxy is not. Unreachable proxy is a SKIP with a named reason; a genuine
+# go.mod/imports mismatch is still a failure.
+tidy-check:
+	@echo "==> go mod tidy -diff"
+	@out="$$(go mod tidy -diff 2>&1)"; status=$$?; \
+	if [ $$status -eq 0 ]; then \
+		echo "tidy: OK (go.mod and go.sum match the imports)"; \
+	elif echo "$$out" | grep -qiE 'dial tcp|no such host|forbidden|i/o timeout|connection refused|unrecognized import path|proxy|TLS|certificate|network is unreachable'; then \
+		echo "tidy: SKIP — the Go module proxy is not reachable from here, so go.mod cannot be verified."; \
+		echo "      CI verifies it; run 'make tidy' once you are online."; \
+	else \
+		echo "$$out"; \
+		echo "ERROR: go.mod/go.sum do not match the imports — run 'make tidy'." >&2; \
+		exit 1; \
+	fi
 
 # Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed.
 # index.html is always tracked (a placeholder ships so go:embed always finds
@@ -218,7 +240,9 @@ lint: ## Go format + vet + golangci-lint (blocking) + UI smoke check
 
 lint-strict: lint ## Alias for lint — kept for muscle memory and CI history; lint is blocking now that the baseline is zero
 
-build: tidy ui-check ## Build the slmcode binary
+# NOT `tidy`: a build target must not rewrite go.mod, and it must work offline.
+# `make check` verifies go.mod separately (see tidy-check).
+build: ui-check ## Build the slmcode binary
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) ./cmd/slmcode
 
 # Default: user install (~/.local/bin)
@@ -267,17 +291,27 @@ e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 # + race tests + web lint/build. This is exactly what CI's lint-test job and
 # .pre-commit-config.yaml both run, so local and CI cannot diverge — if you
 # want to know whether a PR will pass CI, run `make check`.
-check: tidy lint test race ## Run the full local gate (fmt, vet, lint, unit+race tests, web lint+build) — same as CI
-	@echo "==> web lint + build"
-	@if [ -d web ]; then \
-		( cd web && \
-		  if [ ! -d node_modules ]; then npm ci; fi && \
-		  npm run lint && \
-		  npm run build ); \
-	else \
-		echo "(no web/ directory — skipping)"; \
-	fi
+check: tidy-check lint cover race web-check ## Run the full local gate (fmt, vet, lint, ui-check, tests+coverage floor, race, web) — same as CI
 	@echo "check: OK"
+
+# The web half of `check`, as its own target so it can be run and debugged
+# alone. Every reason it cannot run is a NAMED skip, not a failure: the Go tree
+# is not broken because npm is missing or the registry is unreachable, and a
+# gate that fails for a reason the developer cannot fix is a gate people learn
+# to bypass. A lint or build error with node_modules already present IS a
+# failure — that is the tree's fault, and CI's web-check job runs it for real.
+web-check: ## Lint + build the Studio UI (skips with a reason when npm/registry are unavailable)
+	@echo "==> web lint + build"
+	@if [ ! -d web ]; then \
+		echo "web: SKIP — no web/ directory in this tree."; \
+	elif ! command -v npm >/dev/null 2>&1; then \
+		echo "web: SKIP — npm is not on PATH. Install Node.js to lint and build the Studio UI."; \
+	elif [ ! -d web/node_modules ] && ! ( cd web && npm ci ); then \
+		echo "web: SKIP — 'npm ci' failed (npm registry unreachable?). The Go gate above still ran."; \
+	else \
+		( cd web && npm run lint && npm run build ) || exit 1; \
+		echo "web: OK"; \
+	fi
 
 studio: build ## Build & launch Studio UI
 	./bin/$(BIN) studio

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/UnicoLab/slmcode/pkg/server"
 )
 
 func TestVersionMetadata(t *testing.T) {
@@ -43,6 +47,22 @@ func TestVersionMetadata(t *testing.T) {
 	}
 }
 
+// TestUIEmbedPresent pins the go:embed contract for the Studio UI directory.
+//
+// cmd/slmcode/ui/ has exactly one tracked file, .gitkeep, so that the directory
+// exists on a fresh clone and `//go:embed all:ui` has something to embed — an
+// embed pattern that matches nothing is a COMPILE error, so this is what keeps
+// `go build ./cmd/slmcode` working with no Node toolchain in sight. The `all:`
+// prefix is what makes a dotfile eligible; without it the directory would look
+// empty to embed.
+//
+// Two states are legitimate and this asserts the right thing in each:
+//
+//	placeholder — no index.html: the server serves pkg/server's built-in page
+//	built       — index.html AND assets/ from `make bootstrap` / `make ui-react`
+//
+// index.html without assets/ is neither: the shell would boot and then ask for
+// /assets/*.js that do not exist — a blank screen.
 func TestUIEmbedPresent(t *testing.T) {
 	entries, err := uiEmbed.ReadDir("ui")
 	if err != nil {
@@ -52,10 +72,45 @@ func TestUIEmbedPresent(t *testing.T) {
 	for _, e := range entries {
 		have[e.Name()] = true
 	}
-	if !have["index.html"] {
-		t.Fatal("missing ui files: map[index.html:true]")
+	if len(entries) == 0 {
+		t.Fatal("go:embed all:ui embedded an empty directory")
+	}
+	if !have[".gitkeep"] {
+		t.Errorf("cmd/slmcode/ui/.gitkeep is not embedded (got %v) — it is the only tracked "+
+			"file in that directory and `all:` is what makes go:embed include a dotfile", keys(have))
+	}
+
+	uiFS, err := fs.Sub(uiEmbed, "ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := server.UIIsBuilt(uiFS)
+	// The CLI's startup warning and the page the server serves must agree.
+	if built == studioUIIsPlaceholder(uiFS) {
+		t.Fatalf("server.UIIsBuilt=%v disagrees with studioUIIsPlaceholder=%v",
+			built, studioUIIsPlaceholder(uiFS))
+	}
+
+	if !built {
+		if have["assets"] {
+			t.Fatal("cmd/slmcode/ui/assets/ is embedded without an index.html — " +
+				"half-built UI; run `make bootstrap` or delete cmd/slmcode/ui/assets")
+		}
+		t.Log("Studio UI not built — the binary serves the built-in placeholder page " +
+			"(pkg/server/placeholder.go). Run `make bootstrap` to embed the real React UI.")
+		return
 	}
 	if !have["assets"] {
-		t.Skip("Studio UI assets not built — run `make bootstrap` or `make ui-react` to embed the real React UI (placeholder index.html is present and embeds fine)")
+		t.Fatal("cmd/slmcode/ui/index.html is embedded without assets/ — the SPA shell " +
+			"would load and then 404 its own bundle; run `make bootstrap`")
 	}
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

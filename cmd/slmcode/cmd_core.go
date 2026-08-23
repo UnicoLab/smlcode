@@ -801,18 +801,21 @@ func boardProgress(slmDir string) func() (int, int) {
 	}
 }
 
-// studioUIIsPlaceholder reports that the embedded UI is the checked-in stub
-// rather than a built React bundle.
+// studioUIIsPlaceholder reports that no built Studio SPA is embedded in this
+// binary, so the server will answer navigations with the built-in placeholder
+// page instead.
 //
-// `go build` alone embeds cmd/slmcode/ui/index.html, which renders "SLMCode
-// Studio UI not built". That is a good page — but the CLI used to announce
-// "Studio listening" and open a browser without a word about it, so the first
-// thing a from-source user saw was a placeholder with no explanation in the
-// terminal they were looking at.
+// `go build` alone embeds only cmd/slmcode/ui/.gitkeep — the Vite output is
+// gitignored build product, not source — so a from-source binary has no SPA
+// until `make bootstrap` runs. The CLI used to announce "Studio listening" and
+// open a browser without a word about it, so the first thing a from-source user
+// saw was a placeholder with no explanation in the terminal they were looking
+// at.
+//
+// The predicate is server.UIIsBuilt so the CLI's startup warning and the page
+// the server actually serves can never disagree; it used to grep a checked-in
+// index.html for a magic string, which forced that placeholder to be a tracked
+// file that `make ui-react` then overwrote.
 func studioUIIsPlaceholder(uiFS fs.FS) bool {
-	data, err := fs.ReadFile(uiFS, "index.html")
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), "Studio UI not built")
+	return !server.UIIsBuilt(uiFS)
 }

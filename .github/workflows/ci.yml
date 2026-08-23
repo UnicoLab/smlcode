@@ -25,6 +25,9 @@ jobs:
       - name: Check for stale/broken repo slug references
         run: ./scripts/check-repo-refs.sh
 
+      - name: Check the version is consistent everywhere it is written down
+        run: ./scripts/check-version.sh
+
   lint-test:
     name: Lint & Test
     runs-on: ubuntu-latest
@@ -46,11 +49,15 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # `make web-deps`, not a bare `npm ci`: `npm ci` refuses to run at all when
+      # web/package-lock.json does not match web/package.json, and the lock in this
+      # tree predates the vitest/eslint devDependencies. web-deps tries `npm ci`
+      # first and falls back to `npm install`, printing the real fix either way.
       - name: Install web deps
-        run: cd web && npm ci
+        run: make web-deps
 
-      - name: Build web UI
-        run: cd web && npm run build && mkdir -p ../cmd/slmcode/ui && cp -r dist/* ../cmd/slmcode/ui/
+      - name: Build web UI into the go:embed directory
+        run: make ui-react
 
       - name: Install golangci-lint
         run: |
@@ -104,8 +111,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # `make web-deps`, not a bare `npm ci`: `npm ci` refuses to run at all when
+      # web/package-lock.json does not match web/package.json, and the lock in this
+      # tree predates the vitest/eslint devDependencies. web-deps tries `npm ci`
+      # first and falls back to `npm install`, printing the real fix either way.
       - name: Install web deps
-        run: cd web && npm ci
+        run: make web-deps
 
       - name: Type check
         run: cd web && npx tsc --noEmit
@@ -139,11 +150,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # `make web-deps`, not a bare `npm ci`: `npm ci` refuses to run at all when
+      # web/package-lock.json does not match web/package.json, and the lock in this
+      # tree predates the vitest/eslint devDependencies. web-deps tries `npm ci`
+      # first and falls back to `npm install`, printing the real fix either way.
       - name: Install web deps
-        run: cd web && npm ci
+        run: make web-deps
 
-      - name: Build web UI
-        run: cd web && npm run build && mkdir -p ../cmd/slmcode/ui && cp -r dist/* ../cmd/slmcode/ui/
+      - name: Build web UI into the go:embed directory
+        run: make ui-react
 
       - name: Install golangci-lint
         run: |

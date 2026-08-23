@@ -62,6 +62,22 @@ for want in "$DARWIN_ARM64" "$DARWIN_AMD64" "$LINUX_ARM64" "$LINUX_AMD64"; do
   grep -q "sha256 \"$want\"" "$tmp" || { echo "error: checksum $want not written to formula" >&2; exit 1; }
 done
 
+# No placeholder may survive. Between a version bump and this sync the formula
+# carries all-zero sha256 values (see Formula/slmcode.rb for why zeros and not
+# the previous release's real hashes); if any is still there, a substitution
+# above silently did not match and Homebrew would be left unable to install.
+if grep -n 'sha256 "0\{64\}"' "$tmp"; then
+  echo "error: a placeholder sha256 survived the sync — the URL templates in $FORMULA no longer match the patterns in this script" >&2
+  exit 1
+fi
+
+# And the version line must now be the one we were asked for, or the "#{version}"
+# templates in every url resolve to the wrong release.
+if ! grep -q "^  version \"$VERSION\"" "$tmp"; then
+  echo "error: $FORMULA version line was not set to $VERSION" >&2
+  exit 1
+fi
+
 mv "$tmp" "$FORMULA"
 
 echo "✔ Formula/slmcode.rb synced for v${VERSION}"

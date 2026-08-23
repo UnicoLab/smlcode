@@ -8,11 +8,19 @@ on:
 permissions:
   contents: write
 
+env:
+  # Keep in lockstep with .github/workflows/ci.yml. The release gate must be the
+  # same gate CI runs, not a weaker one.
+  GOLANGCI_LINT_VERSION: v2.5.0
+
 jobs:
   release:
     name: Build & Publish
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # `make check` = tidy-check + lint + coverage + race + web lint/build, and the
+    # cross-compile matrix follows it. CI splits that across three jobs with 25+20+15
+    # minutes; this job runs all of it plus six builds.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,25 +40,105 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Install web deps
-        run: cd web && npm ci
-
       - name: Extract version
         id: ver
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag ${TAG} is not a vX.Y.Z release tag" >&2
+            exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      # The same gate contributors run and the same one CI's lint-test job runs:
-      # gofmt, vet, golangci-lint (blocking), the coverage floor, -race, and the
-      # web build. A release used to go out on `make lint && make test` alone,
-      # which skipped the race detector, the coverage floor and the web lint.
-      - name: Build the Studio UI and run the full gate
+      # Fail before spending 40 minutes on a build whose binaries would report a
+      # version nobody asked for. This catches the classic release mistake: the
+      # tag says v0.17.0, cmd/slmcode/version.go still says 0.16.0, and every
+      # published artifact carries the tag in its filename and the old version
+      # in `slmcode version`.
+      - name: Version consistency (tag == version.go == Makefile == Formula)
+        run: ./scripts/check-version.sh --tag "${{ steps.ver.outputs.tag }}"
+
+      - name: Repo reference guard
+        run: ./scripts/check-repo-refs.sh
+
+      # NOT a bare `cd web && npm ci`. `npm ci` installs strictly from
+      # package-lock.json and refuses to run when the lock does not match
+      # package.json — which is exactly the state web/ is in until a regenerated
+      # lock is committed. A stale lock is a reason to fix the lock, never a
+      # reason for a tagged release to abort before it builds anything.
+      # `make web-deps` tries `npm ci` first and falls back to `npm install`,
+      # printing the fix either way.
+      - name: Install web deps
+        run: make web-deps
+
+      - name: Install golangci-lint
         run: |
-          make ui-react
-          make check
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # ORDER IS LOAD-BEARING. `make ui-react` builds web/ and syncs web/dist into
+      # cmd/slmcode/ui/, which is what `//go:embed all:ui` compiles into every
+      # binary. It MUST run before any `go build`, or cmd/slmcode/ui/ holds nothing
+      # but .gitkeep, every published binary falls back to the placeholder page
+      # compiled into pkg/server, and every user who runs `slmcode studio` gets
+      # "Studio not built" — with no way to fix it short of a new release. The
+      # step below turns that from a silent downgrade into a failed release.
+      - name: Build the Studio UI
+        run: make ui-react
+
+      # `sourcemap: 'hidden'` in web/vite.config.ts still WRITES .map files into
+      # web/dist; it only suppresses the sourceMappingURL comment. `go:embed all:ui`
+      # takes the directory as-is, so every release binary would carry the full TSX
+      # source. Drop them after the sync and before the compile.
+      - name: Strip sourcemaps from the embedded UI
+        run: |
+          set -euo pipefail
+          find cmd/slmcode/ui -name '*.map' -print -delete
+
+      # The same gate contributors run and the same one CI's lint-test job runs:
+      # gofmt, vet, golangci-lint (blocking — golangci-lint is installed above, or
+      # scripts/lint.sh silently SKIPS it), the coverage floor, -race, and the web
+      # build. A release used to go out on `make lint && make test` alone, which
+      # skipped the race detector, the coverage floor and the web lint.
+      - name: Run the full gate (make check)
+        run: make check
+
+      # The single check that stands between this release and shipping a
+      # placeholder Studio to every user. `make check` does NOT enforce it:
+      # scripts/ui-check.sh treats "no build output at all" as a valid state, so
+      # contributors without Node can still build — the binary then serves the
+      # placeholder page compiled into pkg/server. For a RELEASE that state is
+      # fatal, so this step asserts the *built* branch specifically.
+      - name: Verify the real Studio UI is embedded (fatal)
+        run: |
+          set -euo pipefail
+          ui=cmd/slmcode/ui
+          fail() { echo "::error::$*"; exit 1; }
+
+          # Shared contract first (tracked .gitkeep, no half-built tree).
+          ./scripts/ui-check.sh
+
+          [[ -f "$ui/index.html" ]] || fail "$ui/index.html is missing — 'make ui-react' did not sync web/dist. Every published binary would serve the pkg/server placeholder page."
+          [[ -d "$ui/assets" ]] || fail "$ui/assets is missing — 'make ui-react' did not sync web/dist. Every published binary would serve the pkg/server placeholder page."
+
+          # A real Vite index.html mounts #root and loads a hashed module bundle.
+          grep -q 'id="root"' "$ui/index.html" \
+            || fail "$ui/index.html has no <div id=\"root\"> — not a Vite build of web/"
+          grep -qE '<script[^>]+src="[^"]*assets/[^"]+\.js"' "$ui/index.html" \
+            || fail "$ui/index.html does not reference a built assets/*.js bundle — not a Vite build output"
+
+          js_count="$(find "$ui/assets" -name '*.js' | wc -l | tr -d ' ')"
+          [[ "$js_count" -ge 1 ]] || fail "$ui/assets contains no JavaScript bundle"
+          if find "$ui" -name '*.map' | grep -q .; then
+            fail "sourcemaps survived into $ui — they would ship the TSX source inside every binary"
+          fi
+          echo "Studio UI verified: ${js_count} JS bundle(s) under ${ui}/assets"
+          ls -la "$ui" "$ui/assets"
 
       - name: Build release binaries
         env:
@@ -60,7 +148,11 @@ jobs:
           mkdir -p dist
           commit="$(git rev-parse --short HEAD)"
           built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ldflags="-s -w -X main.Version=${VERSION} -X main.GitCommit=${commit} -X main.BuildTime=${built}"
+          # SourceRoot is stamped EMPTY on purpose. The Makefile stamps $(CURDIR)
+          # for local builds so `slmcode update` can find the checkout; a release
+          # binary must not carry the runner's throwaway path, or `slmcode update`
+          # would try to rebuild from /home/runner/work/... on the user's machine.
+          ldflags="-s -w -X main.Version=${VERSION} -X main.SourceRoot= -X main.GitCommit=${commit} -X main.BuildTime=${built}"
 
           build() {
             local goos="$1" goarch="$2" ext="$3"
@@ -68,9 +160,14 @@ jobs:
             echo "Building ${out}"
             GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
               go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/slmcode
-            chmod +x "$out" || true
+            chmod +x "$out"
           }
 
+          # Must stay in sync with, in this order:
+          #   scripts/install-remote.sh  (linux|darwin × amd64|arm64)
+          #   scripts/install.ps1        (windows × amd64|arm64, with .exe)
+          #   Formula/slmcode.rb         (macOS arm/intel, Linux arm/intel)
+          #   cmd/slmcode/cmd_update_binary.go assetName()
           build darwin amd64 ""
           build darwin arm64 ""
           build linux amd64 ""
@@ -84,32 +181,44 @@ jobs:
 
           (
             cd dist
-            shasum -a 256 slmcode_* install.sh install.ps1 install.cmd > SHA256SUMS
+            # coreutils sha256sum, not perl's shasum: same "<hex>  <name>" output,
+            # one less thing that has to be present on the runner image.
+            sha256sum slmcode_* install.sh install.ps1 install.cmd > SHA256SUMS
           )
+          cat dist/SHA256SUMS
           ls -lah dist
 
-      - name: Sync Homebrew formula checksums
+      # Prove the artifact the user will download reports what the tag says, and
+      # that the Studio it serves is the real SPA. Runs the native linux/amd64
+      # build — the one platform this runner can execute.
+      - name: Smoke-test the built binary
         env:
           VERSION: ${{ steps.ver.outputs.version }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Apply the formula update on top of the latest main (not the tag
-          # checkout) so the repo stays linear.
-          cp scripts/update-formula.sh /tmp/update-formula.sh
-          git fetch origin main
-          git checkout -B main origin/main
-          bash /tmp/update-formula.sh "$VERSION" "$PWD/dist"
-          if git diff --quiet -- Formula/slmcode.rb; then
-            echo "Formula unchanged — nothing to commit"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Formula/slmcode.rb
-            git commit -m "chore: sync Homebrew formula checksums for v${VERSION} [skip ci]"
-            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-            git push origin main
-          fi
+          bin="dist/slmcode_${VERSION}_linux_amd64"
+          export SLMCODE_SKIP_UPDATE_CHECK=1
+          "$bin" version
+          python3 - "$VERSION" <<'PY'
+          import json, subprocess, sys
+          version = sys.argv[1]
+          bin_path = "dist/slmcode_%s_linux_amd64" % version
+          info = json.loads(subprocess.check_output([bin_path, "version", "--json"]))
+          problems = []
+          if info.get("version") != version:
+              problems.append("version is %r, expected %r" % (info.get("version"), version))
+          if not info.get("commit") or info["commit"] == "unknown":
+              problems.append("GitCommit was not stamped (%r)" % info.get("commit"))
+          if not info.get("built") or info["built"] == "unknown":
+              problems.append("BuildTime was not stamped (%r)" % info.get("built"))
+          if info.get("source"):
+              problems.append("SourceRoot leaked into the release binary: %r" % info["source"])
+          if problems:
+              for p in problems:
+                  print("::error::%s" % p)
+              sys.exit(1)
+          print("binary reports version=%s commit=%s built=%s" % (info["version"], info["commit"], info["built"]))
+          PY
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -135,6 +244,49 @@ jobs:
             brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
             ```
 
+            **Already installed**
+            ```bash
+            slmcode update
+            ```
+
+            ## ⚠️ Breaking behaviour changes in this release
+
+            Existing workspaces keep working, but five defaults changed. Full detail and
+            the opt-back-in for each is in the
+            [migration notes](https://github.com/UnicoLab/smlcode/blob/main/docs/migration.md).
+
+            - **Repository hooks fail closed.** `.slmcode/hooks.json` no longer runs on
+              clone. `hooks_enabled` defaults to `false`, and the file's contents must be
+              approved per user: `slmcode hooks list` → `slmcode hooks trust`.
+              CI escape hatch: `SLMCODE_TRUST_HOOKS=1`.
+            - **`mcp_servers` is read from the user config layer only.** A project file can
+              no longer add or replace MCP servers. Opt back in with
+              `SLMCODE_TRUST_PROJECT_MCP=1`.
+            - **The shell allowlist is tiered.** Interpreters (`python`, `node`, `bash`,
+              `make`, …) and file mutators (`sed`, `rm`, `cp`, …) are refused unless listed
+              in `shell_allow`. Command substitution and a bare `&` are never allowlistable.
+            - **`slmcode apply` is interactive by default**, and exits 2 without a TTY.
+              Scripts must pass `--all` to keep applying without a prompt (`--list`
+              and `--json` are the read-only forms).
+            - **HITL gates block instead of auto-approving** when a human is attached to
+              the session. Unattended runs are unchanged.
+            - **Studio requires a session token.** `slmcode studio` prints the URL with
+              `?t=…`; there is no unauthenticated HTML shell any more.
+            - **New state directories** `.slmcode/memory/` and `.slmcode/evolve/`. Run
+              `slmcode init` once to refresh `.slmcode/.gitignore` before your next
+              `slmcode commit`.
+
+            ## Verify what you downloaded
+
+            ```bash
+            curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/${{ steps.ver.outputs.tag }}/SHA256SUMS
+            shasum -a 256 -c SHA256SUMS --ignore-missing
+            ```
+
+            [Changelog](https://github.com/UnicoLab/smlcode/blob/main/docs/changelog.md) ·
+            [Migration notes](https://github.com/UnicoLab/smlcode/blob/main/docs/migration.md) ·
+            [Install guide](https://github.com/UnicoLab/smlcode/blob/main/docs/install.md)
+
             Made with ♥ by [UnicoLab](https://unicolab.ai)
           files: |
             dist/slmcode_*
@@ -144,3 +296,68 @@ jobs:
             dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # AFTER the release exists, never before: the formula's url lines point at
+      # release assets, so pushing a synced formula while the upload could still
+      # fail would leave main advertising a download that 404s.
+      #
+      # Done in a throwaway clone rather than in this checkout. This tree is a
+      # detached HEAD at the tag with a build tree on top of it, so the previous
+      # `git checkout -B main origin/main` in-place was one upstream edit away
+      # from aborting on "local changes would be overwritten" — after the
+      # binaries had already been built and with no way to resume.
+      - name: Sync Homebrew formula checksums onto main
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          git clone --depth 1 --branch main \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$work"
+          cp scripts/update-formula.sh "$work/scripts/update-formula.sh"
+          (
+            cd "$work"
+            bash scripts/update-formula.sh "$VERSION" "${GITHUB_WORKSPACE}/dist"
+            if git diff --quiet -- Formula/slmcode.rb; then
+              echo "Formula unchanged — nothing to commit"
+              exit 0
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Formula/slmcode.rb
+            git commit -m "chore: sync Homebrew formula checksums for v${VERSION} [skip ci]"
+            git push origin main
+          )
+          rm -rf "$work"
+
+      # Close the loop: what GitHub is actually serving must match what we built.
+      # Catches a partial upload, a truncated asset, and a formula synced against
+      # a dist/ that is not what landed on the release.
+      - name: Verify the published assets
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          verify="$(mktemp -d)"
+          curl -fsSL --retry 5 --retry-delay 5 -o "$verify/SHA256SUMS" "$base/SHA256SUMS"
+          if ! diff -u dist/SHA256SUMS "$verify/SHA256SUMS"; then
+            echo "::error::the published SHA256SUMS differs from the one built here"
+            exit 1
+          fi
+          for asset in \
+            "slmcode_${VERSION}_darwin_arm64" \
+            "slmcode_${VERSION}_darwin_amd64" \
+            "slmcode_${VERSION}_linux_arm64" \
+            "slmcode_${VERSION}_linux_amd64" \
+            "slmcode_${VERSION}_windows_amd64.exe" \
+            "slmcode_${VERSION}_windows_arm64.exe" \
+            install.sh install.ps1 install.cmd
+          do
+            curl -fsSL --retry 5 --retry-delay 5 -o "$verify/$asset" "$base/$asset"
+          done
+          ( cd "$verify" && sha256sum -c SHA256SUMS )
+          echo "All published assets match SHA256SUMS."
+          rm -rf "$verify"

@@ -446,9 +446,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/feedback", s.handleSetFeedback)
 	s.mux.HandleFunc("DELETE /api/feedback", s.handleClearFeedback)
 
-	if s.ui != nil {
+	// `GET /` is always wired. With a built SPA embedded it serves the shell
+	// and its assets; without one it serves the placeholder page from
+	// placeholder.go, so a from-source build says what is missing instead of
+	// 404ing at the root. Both sit behind the same token gate (Handler →
+	// secure → mux), so neither is reachable unauthenticated.
+	if UIIsBuilt(s.ui) {
 		fileServer := http.FileServer(http.FS(s.ui))
 		s.mux.Handle("GET /", s.spaHandler(fileServer))
+	} else {
+		s.mux.Handle("GET /", s.placeholderHandler())
 	}
 }
 

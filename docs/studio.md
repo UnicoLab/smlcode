@@ -30,10 +30,34 @@ exactly `slmcode`.
 The listen address comes from `listen` in config (`127.0.0.1:7420` by default) unless
 `--listen` overrides it.
 
-!!! note "Build it first"
-    `cmd/slmcode/ui/index.html` is a checked-in **placeholder** so `go build` always succeeds.
-    From a source checkout, run `make bootstrap` (or `make ui-react`) before `slmcode studio`, or
-    you will get the placeholder page instead of Studio.
+---
+
+## Building the UI
+
+Studio's front end is a React 18 + Vite + TypeScript SPA in `web/`. `make ui-react` builds it and
+copies `web/dist/*` into `cmd/slmcode/ui/`, which the binary embeds with `//go:embed all:ui`.
+Released binaries ship it already built; a binary you built yourself does not have it until you
+run:
+
+```bash
+make bootstrap      # installs web/'s npm dependencies (Node 18+), then builds the UI
+make build
+```
+
+Without that, everything still works except the web page: `slmcode studio` starts, serves the API,
+prints its tokenised URL — and warns on startup that the UI is not built. The page you get says
+the same and gives the command. That placeholder is compiled into the server (`pkg/server`), not
+checked into `cmd/slmcode/ui/`: the only tracked file there is `.gitkeep`, so building the UI never
+dirties a tracked file, and `go:embed` still has something to embed on a fresh clone.
+
+!!! warning "`web/package-lock.json` is out of date"
+    `web/package.json` gained `vitest`, `@testing-library/*` and `eslint`; the lock predates them,
+    so `npm ci` refuses to run. `make bootstrap` reports this and falls back to `npm install`,
+    which **regenerates `web/package-lock.json`** — commit the regenerated lock.
+    See [Troubleshooting](troubleshooting.md#studio-ui-wont-build).
+
+For UI work: `cd web && npm run dev` (Vite dev server), then `make ui-react` to fold it back into
+the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 
 ---
 

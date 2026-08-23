@@ -74,13 +74,19 @@ Full matrix (CMD, pinned versions, uninstall): **[docs/install.md](docs/install.
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap          # needs Node + npm: builds the React Studio UI into the binary
+make bootstrap          # needs Node 18+: installs web/ deps and builds the Studio UI in
 make install-user       # → ~/.local/bin/slmcode
 ```
 
-No Node? `go build ./cmd/slmcode` works on its own — everything except the Studio SPA. The
-binary then embeds a placeholder page, `slmcode studio` says so on startup, and the page itself
-tells you to run `make bootstrap`. The CLI, the TUI and the Studio API are unaffected.
+`make bootstrap` is the one step that needs Node. It installs `web/`'s npm dependencies and runs
+the Vite build into `cmd/slmcode/ui/`, which is `go:embed`ed into the binary. Note that
+`web/package-lock.json` is currently out of date with `web/package.json`, so `npm ci` cannot run;
+`make bootstrap` says so and falls back to `npm install`, which regenerates the lock — **commit
+the regenerated `web/package-lock.json`**. Full story: [CONTRIBUTING.md](CONTRIBUTING.md#build).
+
+No Node? `go build ./cmd/slmcode` works on its own — everything except the Studio SPA. The binary
+then serves a built-in placeholder page that tells you to run `make bootstrap`, and `slmcode
+studio` says the same on startup. The CLI, the TUI and the Studio API are unaffected.
 
 ### Run it
 
@@ -346,12 +352,16 @@ Local preview: `make docs-serve` → <http://127.0.0.1:8000>
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap        # build the Studio UI (npm ci + vite build)
+make bootstrap        # install web/ npm deps + build the Studio UI into cmd/slmcode/ui/
 make check            # the one gate: fmt, vet, lint, tests, race, web lint+build — same as CI
 ```
 
-Studio is a Vite + React + TypeScript SPA in `web/`, built to `cmd/slmcode/ui/` and embedded
-with `go:embed`. For UI work: `cd web && npm install && npm run dev`.
+Studio is a Vite + React + TypeScript SPA in `web/`, built to `cmd/slmcode/ui/` and embedded with
+`go:embed all:ui`. Everything in `cmd/slmcode/ui/` except `.gitkeep` is gitignored build output,
+so building the UI never dirties a tracked file; with none of it present the server serves a
+placeholder page compiled into `pkg/server`. For UI work: `make bootstrap && cd web && npm run dev`.
+See [CONTRIBUTING.md](CONTRIBUTING.md#build) — including why `web/package-lock.json` needs
+regenerating and committing.
 
 ```go
 import "github.com/UnicoLab/slmcode/pkg/harness"

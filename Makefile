@@ -19,7 +19,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy tidy-check web-check lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
+.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -32,7 +32,8 @@ help: ## Show this help
 	@echo ""
 	@echo "  Core commands:"
 	@echo "    make build           Build the binary"
-	@echo "    make bootstrap       Build the Studio UI from source if missing (npm ci && vite build)"
+	@echo "    make bootstrap       Build the Studio UI into the binary (npm deps + vite build)"
+	@echo "    make ui-react        Rebuild the Studio UI after editing web/"
 	@echo "    make install         Install user-wide (~/.local/bin)"
 	@echo "    make install-system  Install system-wide"
 	@echo "    make test            Run unit tests"
@@ -43,6 +44,7 @@ help: ## Show this help
 	@echo "    make lint            Format-check + vet + golangci-lint (blocking) + UI smoke"
 	@echo "    make lint-strict     Alias for lint (both blocking — the lint baseline is zero)"
 	@echo "    make check           Full local gate — same as CI (fmt, vet, lint, tests+coverage, race, web)"
+	@echo "    make web-check       Lint/typecheck/test/build web/ (skips cleanly without npm)"
 	@echo "    make govulncheck     Scan dependencies for known vulnerabilities"
 	@echo "    make doctor          Run system health check"
 	@echo ""
@@ -176,13 +178,38 @@ blocks-apply-react:
 	else echo "Run: make build"; exit 1; fi
 
 # ── UI: build React Studio and update embedded UI ──
-ui-react: ## Build React/Vite Studio UI and sync to embed directory
+#
+# Target graph:
+#   web-deps ──┬── ui-react ── bootstrap
+#              └── web-check   (calls web-deps tolerantly: a failure is a SKIP)
+#   ui-check (no npm needed) ── build ── studio / doctor
+#
+# web-deps is the single place that knows how to get web/node_modules into a
+# usable state. Every target that runs a script from web/package.json goes
+# through it, so a missing or stale install can never surface as a wall of
+# TS2307 "Cannot find module" errors again.
+web-deps: ## Install web/ dependencies if missing or stale (npm ci, falling back to npm install)
+	@./scripts/web-deps.sh
+
+ui-react: web-deps ## Build React/Vite Studio UI and sync it into the go:embed directory
+	@if [ ! -d web/node_modules ]; then \
+		echo "ERROR: web/node_modules is missing — the Studio UI dependencies are not installed." >&2; \
+		echo "       Run 'make bootstrap' (installs dependencies, then builds)." >&2; \
+		echo "       Building without them fails with dozens of TS2307 'Cannot find module'" >&2; \
+		echo "       errors, which say nothing about the real problem." >&2; \
+		exit 1; \
+	fi
 	@echo "Building React Studio UI..."
 	cd web && npm run build
 	@echo "Syncing to embed directory..."
-	rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
+	@rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor cmd/slmcode/ui/index.html
+	@mkdir -p cmd/slmcode/ui
 	cp -r web/dist/* cmd/slmcode/ui/
-	@echo "✔ React Studio UI synced to cmd/slmcode/ui/"
+	@$(MAKE) --no-print-directory ui-check
+
+bootstrap: web-deps ## Install web deps and build the Studio UI into cmd/slmcode/ui (run once per clone)
+	@$(MAKE) --no-print-directory ui-react
+	@echo "✔ Studio UI built and embedded — 'make build' now ships the real SPA."
 
 tidy: ## Tidy Go modules (rewrites go.mod/go.sum — needs the module proxy)
 	go mod tidy
@@ -209,31 +236,13 @@ tidy-check:
 		exit 1; \
 	fi
 
-# Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed.
-# index.html is always tracked (a placeholder ships so go:embed always finds
-# something on a fresh clone); assets/ is the gitignored built-UI output and
-# is optional — see `make bootstrap`.
-ui-check: ## Smoke-test the embedded UI files
-	@test -f cmd/slmcode/ui/index.html
-	@grep -q 'SLMCode Studio' cmd/slmcode/ui/index.html
-	@if [ -d cmd/slmcode/ui/assets ]; then \
-		echo "ui-check: OK (React Studio embedded by go:embed all:ui)"; \
-	else \
-		echo "ui-check: OK (placeholder UI embedded — run 'make bootstrap' for the real Studio UI)"; \
-	fi
-
-bootstrap: ## Build the Studio UI from source if it hasn't been built yet (npm ci && vite build)
-	@if [ -d cmd/slmcode/ui/assets ]; then \
-		echo "Studio UI assets already present at cmd/slmcode/ui/assets — nothing to do (run 'make ui-react' to rebuild)."; \
-	else \
-		echo "Studio UI assets missing — bootstrapping (cd web && npm ci && npm run build)…"; \
-		if ! command -v npm >/dev/null 2>&1; then \
-			echo "ERROR: npm not found on PATH. Install Node.js (see web/package.json for the expected version), then re-run: make bootstrap" >&2; \
-			exit 1; \
-		fi; \
-		(cd web && npm ci && npm run build) || { echo "ERROR: web UI build failed — see output above." >&2; exit 1; }; \
-		$(MAKE) ui-react; \
-	fi
+# cmd/slmcode/ui/ is a go:embed directory with exactly ONE tracked file:
+# .gitkeep. index.html / assets/ / vendor/ in there are gitignored BUILD OUTPUT
+# written by `make ui-react`. When they are absent the binary serves the
+# placeholder page compiled into pkg/server, so `go build` works on a fresh
+# clone with no Node at all. scripts/ui-check.sh is shared with scripts/lint.sh.
+ui-check: ## Smoke-test the embedded UI directory (built UI or placeholder — both valid)
+	@./scripts/ui-check.sh
 
 lint: ## Go format + vet + golangci-lint (blocking) + UI smoke check
 	@./scripts/lint.sh
@@ -300,16 +309,22 @@ check: tidy-check lint cover race web-check ## Run the full local gate (fmt, vet
 # gate that fails for a reason the developer cannot fix is a gate people learn
 # to bypass. A lint or build error with node_modules already present IS a
 # failure — that is the tree's fault, and CI's web-check job runs it for real.
-web-check: ## Lint + build the Studio UI (skips with a reason when npm/registry are unavailable)
-	@echo "==> web lint + build"
+#
+# This is the ONE web target that does not take web-deps as a prerequisite: a
+# prerequisite failure aborts make, and "npm cannot reach the registry" must be
+# a skip here, not an abort. It calls web-deps as a sub-make instead and treats
+# a non-zero exit as the skip.
+web-check: ## Lint, typecheck, test + build the Studio UI (skips with a reason when npm/registry are unavailable)
+	@echo "==> web lint + typecheck + test + build"
 	@if [ ! -d web ]; then \
 		echo "web: SKIP — no web/ directory in this tree."; \
 	elif ! command -v npm >/dev/null 2>&1; then \
 		echo "web: SKIP — npm is not on PATH. Install Node.js to lint and build the Studio UI."; \
-	elif [ ! -d web/node_modules ] && ! ( cd web && npm ci ); then \
-		echo "web: SKIP — 'npm ci' failed (npm registry unreachable?). The Go gate above still ran."; \
+	elif ! ./scripts/web-deps.sh; then \
+		echo "web: SKIP — web/ dependencies could not be installed (npm registry unreachable?)."; \
+		echo "     The Go gate above still ran. See the npm output above for the reason."; \
 	else \
-		( cd web && npm run lint && npm run build ) || exit 1; \
+		( cd web && npm run lint && npm run typecheck:test && npm run test && npm run build ) || exit 1; \
 		echo "web: OK"; \
 	fi
 

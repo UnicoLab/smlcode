@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/installmeta"
+	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 )
 
 // Binary self-update, without piping the internet into a shell.
@@ -58,6 +60,11 @@ func sortedKeys(m map[string]bool) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+	// Map iteration order is randomized, so without this the "allowed upstreams"
+	// list in the refusal message came out in a different order every run — which
+	// makes the one error a user is most likely to paste into an issue look like
+	// two different errors.
+	sort.Strings(out)
 	return out
 }
 
@@ -75,10 +82,20 @@ type releaseInfo struct {
 }
 
 // assetName builds the platform asset name used by the release workflow:
-// slmcode_<version>_<os>_<arch>.
+// slmcode_<version>_<os>_<arch>, plus ".exe" on Windows.
+//
+// The .exe suffix is not cosmetic. .github/workflows/release.yml builds the
+// Windows artifacts as slmcode_<version>_windows_<arch>.exe, so a name without
+// it matches no asset on any release and `slmcode update` failed on Windows with
+// "release vX.Y.Z has no asset ..." for every version — the one platform where
+// re-running the installer by hand is the most awkward.
 func assetName(version string) string {
 	version = strings.TrimPrefix(strings.TrimPrefix(version, "v"), "V")
-	return fmt.Sprintf("slmcode_%s_%s_%s", version, runtime.GOOS, runtime.GOARCH)
+	name := fmt.Sprintf("slmcode_%s_%s_%s", version, runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 func fetchLatestRelease(repo string) (releaseInfo, error) {
@@ -162,16 +179,28 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 	latest := strings.TrimPrefix(strings.TrimPrefix(rel.TagName, "v"), "V")
 	cli.KeyVal("latest", latest)
 
+	// Compare as versions, not as strings. String equality answers "are these
+	// the same release?" but not "is that one newer?", so a plain `!=` treated
+	// an OLDER published release — a re-tag, a rollback, a pre-release promoted
+	// to latest — as an available update and would happily downgrade the user.
+	cmp := updatecheck.CompareVersions(latest, Version)
+
 	if checkOnly {
-		if latest == Version {
-			fmt.Println(cli.Success("installed binary matches the latest release"))
-		} else {
+		switch {
+		case cmp > 0:
 			fmt.Println(cli.Warn("v" + latest + " is available — run: slmcode update"))
+		case cmp < 0:
+			fmt.Println(cli.Dim("this binary (v" + Version + ") is newer than the latest release (v" + latest + ")"))
+		default:
+			fmt.Println(cli.Success("installed binary matches the latest release"))
 		}
 		return nil
 	}
-	if latest == Version {
+	if cmp <= 0 {
 		fmt.Println(cli.Success("already on the latest release — nothing to do"))
+		if cmp < 0 {
+			fmt.Println(cli.Dim("(this binary is v" + Version + "; the latest release is v" + latest + ")"))
+		}
 		return nil
 	}
 
@@ -186,9 +215,9 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 		return failf(1, "release %s publishes no SHA256SUMS — refusing to install an unverified binary", rel.TagName)
 	}
 
-	target := resolveBinaryPath()
-	if target == "(unknown)" {
-		return failf(1, "cannot locate the running binary to replace")
+	target, err := resolveUpdateTarget(userMode, system)
+	if err != nil {
+		return err
 	}
 	dstDir := filepath.Dir(target)
 
@@ -237,6 +266,9 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 	if err := os.Chmod(binPath, 0o755); err != nil { //nolint:gosec // must be executable: this is the replacement slmcode binary
 		return err
 	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil { //nolint:gosec // a bin directory on PATH
+		return failf(1, "creating %s: %s", dstDir, err.Error())
+	}
 	if err := atomicReplace(binPath, target); err != nil {
 		return failf(1, "installing to %s: %s (try sudo, or --user to install into ~/.local/bin)", target, err.Error())
 	}
@@ -266,9 +298,63 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 	return nil
 }
 
+// resolveUpdateTarget decides which file this update writes.
+//
+// By default that is the running binary, wherever it happens to live. --user
+// and --system used to be accepted and then ignored on this path: they only
+// changed the "mode" recorded in install.json, while the failure message told
+// the user to "try --user to install into ~/.local/bin" — advice the flag did
+// not implement. Now it does.
+func resolveUpdateTarget(userMode, system bool) (string, error) {
+	if userMode && system {
+		return "", failf(2, "--user and --system are mutually exclusive")
+	}
+	if userMode {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", failf(1, "cannot resolve your home directory for --user: %s", err.Error())
+		}
+		name := "slmcode"
+		if runtime.GOOS == "windows" {
+			name = "slmcode.exe"
+		}
+		return filepath.Join(home, ".local", "bin", name), nil
+	}
+	// --system, and the default, both replace the binary that is running: it is
+	// already at whichever prefix the user installed to, and replacing anything
+	// else would leave two copies and a PATH coin-flip over which one wins.
+	running := resolveBinaryPath()
+	if running == "(unknown)" {
+		return "", failf(1, "cannot locate the running binary to replace — reinstall with the one-liner in docs/install.md")
+	}
+	return running, nil
+}
+
 // atomicReplace moves src over dst, falling back to a copy when the two live on
 // different filesystems. The running binary keeps executing from its open inode.
 func atomicReplace(src, dst string) error {
+	// Windows refuses to rename over or unlink a file that is mapped as a
+	// running image, so both the rename and the copy fallback below fail with a
+	// sharing violation when slmcode updates itself. Moving the running image
+	// out of the way first is allowed, and the displaced file can be deleted on
+	// the next run. POSIX needs none of this: there, rename(2) over a running
+	// binary succeeds and the process keeps executing from its open inode.
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(dst); err == nil {
+			old := dst + ".old"
+			_ = os.Remove(old) // a leftover from a previous update; ignore if held
+			if err := os.Rename(dst, old); err != nil {
+				return fmt.Errorf("moving the running binary aside: %w", err)
+			}
+			if err := os.Rename(src, dst); err != nil {
+				// Put it back rather than leaving the user with no slmcode at all.
+				_ = os.Rename(old, dst)
+				return err
+			}
+			_ = os.Remove(old)
+			return nil
+		}
+	}
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}

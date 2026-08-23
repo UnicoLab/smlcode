@@ -17,9 +17,15 @@ little-coder/
 prime-agent/
 /slmcode
 # Built React/Vite Studio UI output (see `make ui-react` / `make bootstrap`).
-# cmd/slmcode/ui/index.html itself stays TRACKED — it ships as a checked-in
-# placeholder so `go:embed all:ui` always has something to embed on a fresh
-# clone, and `make ui-react` overwrites it with the real built UI.
-cmd/slmcode/ui/assets/
-cmd/slmcode/ui/vendor/
+# NOTHING in cmd/slmcode/ui/ is tracked except .gitkeep: index.html, assets/
+# and vendor/ are all build output, and index.html used to be a tracked
+# placeholder that `make ui-react` overwrote — which left every developer who
+# built Studio with a permanently dirty tree and a machine-specific bundle
+# reference one `git commit -a` away from being pushed.
+# .gitkeep keeps the directory present on a fresh clone so `//go:embed all:ui`
+# compiles (the `all:` prefix is what makes it embed a dotfile). With no build
+# output there, the binary serves the placeholder page compiled into
+# pkg/server (pkg/server/placeholder.go).
+cmd/slmcode/ui/*
+!cmd/slmcode/ui/.gitkeep
 docs/assets/slmcode-logo.png

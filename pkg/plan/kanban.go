@@ -199,6 +199,8 @@ func normalizeColumnAlias(col string) string {
 
 // ByColumn groups tasks for kanban rendering.
 func (b *Board) ByColumn() map[string][]Task {
+	boardMu.RLock()
+	defer boardMu.RUnlock()
 	out := map[string][]Task{}
 	for _, c := range Columns() {
 		out[c] = nil
@@ -213,6 +215,12 @@ func (b *Board) ByColumn() map[string][]Task {
 // ExecutableTasks are ready for the agent loop (ready_to_dev, deps satisfied).
 // Blocked upstream deps are soft-skipped so one failed locate task cannot freeze the board.
 func (b *Board) ExecutableTasks() []Task {
+	boardMu.RLock()
+	defer boardMu.RUnlock()
+	return b.executableTasksLocked()
+}
+
+func (b *Board) executableTasksLocked() []Task {
 	satisfied := map[string]bool{}
 	for _, t := range b.Tasks {
 		t.Normalize()
@@ -242,6 +250,12 @@ func (b *Board) ExecutableTasks() []Task {
 
 // AgentWorkRemaining is true while agents still have work in the pipe.
 func (b *Board) AgentWorkRemaining() bool {
+	boardMu.RLock()
+	defer boardMu.RUnlock()
+	return b.agentWorkRemainingLocked()
+}
+
+func (b *Board) agentWorkRemainingLocked() bool {
 	for _, t := range b.Tasks {
 		t.Normalize()
 		switch t.Column {
@@ -254,6 +268,8 @@ func (b *Board) AgentWorkRemaining() bool {
 
 // HumanBacklogRemaining is true when tasks wait for human scoping.
 func (b *Board) HumanBacklogRemaining() bool {
+	boardMu.RLock()
+	defer boardMu.RUnlock()
 	for _, t := range b.Tasks {
 		t.Normalize()
 		switch t.Column {

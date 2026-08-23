@@ -21,7 +21,7 @@ func TestRenameOKSymbolSatisfied(t *testing.T) {
 	if !renameOK(root, task) {
 		t.Fatal("expected renameOK")
 	}
-	if !alreadySatisfied(root, task) {
+	if !alreadySatisfied(root, task, nil) {
 		t.Fatal("expected alreadySatisfied via rename")
 	}
 	r := &Runner{Root: root}

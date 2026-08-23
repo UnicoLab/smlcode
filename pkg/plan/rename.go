@@ -96,6 +96,7 @@ func RenameSatisfied(root string, spec RenameSpec, focus []string) bool {
 			if !FileExists(root, f) {
 				continue
 			}
+			//nolint:gosec // G304: f is filtered by FileExists under root.
 			data, err := os.ReadFile(filepath.Join(root, f))
 			if err != nil {
 				continue

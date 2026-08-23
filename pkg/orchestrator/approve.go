@@ -88,6 +88,11 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 	o.mu.Lock()
 	h := o.onPlanApprove
 	o.mu.Unlock()
+	// A subscriber is anything that COULD have answered: the CLI registers
+	// OnPlanApprove/OnContinue/OnEscalate/OnAsk and intercepts before this
+	// path, while the Studio/REST path relies on the pending-ask file plus an
+	// attached event listener.
+	subscribed := o.Subscribed()
 	if h != nil {
 		if a, err := h(ctx, ask); err == nil {
 			a.AskID = ask.ID
@@ -106,8 +111,25 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 	hitl.Clear(o.cfg.SlmDir(), "plan")
 
 	if !got {
-		o.emit("plan", "plan approval timeout — auto-approving", "")
-		return planApprovalDecision{Approved: true}, nil
+		// P14: the gate used to fail OPEN — a timeout auto-approved the plan and
+		// execute started with nobody having looked at it. That is only
+		// defensible when there was no subscriber that COULD have answered.
+		switch o.planApproveOnTimeout() {
+		case PlanTimeoutApprove:
+			o.emitWarn("plan", "plan approval timeout — auto-approving (plan_approve_on_timeout=approve)", "")
+			return planApprovalDecision{Approved: true}, nil
+		case PlanTimeoutReject:
+			o.emitProblem("plan", "plan approval timeout — NOT approving (plan_approve_on_timeout=reject)", "")
+			return planApprovalDecision{}, fmt.Errorf("plan approval timed out after %s and plan_approve_on_timeout=reject", timeout)
+		default: // PlanTimeoutAuto
+			if subscribed {
+				o.emitProblem("plan",
+					"plan approval timeout with a listener attached — NOT auto-approving; re-run or set plan_approve=off", "")
+				return planApprovalDecision{}, fmt.Errorf("plan approval timed out after %s with no answer", timeout)
+			}
+			o.emitWarn("plan", "plan approval timeout with no listener attached — auto-approving", "")
+			return planApprovalDecision{Approved: true}, nil
+		}
 	}
 	if plan.IsPlanReplan(ans) {
 		note := strings.TrimSpace(ans.Notes)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/schema"
 )
 
 // EscalateDecide is the SLM arbitrator JSON on HITL timeout.
@@ -25,6 +27,14 @@ func ParseEscalateDecide(raw string) (EscalateDecide, bool) {
 	if err := json.Unmarshal([]byte(raw), &d); err == nil && strings.TrimSpace(d.Action) != "" {
 		d.Action = NormalizeEscalateAction(d.Action)
 		return d, true
+	}
+	// Schema-aware repair ladder: coerces the escalate contract (and records
+	// per-rung telemetry) before the hand-rolled fence/substring fallbacks.
+	if fixed := repairRole(extractJSON(raw), schema.RoleEscalate); fixed != "" {
+		if err := json.Unmarshal([]byte(fixed), &d); err == nil && strings.TrimSpace(d.Action) != "" {
+			d.Action = NormalizeEscalateAction(d.Action)
+			return d, true
+		}
 	}
 	// Strip markdown fences, then try substring from first { to last }.
 	cleaned := raw

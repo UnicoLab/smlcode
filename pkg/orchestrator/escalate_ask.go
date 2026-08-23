@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
@@ -14,6 +15,9 @@ import (
 
 // EscalateHandler collects escalate decisions (tests / custom UIs).
 type EscalateHandler func(ctx context.Context, ask plan.EscalateAsk) (plan.EscalateAnswer, error)
+
+// escalateAskMu serializes escalate HITL. See runEscalateAsk for why.
+var escalateAskMu sync.Mutex
 
 // OnEscalate registers an escalate-ask callback.
 func (o *Orchestrator) OnEscalate(h EscalateHandler) {
@@ -34,10 +38,7 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	if o.cfg.AutoApprove {
 		mode = plan.EscalateAskAuto
 	}
-	timeout := o.cfg.EscalateAskTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
+	timeout := o.escalateAskTimeout()
 	timeoutSec := int(timeout / time.Second)
 	ask := plan.BuildEscalateAsk(t, detail, timeoutSec)
 	payload := plan.MarshalEscalateAskJSON(ask)
@@ -63,6 +64,26 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 		})
 		ans.Action = plan.EscalateActionRetry
 		plan.ApplyEscalateAction(board, t.ID, ans.Action, "auto escalate → retry")
+		o.persistBoard(board)
+		return ans
+	}
+
+	// hitl.WriteAsk stores ONE pending ask per KIND, and OnEscalate fires from
+	// inside reviewAndCorrect, which runs in N goroutines under ReviewParallel.
+	// Two tasks escalating in the same wave therefore overwrote each other's
+	// ask file, each then waited on its own (now-absent) ask ID, and at most
+	// one could be answered: the loser burned the full timeout and spent an
+	// extra LLM call in escalateTimeoutDecide, while hitl.Clear from the winner
+	// dropped the loser's pending state entirely.
+	//
+	// A human answers one ask at a time anyway, so the asks are serialized:
+	// each task gets the single ask slot to itself, start to finish.
+	escalateAskMu.Lock()
+	defer escalateAskMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		ans.Action = plan.EscalateActionReScope
+		ans.Notes = "run canceled while queued for escalate"
+		plan.ApplyEscalateAction(board, t.ID, ans.Action, ans.Notes)
 		o.persistBoard(board)
 		return ans
 	}

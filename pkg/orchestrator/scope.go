@@ -46,7 +46,7 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	o.emitAgent("clarify", "interviewer", "", "scope interview", "", "")
 
 	clarifyPrompt := agents.PromptClarifier + "\n\n## Query\n" + truncate(query, 1200) +
-		"\n\n## Exploration\n" + truncate(exploreOut, 2000) +
+		"\n\n## Exploration\n" + sanitizeForContract(truncate(exploreOut, 2000)) +
 		"\n\nMode hint: clarify_mode=" + mode +
 		". If mode=auto, still emit recommended options but set needs_user=false." +
 		"\n\n## Project language\n" + o.langHint() +
@@ -76,7 +76,7 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 
 	md := plan.FormatPRDMarkdown(resolved.PRD, resolved.Assumptions)
 	if strings.TrimSpace(md) != "" {
-		_ = o.store.Append(contextstore.DocContext, "Locked PRD", md)
+		_ = o.store.ReplaceSection(contextstore.DocContext, "Locked PRD", md)
 	}
 	o.emitFull("clarify", stream.KindOutput, "interviewer", "",
 		"PRD locked", "", truncate(md, 1000))
@@ -135,7 +135,7 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 		if a, ok, err := plan.WaitScopeAnswersForID(ctx, o.cfg.SlmDir(), ask.ID, timeout); err == nil && ok {
 			ans, got = a, true
 		} else if err != nil && ctx.Err() != nil {
-			// cancelled
+			// canceled
 			return plan.ApplyScopeAnswers(interview, plan.ResolveWithDefaults(interview))
 		}
 	}
@@ -165,7 +165,7 @@ func (o *Orchestrator) runScopeJudgeGate(ctx context.Context, query string, boar
 		prompt := agents.PromptScopeJudge +
 			"\n\n## Query\n" + truncate(query, 800) +
 			"\n\n## Locked PRD\n" + truncate(plan.FormatPRDMarkdown(prd, nil), 2000) +
-			"\n\n## Tasks\n" + truncate(tasksMD, 4000)
+			"\n\n## Tasks\n" + sanitizeForContract(truncate(tasksMD, 4000))
 		if out, err := o.runRoleTracked(ctx, plan.RoleReviewer, "", prompt); err == nil && strings.TrimSpace(out) != "" {
 			lj := plan.ParseScopeJudgeJSON(out)
 			_ = o.store.Append(contextstore.DocScratch, "Scope judge", out)
@@ -253,7 +253,18 @@ func (o *Orchestrator) rewriteWeakTaskScopes(ctx context.Context, query string, 
 			board.Tasks[i].Description = firstNonEmpty(rt.Description, board.Tasks[i].Description)
 			board.Tasks[i].Acceptance = firstNonEmpty(rt.Acceptance, board.Tasks[i].Acceptance)
 			if len(rt.Files) > 0 {
-				board.Tasks[i].Files = rt.Files
+				// The splitter rewrite runs AFTER SanitizeTasksIn +
+				// ReconcileFiles + EnsureTaskPRDs, so assigning rt.Files raw
+				// walked paths the sanitizer had just removed straight back
+				// onto the board and into "## Focus files (HARD SCOPE)".
+				// Reconcile them; keep the vetted originals when nothing
+				// resolves rather than widening scope to whatever was claimed.
+				if reconciled := plan.ReconcileFiles(o.cfg.Root, rt.Files, board.Tasks[i].Files); len(reconciled) > 0 {
+					board.Tasks[i].Files = reconciled
+				} else {
+					o.emitWarn("split", fmt.Sprintf(
+						"%s: rewritten files did not resolve — keeping reconciled scope", board.Tasks[i].ID), "")
+				}
 			}
 			if len(rt.Checklist) > 0 {
 				board.Tasks[i].Checklist = rt.Checklist
@@ -286,4 +297,21 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// sanitizeForContract neutralizes quoted JSON keys inside evidence that is
+// EMBEDDED in a prompt whose own output contract is something else.
+//
+// pkg/schema selects the constrained-decoding contract by counting how many of
+// each contract's required keys appear QUOTED anywhere in the prompt. The scope
+// judge re-tasks the reviewer agent, so its own SchemaRole hint (review) does
+// not help — and Board.ToMarkdown embeds each task's worker JSON under
+// "#### Output", whose "status"/"summary"/"files_changed" keys fully satisfy
+// the worker and placeholder contracts. The judge was therefore decoded against
+// the placeholder contract and its scope verdict came back unparsable.
+//
+// Downgrading the embedded quotes keeps the evidence readable for the model
+// while leaving exactly one contract visible to the detector: the prompt's own.
+func sanitizeForContract(s string) string {
+	return strings.ReplaceAll(s, `"`, "'")
 }

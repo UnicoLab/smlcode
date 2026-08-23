@@ -18,6 +18,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/evolve"
 	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/instructions"
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
@@ -30,6 +31,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/refine"
+	"github.com/UnicoLab/slmcode/pkg/repomap"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
@@ -88,6 +90,26 @@ type Orchestrator struct {
 	waveCounter int
 	pipe        *pipeline.Config // config-driven phases / slots / loop agents
 
+	// workspace / repoMap / tracker come from the tool layer so the
+	// orchestrator can reset the per-task loop guard and seed focus discovery.
+	workspace *workspace.Workspace
+	tracker   *workspace.CallTracker
+	repoMap   *repomap.Map
+
+	// evolve is the self-improvement engine (memory + repair rules + bandit +
+	// regression checks). Nil-safe: every call site tolerates a nil engine.
+	evolve *evolve.Engine
+	// decisions accumulates the bandit choices this run made, for the
+	// end-of-run RunReport.
+	decisions []evolve.DecisionRecord
+	// gates accumulates quality-gate outcomes for the RunReport.
+	gates []evolve.GateResult
+
+	// projectInstructions is AGENTS.md / CLAUDE.md / PROJECT instructions,
+	// consumed by skillPackFor so they reach the STABLE PREFIX of every pack
+	// instead of dead-ending in SCRATCH.md.
+	projectInstructions string
+
 	// dynamicSkills maps specialist roles → composer-selected skills for the
 	// in-flight dynamic-pipeline run. Guarded by mu.
 	dynamicSkills map[string][]string
@@ -109,6 +131,15 @@ type Orchestrator struct {
 	usage TokenUsage
 	// refineRound counts auto-refine passes in the current run.
 	refineRound int
+	// llmCalls counts LLM round-trips this run (evolve RunReport).
+	llmCalls int
+	// eventSubscribed records that a UI attached an event handler.
+	eventSubscribed bool
+	// runStart is when the in-flight run began (evolve RunReport).
+	runStart time.Time
+	// activeRunner is the inner loop for the in-flight run, kept so completeRun
+	// can drain its accumulated failure events and decision records.
+	activeRunner *loop.Runner
 
 	// liveFeedback is a free-form steering message from the user, injected into
 	// the next agent prompts mid-run (see runRoleTracked).
@@ -124,7 +155,20 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	store := contextstore.New(cfg.SlmDir())
 	boardStore := plan.NewLiveStore(cfg.SlmDir())
 	_ = boardStore.Load()
-	packer := contextstore.NewPacker(store, cfg.Root, cfg.MaxContextKB)
+
+	// Token-native packer. NewPacker's byte budget silently capped a 32K model
+	// at ~3.2K tokens (MaxContextKB defaults to 16 → 16*1024/4 with the legacy
+	// reserves), which is the single biggest context regression in the harness.
+	profile := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+	contextLimit := profile.ContextLimit
+	if contextLimit <= 0 {
+		contextLimit = contextstore.TokensFromKB(cfg.MaxContextKB)
+	}
+	// One repo map per run, cached under .slmcode. Build failures are
+	// non-fatal: the packer simply has no symbol index.
+	repoMap, repoErr := repomap.Build(cfg.Root, repomap.Options{CacheDir: cfg.SlmDir()})
+	packer := contextstore.NewPackerWithBudget(store, cfg.Root, contextLimit,
+		contextstore.WithRepoMap(repoMap))
 
 	bundledDir := filepath.Join(cfg.SlmDir(), "skills", "_bundled")
 	_ = skills.MaterializeBundled(bundledDir)
@@ -153,7 +197,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		}
 	}
 
-	if err := workspace.RegisterCodingToolsOpts(toolReg, cfg.Root, workspace.ToolOpts{
+	ws, tracker, err := workspace.RegisterCodingToolsWithWorkspace(toolReg, cfg.Root, workspace.ToolOpts{
 		ShellPermission: cfg.ShellPermission,
 		DryRun:          cfg.DryRun, Permission: cfg.Permission, SlmDir: cfg.SlmDir(),
 		Focus: focus, Hooks: hooksRunner,
@@ -189,10 +233,23 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 					"shell approval required: "+truncate(ask.Command, 120), "", string(b))
 			}
 		},
-	}); err != nil {
+		// Tool-layer knobs. Zero keeps the package default; see options.go for
+		// the config fields these should read once pkg/config grows them.
+		DisableSyntaxCheck: envBool(envDisableSyntaxCheck, false),
+		ReadWindowLines:    envInt(envReadWindowLines, 0),
+		MaxToolChars:       envInt(envMaxToolChars, 0),
+		ShellTimeout:       envDuration(envShellTimeout, 0),
+	})
+	if err != nil {
 		return nil, err
 	}
 	if err := models.RegisterFindModelsTool(toolReg, cfg); err != nil {
+		return nil, err
+	}
+	// ws_skill closes the progressive-disclosure loop: pkg/skills renders cards
+	// for every match and only expands a body on an explicit reference, so an
+	// agent needs a way to ask for the body it just saw a card for.
+	if err := registerSkillTool(toolReg, loader); err != nil {
 		return nil, err
 	}
 
@@ -259,9 +316,9 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		return nil, err
 	}
 
-	registry, err := factory.BuildRegistry()
-	if err != nil {
-		return nil, err
+	registry, regErr := factory.BuildRegistry()
+	if regErr != nil {
+		return nil, regErr
 	}
 	exec := ggagent.NewSubAgentExecutor(registry)
 	exec.SetParallel(true)
@@ -286,6 +343,34 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		hooksRunner: hooksRunner,
 		mcpMgr:      mcpMgr,
 		rewindMgr:   &rewind.Manager{SlmDir: cfg.SlmDir(), Root: cfg.Root},
+		workspace:   ws,
+		tracker:     tracker,
+		repoMap:     repoMap,
+	}
+	if repoErr != nil {
+		o.emitFull("init", stream.KindDebug, "repomap", "",
+			"repo map unavailable: "+repoErr.Error(), "", "")
+	}
+	// Project instructions belong in the STABLE PREFIX of every specialist
+	// pack, not only in SCRATCH.md (which nothing but the Studio API reads).
+	o.projectInstructions = instructions.LoadProjectInstructions(cfg.Root)
+
+	// Self-improvement engine. A degraded engine is still safe to call, and a
+	// nil one is tolerated everywhere, so failures never stop a run.
+	if o.evolveEnabled() {
+		eng, evErr := evolve.OpenWith(cfg.Root, "", evolve.EngineOptions{
+			Deterministic: o.deterministicMode(),
+		})
+		o.evolve = eng
+		if evErr != nil {
+			o.emitFull("init", stream.KindDebug, "evolve", "",
+				"evolve degraded: "+evErr.Error(), "", "")
+		}
+	}
+
+	// Reset the per-task tool loop guard whenever the runner starts a task.
+	if tracker != nil {
+		tracker.ResetAll()
 	}
 	_ = pipeline.EnsureFile(cfg.SlmDir())
 	o.loadPipelineLocked()
@@ -302,7 +387,31 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	return o, nil
 }
 
-func (o *Orchestrator) OnEvent(h EventHandler)     { o.onEvent = h }
+// OnEvent registers the event sink. Registering one also marks this
+// orchestrator as SUBSCRIBED, which is what the HITL gates use to decide
+// whether an unanswered ask means "nobody was listening" (safe to proceed) or
+// "somebody was listening and did not answer" (not safe to proceed).
+func (o *Orchestrator) OnEvent(h EventHandler) {
+	o.mu.Lock()
+	o.eventSubscribed = h != nil
+	o.mu.Unlock()
+	if h == nil {
+		h = func(Event) {}
+	}
+	o.onEvent = h
+}
+
+// Subscribed reports whether any UI is attached to this orchestrator.
+func (o *Orchestrator) Subscribed() bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.eventSubscribed || o.onPlanApprove != nil || o.onAsk != nil ||
+		o.onContinue != nil || o.onEscalate != nil
+}
+
 func (o *Orchestrator) Store() *contextstore.Store { return o.store }
 func (o *Orchestrator) Board() *plan.LiveStore     { return o.boardStore }
 func (o *Orchestrator) Skills() *skills.Loader     { return o.skills }
@@ -404,7 +513,11 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	runID := fmt.Sprintf("run-%d", start.UnixNano())
 	if o.packer != nil {
 		o.packer.ClearCache()
+		// The model can be re-pointed between runs (stacks, Studio, --model), so
+		// re-resolve the window rather than trusting the one New() saw.
+		o.packer.SetContextLimitTokens(o.contextLimitTokens())
 	}
+	o.refreshRepoMap()
 	if o.cfg != nil {
 		clearDynamicRunArtifacts(o.cfg.SlmDir())
 		clearPendingHITL(o.cfg.SlmDir())
@@ -413,6 +526,10 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	o.latencyMs = map[string]int64{}
 	o.usage = TokenUsage{}
 	o.refineRound = 0
+	o.llmCalls = 0
+	o.runStart = start
+	o.decisions = nil
+	o.gates = nil
 	o.dynamicSkills = nil
 	o.dynamicBrief = ""
 	o.dynamicComposition = nil
@@ -440,6 +557,9 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	o.emit("init", "query-scoped plan/tasks reset for "+runID, "")
 
 	_ = o.store.SetQuery(query)
+	o.startEvolveRun(runID, query)
+	o.applyRoleModelPolicy()
+	o.emitShellPolicyNotice()
 	o.injectPriorKnowledge(ctx, query)
 	o.seedAdaptiveLessons()
 	o.shared.SetGlobal("query", query)
@@ -477,25 +597,136 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 }
 
 // skillPackFor builds a role-targeted skill pack (pins + @skill + agent defaults
-// + composer-selected skills for this role).
+// + composer-selected skills for this role), prefixed with the project
+// instructions and any memory worth saying.
+//
+// Ordering matters: instructions and the collaboration brief are STABLE across
+// every call in a run, so they go first and stay byte-identical, which is what
+// keeps the provider's KV-cache prefix reusable. Memory and the matched skills
+// vary per role and come after.
 func (o *Orchestrator) skillPackFor(role, query string) string {
-	pins := append([]string{}, o.cfg.PinnedSkills...)
-	brief := ""
-	if o != nil {
-		o.mu.Lock()
-		pins = append(pins, o.dynamicSkills[strings.ToLower(strings.TrimSpace(role))]...)
-		brief = o.dynamicBrief
-		o.mu.Unlock()
+	if o == nil {
+		return ""
 	}
-	list := o.skills.ResolveForRun(query, role, pins, 4)
-	rendered := skills.RenderPack(list, 1600)
-	if strings.TrimSpace(brief) == "" {
-		return rendered
+	var pins []string
+	if o.cfg != nil {
+		pins = append(pins, o.cfg.PinnedSkills...)
 	}
-	if strings.TrimSpace(rendered) == "" {
-		return brief
+	o.mu.Lock()
+	pins = append(pins, o.dynamicSkills[strings.ToLower(strings.TrimSpace(role))]...)
+	brief := o.dynamicBrief
+	instr := o.projectInstructions
+	o.mu.Unlock()
+
+	var parts []string
+	if s := strings.TrimSpace(instr); s != "" {
+		parts = append(parts, "## Project instructions (authoritative)\n\n"+truncate(s, 6000))
 	}
-	return brief + "\n\n" + rendered
+	if s := strings.TrimSpace(brief); s != "" {
+		parts = append(parts, s)
+	}
+	if mem := o.memoryBlockFor(role); mem != "" {
+		parts = append(parts, mem)
+	}
+	if o.skills != nil {
+		if rendered := strings.TrimSpace(skills.RenderPack(o.skills.ResolveForRun(query, role, pins, 4), 1600)); rendered != "" {
+			parts = append(parts, rendered)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// memoryBlockFor renders the evolve memory block for a role, budgeted from the
+// role's own pack budget. It returns "" when there is nothing worth saying, so
+// no heading is emitted around an empty string.
+func (o *Orchestrator) memoryBlockFor(role string) string {
+	if o == nil || o.evolve == nil {
+		return ""
+	}
+	mem := o.evolve.Memory()
+	if mem == nil {
+		return ""
+	}
+	budget := o.memoryTokens()
+	if o.packer != nil {
+		if b := o.packer.BudgetTokensFor(role) / 6; b > 0 {
+			budget = b
+		}
+	}
+	return strings.TrimSpace(mem.RenderForPrompt(role, budget))
+}
+
+// refreshProjectInstructions reloads AGENTS.md / CLAUDE.md gated to the paths
+// this run actually touches, so a repo whose instructions are path-scoped only
+// pays for the sections that apply.
+func (o *Orchestrator) refreshProjectInstructions(scopePaths []string) string {
+	if o == nil || o.cfg == nil {
+		return ""
+	}
+	instr := instructions.LoadForScope(o.cfg.Root, scopePaths)
+	if strings.TrimSpace(instr) == "" {
+		instr = instructions.LoadProjectInstructions(o.cfg.Root)
+	}
+	o.mu.Lock()
+	o.projectInstructions = instr
+	o.mu.Unlock()
+	if o.packer != nil {
+		// The stable prefix changed; cached packs carry the old one.
+		o.packer.ClearCache()
+	}
+	return instr
+}
+
+// resolvedThinkPasses is config think_passes, with the bandit picking between
+// the configured value and its immediate neighbors when the engine is on.
+// A user who pinned think_passes explicitly is never overridden by more than
+// one step, so the policy tunes rather than reinterprets.
+func (o *Orchestrator) resolvedThinkPasses() int {
+	base := 1
+	if o != nil && o.cfg != nil {
+		base = o.cfg.ThinkPasses
+	}
+	if base <= 0 {
+		base = 1
+	}
+	if o == nil || o.evolve == nil {
+		return base
+	}
+	arms := []string{itoa(base)}
+	if base > 1 {
+		arms = append(arms, itoa(base-1))
+	}
+	if base < 3 {
+		arms = append(arms, itoa(base+1))
+	}
+	switch o.choose(evolve.DecThinkPasses, arms...) {
+	case "1":
+		return 1
+	case "2":
+		return 2
+	case "3":
+		return 3
+	}
+	return base
+}
+
+// explorePolicyApplies reports whether the explore decision is genuinely
+// discretionary for this query (no explicit user/config signal forcing it).
+func (o *Orchestrator) explorePolicyApplies(query string) bool {
+	if o == nil || o.evolve == nil || o.cfg == nil {
+		return false
+	}
+	if o.cfg.ThinkPasses >= 3 || wantsForceExplore(query) {
+		return false
+	}
+	return true
+}
+
+func boolArm(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }
 
 // thinkRefinePasses maps config think_passes → multipass critique loops.
@@ -586,20 +817,28 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 }
 
 func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack string, start time.Time) (*Result, error) {
-	var err error
-	// 0 Auto-load AGENTS.md / CLAUDE.md / PROJECT instructions (Claude Code style)
-	if instr := instructions.LoadProjectInstructions(o.cfg.Root); instr != "" {
-		o.emit("init", "loaded project instructions (AGENTS.md/CLAUDE.md/PROJECT)", "")
-		_ = o.store.Append(contextstore.DocScratch, "Project instructions", truncate(instr, 8000))
+	// 0 Auto-load AGENTS.md / CLAUDE.md / PROJECT instructions (Claude Code style).
+	//
+	// These used to be appended to SCRATCH.md — a write-only sink, written in 25
+	// places and read in exactly one (the Studio API) — and concatenated into a
+	// skillPack that was threaded through runSLM → finalizeAfterExecute →
+	// completeRun and discarded with `_ = skillPack`. Meanwhile every
+	// packer.Build call used o.skillPackFor, which rebuilt from skills alone, so
+	// no specialist prompt ever saw AGENTS.md. They now live on the orchestrator
+	// and skillPackFor puts them in the STABLE PREFIX of every pack.
+	//
+	// LoadForScope gates sections by path glob, so a repo whose instructions are
+	// scoped to subtrees only pays for the sections that apply to this query.
+	if instr := o.refreshProjectInstructions(plan.DiscoverRelevantFiles(o.cfg.Root, query, "")); instr != "" {
+		o.emit("init", "loaded project instructions (AGENTS.md/CLAUDE.md/PROJECT) into every pack prefix", "")
 		o.shared.SetGlobal("project_instructions", instr)
-		skillPack = skillPack + "\n\n## Project instructions\n\n" + truncate(instr, 6000)
 	}
 
 	// 0a Parse @file: / @folder: references from the query (Claude Code–style)
 	if refs := extractFileRefs(query); len(refs) > 0 {
 		o.shared.SetGlobal("query_file_refs", strings.Join(refs, ","))
 		discoveredEarly := plan.ReconcileFiles(o.cfg.Root, refs, refs)
-		_ = o.store.Append(contextstore.DocContext, "User file refs", "- "+strings.Join(discoveredEarly, "\n- "))
+		_ = o.store.ReplaceSection(contextstore.DocContext, "User file refs", "- "+strings.Join(discoveredEarly, "\n- "))
 		o.emit("init", fmt.Sprintf("attached %d file ref(s)", len(discoveredEarly)), "")
 	}
 
@@ -614,7 +853,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		if len(discoveredEarly) > 0 {
 			invMD += "\n\n## Likely targets for this query\n\n- " + strings.Join(discoveredEarly, "\n- ")
 		}
-		_ = o.store.Append(contextstore.DocContext, "Workspace inventory", invMD)
+		_ = o.store.ReplaceSection(contextstore.DocContext, "Workspace inventory", invMD)
 		o.shared.SetGlobal("workspace_files", strings.Join(inventory, ","))
 		skillPack = skillPack + "\n\n" + invMD + "\n"
 		o.emit("init", fmt.Sprintf("indexed %d workspace file(s)", len(inventory)), "")
@@ -657,9 +896,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 			// Re-assert authoritative paths after the context rewrite (SLMs often invent main.go).
 			if len(inventory) > 0 {
 				invMD := "- " + strings.Join(inventory, "\n- ")
-				_ = o.store.Append(contextstore.DocContext, "Workspace inventory (authoritative)", invMD)
+				_ = o.store.ReplaceSection(contextstore.DocContext, "Workspace inventory (authoritative)", invMD)
 				if real := plan.FilterExisting(o.cfg.Root, discoveredEarly); len(real) > 0 {
-					_ = o.store.Append(contextstore.DocContext, "Likely targets (existing files only)",
+					_ = o.store.ReplaceSection(contextstore.DocContext, "Likely targets (existing files only)",
 						"- "+strings.Join(real, "\n- "))
 				}
 			}
@@ -719,16 +958,22 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 				if exploreErr != nil {
 					return phaseResult{name: "explore", err: fmt.Errorf("explorer: %w", exploreErr)}
 				}
+				// Build the document ONCE. The two Appends used to be clobbered
+				// three lines later by the Write, so the docs and architecture
+				// sections never survived to disk.
+				var doc strings.Builder
+				doc.WriteString("# Exploration\n\n")
 				if docsOut != "" {
-					_ = o.store.Append(contextstore.DocScratch, "Docs exploration", docsOut)
 					exploreOut += "\n\n" + docsOut
 					o.shared.SetGlobal("docs_exploration", docsOut)
 				}
+				doc.WriteString(exploreOut)
 				if archOut != "" {
-					_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+					doc.WriteString("\n\n## Architecture\n\n")
+					doc.WriteString(archOut)
 					o.shared.SetGlobal("architecture", archOut)
 				}
-				_ = o.store.Write(contextstore.DocScratch, "# Exploration\n\n"+exploreOut)
+				_ = o.store.Write(contextstore.DocScratch, doc.String())
 				o.shared.SetGlobal("exploration", exploreOut)
 				o.shared.SetGlobal("explore_mode", "deep")
 			}
@@ -740,6 +985,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	)
 
 	// Explore errors are fatal; context errors are non-blocking warnings.
+	if err := canceledPhase(parResults); err != nil {
+		return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+	}
 	if r, ok := parResults["explore"]; ok && r.err != nil {
 		return nil, r.err
 	}
@@ -801,175 +1049,27 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	)
 
 	// Architect errors are fatal.
+	if err := canceledPhase(archClarifyResults); err != nil {
+		return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
+	}
 	if r, ok := archClarifyResults["architect"]; ok && r.err != nil {
 		return nil, r.err
 	}
 
-	// 3+4 Plan / Split / approval. Users can request a bounded replan from
-	// the validation modal; their notes are fed back into planner and splitter.
-	const maxPlanApprovalReplans = 2
-	var planOut string
-	var pl plan.Plan
-	var board *plan.Board
-	var replanNotes []string
-	for planAttempt := 0; ; planAttempt++ {
-		if planAttempt > 0 {
-			o.emit("plan", fmt.Sprintf("replanning from user feedback (%d/%d)", planAttempt, maxPlanApprovalReplans), "")
-		}
-
-		// 3 Plan (multipass when think_passes>1; single-shot otherwise)
-		session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
-		if err := o.runPipelineSlots(ctx, "plan", "before", query, exploreOut, ""); err != nil {
-			return nil, err
-		}
-		planAgent := o.phaseAgent("plan", plan.RolePlanner)
-		planOut = ""
-		if o.Pipeline().HasReplace("plan") {
-			if err := o.runPipelineSlots(ctx, "plan", "replace", query, exploreOut, ""); err != nil {
-				return nil, err
-			}
-			planOut = `{"summary":"pipeline slot replaced plan","goals":[],"steps":["Execute board tasks"]}`
-		} else if o.phaseEnabled("plan") {
-			o.emitAgent("plan", planAgent, "", "creating plan", "", "")
-			planPrompt := o.buildPlannerPrompt(query, runID, planAgent, exploreOut, archOut, prd, clarify, replanNotes)
-			planOut, err = o.runRoleMultipassTracked(ctx, planAgent, "", planPrompt)
-			if err != nil {
-				if isCancelErr(err) {
-					return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
-				}
-				return nil, fmt.Errorf("planner: %w", err)
-			}
-			// Extra plan critique only when think_passes≥3.
-			if o.cfg.ThinkPasses >= 3 && !multipass.LooksCompleteJSON(planOut) {
-				revAgent := o.Pipeline().Execute.Reviewer
-				if revAgent == "" {
-					revAgent = plan.RoleReviewer
-				}
-				o.emitAgent("plan", revAgent, "", "plan critique pass", "", "")
-				critiquePrompt := "Critique this SLM plan. Check missing files, oversized tasks, unclear acceptance, wrong order.\n" +
-					"Query:\n" + truncate(query, 800) + "\n\nPlan:\n" + truncate(planOut, 3500) +
-					"\n\nSTRICT JSON: {\"ok\":bool,\"issues\":[string],\"hints\":[string]}"
-				critique, _ := o.runRoleTracked(ctx, revAgent, "", critiquePrompt)
-				if strings.TrimSpace(critique) != "" {
-					_ = o.store.Append(contextstore.DocScratch, "Plan critique", critique)
-					o.emitFull("plan", stream.KindOutput, revAgent, "", "plan critique", "", truncate(critique, 800))
-					if !strings.Contains(strings.ToLower(critique), `"ok": true`) &&
-						!strings.Contains(strings.ToLower(critique), `"ok":true`) {
-						o.emitAgent("plan", planAgent, "", "refining plan from critique", "", "")
-						refine := planPrompt + "\n\n## Critique\n" + truncate(critique, 2000) +
-							"\n\nRevise. Atomic for SLM. STRICT JSON plan."
-						if refined, rerr := o.runRoleTracked(ctx, planAgent, "", refine); rerr == nil && strings.TrimSpace(refined) != "" {
-							planOut = refined
-						}
-					}
-				}
-			}
-		}
-		if err := o.runPipelineSlots(ctx, "plan", "after", query, exploreOut, planOut); err != nil {
-			return nil, err
-		}
-		pl, _ = plan.ParsePlanJSON(planOut)
-		if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
-			pl.Summary = firstSentence(stripJSONNoise(planOut))
-			if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
-				pl.Summary = "Implement request with locked PRD"
-			}
-		}
-		pl = plan.MergeClarifyIntoPlan(pl, clarify)
-		pl = plan.MergePRDIntoPlan(pl, prd)
-		if len(replanNotes) > 0 {
-			pl.Assumptions = append(pl.Assumptions, "User replan notes: "+strings.Join(replanNotes, " | "))
-		}
-		// Persist agent plan immediately so Studio PLAN.md / board update live mid-run.
-		o.persistBoard(&plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: nil})
-		o.emit("plan", "PLAN.md rewritten for this query", "")
-
-		// 4 Split
-		session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
-		if err := o.runPipelineSlots(ctx, "split", "before", query, exploreOut, planOut); err != nil {
-			return nil, err
-		}
-		splitAgent := o.phaseAgent("split", "splitter")
-		var tasksOut string
-		if o.Pipeline().HasReplace("split") {
-			if err := o.runPipelineSlots(ctx, "split", "replace", query, exploreOut, planOut); err != nil {
-				return nil, err
-			}
-			tasksOut = `{"tasks":[]}`
-		} else if o.phaseEnabled("split") {
-			o.emitAgent("split", splitAgent, "", "atomic task split", "", "")
-			splitPrompt := o.buildSplitterPrompt(query, splitAgent, planOut, prd, clarify, replanNotes)
-			tasksOut, err = o.runRoleMultipassTracked(ctx, splitAgent, "", splitPrompt)
-			if err != nil {
-				if isCancelErr(err) {
-					return o.checkpointInterrupt(&plan.Board{QueryID: runID, Query: query, Plan: pl}, session.PhaseSplit, err)
-				}
-				return nil, fmt.Errorf("splitter: %w", err)
-			}
-		}
-		if err := o.runPipelineSlots(ctx, "split", "after", query, exploreOut, planOut); err != nil {
-			return nil, err
-		}
-		tasks, err := plan.ParseTasksJSON(tasksOut)
-		if err != nil || len(tasks) == 0 {
-			tasks = fallbackTasks(pl)
-		}
-		discovered := plan.DiscoverRelevantFiles(o.cfg.Root, query, exploreOut)
-		if len(discoveredEarly) > 0 {
-			discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, discoveredEarly...), inventory)
-		}
-		tasks = plan.SanitizeTasksIn(tasks, exploreOut+"\n"+strings.Join(discovered, "\n"), query, o.cfg.Root)
-		tasks = plan.EnsureTaskPRDs(tasks, prd, query)
-		if len(discovered) > 0 {
-			_ = o.store.Append(contextstore.DocContext, "Discovered files", "- "+strings.Join(discovered, "\n- "))
-		}
-		for i := range tasks {
-			tasks[i].Files = plan.ReconcileFiles(o.cfg.Root, tasks[i].Files, discovered)
-			// Keep persisted descriptions lean - scoped packs are injected at execute time.
-			tasks[i].Description = loop.StripScopedPack(tasks[i].Description)
-		}
-		if len(tasks) > 8 {
-			o.emit("split", fmt.Sprintf("capping tasks %d -> 8 for SLM efficiency (preserving harness/tester)", len(tasks)), "")
-			tasks = plan.CapTasksPreserveHarness(tasks, 8)
-		}
-
-		board = &plan.Board{QueryID: runID, Query: query, Plan: pl, Tasks: tasks}
-		for i := range board.Tasks {
-			t := board.Tasks[i]
-			if t.Column == "" {
-				t.Column = plan.ColReadyToDev
-			}
-			t.Normalize()
-			board.Tasks[i] = t
-		}
-		// 4a Scope / PRD judge gate - enrich or rewrite weak tasks before execute.
-		scopeValidation := o.runScopeJudgeGate(ctx, query, board, prd)
-		o.persistBoard(board)
-		o.emit("split", fmt.Sprintf("TASKS.md + board: %d agent tasks", len(board.Tasks)), "")
-
-		// 4b Coordinator reviews the board before execute
-		o.coordinate(ctx, query, board, "pre-execute")
-
-		// 4c Plan approval gate (Claude Code Plan Mode)
-		decision, aerr := o.runPlanApprovalDecision(ctx, query, board, scopeValidation)
-		if aerr != nil {
-			return nil, aerr
-		}
-		if decision.Approved {
-			break
-		}
-		if !decision.Replan {
-			return nil, fmt.Errorf("plan not approved")
-		}
-		if planAttempt >= maxPlanApprovalReplans {
-			return nil, fmt.Errorf("plan replan limit reached after %d revision(s): %s", maxPlanApprovalReplans, decision.Notes)
-		}
-		note := strings.TrimSpace(decision.Notes)
-		if note == "" {
-			note = "Revise the plan for smaller, safer, better-scoped execution."
-		}
-		replanNotes = append(replanNotes, note)
-		_ = o.store.Append(contextstore.DocScratch, "Plan replan request", "- "+note)
+	// 3+4 Plan / Split / approval — extracted so runSLM reads as a pipeline
+	// rather than one 500-line function.
+	board, _, planOut, err := o.runPlanSplitApprove(ctx, planSplitInput{
+		RunID:      runID,
+		Query:      query,
+		ExploreOut: exploreOut,
+		ArchOut:    archOut,
+		Inventory:  inventory,
+		Discovered: discoveredEarly,
+		PRD:        prd,
+		Clarify:    clarify,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
@@ -982,78 +1082,8 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.focus.Clear()
 	}
 	o.waveCounter = 0
-	runner := loop.NewRunner(o.executor, o.shared)
-	runner.Root = o.cfg.Root
-	runner.SlmDir = o.cfg.SlmDir()
-	runner.Feedback = o.LiveFeedback
-	runner.TurnID = runID
-	runner.Store = o.boardStore
-	runner.Focus = o.focus
-	runner.MaxRetries = o.cfg.MaxRetries
-	runner.MaxParallel = o.cfg.MaxParallel
-	runner.ReviewParallel = o.cfg.MaxParallel >= 2
-	runner.Timeout = o.cfg.TaskTimeout
-	runner.ReviewerRole = o.Pipeline().Execute.Reviewer
-	runner.CorrectorRole = o.Pipeline().Execute.Corrector
-	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
-	runner.MaxWaves = o.Pipeline().Execute.MaxWaves
-	runner.PostWorkerSmoke = o.cfg.PostWorkerSmoke
-	runner.WaveSnapshots = o.cfg.WaveSnapshots
-	runner.RewindMgr = o.rewindMgr
-	runner.FailureHandler = loop.NewEnhancedFailureHandler(o.cfg.Root)
-	runner.Log = func(format string, args ...interface{}) {
-		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")
-	}
-	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
-		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
-	}
-	runner.OnEscalate = func(ctx context.Context, board *plan.Board, t plan.Task, detail string) {
-		o.runEscalateAsk(ctx, board, t, detail)
-	}
-	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
-		o.recordUsage(u, estimated)
-	}
-	runner.OnOverflowCompact = func(ctx context.Context) error {
-		_, err := o.CompactContextNow()
-		if o.cfg.ReactCompact {
-			// Force react watchdog rearm so next resume compacts aggressively.
-			o.emitFull("execute", stream.KindDebug, "compact", "",
-				"overflow: CONTEXT compacted; ReAct will compact on resume", "", "")
-		}
-		return err
-	}
-	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
-		o.evolveAfterWave(ctx, query, skillPack, board, wave)
-		o.maybeCompactContext(ctx)
-		o.coordinate(ctx, query, board, "after-wave")
-	}
-	// Ephemeral scoped packs — never persist fat context into TASKS.md / board descriptions.
-	// Workers get lean docs + tight file excerpts for faster SLM inference.
-	runner.QualityMonitor = o.cfg.QualityMonitor
-	runner.StaticQuality = o.cfg.StaticQuality
-	runner.RequireSmoke = o.cfg.RequireSmoke
-	runner.ClaimsGate = o.cfg.ClaimsGate
-	runner.WorkerCritique = o.cfg.WorkerCritique
-	runner.ThinkPasses = o.cfg.ThinkPasses
-	runner.ThinkingBudget = o.cfg.ThinkingBudget
-	runner.ThinkingBudgetTokens = o.resolvedProfile().ThinkingBudgetTokens
-	if runner.ThinkingBudgetTokens <= 0 {
-		runner.ThinkingBudgetTokens = o.cfg.ThinkingBudgetTokens
-	}
-	runner.AutoTextTools = o.cfg.AutoTextTools
-	runner.FinalizeWarn = o.cfg.FinalizeWarn
-	runner.ReactCompact = o.cfg.ReactCompact
-	runner.ReactCompactAtPercent = o.cfg.ReactCompactAtPercent
-	runner.MaxContextKB = o.cfg.MaxContextKB
-	runner.BuildInput = func(t plan.Task) string {
-		lean := loop.StripScopedPack(t.Description)
-		docs := contextstore.LeanDocsForRole(t.Role)
-		tp, _ := o.packer.Build(t.Role, query, docs, t.Files, o.skillPackFor(t.Role, query))
-		tp.TaskID = t.ID
-		tp.TaskTitle = t.Title
-		t.Description = tp.Render() + "\n## Task instructions\n\n" + lean
-		return o.formatWorkerPrompt(query, t)
-	}
+	o.applyArchitectEditorRoles(board)
+	runner := o.buildRunner(query, runID, skillPack)
 	snap := o.boardStore.Snapshot()
 	board = &snap
 	for i := range board.Tasks {
@@ -1086,6 +1116,9 @@ func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
 	enabled, endpoint, model, apiKey, topK := o.cfg.RetrievalConfig()
 	body, mode, err := retrieval.RetrieveForQuery(ctx, o.cfg.SlmDir(), query, retrieval.Config{
 		Enabled: enabled, Endpoint: endpoint, Model: model, APIKey: apiKey, TopK: topK,
+		// Without CacheDir the embedding cache and query-dir pruning never
+		// activate, so every run re-embeds the whole corpus.
+		CacheDir: o.cfg.SlmDir(),
 	})
 	if err != nil {
 		o.emit("init", "retrieval warning: "+err.Error(), "")
@@ -1243,6 +1276,34 @@ func (o *Orchestrator) resolveExecRole(role string) string {
 	return mapped
 }
 
+// applyRoleModelPolicy lets the bandit choose whether the light roles
+// (reviewer, context, memory, coordinator, escalate — short structured outputs,
+// never implementation) run on the configured fast model or on the main one.
+//
+// It runs ONCE per run, before any agent is built, because agents.Factory
+// resolves the effective model at construction time and mutating FastModel
+// while workers are running would be a data race on a shared field.
+//
+// LIMITATION: agents.Factory keys the fast model off isLightAgent(spec.ID), so
+// this is a per-RUN choice for the whole light set, not per role. A per-role
+// `Factory.SetPreferFast(role string, fast bool)` upstream would make the arm
+// per-role; the decision key is already recorded per role-class.
+func (o *Orchestrator) applyRoleModelPolicy() {
+	if o == nil || o.evolve == nil || o.cfg == nil || o.factory == nil {
+		return
+	}
+	fast := strings.TrimSpace(o.cfg.FastModel)
+	if fast == "" {
+		return
+	}
+	if o.choose(evolve.DecRoleModel, "fast", "heavy") == "heavy" {
+		o.factory.FastModel = ""
+		o.emit("init", "policy: light roles on the main model this run", "")
+		return
+	}
+	o.factory.FastModel = fast
+}
+
 // genericRoleFor strips language/kind affixes from a role id so
 // go-tester → tester, python-worker → worker, react-tester → tester.
 func genericRoleFor(role string) string {
@@ -1272,6 +1333,7 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 		o.emit(role, fmt.Sprintf("fallback role %s → %s (agent not registered)", role, execRole), "")
 	}
 	o.emitFull(execRole, stream.KindAgentStart, execRole, taskID, "started", scopeFromInput(input), "")
+	o.bumpLLMCalls(1)
 	start := time.Now()
 	timeout := o.roleTimeout(execRole)
 	rctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1282,7 +1344,7 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	elapsed := time.Since(start)
 	o.recordLatency(execRole, elapsed)
 	if len(results) == 0 {
-		o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID, "no result", "", "")
+		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID, "no result", "", "", stream.LevelError)
 		if err != nil {
 			return "", err
 		}
@@ -1294,12 +1356,18 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	}
 	o.recordResultUsage(results[0], input, out)
 	if results[0].Error != nil && out == "" {
-		o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID, "error: "+results[0].Error.Error(), "", "")
+		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
+			"error: "+results[0].Error.Error(), "", "", stream.LevelError)
 		return "", results[0].Error
 	}
-	o.emitFull(execRole, stream.KindAgentEnd, execRole, taskID,
+	endLevel := stream.LevelSuccess
+	if results[0].Error != nil {
+		// Partial output with an error is still a failure for the ✔/✖ tally.
+		endLevel = stream.LevelWarn
+	}
+	o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
 		fmt.Sprintf("finished (%s)", elapsed.Round(time.Millisecond)),
-		scopeFromInput(input), truncate(out, 1500))
+		scopeFromInput(input), truncate(out, 1500), endLevel)
 	o.emitFull(execRole, stream.KindLatency, execRole, taskID,
 		fmt.Sprintf("%s %dms", execRole, elapsed.Milliseconds()), "", "")
 	return out, nil
@@ -1330,25 +1398,67 @@ func (o *Orchestrator) snapshotLatency() map[string]int64 {
 	return out
 }
 
-func (o *Orchestrator) runRoleMultipass(ctx context.Context, role, input string) (string, error) {
-	return o.runRoleMultipassTracked(ctx, role, "", input)
-}
-
+// runRoleMultipassTracked runs the multi-pass cycle for a role with the same
+// guarantees as its single-shot twin runRoleTracked: a timeout, latency and
+// usage accounting, live-feedback injection, and a Level-tagged AgentEnd.
+//
+// It used to have none of those, which mattered because it is used for the two
+// slowest roles in the harness (planner and splitter) where one call issues up
+// to 1+2×passes LLM round-trips — an unbounded, unaccounted stall.
 func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID, input string) (string, error) {
-	if o.cfg.ThinkPasses <= 1 {
+	passes := o.resolvedThinkPasses()
+	if o == nil || o.cfg == nil || passes <= 1 {
 		return o.runRoleTracked(ctx, role, taskID, input)
 	}
-	o.emitFull(role, stream.KindAgentStart, role, taskID, fmt.Sprintf("multipass×%d", o.cfg.ThinkPasses), "", "")
-	a, err := o.factory.Create(role)
-	if err != nil {
+	if o.think == nil || o.factory == nil {
 		return o.runRoleTracked(ctx, role, taskID, input)
 	}
-	out, err := o.think.Execute(ctx, a, input)
+	o.think.Passes = thinkRefinePasses(passes)
+	// Live user steering: same priority as the single-shot path.
+	if fb := o.LiveFeedback(); fb != "" {
+		input = "\n\n## LIVE FEEDBACK FROM USER (highest priority — adjust your work now)\n" + fb + "\n" + input
+	}
+	execRole := o.resolveExecRole(role)
+	if execRole != role {
+		o.emit(role, fmt.Sprintf("fallback role %s → %s (agent not registered)", role, execRole), "")
+	}
+
+	// Per-pass timeout is the single-shot budget; the whole cycle gets the
+	// pass budget times the worst-case number of calls, capped at the task
+	// timeout so a stuck planner cannot outlive the run.
+	pass := o.roleTimeout(execRole)
+	budget := time.Duration(1+2*thinkRefinePasses(passes)) * pass
+	if full := o.cfg.TaskTimeout; full > 0 && budget > full {
+		budget = full
+	}
+	o.think.SetPassTimeout(pass).SetBudget(budget).SetFactory(o.factory.Create)
+	o.think.OnCall = func(ci multipass.CallInfo) {
+		o.recordLatency(execRole, ci.Elapsed)
+		o.emitFull(execRole, stream.KindLatency, execRole, taskID,
+			fmt.Sprintf("%s %s#%d %dms", execRole, ci.Pass, ci.Index, ci.Elapsed.Milliseconds()), "", "")
+	}
+	o.think.OnUsage = func(u multipass.Usage) {
+		o.recordEstimatedUsage(u.InputChars, u.OutputChars)
+	}
+
+	o.emitFull(execRole, stream.KindAgentStart, execRole, taskID,
+		fmt.Sprintf("multipass×%d (budget %s)", passes, budget.Round(time.Second)),
+		scopeFromInput(input), "")
+	rctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	start := time.Now()
+	// ExecuteRole caches and resets the agent instead of rebuilding it: a
+	// rebuild re-resolves the provider, tools and profile caps every call.
+	out, err := o.think.ExecuteRole(rctx, execRole, input)
+	elapsed := time.Since(start)
 	if err != nil {
-		o.emitFull(role, stream.KindAgentEnd, role, taskID, "error: "+err.Error(), "", "")
+		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
+			"error: "+err.Error(), "", "", stream.LevelError)
 		return "", err
 	}
-	o.emitFull(role, stream.KindAgentEnd, role, taskID, "multipass finished", "", truncate(out, 1500))
+	o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
+		fmt.Sprintf("multipass finished (%s)", elapsed.Round(time.Millisecond)),
+		scopeFromInput(input), truncate(out, 1500), stream.LevelSuccess)
 	return out, nil
 }
 
@@ -1358,6 +1468,21 @@ func (o *Orchestrator) shouldDeepExplore(query string) (doDeep bool, reason stri
 	if os.Getenv("SLMCODE_FORCE_EXPLORE") == "1" {
 		return true, ""
 	}
+	// The heuristics below are the PRIOR; the bandit gets the final say on the
+	// genuinely discretionary case. Explicit forcing signals (a query that asks
+	// to explore, think_passes>=3) stay hard rules — the policy chooses between
+	// two defensible options, it does not override an instruction.
+	defer func() {
+		if !o.explorePolicyApplies(query) {
+			return
+		}
+		switch o.choose(evolve.DecExplorePhase, boolArm(doDeep), boolArm(!doDeep)) {
+		case "on":
+			doDeep, reason = true, "policy: explore=on"
+		case "off":
+			doDeep, reason = false, "policy: explore=off"
+		}
+	}()
 	// Deeper SLM planning: think_passes>=3 always digs; >=2 digs on non-trivial queries.
 	if o.cfg != nil && o.cfg.ThinkPasses >= 3 {
 		return true, ""
@@ -1470,16 +1595,16 @@ func (o *Orchestrator) applyCoordinatorActions(board *plan.Board, raw string) {
 				o.emit("coord", "task cap reached — skip add_task", "")
 				continue
 			}
-			id := board.NextID()
 			nt := plan.Task{
-				ID: id, Title: title, Description: a.Text,
+				Title: title, Description: a.Text,
 				Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: wrap.FocusFiles,
 			}
 			if a.Role != "" {
 				nt.Role = a.Role
 			}
-			nt.Normalize()
-			board.Tasks = append(board.Tasks, nt)
+			// AddTask allocates the id under the board lock — the coordinator
+			// can be appending while parallel review appends too.
+			board.AddTask(nt)
 		}
 	}
 	if len(wrap.FocusFiles) > 0 {
@@ -1571,6 +1696,67 @@ func (o *Orchestrator) contextSummarizer() compact.Summarizer {
 	}
 }
 
+// contextBudgetKB returns the soft and hard CONTEXT.md byte budgets in KB.
+func (o *Orchestrator) contextBudgetKB() (soft, hard int) {
+	soft = 16
+	if o != nil && o.cfg != nil && o.cfg.MaxContextKB > 0 {
+		soft = o.cfg.MaxContextKB
+	}
+	return soft, soft * 2
+}
+
+// compactContext is the single compaction path for CONTEXT.md.
+//
+// It picks the engine with compact.EngineFor (which downgrades to the
+// heuristic when the body is too far over budget for an SLM to summarize
+// safely), targets compact.CompactTargetBytes (~70% of the trigger, so the very
+// next Append does not re-trigger a full LLM compaction), SNAPSHOTS the
+// pre-compaction body to CONTEXT.md.bak before overwriting — an LLM that ate
+// CONTEXT.md must be recoverable — and reports res.Rejected when a candidate
+// summary failed the acceptance gates and fell back to the heuristic.
+func (o *Orchestrator) compactContext(ctx context.Context, body string) (compact.Result, error) {
+	soft, hard := o.contextBudgetKB()
+	preferred := "heuristic"
+	if o.cfg != nil && strings.TrimSpace(o.cfg.ContextCompactEngine) != "" {
+		preferred = o.cfg.ContextCompactEngine
+	}
+	engine := compact.EngineFor(preferred, body, soft, hard)
+	var llmSummarize compact.Summarizer
+	if engine == "llm" || engine == "auto" {
+		llmSummarize = o.contextSummarizer()
+	}
+	res := compact.Summarize(ctx, engine, body, compact.CompactTargetBytes(soft, hard), llmSummarize)
+	if !res.Compacted {
+		return res, nil
+	}
+	if err := o.snapshotContextBackup(res.Original); err != nil {
+		o.emitWarn("learn", "CONTEXT backup failed — not compacting: "+err.Error(), "")
+		return compact.Result{Original: res.Original}, err
+	}
+	if err := o.store.Write(contextstore.DocContext, res.Summary); err != nil {
+		return res, err
+	}
+	if rejected := strings.TrimSpace(string(res.Rejected)); rejected != "" {
+		o.emitWarn("learn", "CONTEXT llm summary rejected ("+rejected+") — used heuristic engine", "")
+	}
+	o.emitFull("learn", stream.KindOutput, "compact", "",
+		fmt.Sprintf("CONTEXT compacted %d→%d bytes (engine=%s, backup .slmcode/%s)",
+			res.BeforeBytes, res.AfterBytes, engine, contextBackupName),
+		"", truncate(res.Summary, 400))
+	return res, nil
+}
+
+// contextBackupName is the pre-compaction snapshot of CONTEXT.md.
+const contextBackupName = "CONTEXT.md.bak"
+
+func (o *Orchestrator) snapshotContextBackup(original string) error {
+	if o == nil || o.cfg == nil || strings.TrimSpace(original) == "" {
+		return nil
+	}
+	path := filepath.Join(o.cfg.SlmDir(), contextBackupName)
+	return atomicfile.Write(path, []byte(original), 0o600)
+}
+
 // maybeCompactContext summarizes CONTEXT.md when it exceeds the pack budget.
 func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
 	if o == nil || o.cfg == nil || !o.cfg.ContextCompact || o.store == nil {
@@ -1580,26 +1766,11 @@ func (o *Orchestrator) maybeCompactContext(ctx context.Context) {
 	if err != nil || body == "" {
 		return
 	}
-	soft := o.cfg.MaxContextKB
-	if soft <= 0 {
-		soft = 16
-	}
-	if !compact.NeedsCompact(body, soft, soft*2) {
+	soft, hard := o.contextBudgetKB()
+	if !compact.NeedsCompact(body, soft, hard) {
 		return
 	}
-	engine := o.cfg.ContextCompactEngine
-	var llm compact.Summarizer
-	if engine == "llm" || engine == "auto" {
-		llm = o.contextSummarizer()
-	}
-	res := compact.Summarize(ctx, engine, body, soft*1024, llm)
-	if !res.Compacted {
-		return
-	}
-	_ = o.store.Write(contextstore.DocContext, res.Summary)
-	o.emitFull("learn", stream.KindOutput, "compact", "",
-		fmt.Sprintf("CONTEXT compacted %d→%d bytes (engine=%s)", res.BeforeBytes, res.AfterBytes, engine),
-		"", truncate(res.Summary, 400))
+	_, _ = o.compactContext(ctx, body)
 }
 
 // CompactContextNow forces a CONTEXT.md compaction (TUI /compact context).
@@ -1608,23 +1779,7 @@ func (o *Orchestrator) CompactContextNow() (compact.Result, error) {
 	if err != nil {
 		return compact.Result{}, err
 	}
-	max := o.cfg.MaxContextKB * 1024
-	if max <= 0 {
-		max = 16 * 1024
-	}
-	engine := "heuristic"
-	if o.cfg != nil && o.cfg.ContextCompactEngine != "" {
-		engine = o.cfg.ContextCompactEngine
-	}
-	var llm compact.Summarizer
-	if engine == "llm" || engine == "auto" {
-		llm = o.contextSummarizer()
-	}
-	res := compact.Summarize(context.Background(), engine, body, max, llm)
-	if res.Compacted {
-		_ = o.store.Write(contextstore.DocContext, res.Summary)
-	}
-	return res, nil
+	return o.compactContext(context.Background(), body)
 }
 
 func (o *Orchestrator) persistBoard(board *plan.Board) {
@@ -1670,10 +1825,6 @@ func (o *Orchestrator) emitWarn(phase, msg, taskID string) {
 	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelWarn)
 }
 
-func (o *Orchestrator) emitError(phase, msg, taskID string) {
-	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelError)
-}
-
 func (o *Orchestrator) emitSuccess(phase, msg, taskID string) {
 	o.emitFullL(phase, stream.KindPhase, "", taskID, msg, "", "", stream.LevelSuccess)
 }
@@ -1693,13 +1844,12 @@ func (o *Orchestrator) emitFullDataL(phase, kind, agent, taskID, msg, scope, out
 	if level == "" {
 		level = stream.LevelInfo
 	}
-	if o.cfg.Verbose {
-		prefix := phase
-		if agent != "" {
-			prefix = phase + ":@" + agent
-		}
-		fmt.Printf("[%s] %s\n", prefix, msg)
-	}
+	// The engine never writes to stdout. The CLI is the sole renderer (it owns
+	// --log-level, -v/-vv, a sticky footer and an append-only transcript), so
+	// the `if o.cfg.Verbose { fmt.Printf(...) }` that used to sit here both
+	// double-printed every line and shredded the dashboard. Verbosity is a
+	// RENDERER concern now: every event carries a Level and the CLI decides
+	// which levels it shows.
 	if o.cfg != nil && o.cfg.SessionEventLog && o.currentTurn != nil {
 		_ = session.AppendEvent(o.cfg.SlmDir(), o.currentTurn.ID, session.EventRecord{
 			Phase: phase, Kind: kind, Agent: agent, TaskID: taskID,
@@ -1795,11 +1945,11 @@ func InitWorkspace(root string, cfg *config.Config) error {
 	if err := store.Init(filepath.Base(root)); err != nil {
 		return err
 	}
-	_ = os.MkdirAll(cfg.SkillsDir(), 0o755)
-	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "errors"), 0o755)
-	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "archives"), 0o755)
-	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "queries"), 0o755)
-	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "summaries"), 0o755)
+	_ = os.MkdirAll(cfg.SkillsDir(), 0o750)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "errors"), 0o750)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "archives"), 0o750)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "queries"), 0o750)
+	_ = os.MkdirAll(filepath.Join(cfg.SlmDir(), "summaries"), 0o750)
 	// Materialize bundled skills only — CONTEXT/PLAN/TASKS stay empty until agents write them.
 	_ = skills.MaterializeBundled(filepath.Join(cfg.SlmDir(), "skills", "_bundled"))
 	_ = pipeline.EnsureFile(cfg.SlmDir())
@@ -2151,10 +2301,46 @@ func (o *Orchestrator) langHint() string {
 	}
 }
 
+// langCache memoises detectProjectLang per root.
+//
+// The uncached version does up to two full os.ReadDir passes over the project
+// root and was called once per worker prompt AND once per review prompt — N
+// tasks × 2 syscall storms per wave, for an answer that cannot change during a
+// run. Keyed by root so a Studio process serving several projects stays correct.
+var langCache sync.Map // root -> string
+
 // detectProjectLang returns a human-readable project language label based on
 // config files found at the project root. Used to steer the splitter away from
 // hallucinating language-inappropriate files and acceptance commands.
+//
+// The result is cached for the process lifetime; ResetLangCache clears it when
+// a project's shape genuinely changes (e.g. after a greenfield scaffold wrote
+// the first go.mod / package.json).
 func detectProjectLang(root string) string {
+	if root == "" {
+		return ""
+	}
+	if v, ok := langCache.Load(root); ok {
+		return v.(string)
+	}
+	lang := detectProjectLangUncached(root)
+	langCache.Store(root, lang)
+	return lang
+}
+
+// ResetLangCache drops the memoised language for root (all roots when empty).
+func ResetLangCache(root string) {
+	if root == "" {
+		langCache.Range(func(k, _ any) bool {
+			langCache.Delete(k)
+			return true
+		})
+		return
+	}
+	langCache.Delete(root)
+}
+
+func detectProjectLangUncached(root string) string {
 	if root == "" {
 		return ""
 	}

@@ -60,6 +60,35 @@ func (o *Orchestrator) recordResultUsage(r ggagent.SubAgentResult, input, output
 	o.recordUsage(u, est)
 }
 
+// recordEstimatedUsage accounts for a call whose provider reported no usage,
+// from the character counts the caller already has (multipass reports these).
+func (o *Orchestrator) recordEstimatedUsage(inputChars, outputChars int) {
+	if inputChars <= 0 && outputChars <= 0 {
+		return
+	}
+	in := inputChars / charsPerTokenEstimate
+	out := outputChars / charsPerTokenEstimate
+	o.recordUsage(llm.Usage{
+		PromptTokens:     in,
+		CompletionTokens: out,
+		TotalTokens:      in + out,
+	}, true)
+}
+
+// charsPerTokenEstimate is the same 4:1 ratio pkg/context uses when no
+// tokenizer is available.
+const charsPerTokenEstimate = 4
+
+// bumpLLMCalls tracks LLM round-trips for the evolve RunReport.
+func (o *Orchestrator) bumpLLMCalls(n int) {
+	if o == nil || n <= 0 {
+		return
+	}
+	o.mu.Lock()
+	o.llmCalls += n
+	o.mu.Unlock()
+}
+
 func (o *Orchestrator) snapshotUsage() *TokenUsage {
 	o.mu.Lock()
 	defer o.mu.Unlock()

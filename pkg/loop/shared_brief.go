@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
 
@@ -126,10 +127,6 @@ func rankSharedBriefItems(tasks []plan.Task, current plan.Task, root string) []s
 		items = items[:6]
 	}
 	return items
-}
-
-func formatSharedBriefLine(task plan.Task) string {
-	return formatSharedBriefLineWithRoot(task, "")
 }
 
 func formatSharedBriefLineWithRoot(task plan.Task, root string) string {
@@ -426,6 +423,9 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// truncateASCII clips s to at most n bytes on a RUNE boundary. The name is
+// historical: it used to byte-slice, which split multi-byte runes and produced
+// invalid UTF-8 in prompts.
 func truncateASCII(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if n <= 0 {
@@ -435,7 +435,7 @@ func truncateASCII(s string, n int) string {
 		return s
 	}
 	if n <= 3 {
-		return s[:n]
+		return textutil.Clip(s, n)
 	}
-	return s[:n-3] + "..."
+	return textutil.Clip(s, n-3) + "..."
 }

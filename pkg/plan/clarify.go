@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/UnicoLab/slmcode/pkg/repair"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 )
 
 // ClarifyResult is the structured output of the pre-plan clarifier.
@@ -64,10 +64,7 @@ func NeedsClarification(query string) bool {
 // ParseClarifyJSON extracts ClarifyResult from model output.
 func ParseClarifyJSON(raw string) ClarifyResult {
 	raw = strings.TrimSpace(raw)
-	extracted := extractJSON(raw)
-	if fixed, err := repair.RepairJSON(extracted); err == nil {
-		extracted = fixed
-	}
+	extracted := repairRole(extractJSON(raw), schema.RoleClarify)
 	var c ClarifyResult
 	if err := json.Unmarshal([]byte(extracted), &c); err != nil {
 		return ClarifyResult{

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/UnicoLab/slmcode/pkg/repair"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 )
 
 // Clarify modes (Claude Code / pi-clarify style).
@@ -114,10 +114,7 @@ func NormalizeClarifyMode(m string) string {
 // Accepts both the new questions[{options}] shape and legacy string questions.
 func ParseScopeInterview(raw string) ScopeInterview {
 	raw = strings.TrimSpace(raw)
-	extracted := extractJSON(raw)
-	if fixed, err := repair.RepairJSON(extracted); err == nil {
-		extracted = fixed
-	}
+	extracted := repairRole(extractJSON(raw), schema.RoleClarify)
 
 	// Try rich shape first (questions as objects).
 	var rich struct {
@@ -491,10 +488,8 @@ func defaultAcceptanceFromQuery(query string, prd ScopePRD) []string {
 // JudgeTaskScopeHeuristics finds tasks with incomplete PRD/scope (no LLM).
 func JudgeTaskScopeHeuristics(tasks []Task, prd ScopePRD) ScopeJudgeResult {
 	res := ScopeJudgeResult{OK: true}
-	if strings.TrimSpace(prd.Summary) == "" && len(prd.Acceptance) == 0 &&
-		prd.Language == "" && prd.Entrypoint == "" {
-		// No PRD at all is ok for tiny concrete edits — only flag worker gaps.
-	}
+	// Note: an entirely absent PRD is fine for tiny concrete edits, so it is
+	// deliberately NOT an issue here — only per-task worker gaps are flagged.
 	for _, t := range tasks {
 		if strings.EqualFold(t.Role, RoleExplorer) || strings.EqualFold(t.Role, "docs") {
 			continue
@@ -538,10 +533,7 @@ func JudgeTaskScopeHeuristics(tasks []Task, prd ScopePRD) ScopeJudgeResult {
 // ParseScopeJudgeJSON parses LLM scope-judge output.
 func ParseScopeJudgeJSON(raw string) ScopeJudgeResult {
 	raw = strings.TrimSpace(raw)
-	extracted := extractJSON(raw)
-	if fixed, err := repair.RepairJSON(extracted); err == nil {
-		extracted = fixed
-	}
+	extracted := repairRole(extractJSON(raw), schema.RoleScopeJudge)
 	var r ScopeJudgeResult
 	if err := json.Unmarshal([]byte(extracted), &r); err != nil {
 		lower := strings.ToLower(raw)

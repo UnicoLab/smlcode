@@ -141,6 +141,14 @@ func FilterExisting(root string, files []string) []string {
 
 // ReconcileFiles keeps claimed paths when they exist or look like intentional
 // greenfield creates. Hallucinated missing paths fall back to discovered files.
+//
+// When nothing resolves it returns nil — NOT an arbitrary slice of the
+// workspace. It used to return FilterExisting(root, ListWorkspaceFiles(root, 12)),
+// and those twelve unrelated files went verbatim into "## Focus files (HARD
+// SCOPE)" and into Focus.SetWave, so the anti-wander guard started PERMITTING
+// writes to all twelve and an SLM with a vague task was invited to wander over
+// them. A task whose targets cannot be resolved has unknown scope: callers must
+// block it (move it to ColToScope for human scoping), not guess for it.
 func ReconcileFiles(root string, claimed, discovered []string) []string {
 	var planned []string
 	for _, f := range claimed {
@@ -173,15 +181,8 @@ func ReconcileFiles(root string, claimed, discovered []string) []string {
 			return uniq(out)
 		}
 	}
-	fallback := FilterExisting(root, discovered)
-	if len(fallback) > 0 {
-		return fallback
-	}
-	return FilterExisting(root, ListWorkspaceFiles(root, 12))
+	return FilterExisting(root, discovered)
 }
-
-// Keep testable helper name used by greenfield sanitize paths.
-func looksLikeCreateTarget(f string) bool { return isGreenfieldCreatePath(f) }
 
 func isGreenfieldCreatePath(f string) bool {
 	f = strings.ToLower(strings.TrimSpace(f))

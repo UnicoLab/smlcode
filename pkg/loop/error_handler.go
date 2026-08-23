@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
@@ -190,11 +191,21 @@ func (efh *EnhancedFailureHandler) getStack() string {
 	return string(buf[:n])
 }
 
+// truncate clips s to at most maxLen bytes on a rune boundary.
+//
+// The old body was `s[:maxLen-3] + "..."`, which panics with a negative slice
+// bound for any maxLen < 3 and splits multi-byte runes for every other value.
 func (efh *EnhancedFailureHandler) truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen <= 3 {
+		return textutil.Clip(s, maxLen)
+	}
+	return textutil.Clip(s, maxLen-3) + "..."
 }
 
 // ReportAndLogWaveLesson captures a durable lesson for recurring failures.

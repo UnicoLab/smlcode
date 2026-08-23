@@ -385,7 +385,7 @@ func TestEmitEvictsTokenEventsFirst(t *testing.T) {
 	}
 }
 
-// readSSE runs one SSE request with a cancelled-after-write context and returns
+// readSSE runs one SSE request with a canceled-after-write context and returns
 // the emitted frames.
 func readSSE(t *testing.T, s *Server, lastEventID string) string {
 	t.Helper()
@@ -429,7 +429,7 @@ func TestShutdownClosesStreamsAndCancelsRunContext(t *testing.T) {
 	s := New(newHarness(t), nil)
 	runCtx := s.runContext()
 	if runCtx.Err() != nil {
-		t.Fatal("run context already cancelled")
+		t.Fatal("run context already canceled")
 	}
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)

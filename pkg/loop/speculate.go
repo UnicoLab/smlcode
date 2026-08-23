@@ -94,10 +94,14 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 						if j.slot.Timeout > 0 {
 							slotTimeout = j.slot.Timeout
 						}
+						// The racing reviewers stream too; the task id rides on
+						// gctx (speculate is entered under r.taskCtx).
+						stop := r.streamTokensCtx(gctx, j.slot.Role)
 						res, e := r.Executor.ExecuteSubAgents(gctx, []ggagent.SubAgentRequest{{
 							AgentID: j.slot.Role, Input: j.slot.Prompt,
 							Timeout: slotTimeout, ShareState: true,
 						}}, r.Shared)
+						stop()
 						err = e
 						if len(res) > 0 {
 							r.noteUsage(res[0], j.slot.Prompt, outputString(res[0]))

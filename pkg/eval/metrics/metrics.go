@@ -12,6 +12,19 @@
 // code. Aider's leaderboard reports "% of responses using the correct edit
 // format" next to task success for the same reason.
 //
+// There are TWO such rates and they measure different things:
+//
+//   - EditApplyRate      — did the edit land in the end, counting the ones that
+//     only worked after a repaired argument or a retry.
+//   - FirstAttemptApplyRate — did the edit land exactly as the model emitted it.
+//
+// The second is the one Aider's leaderboard tracks and the one that matters for
+// a small model: a format that needs two repairs before it applies is not a
+// format that model can use, however good the eventual number looks. Reporting
+// only the first conflates "the harness recovered" with "the model complied",
+// which is precisely the confusion that lets a harness change look like a model
+// improvement.
+//
 // The package deliberately depends on nothing but the standard library and
 // pkg/internal/atomicfile, so the orchestrator can import it without dragging
 // in the evaluation harness (which itself imports the orchestrator).
@@ -63,6 +76,10 @@ type Metrics struct {
 	EditFormat     string `json:"edit_format,omitempty"`
 	EditsAttempted int    `json:"edits_attempted"`
 	EditsApplied   int    `json:"edits_applied"`
+	// EditsFirstAttempt counts the edits that applied exactly as the model
+	// emitted them — no repaired arguments, no second try. It is always
+	// <= EditsApplied; the gap between them is what the harness recovered.
+	EditsFirstAttempt int `json:"edits_first_attempt"`
 
 	ToolCalls      int `json:"tool_calls"`
 	ToolErrors     int `json:"tool_errors"`
@@ -103,7 +120,7 @@ func (m *Metrics) Normalize(now time.Time) {
 		m.Gates[i].Name = clip(m.Gates[i].Name, 80)
 	}
 	for _, p := range []*int{
-		&m.Tasks, &m.TasksPassed, &m.EditsAttempted, &m.EditsApplied,
+		&m.Tasks, &m.TasksPassed, &m.EditsAttempted, &m.EditsApplied, &m.EditsFirstAttempt,
 		&m.ToolCalls, &m.ToolErrors, &m.RedundantCalls, &m.LLMCalls,
 		&m.TokensIn, &m.TokensOut, &m.Failures, &m.RepairHits,
 		&m.ResolvedFromMemory, &m.ResolvedFromLLM, &m.Unresolved,
@@ -121,13 +138,32 @@ func (m *Metrics) Normalize(now time.Time) {
 	if m.EditsApplied > m.EditsAttempted {
 		m.EditsAttempted = m.EditsApplied
 	}
+	// A first-attempt apply IS an apply, so it can never exceed either count.
+	if m.EditsFirstAttempt > m.EditsApplied {
+		m.EditsFirstAttempt = m.EditsApplied
+	}
 }
 
 // Rates. Each returns -1 when the denominator is zero, so "no data" is
 // distinguishable from "zero percent" — averaging a fake 0 is how a metric
 // starts lying.
-func (m Metrics) TaskPassRate() float64      { return ratio(m.TasksPassed, m.Tasks) }
-func (m Metrics) EditApplyRate() float64     { return ratio(m.EditsApplied, m.EditsAttempted) }
+func (m Metrics) TaskPassRate() float64  { return ratio(m.TasksPassed, m.Tasks) }
+func (m Metrics) EditApplyRate() float64 { return ratio(m.EditsApplied, m.EditsAttempted) }
+
+// FirstAttemptApplyRate is "% of responses using the correct edit format": the
+// share of edit attempts that applied as emitted, with no repair and no retry.
+// It is deliberately NOT the same number as EditApplyRate — see the package
+// doc for why keeping them apart is the point.
+func (m Metrics) FirstAttemptApplyRate() float64 {
+	return ratio(m.EditsFirstAttempt, m.EditsAttempted)
+}
+
+// EditRepairRate is the share of applied edits that only landed because the
+// harness repaired or retried them. High is a working harness AND a model that
+// cannot use the format it was given.
+func (m Metrics) EditRepairRate() float64 {
+	return ratio(m.EditsApplied-m.EditsFirstAttempt, m.EditsAttempted)
+}
 func (m Metrics) ToolErrorRate() float64     { return ratio(m.ToolErrors, m.ToolCalls) }
 func (m Metrics) RedundantCallRate() float64 { return ratio(m.RedundantCalls, m.ToolCalls) }
 func (m Metrics) RepairHitRate() float64     { return ratio(m.RepairHits, m.Failures) }

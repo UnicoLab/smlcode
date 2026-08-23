@@ -17,6 +17,10 @@ type Summary struct {
 
 	EditsAttempted int `json:"edits_attempted"`
 	EditsApplied   int `json:"edits_applied"`
+	// EditsFirstAttempt pools the edits that applied as emitted. Pooling it
+	// separately (rather than deriving it from a per-run rate) keeps the
+	// aggregate honest across runs of very different sizes.
+	EditsFirstAttempt int `json:"edits_first_attempt"`
 
 	ToolCalls      int `json:"tool_calls"`
 	ToolErrors     int `json:"tool_errors"`
@@ -46,6 +50,7 @@ func Aggregate(in []Metrics) Summary {
 		s.TasksPassed += m.TasksPassed
 		s.EditsAttempted += m.EditsAttempted
 		s.EditsApplied += m.EditsApplied
+		s.EditsFirstAttempt += m.EditsFirstAttempt
 		s.ToolCalls += m.ToolCalls
 		s.ToolErrors += m.ToolErrors
 		s.RedundantCalls += m.RedundantCalls
@@ -85,6 +90,13 @@ func comparedMetrics() []Metric {
 	return []Metric{
 		{"task pass rate", true, "%", func(s Summary) float64 { return ratio(s.TasksPassed, s.Tasks) }},
 		{"edit-format apply rate", true, "%", func(s Summary) float64 { return ratio(s.EditsApplied, s.EditsAttempted) }},
+		// The Aider-leaderboard number: applied AS EMITTED. Ranked next to the
+		// eventual apply rate on purpose — a change that moves the first only
+		// proves the harness got better at recovering, not that the format fits
+		// the model.
+		{"first-attempt edit-format rate", true, "%", func(s Summary) float64 {
+			return ratio(s.EditsFirstAttempt, s.EditsAttempted)
+		}},
 		{"gate pass rate", true, "%", func(s Summary) float64 { return ratio(s.GatesPassed, s.GatesRun) }},
 		{"repair-rule hit rate", true, "%", func(s Summary) float64 { return ratio(s.RepairHits, s.Failures) }},
 		{"failures fixed from memory", true, "%", func(s Summary) float64 {
@@ -261,6 +273,7 @@ func (s Summary) Render() string {
 	}{
 		{"task pass rate", ratio(s.TasksPassed, s.Tasks), "%"},
 		{"edit-format apply rate", ratio(s.EditsApplied, s.EditsAttempted), "%"},
+		{"first-attempt edit rate", ratio(s.EditsFirstAttempt, s.EditsAttempted), "%"},
 		{"gate pass rate", ratio(s.GatesPassed, s.GatesRun), "%"},
 		{"tool error rate", ratio(s.ToolErrors, s.ToolCalls), "%"},
 		{"redundant-call rate", ratio(s.RedundantCalls, s.ToolCalls), "%"},

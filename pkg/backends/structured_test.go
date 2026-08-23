@@ -330,9 +330,22 @@ func TestBindRoleIsIdempotentAndSafe(t *testing.T) {
 	if got := BindRole(nil, "omlx", d); got != "omlx" {
 		t.Errorf("nil manager = %q", got)
 	}
-	// A role with nothing to shape reuses the shared registration.
-	if got := BindRole(m, "omlx", Directives{Role: "context"}); got != "omlx" {
-		t.Errorf("no-op directives created a provider: %q", got)
+	// A role with nothing to SHAPE still gets its own registration: the role key
+	// is how live token deltas are attributed to an agent (see stream.go). What
+	// it must not get is a structured wrapper.
+	plain := BindRole(m, "omlx", Directives{Role: "context"})
+	if plain != "omlx"+RoleKeySeparator+"context" {
+		t.Fatalf("role key = %q", plain)
+	}
+	p, err := m.GetProvider(plain)
+	if err != nil {
+		t.Fatalf("plain role not registered: %v", err)
+	}
+	if _, isStructured := p.(*structuredProvider); isStructured {
+		t.Error("a role with nothing to shape was given a structured wrapper")
+	}
+	if p.GetConfig()["slmcode_stream_role"] != "context" {
+		t.Errorf("plain role is not the streaming tee: %v", p.GetConfig())
 	}
 }
 

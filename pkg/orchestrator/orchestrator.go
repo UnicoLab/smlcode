@@ -64,10 +64,15 @@ type Result struct {
 }
 
 type Orchestrator struct {
-	cfg           *config.Config
-	store         *contextstore.Store
-	boardStore    *plan.LiveStore
-	packer        *contextstore.Packer
+	cfg        *config.Config
+	store      *contextstore.Store
+	boardStore *plan.LiveStore
+	packer     *contextstore.Packer
+	// rolePackers holds a packer per role that carries an explicit
+	// context_role_budget override (nil when none is configured). See
+	// context_wiring.go — Budget's role table is package-level in
+	// pkg/context, so a per-role share is expressed as a scaled window.
+	rolePackers   map[string]*contextstore.Packer
 	skills        *skills.Loader
 	llm           *llm.ProviderManager
 	tools         *tools.ToolRegistry
@@ -122,6 +127,11 @@ type Orchestrator struct {
 	running bool
 	cancel  context.CancelFunc
 
+	// evMu guards onEvent alone. Studio swaps the sink (setOrch →
+	// wireOrchestratorEvents) while a run is emitting, and the emit path must
+	// not take mu — several callers already hold it.
+	evMu sync.RWMutex
+
 	// currentTurn scopes plan/tasks/summary to one user query (rewritten each Run).
 	currentTurn *session.Turn
 
@@ -145,6 +155,11 @@ type Orchestrator struct {
 	// the next agent prompts mid-run (see runRoleTracked).
 	liveFeedback   string
 	liveFeedbackAt string // RFC3339 when liveFeedback was last set
+
+	// changedFiles is the set of workspace paths this run has written, fed by
+	// the tool layer's OnFileChange hook. The QA gate formats exactly these —
+	// quality.FormatChangedFiles refuses to format anything else.
+	changedFiles map[string]bool
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -167,8 +182,6 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// One repo map per run, cached under .slmcode. Build failures are
 	// non-fatal: the packer simply has no symbol index.
 	repoMap, repoErr := repomap.Build(cfg.Root, repomap.Options{CacheDir: cfg.SlmDir()})
-	packer := contextstore.NewPackerWithBudget(store, cfg.Root, contextLimit,
-		contextstore.WithRepoMap(repoMap))
 
 	bundledDir := filepath.Join(cfg.SlmDir(), "skills", "_bundled")
 	_ = skills.MaterializeBundled(bundledDir)
@@ -222,6 +235,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		},
 		OnFileChange: func(path, kind, detail string) {
 			if o != nil {
+				// The QA gate's formatting pass is scoped to exactly this set.
+				o.noteChangedFiles(path)
 				o.emitFull("execute", stream.KindFileChange, "worker", "",
 					fmt.Sprintf("%s %s", kind, path), path, detail)
 			}
@@ -236,7 +251,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		// Tool-layer knobs. Zero keeps the package default. These read the
 		// config fields (disable_syntax_check, read_window_lines,
 		// max_tool_chars, shell_timeout) with the legacy SLMCODE_* variables
-		// still honoured as overrides — see options.go.
+		// still honored as overrides — see options.go.
 		DisableSyntaxCheck: o.syntaxCheckDisabled(),
 		ReadWindowLines:    o.readWindowLines(),
 		MaxToolChars:       o.maxToolChars(),
@@ -330,7 +345,6 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		cfg:         cfg,
 		store:       store,
 		boardStore:  boardStore,
-		packer:      packer,
 		skills:      loader,
 		llm:         llmManager,
 		tools:       toolReg,
@@ -349,6 +363,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		tracker:     tracker,
 		repoMap:     repoMap,
 	}
+	// The packer carries the whole context-engineering config (repo map budget,
+	// excerpt window, reserves, slack, per-role shares) — see context_wiring.go.
+	o.buildPackers(repoMap, contextLimit)
+	// structured_decoding: off means prompt-only JSON for every role. The
+	// enforcement point is pkg/backends' capability cache, and it has to run
+	// AFTER RegisterLLM (which points the cache at .slmcode and would otherwise
+	// re-probe over the top of what we seed here).
+	o.applyStructuredDecodingPolicy()
 	if repoErr != nil {
 		o.emitFull("init", stream.KindDebug, "repomap", "",
 			"repo map unavailable: "+repoErr.Error(), "", "")
@@ -400,7 +422,23 @@ func (o *Orchestrator) OnEvent(h EventHandler) {
 	if h == nil {
 		h = func(Event) {}
 	}
+	// Guarded by its own lock, not o.mu: emitters must never take o.mu (many
+	// of them are called from code paths that already hold it), and Studio
+	// re-subscribes from setOrch while a run can be emitting.
+	o.evMu.Lock()
 	o.onEvent = h
+	o.evMu.Unlock()
+}
+
+// eventSink returns the current handler. Never nil.
+func (o *Orchestrator) eventSink() EventHandler {
+	o.evMu.RLock()
+	h := o.onEvent
+	o.evMu.RUnlock()
+	if h == nil {
+		return func(Event) {}
+	}
+	return h
 }
 
 // Subscribed reports whether any UI is attached to this orchestrator.
@@ -514,11 +552,15 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	}
 	runID := fmt.Sprintf("run-%d", start.UnixNano())
 	if o.packer != nil {
-		o.packer.ClearCache()
+		o.clearPackCaches()
 		// The model can be re-pointed between runs (stacks, Studio, --model), so
 		// re-resolve the window rather than trusting the one New() saw.
-		o.packer.SetContextLimitTokens(o.contextLimitTokens())
+		// Rebuild rather than SetContextLimitTokens: that setter resets the
+		// budget to contextstore's DEFAULT reserves and would throw away every
+		// context_reserve_* / context_slack_percent the operator configured.
+		o.rebuildPacker(o.contextLimitTokens())
 	}
+	o.resetChangedFiles()
 	o.refreshRepoMap()
 	if o.cfg != nil {
 		clearDynamicRunArtifacts(o.cfg.SlmDir())
@@ -631,7 +673,12 @@ func (o *Orchestrator) skillPackFor(role, query string) string {
 		parts = append(parts, mem)
 	}
 	if o.skills != nil {
-		if rendered := strings.TrimSpace(skills.RenderPack(o.skills.ResolveForRun(query, role, pins, 4), 1600)); rendered != "" {
+		// Progressive disclosure, not the pre-disclosure dump: RenderMatches
+		// honors skill_disclosure (auto | cards | full) and skill_max_expanded,
+		// which RenderPack ignored — so both knobs were inert in production.
+		matches := o.skills.ResolveMatches(query, role, pins, 4)
+		if rendered := strings.TrimSpace(
+			skills.RenderMatches(matches, skillPackOptions(o.cfg, 1600))); rendered != "" {
 			parts = append(parts, rendered)
 		}
 	}
@@ -650,8 +697,8 @@ func (o *Orchestrator) memoryBlockFor(role string) string {
 		return ""
 	}
 	budget := o.memoryTokens()
-	if o.packer != nil {
-		if b := o.packer.BudgetTokensFor(role) / 6; b > 0 {
+	if p := o.packerFor(role); p != nil {
+		if b := p.BudgetTokensFor(role) / 6; b > 0 {
 			budget = b
 		}
 	}
@@ -674,7 +721,7 @@ func (o *Orchestrator) refreshProjectInstructions(scopePaths []string) string {
 	o.mu.Unlock()
 	if o.packer != nil {
 		// The stable prefix changed; cached packs carry the old one.
-		o.packer.ClearCache()
+		o.clearPackCaches()
 	}
 	return instr
 }
@@ -772,7 +819,7 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	if invMD != "" {
 		packSkills = packSkills + "\n\n" + invMD
 	}
-	tp, _ := o.packer.Build(role, query, contextstore.DefaultDocsForRole(role), discovered, packSkills)
+	tp, _ := o.packBuild(role, query, contextstore.DefaultDocsForRole(role), discovered, packSkills)
 	input := tp.Render() + "\n## Request\n\n" + query +
 		"\n\nYou are running in **specialist mode** as `" + role + "`. Complete this request directly."
 
@@ -874,7 +921,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 			ctxAgent := o.phaseAgent("context", plan.RoleContext)
 			if o.phaseEnabled("context") && !o.Pipeline().HasReplace("context") {
 				o.emitAgent("context", ctxAgent, "", "updating working context", "", "")
-				pack, _ := o.packer.Build(ctxAgent, query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor(ctxAgent, query))
+				pack, _ := o.packBuild(ctxAgent, query, contextstore.DefaultDocsForRole("context"), discoveredEarly, o.skillPackFor(ctxAgent, query))
 				ctxOut, ctxErr := o.runRoleTracked(ctx, ctxAgent, "", pack.Render()+
 					"\nRewrite CONTEXT.md for this query (markdown). ONLY reference files from the authoritative workspace list. Include: Active focus, Recent findings, Open questions.")
 				if ctxErr != nil {
@@ -943,7 +990,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 			} else {
 				expAgent := o.phaseAgent("explore", plan.RoleExplorer)
 				o.emitAgent("explore", expAgent, "", "codebase deep-dive", "", "")
-				expPack, _ := o.packer.Build(expAgent, query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor(expAgent, query))
+				expPack, _ := o.packBuild(expAgent, query, contextstore.DefaultDocsForRole("explorer"), nil, o.skillPackFor(expAgent, query))
 				explorePrompt := expPack.Render() + "\nExplore for this query. Return JSON."
 				needDocs := (wantsDocsExplorer(query) || o.cfg.ThinkPasses >= 3) && o.phaseEnabled("docs") &&
 					o.Pipeline().PhaseWhen("docs") != pipeline.WhenNever
@@ -1023,7 +1070,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 				} else {
 					archAgent := o.phaseAgent("architect", "architect")
 					o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
-					archPack, _ := o.packer.Build(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
+					archPack, _ := o.packBuild(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
 					archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
 					if strings.TrimSpace(archOut) != "" {
 						_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
@@ -1116,11 +1163,21 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 
 func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
 	enabled, endpoint, model, apiKey, topK := o.cfg.RetrievalConfig()
+	// Without CacheDir the embedding cache and query-dir pruning never
+	// activate, so every run re-embeds the whole corpus. retrieval_cache_dir
+	// relocates it; empty keeps .slmcode.
+	cacheDir := strings.TrimSpace(o.cfg.RetrievalCacheDir)
+	if cacheDir == "" {
+		cacheDir = o.cfg.SlmDir()
+	} else if !filepath.IsAbs(cacheDir) {
+		cacheDir = filepath.Join(o.cfg.Root, cacheDir)
+	}
 	body, mode, err := retrieval.RetrieveForQuery(ctx, o.cfg.SlmDir(), query, retrieval.Config{
 		Enabled: enabled, Endpoint: endpoint, Model: model, APIKey: apiKey, TopK: topK,
-		// Without CacheDir the embedding cache and query-dir pruning never
-		// activate, so every run re-embeds the whole corpus.
-		CacheDir: o.cfg.SlmDir(),
+		CacheDir: cacheDir,
+		// retrieval_min_score raises the similarity floor above the calibrated
+		// per-embedder default; 0 keeps the calibrated value.
+		MinScore: o.cfg.RetrievalMinScore,
 	})
 	if err != nil {
 		o.emit("init", "retrieval warning: "+err.Error(), "")
@@ -1174,7 +1231,7 @@ func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPac
 		return nil, fmt.Errorf("claude-code backend selected but %q not found on PATH", o.cfg.ClaudeCodeBin)
 	}
 	o.emit("claude-code", "delegating scoped run to Claude Code CLI", "")
-	pack, _ := o.packer.Build("worker", query,
+	pack, _ := o.packBuild("worker", query,
 		[]string{contextstore.DocProject, contextstore.DocContext, contextstore.DocQuery, contextstore.DocMemory},
 		nil, skillPack)
 	prompt := pack.Render() + "\n\n## Request\n\n" + query + "\n\nWork only on what is needed. Prefer small atomic edits."
@@ -1859,8 +1916,8 @@ func (o *Orchestrator) emitFullDataL(phase, kind, agent, taskID, msg, scope, out
 			Model: o.cfg.Model,
 		})
 	}
-	if o.onEvent != nil {
-		o.onEvent(Event{
+	if sink := o.eventSink(); sink != nil {
+		sink(Event{
 			Phase: phase, Kind: kind, Level: level, Message: msg, TaskID: taskID,
 			Agent: agent, Scope: scope, Output: stream.Truncate(output, 2000),
 			Data: data,
@@ -2165,55 +2222,26 @@ func (o *Orchestrator) resolvedProfileForRole(role string) config.ModelProfile {
 	return config.ResolveModelProfile(o.cfg.ModelProfiles, model)
 }
 
+// formatWorkerPromptFor renders the task-adjacent worker (or tester) prompt.
+//
+// It delegates to agents.BuildWorkerPrompt, which is the ONE source of truth
+// for the worker contract. The builder this function used to be dropped the
+// checklist, the "no extra helper files" rule, the ws_patch re-read/retry rule,
+// the language-appropriate ws_shell smoke step and the no-stubs rule — while
+// the review gates went on rejecting for exactly those omissions. A 7B–32B
+// model weights a task-adjacent restatement far above the same words in a
+// system prompt thousands of tokens earlier, so a rule the gate enforces has to
+// appear next to the task, every time.
 func formatWorkerPromptFor(t plan.Task, langHint string) string {
 	// Keep ephemeral scoped packs (injected by BuildInput); only strip when absent.
 	desc := t.Description
 	if !strings.Contains(desc, "# Scoped context") {
 		desc = loop.StripScopedPack(desc)
 	}
-	var b strings.Builder
-	b.WriteString("Atomic task — complete only this:\n\n")
-	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
-	if langHint != "" {
-		b.WriteString("## Project language\n" + langHint + "\n\n")
-	}
-	b.WriteString(desc)
-	b.WriteString("\n")
-	if len(t.Files) > 0 {
-		b.WriteString("\n## Focus files (HARD SCOPE)\nOnly edit these paths or files in the same package directory:\n- ")
-		b.WriteString(strings.Join(t.Files, "\n- "))
-		b.WriteString("\nDo NOT create main.go / index.js / other entrypoints unless listed above.\n")
-	}
-	if t.Acceptance != "" {
-		b.WriteString("\nAcceptance criteria:\n")
-		b.WriteString(t.Acceptance)
-		b.WriteString("\n")
-	}
-	if t.Notes != "" {
-		b.WriteString("\nHuman notes:\n")
-		b.WriteString(t.Notes)
-		b.WriteString("\n")
-	}
-	if t.Role == plan.RoleTester {
-		b.WriteString(`
-## Required finish (tester)
-1. Use ws_shell to install deps if needed, then run real tests or smoke commands.
-2. Reading files alone is NOT verification — commands must exit 0.
-3. End with STRICT JSON only:
-{"passed":true|false,"commands":["exact shell…"],"summary":"...","failures":["T1: path — reason"]}
-Never end on a tool call. Never soft-pass broken code.
-`)
-		return b.String()
-	}
-	b.WriteString(`
-## Required finish
-1. ws_read focus files first, then ws_edit / ws_patch (prefer over rewrites).
-2. ws_write is for NEW files only — refused on existing paths. Never cat> overwrite via shell.
-3. End with STRICT JSON only:
-{"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}
-Never claim done without tool edits. Never end on a tool call.
-`)
-	return b.String()
+	return agents.BuildWorkerPrompt(t, agents.WorkerPromptOptions{
+		LangHint:    langHint,
+		Description: desc,
+	})
 }
 
 func ensureHeading(body, heading string) string {
@@ -2432,7 +2460,7 @@ func stripJSONNoise(s string) string {
 
 func (o *Orchestrator) buildPlannerPrompt(query, runID, planAgent, exploreOut, archOut string, prd plan.ScopePRD, clarify plan.ClarifyResult, replanNotes []string) string {
 	planDocs := contextstore.LeanDocsForRole("planner")
-	planPack, _ := o.packer.Build(planAgent, query, planDocs, nil, o.skillPackFor(planAgent, query))
+	planPack, _ := o.packBuild(planAgent, query, planDocs, nil, o.skillPackFor(planAgent, query))
 	exploreCap := 2500
 	if o.cfg.ThinkPasses >= 3 {
 		exploreCap = 4000
@@ -2457,7 +2485,7 @@ func (o *Orchestrator) buildPlannerPrompt(query, runID, planAgent, exploreOut, a
 
 func (o *Orchestrator) buildSplitterPrompt(query, splitAgent, planOut string, prd plan.ScopePRD, clarify plan.ClarifyResult, replanNotes []string) string {
 	splitDocs := contextstore.LeanDocsForRole("splitter")
-	splitPack, _ := o.packer.Build(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
+	splitPack, _ := o.packBuild(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
 	prompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
 	if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
 		prompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)

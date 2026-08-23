@@ -16,7 +16,7 @@ var DevOrigins = []string{
 	"http://[::1]:5173",
 }
 
-// Options configures Studio server security and lifecycle behaviour.
+// Options configures Studio server security and lifecycle behavior.
 //
 // Security model (see docs/studio.md):
 //

@@ -79,16 +79,28 @@ func BackendEndpoint(key string) (provider, endpoint, model string, ok bool) {
 // RoleKeySeparator marks a role-bound provider registration.
 const RoleKeySeparator = "#role="
 
+// shapes reports whether these directives change the shape of a request. When
+// they do not, the role registration exists purely so live token deltas can be
+// attributed to a role.
+func (d Directives) shapes() bool {
+	return d.JSONOnly || d.SerialTools || len(d.StopSequences) > 0 ||
+		strings.TrimSpace(d.ToolChoice) != ""
+}
+
 // BindRole registers (once) a role-scoped provider that wraps the provider at
 // baseKey and applies d to every completion, returning the registry key the
 // agent should use. It is a no-op returning baseKey when the manager, the base
 // provider, or the role is missing, so callers need no error handling.
+//
+// The registration is made for EVERY named role, even one with nothing to
+// shape. It used to be skipped in that case to avoid a redundant wrapper, but
+// the role key is also the only address live token streaming has: the deltas
+// of four concurrent workers are told apart by the role encoded here plus the
+// task id on the context (see stream.go). A role that shared the base
+// registration had no way to attribute its output.
 func BindRole(m *llm.ProviderManager, baseKey string, d Directives) string {
 	if m == nil || strings.TrimSpace(baseKey) == "" || strings.TrimSpace(d.Role) == "" {
 		return baseKey
-	}
-	if !d.JSONOnly && !d.SerialTools && len(d.StopSequences) == 0 && strings.TrimSpace(d.ToolChoice) == "" {
-		return baseKey // nothing to shape — keep the shared registration
 	}
 	key := baseKey + RoleKeySeparator + d.Role
 	if _, err := m.GetProvider(key); err == nil {
@@ -99,20 +111,29 @@ func BindRole(m *llm.ProviderManager, baseKey string, d Directives) string {
 		return baseKey
 	}
 	meta, _ := lookupBackend(baseKey)
-	sp := &structuredProvider{
-		inner:      inner,
-		directives: d,
-		meta:       meta,
-		policy:     DefaultRetryPolicy(),
-		client:     &http.Client{},
+	// Stack order matters: the tee sits UNDER the structured wrapper, so the
+	// constrained-decoding direct HTTP call (deliberately non-streaming) is
+	// still reached and simply produces no deltas, rather than being bypassed.
+	p := newStreamTee(inner, d.Role)
+	if d.shapes() {
+		p = &structuredProvider{
+			inner:      p,
+			directives: d,
+			meta:       meta,
+			policy:     DefaultRetryPolicy(),
+			client:     &http.Client{},
+		}
 	}
-	if err := m.RegisterProvider(key, sp); err != nil {
+	if err := m.RegisterProvider(key, p); err != nil {
 		// A concurrent Create won the race — reuse whatever landed.
 		if _, gerr := m.GetProvider(key); gerr == nil {
 			return key
 		}
 		return baseKey
 	}
+	// Diagnostics resolve endpoint/model by registry key; without this a
+	// role-bound key reported "unknown backend".
+	rememberBackend(key, meta)
 	return key
 }
 

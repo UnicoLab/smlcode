@@ -192,6 +192,17 @@ type Runner struct {
 	// orchestrator to drain at the end of a run.
 	evo evolveState
 
+	// edits is the run's edit-format ledger (see editstats.go). It is what
+	// EditStats reports and what the edit-format bandit arm is rewarded on.
+	edits editStats
+
+	// editFmtOnce memoizes the edit-format arm. chooseEditFormat is called
+	// once per prompt render, and it used to pull the bandit — and append a
+	// DecisionRecord — every single time, so one run credited the arm with as
+	// many pulls as it built prompts.
+	editFmtOnce sync.Once
+	editFmt     string
+
 	// fpMu/fpCache cache per-wave content fingerprints (sha256 of file bytes).
 	fpMu    sync.Mutex
 	fpCache map[string]string
@@ -682,6 +693,7 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 		return nil, nil
 	}
 	if len(reqs) == 1 {
+		defer r.streamTokens(reqs[0].AgentID, reqs[0].TaskID)()
 		return r.Executor.ExecuteSubAgents(r.taskCtx(ctx, reqs[0].TaskID), reqs, r.Shared)
 	}
 
@@ -693,6 +705,10 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 		go func(i int) {
 			defer wg.Done()
 			req := reqs[i]
+			// One sink per (agent, task) for the life of this call: that pair is
+			// exactly what the terminal needs to keep four concurrent workers'
+			// deltas apart.
+			defer r.streamTokens(req.AgentID, req.TaskID)()
 			out, err := r.Executor.ExecuteSubAgents(
 				r.taskCtx(ctx, req.TaskID), []ggagent.SubAgentRequest{req}, r.Shared)
 			errs[i] = err
@@ -1008,7 +1024,11 @@ func (r *Runner) fireTurn(taskID string, iter, maxIter int) {
 	r.fire(stream.KindTurn, "harness", taskID, msg, fmt.Sprintf("%d/%d", iter, maxIter), "")
 }
 
+// noteUsage is the single choke point every agent result passes through, which
+// makes it the right place to fold the transcript into the edit ledger too —
+// wave results, sequential round-trips and the speculative race all land here.
 func (r *Runner) noteUsage(res ggagent.SubAgentResult, input, output string) {
+	r.noteEdits(res.Messages)
 	if r.OnUsage == nil {
 		return
 	}

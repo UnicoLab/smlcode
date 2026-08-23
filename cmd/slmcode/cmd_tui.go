@@ -136,6 +136,7 @@ func runInteractiveSession(plain bool) error {
 	if err != nil {
 		return err
 	}
+	defer closeHarness(h)
 	_ = h.EnsureInitialized()
 
 	sess := cli.NewLiveSession()

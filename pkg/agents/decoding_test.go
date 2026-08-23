@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -16,7 +15,9 @@ import (
 // outputMarker is how every prompt introduces its single output contract.
 const outputMarker = "OUTPUT — "
 
-// contractOf returns the JSON object a prompt ends with.
+// contractOf returns the JSON object a prompt ends with. The contract checks
+// themselves live in contract_test.go, which validates every role's example
+// against both its JSON Schema and its generated GBNF grammar.
 func contractOf(t *testing.T, prompt string) string {
 	t.Helper()
 	i := strings.LastIndex(prompt, outputMarker)
@@ -55,42 +56,6 @@ func contractOf(t *testing.T, prompt string) string {
 		}
 	}
 	return ""
-}
-
-// TestPromptContractsMatchSchema is the guard rail between prompts.go and
-// pkg/schema: the example object every JSON-only prompt ends with must be a
-// document its own schema accepts, and must be recognisable as that contract.
-func TestPromptContractsMatchSchema(t *testing.T) {
-	for _, spec := range Specs() {
-		if !spec.JSONOnly {
-			continue
-		}
-		t.Run(spec.ID, func(t *testing.T) {
-			if spec.SchemaRole == "" {
-				t.Fatal("JSON-only role has no SchemaRole")
-			}
-			sc, ok := schema.For(spec.SchemaRole)
-			if !ok {
-				t.Fatalf("SchemaRole %q is not registered", spec.SchemaRole)
-			}
-			contract := contractOf(t, spec.SystemPrompt)
-			if contract == "" {
-				t.Fatalf("prompt has no %q contract block at the end", outputMarker)
-			}
-			if !json.Valid([]byte(contract)) {
-				t.Fatalf("contract block is not valid JSON:\n%s", contract)
-			}
-			if err := schema.ValidateSpec(sc, []byte(contract)); err != nil {
-				t.Errorf("the prompt's own example fails its schema: %v\n%s", err, contract)
-			}
-			// The contract must be identifiable from the prompt alone, so a role
-			// re-tasked with another contract is still constrained correctly.
-			got, ok := schema.DetectRole(spec.SystemPrompt, spec.SchemaRole)
-			if !ok || got.Name != sc.Name {
-				t.Errorf("DetectRole = %q (ok=%v), want %q", got.Name, ok, sc.Name)
-			}
-		})
-	}
 }
 
 func TestEveryPromptStatesItsContractExactlyOnce(t *testing.T) {
@@ -422,47 +387,5 @@ func TestFactoryWithoutManagerDegradesToPlainKey(t *testing.T) {
 	// And the registry still builds, so `agent list` and BuildRegistry work.
 	if _, err := f.BuildRegistry(); err != nil {
 		t.Fatalf("BuildRegistry with a nil manager: %v", err)
-	}
-}
-
-// TestUnboundPromptContractsAlsoMatchSchema covers the three prompts that are
-// run through another agent rather than a role of their own: the clarify
-// interview and the scope judge (both re-task an existing agent) and the wave
-// learner. Their contracts must still be detectable and schema-valid, because
-// that is exactly how the structured provider picks the right schema for them.
-func TestUnboundPromptContractsAlsoMatchSchema(t *testing.T) {
-	cases := []struct {
-		name   string
-		prompt string
-		// hint is the agent the orchestrator actually runs the prompt through.
-		hint string
-		role string
-	}{
-		{"clarify via planner", PromptClarifier, schema.RolePlan, schema.RoleClarify},
-		{"scope judge via reviewer", PromptScopeJudge, schema.RoleReview, schema.RoleScopeJudge},
-		{"learner via memory", PromptLearner, "", schema.RoleLessons},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if n := strings.Count(tc.prompt, outputMarker); n != 1 {
-				t.Errorf("%d output contracts, want exactly 1", n)
-			}
-			contract := contractOf(t, tc.prompt)
-			if contract == "" {
-				t.Fatal("no contract block")
-			}
-			sc, ok := schema.For(tc.role)
-			if !ok {
-				t.Fatalf("%q not registered", tc.role)
-			}
-			if err := schema.ValidateSpec(sc, []byte(contract)); err != nil {
-				t.Errorf("contract fails its schema: %v\n%s", err, contract)
-			}
-			got, ok := schema.DetectRole(tc.prompt, tc.hint)
-			if !ok || got.Name != tc.role {
-				t.Errorf("DetectRole = %q (ok=%v), want %q — the wrong schema would be enforced",
-					got.Name, ok, tc.role)
-			}
-		})
 	}
 }

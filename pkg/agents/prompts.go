@@ -79,7 +79,7 @@ const PromptCoordinator = `Kanban board supervisor. Manage task flow — you nev
 - type is one of: note, promote, reassign, add_task, skip_explore, focus.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"summary":"one line","actions":[{"type":"promote","task_id":"T1","role":"worker","text":"deps met"}],"focus_files":[],"risks":[]}`
+{"summary":"one line","actions":[{"type":"promote","text":"deps met","role":"worker","task_id":"T1"}],"focus_files":[],"risks":[]}`
 
 const PromptContext = `Maintain CONTEXT.md for the active query.
 - Keep it under 400 words: active focus, relevant paths, constraints, open questions.
@@ -93,7 +93,7 @@ const PromptArchitect = `Architect for SLM-sized changes. Describe the smallest 
 - Scaffolds still need functional classes, real library APIs, tests, and a runnable entrypoint.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"approach":"one paragraph","components":["pkg/auth: token issuer"],"interfaces":["Issue(sub string) (string, error)"],"risks":[],"non_goals":[]}`
+{"approach":"one paragraph","components":["pkg/auth: token issuer"],"interfaces":["Issue(sub string) (string, error)"],"non_goals":[],"risks":[]}`
 
 const PromptPlanner = `SLM planner. Write a fresh plan for THIS query only — ignore any earlier plan.
 - Treat a Locked PRD and locked assumptions as hard requirements.
@@ -102,7 +102,7 @@ const PromptPlanner = `SLM planner. Write a fresh plan for THIS query only — i
 - Name only files and APIs that appear in the exploration context.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"summary":"one line","goals":[],"assumptions":[],"risks":[],"steps":["step one","step two"]}`
+{"summary":"one line","steps":["step one","step two"],"assumptions":[],"goals":[],"risks":[]}`
 
 const PromptTaskSplitter = `Split the query into atomic tasks, each sized for ONE 7–32B worker. Fresh list — ignore earlier splits.
 
@@ -117,7 +117,7 @@ const PromptTaskSplitter = `Split the query into atomic tasks, each sized for ON
 A static-web request always gets an index.html (or the named .html) entrypoint task.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"tasks":[{"id":"T1","title":"add Sum to calc.go","description":"exact instructions plus locked constraints","role":"worker","depends_on":[],"files":["calc.go"],"acceptance":"go test ./... passes"}]}
+{"tasks":[{"id":"T1","title":"add Sum to calc.go","description":"exact instructions plus locked constraints","role":"worker","files":["calc.go"],"acceptance":"go test ./... passes","depends_on":[]}]}
 role is one of: worker, tester, explorer, context.`
 
 const PromptClarifier = `Interviewer for underspecified coding requests. Exploration context is provided.
@@ -130,7 +130,7 @@ const PromptClarifier = `Interviewer for underspecified coding requests. Explora
   acceptance including pytest, a main.py invocation, and a real StateGraph agent.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"needs_user":false,"questions":[{"id":"q1","header":"Language","question":"Which runtime?","options":[{"label":"Python","description":"stdlib + argparse","recommended":true},{"label":"Go","description":"modules + go test"}],"allow_freeform":true,"recommended":"Python"}],"assumptions":["concrete default"],"acceptance":["runnable criterion"],"non_goals":[],"language":"python","entrypoint":"main.py","prd":{"summary":"","goals":[],"non_goals":[],"acceptance":[],"constraints":[],"language":"","entrypoint":""}}`
+{"needs_user":false,"assumptions":["concrete default"],"acceptance":["runnable criterion"],"entrypoint":"main.py","language":"python","non_goals":[],"prd":{"summary":"","acceptance":[],"constraints":[],"entrypoint":"","goals":[],"language":"","non_goals":[]},"questions":[{"id":"q1","header":"Language","question":"Which runtime?","options":[{"label":"Python","description":"stdlib + argparse","recommended":true},{"label":"Go","description":"modules + go test"}],"allow_freeform":true,"recommended":"Python"}]}`
 
 const PromptScopeJudge = `Judge whether the task board is PRD-complete before coding starts.
 - Flag a task when it lacks concrete acceptance, lacks real files, or has a vague title.
@@ -174,7 +174,7 @@ phase list, the specialist roster, and the available skills.
 - handoff carries 2–6 bullets: target files, non-goals, verification commands, sequencing.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"summary":"one line","strategy":"one sentence","handoff":["target only the listed files","verify with go test ./..."],"phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","agent":"planner","enabled":true},{"id":"split","agent":"splitter","enabled":true},{"id":"execute","agent":"worker","enabled":true},{"id":"test","agent":"tester","enabled":true}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"team":[{"role":"worker","skills":["atomic-coding"]}],"slots":[]}`
+{"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"handoff":["target only the listed files","verify with go test ./..."],"slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
 
 // ---------------------------------------------------------------------------
 // Review roles (no tools, pure JSON)
@@ -196,7 +196,7 @@ REJECT when any of these appear:
 Judge only what the evidence shows.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"approved":true,"score":85,"issues":[],"summary":"one line"}`
+{"approved":true,"score":85,"summary":"one line","issues":[]}`
 
 const PromptReviewerStrict = `Second reviewer, strict pass. Same evidence sections as the primary reviewer.
 
@@ -211,7 +211,7 @@ Anything short of that is a rejection with a specific, actionable issue.
 Judge only what the evidence shows; do not assume an unshown file exists.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"approved":false,"score":40,"issues":["calc.go: Sum still returns a"],"summary":"one line"}`
+{"approved":false,"score":40,"summary":"one line","issues":["calc.go: Sum still returns a"]}`
 
 // ---------------------------------------------------------------------------
 // Coding roles (tools, JSON tail after tool use)
@@ -334,7 +334,7 @@ RULES
 4. Finish with the output JSON — never end on a tool call.
 
 OUTPUT — after your tools, reply with this JSON object and nothing else:
-{"summary":"one line","relevant_files":["calc.go"],"key_symbols":["Sum"],"risks":[],"notes":""}`
+{"summary":"one line","relevant_files":["calc.go"],"key_symbols":["Sum"],"notes":"","risks":[]}`
 
 const PromptDocsExplorer = `Read the project's README and docs — not its full source.
 
@@ -345,7 +345,7 @@ RULES
 4. Finish with the output JSON — never end on a tool call.
 
 OUTPUT — after your tools, reply with this JSON object and nothing else:
-{"summary":"one line","doc_files":["README.md"],"conventions":[],"apis":[],"gaps":[]}`
+{"summary":"one line","doc_files":["README.md"],"apis":[],"conventions":[],"gaps":[]}`
 
 // PromptDescriber is the "architect" half of the architect/editor pair.
 //

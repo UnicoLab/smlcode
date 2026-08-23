@@ -85,20 +85,7 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 	o.runRegressionChecks(ctx, "pre-gate")
 
-	if prep := quality.BootstrapDeps(o.cfg.Root, cmd); prep != "" {
-		o.emit("test", "qa_gate bootstrap: "+truncate(prep, 120), "")
-		// BootstrapDeps proposes `pip install` / `npm install` / `go mod tidy`
-		// against an AGENT-AUTHORED manifest. That is arbitrary code execution
-		// from model output, so it goes through the same permission layer as
-		// any other command rather than running unattended.
-		sr := o.runGatedCommand(ctx, prep, "qa bootstrap")
-		_ = o.store.Append(contextstore.DocScratch, "QA bootstrap",
-			fmt.Sprintf("cmd: %s\nok=%v\n\n%s", prep, sr.OK, truncate(sr.Output, 2000)))
-		if !sr.OK {
-			o.emitFullL("test", stream.KindOutput, "qa", "", "qa_gate bootstrap warning", "",
-				truncate(sr.Output, 800), stream.LevelWarn)
-		}
-	}
+	o.runQABootstrap(ctx, cmd)
 
 	for round := 1; round <= max; round++ {
 		if err := ctx.Err(); err != nil {
@@ -126,10 +113,15 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		}
 
 		failText := strings.TrimSpace(sr.Output + "\n" + sr.Summary)
+		// FailureExcerpt, never a head cut: every runner this harness drives
+		// prints its verdict LAST, so head-only truncation handed the reader
+		// collection noise with the assertion removed.
 		_ = o.store.Append(contextstore.DocScratch, "QA gate failure",
-			fmt.Sprintf("round %d/%d\ncmd: %s\n\n%s", round, max, cmd, truncate(failText, 4000)))
+			fmt.Sprintf("round %d/%d\ncmd: %s\n\n%s", round, max, cmd,
+				quality.FailureExcerpt(failText, 4000)))
 		o.emitFullL("test", stream.KindOutput, "qa", "",
-			fmt.Sprintf("qa_gate failed round %d/%d", round, max), "", truncate(failText, 1500), stream.LevelError)
+			fmt.Sprintf("qa_gate failed round %d/%d", round, max), "",
+			quality.FailureExcerpt(failText, 1500), stream.LevelError)
 
 		// The fix pass now runs on EVERY round, the last one included. It used
 		// to be skipped whenever round == max, which with max==1 meant always.
@@ -183,30 +175,108 @@ func (o *Orchestrator) qaCommand() string {
 
 // qaPreflight runs the cheap deterministic fixes before round 1.
 func (o *Orchestrator) qaPreflight(ctx context.Context, round int, cmd string) {
-	if round != 1 || !strings.Contains(cmd, "go test") {
+	if round != 1 {
 		return
 	}
-	if fixOut := quality.AutoFixFormatting(o.cfg.Root); fixOut != "" {
-		o.emit("test", "qa_gate: auto-fixed formatting: "+truncate(fixOut, 200), "")
+	o.formatWaveChanges(ctx)
+	if !strings.Contains(cmd, "go test") {
+		return
 	}
 	if _, err := os.Stat(filepath.Join(o.cfg.Root, "go.mod")); err != nil {
 		return
 	}
 	br := quality.RunSmoke(ctx, o.cfg.Root, "go build ./...", 30*time.Second)
 	if !br.OK {
-		o.emitWarn("test", "qa_gate: build failed — "+truncate(br.Output, 300), "")
+		o.emitWarn("test", "qa_gate: build failed — "+quality.FailureExcerpt(br.Output, 300), "")
 		return
 	}
 	o.emit("test", "qa_gate: build OK, running full tests", "")
 }
 
+// formatWaveChanges formats the files THIS RUN changed, and nothing else.
+//
+// quality.AutoFixFormatting is a documented no-op now: it used to run
+// `gofmt -w .` / `goimports -w .` over the project root, so a repo that was not
+// already gofmt-clean got an enormous unrelated diff attributed to the agent,
+// with no checkpoint and no timeout. Its replacement is scoped to the changed
+// set and snapshots every file first, so the pass stays undoable.
+func (o *Orchestrator) formatWaveChanges(ctx context.Context) {
+	if o == nil || o.cfg == nil {
+		return
+	}
+	changed := o.changedFilesSnapshot()
+	if len(changed) == 0 {
+		return
+	}
+	var snapshot func(string)
+	if o.workspace != nil && o.workspace.Checkpointer != nil {
+		snapshot = o.workspace.Checkpointer.BackupIfNeeded
+	}
+	fixOut := quality.FormatChangedFiles(ctx, quality.FormatRequest{
+		Root:  o.cfg.Root,
+		Files: changed,
+		// goimports stays opt-in: it rewrites the import block from the file it
+		// can see and will delete an import only a build-tagged sibling needs.
+		Goimports: false,
+		Timeout:   quality.DefaultFormatTimeout,
+		Snapshot:  snapshot,
+	})
+	if fixOut != "" {
+		o.emit("test", "qa_gate: formatted changed files: "+truncate(fixOut, 200), "")
+	}
+}
+
+// runQABootstrap applies the qa_bootstrap policy to the dependency install the
+// QA command implies.
+//
+// BootstrapDeps proposes `pip install` / `npm install` / `go mod tidy` derived
+// from an AGENT-AUTHORED manifest, which is arbitrary code execution from model
+// output. quality.PlanBootstrap states the decision explicitly instead of
+// assuming consent: off refuses and says so, ask routes the command through the
+// ws_shell permission layer (shell mode, whitelist, approval flow — the same
+// HITL every other command gets), auto runs it unattended.
+func (o *Orchestrator) runQABootstrap(ctx context.Context, cmd string) {
+	if o == nil || o.cfg == nil {
+		return
+	}
+	policy := quality.NormalizeBootstrapPolicy(o.QABootstrapMode())
+	bp := quality.PlanBootstrap(o.cfg.Root, cmd, policy)
+	if bp.Command == "" {
+		if bp.Reason != "" {
+			// policy=off with a real candidate: say what was skipped, or the
+			// run ends in "it just did not install anything" with no trace.
+			o.emitWarn("test", "qa_gate bootstrap: "+truncate(bp.Reason, 200), "")
+		}
+		return
+	}
+	o.emit("test", "qa_gate bootstrap: "+truncate(bp.Command, 120)+
+		" (policy="+string(bp.Policy)+")", "")
+
+	var sr quality.SmokeResult
+	if bp.NeedsApproval {
+		o.emitWarn("test", truncate(bp.Reason, 240), "")
+		sr = o.runGatedCommand(ctx, bp.Command, "qa bootstrap")
+	} else {
+		// policy=auto: the operator opted in explicitly, so it runs unattended,
+		// exactly as quality.RunAcceptanceSmokeWithPolicy does for Run plans.
+		sr = quality.RunSmoke(ctx, o.cfg.Root, bp.Command, o.cfg.TaskTimeout)
+	}
+	_ = o.store.Append(contextstore.DocScratch, "QA bootstrap",
+		fmt.Sprintf("cmd: %s\npolicy: %s\nran=%v ok=%v\n\n%s",
+			bp.Command, bp.Policy, sr.Ran, sr.OK, quality.FailureExcerpt(sr.Output, 2000)))
+	if !sr.OK {
+		o.emitFullL("test", stream.KindOutput, "qa", "", "qa_gate bootstrap warning", "",
+			quality.FailureExcerpt(sr.Output, 800), stream.LevelWarn)
+	}
+}
+
 // qaDiagnoseAndFix runs the tester (diagnose) then the corrector (fix).
 func (o *Orchestrator) qaDiagnoseAndFix(ctx context.Context, query, cmd, failText string) {
 	o.emitAgent("test", plan.RoleTester, "", "qa_gate diagnose failures", "", "")
-	testPack, _ := o.packer.Build("tester", query, contextstore.DefaultDocsForRole("tester"), nil,
+	testPack, _ := o.packBuild("tester", query, contextstore.DefaultDocsForRole("tester"), nil,
 		o.skillPackFor("tester", query))
 	diag, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack.Render()+
-		"\n## QA gate failure\nCommand: "+cmd+"\n\n"+truncate(failText, 6000)+
+		"\n## QA gate failure\nCommand: "+cmd+"\n\n"+quality.FailureExcerpt(failText, 6000)+
 		"\n\n"+o.langHint()+"\n\nDiagnose with ws_shell if helpful. List concrete file edits needed. "+
 		"Return JSON with status and issues.")
 	if strings.TrimSpace(diag) != "" {
@@ -214,12 +284,12 @@ func (o *Orchestrator) qaDiagnoseAndFix(ctx context.Context, query, cmd, failTex
 	}
 
 	o.emitAgent("test", plan.RoleCorrector, "", "qa_gate fix iteration", "", "")
-	fixPack, _ := o.packer.Build("corrector", query, contextstore.DefaultDocsForRole("corrector"), nil,
+	fixPack, _ := o.packBuild("corrector", query, contextstore.DefaultDocsForRole("corrector"), nil,
 		o.skillPackFor("corrector", query))
 	fixPrompt := fixPack.Render() +
 		"\n## Goal\nMake this command pass: `" + cmd + "`\n\n" +
 		o.langHint() + "\n\n## Failure output\n" +
-		truncate(failText, 5000) +
+		quality.FailureExcerpt(failText, 5000) +
 		"\n\n## Diagnosis\n" + truncate(diag, 3000) +
 		"\n\nUse ws_edit / ws_patch / ws_write for SMALL fixes. Then return STRICT JSON status."
 	fixOut, _ := o.runRoleTracked(ctx, plan.RoleCorrector, "", fixPrompt)
@@ -322,7 +392,7 @@ func (o *Orchestrator) runRegressionChecks(ctx context.Context, when string) {
 		if !sr.OK {
 			o.emitFullL("test", stream.KindIntervention, "regressions", "",
 				"regression returned: "+truncate(cmd, 120), quality.InterventionReview,
-				truncate(sr.Output, 800), stream.LevelProblem)
+				quality.FailureExcerpt(sr.Output, 800), stream.LevelProblem)
 			o.recordGate("regression:"+chk.ID, false, cmd)
 		}
 	}
@@ -333,6 +403,11 @@ func detectQACommand(root string) string {
 	return quality.DetectProjectCommand(root)
 }
 
+// bootstrapQADeps reports the install command a QA command WOULD imply.
+//
+// It grants no permission and is not the production path — runQABootstrap is,
+// and it goes through quality.PlanBootstrap so the qa_bootstrap policy decides.
+// Kept for the detection tests, which assert what a project shape implies.
 func bootstrapQADeps(root, cmd string) string {
 	return quality.BootstrapDeps(root, cmd)
 }

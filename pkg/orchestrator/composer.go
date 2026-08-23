@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -61,10 +60,12 @@ func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string,
 		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
 		return
 	}
-	if fixed := applyOmittedEnabledDefault(&comp, out); len(fixed) > 0 {
-		o.emitWarn("compose",
-			"phase(s) listed without an explicit \"enabled\" treated as ENABLED — "+strings.Join(fixed, ", "), "")
-	}
+	// No "omitted enabled" repair here any more: composer.PhaseChoice grew an
+	// UnmarshalJSON that defaults a MISSING "enabled" key to true, so Parse
+	// already returns Enabled=true for `{"id":"plan"}`. The old regex pass over
+	// the raw text was a no-op on this path; ensureCriticalComposition (inside
+	// activateDynamicComposition) still protects plan/split/execute/test from
+	// an EXPLICIT false.
 	if err := o.activateDynamicComposition(&comp, query, inventory, false); err != nil {
 		o.emitWarn("compose", "invalid composition ("+err.Error()+") — using deterministic composition", "")
 		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
@@ -1185,53 +1186,4 @@ func compositionMarkdown(c composer.Composition) string {
 		}
 	}
 	return b.String()
-}
-
-// omittedEnabledPhase matches one phase object in raw composer JSON and
-// captures its id, so we can tell which phases carried an EXPLICIT
-// "enabled": false from which merely omitted the key.
-var (
-	compPhaseObj  = regexp.MustCompile(`(?s)\{[^{}]*"id"\s*:\s*"([a-z_]+)"[^{}]*\}`)
-	compEnabledKV = regexp.MustCompile(`(?i)"enabled"\s*:\s*(true|false|"true"|"false")`)
-)
-
-// applyOmittedEnabledDefault repairs the composer's most common JSON slip.
-//
-// composer.PhaseChoice.Enabled is a plain bool, so a phase object that omits
-// the key unmarshals to false, and composer.Apply then sets When: never for it.
-// PromptComposer, however, tells the model that LISTING a phase means enabling
-// it — so `{"id":"plan"},{"id":"split"}` silently killed planning and splitting
-// and the run fell through to fallbackTasks.
-//
-// pkg/composer is not ours to change, so the repair happens here: a phase the
-// composer listed is enabled unless its object carried an explicit false.
-// Returns the ids it flipped.
-//
-// The upstream fix is to make the field `Enabled *bool` and treat nil as true.
-func applyOmittedEnabledDefault(comp *composer.Composition, raw string) []string {
-	if comp == nil || strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	explicit := map[string]bool{} // id -> carried an explicit enabled key
-	for _, m := range compPhaseObj.FindAllStringSubmatch(raw, -1) {
-		if len(m) < 2 {
-			continue
-		}
-		if compEnabledKV.MatchString(m[0]) {
-			explicit[m[1]] = true
-		}
-	}
-	var flipped []string
-	for i := range comp.Phases {
-		p := comp.Phases[i]
-		if p.Enabled || explicit[p.ID] {
-			continue
-		}
-		comp.Phases[i].Enabled = true
-		if strings.EqualFold(strings.TrimSpace(comp.Phases[i].When), pipeline.WhenNever) {
-			comp.Phases[i].When = ""
-		}
-		flipped = append(flipped, p.ID)
-	}
-	return flipped
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/knowledge"
 	"github.com/UnicoLab/slmcode/pkg/learning"
@@ -258,23 +259,25 @@ func (o *Orchestrator) runDeterministicPreTest(ctx context.Context) preTest {
 		return pt
 	}
 	pt.Cmd = cmd
-	if prep := quality.BootstrapDeps(o.cfg.Root, cmd); prep != "" {
-		// Agent-authored manifests: through the permission layer, not unattended.
-		_ = o.runGatedCommand(ctx, prep, "pre-test bootstrap")
-	}
+	// Same qa_bootstrap policy as the QA gate: off refuses, ask routes through
+	// the permission layer, auto installs. A manifest the worker wrote moments
+	// ago is not consent to execute its install scripts.
+	o.runQABootstrap(ctx, cmd)
 	sr := quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
 	pt.Ran = true
 	pt.OK = sr.OK
 	pt.Output = sr.Output
+	// FailureExcerpt, not a head cut: this text is what the corrector is asked
+	// to act on, and every runner prints its verdict last.
 	_ = o.store.Append(contextstore.DocScratch, "Deterministic pre-test",
-		fmt.Sprintf("cmd: %s\nok=%v\n\n%s", cmd, sr.OK, truncate(sr.Output, 3000)))
+		fmt.Sprintf("cmd: %s\nok=%v\n\n%s", cmd, sr.OK, quality.FailureExcerpt(sr.Output, 3000)))
 	o.emitFullL("test", stream.KindOutput, "qa", "",
 		fmt.Sprintf("pre-test %s", map[bool]string{true: "green", false: "RED"}[sr.OK]),
-		"", truncate(sr.Output, 800), levelFor(sr.OK))
+		"", quality.FailureExcerpt(sr.Output, 800), levelFor(sr.OK))
 	if !sr.OK {
 		pt.FailJSON = fmt.Sprintf(
 			`{"passed":false,"commands":[%q],"summary":"deterministic pre-test failed","failures":[%q]}`,
-			cmd, truncate(strings.ReplaceAll(sr.Output, `"`, "'"), 400))
+			cmd, quality.FailureExcerpt(strings.ReplaceAll(sr.Output, `"`, "'"), 400))
 	}
 	return pt
 }
@@ -300,7 +303,7 @@ func (o *Orchestrator) runTesterPhase(ctx context.Context, query string, board *
 	testAgent := o.phaseAgent("test", plan.RoleTester)
 	o.emitAgent("test", testAgent, "", "verification pass", "", "")
 	_, tasksMD := board.ToMarkdown()
-	testPack, _ := o.packer.BuildPack(contextstore.BuildRequest{
+	testPack, _ := o.packBuildReq(contextstore.BuildRequest{
 		Role: testAgent, Query: query,
 		Docs:           contextstore.DefaultDocsForRole("tester"),
 		SkillsMarkdown: o.skillPackFor(testAgent, query),
@@ -308,13 +311,15 @@ func (o *Orchestrator) runTesterPhase(ctx context.Context, query string, board *
 		Acceptance:     firstSentence(board.Plan.Summary),
 	})
 	v.Pack = testPack.Render()
+	// The finish contract comes from agents.TesterTaskRules, the same block the
+	// per-task tester prompt uses — including the language-appropriate smoke
+	// commands. Restating it by hand here is how the phase tester ended up with
+	// a weaker contract than the gates that judge its output.
 	testPrompt := v.Pack + "\nTasks:\n" + truncate(tasksMD, 4000) +
 		"\n\nVerify THIS query's work with REAL execution.\n" +
-		"You MUST call ws_shell at least once (install deps if needed, then run the project's real test/smoke commands).\n" +
 		"Reading files alone is not enough.\n\n" +
-		o.langHint() + "\n" +
-		"Return STRICT JSON: " +
-		`{"passed":true|false,"commands":["..."],"summary":"...","failures":["..."]}` +
+		"## Project language\n" + o.langHint() + "\n" +
+		agents.TesterTaskRules(o.langHint()) +
 		"\nIf anything does not work, set passed=false and list concrete failures. Do not approve broken work."
 	if pre.FailJSON != "" {
 		testPrompt += "\n\n## Deterministic pre-test ALREADY FAILED\n" + pre.FailJSON +
@@ -353,7 +358,7 @@ func (o *Orchestrator) runTesterPhase(ctx context.Context, query string, board *
 			o.emitProblem("test", "pre-test re-run still red — overriding tester pass", "")
 			v.Output = fmt.Sprintf(
 				`{"passed":false,"commands":[%q],"summary":"deterministic re-test still failing","failures":[%q]}`,
-				pre.Cmd, truncate(strings.ReplaceAll(recheck.Output, `"`, "'"), 400))
+				pre.Cmd, quality.FailureExcerpt(strings.ReplaceAll(recheck.Output, `"`, "'"), 400))
 			return v, nil
 		}
 	}
@@ -580,7 +585,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 			// threaded all the way here only to be dropped with `_ = skillPack`.
 			memSkills = strings.TrimSpace(memSkills + "\n\n" + extra)
 		}
-		memPack, _ := o.packer.Build("memory", query, contextstore.DefaultDocsForRole("memory"), nil, memSkills)
+		memPack, _ := o.packBuild("memory", query, contextstore.DefaultDocsForRole("memory"), nil, memSkills)
 		memOut, _ := o.runRoleMultipassTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
 			"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", board.FailedCount()))
 		if strings.TrimSpace(memOut) != "" {

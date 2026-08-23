@@ -19,9 +19,10 @@ func MetricsFor(r RunReport, ref Reflection) metrics.Metrics {
 		Tasks:       r.PlannedTasks,
 		TasksPassed: r.CompletedTasks,
 
-		EditFormat:     r.EditFormat,
-		EditsAttempted: r.EditsAttempted,
-		EditsApplied:   r.EditsApplied,
+		EditFormat:        r.EditFormat,
+		EditsAttempted:    r.EditsAttempted,
+		EditsApplied:      r.EditsApplied,
+		EditsFirstAttempt: r.EditsFirstAttempt,
 
 		ToolCalls:      r.ToolCalls,
 		ToolErrors:     r.ToolErrors,

@@ -76,7 +76,7 @@ func applySearchReplace(content, patch string) (string, string, error) {
 }
 
 // applyExact locates oldStr with the full match ladder and refuses to apply a
-// non-unique match. The old behaviour (strings.Replace ..., 1 — first
+// non-unique match. The old behavior (strings.Replace ..., 1 — first
 // occurrence wins) silently patched the wrong function.
 func applyExact(content, oldStr, newStr string) (string, string, error) {
 	if oldStr == "" {

@@ -71,7 +71,7 @@ func TestStudioUIInteraction(t *testing.T) {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s → %d", entry.path, resp.StatusCode)
 		}
@@ -108,7 +108,7 @@ func TestStudioUIInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgBody, _ := io.ReadAll(res.Body)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("put config %d %s", res.StatusCode, cfgBody)
 	}
@@ -126,7 +126,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("put doc %d", res.StatusCode)
 	}
@@ -135,7 +135,7 @@ func TestStudioUIInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	docBody, _ := io.ReadAll(res.Body)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if !strings.Contains(string(docBody), "Focus") {
 		t.Fatalf("doc body=%s", docBody)
 	}
@@ -146,7 +146,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("add task %d", res.StatusCode)
 	}
@@ -155,14 +155,14 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
 	res, err = http.Get(ts.URL + "/api/board")
 	if err != nil {
 		t.Fatal(err)
 	}
 	boardBody, _ := io.ReadAll(res.Body)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if !strings.Contains(string(boardBody), "hello.go") {
 		t.Fatalf("board missing focus files: %s", boardBody)
 	}
@@ -171,7 +171,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("status %d", res.StatusCode)
 	}
@@ -182,7 +182,7 @@ func TestStudioUIInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	qBody, _ := io.ReadAll(res.Body)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("queries %d %s", res.StatusCode, qBody)
 	}
@@ -194,7 +194,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
 	// --- SSE stream briefly (Live feed) ---
 	sseCtxDone := make(chan struct{})
@@ -206,7 +206,7 @@ func TestStudioUIInteraction(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		sc := bufio.NewScanner(resp.Body)
 		_ = sc.Scan() // may timeout; presence of endpoint is enough
 	}()
@@ -216,7 +216,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("stop %d", res.StatusCode)
 	}
@@ -225,7 +225,7 @@ func TestStudioUIInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != 200 {
 		t.Fatalf("latest %d", res.StatusCode)
 	}
@@ -245,7 +245,7 @@ func discoverAssets(t *testing.T, baseURL string) (htmlPath, jsPath, cssPath str
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	html := string(body)
 
 	// Extract JS bundle path from <script type="module" ... src="...">

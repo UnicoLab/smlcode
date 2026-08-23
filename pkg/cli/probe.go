@@ -239,7 +239,7 @@ func ProbeEndpoint(ctx context.Context, provider, endpoint, model, apiKey string
 		res.Cause, res.Remedy = Remediation(provider, endpoint, model, 0, err.Error())
 		return res
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	res.Status = resp.StatusCode
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:

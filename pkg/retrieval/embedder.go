@@ -86,11 +86,8 @@ type OpenAIEmbedder struct {
 }
 
 func NewOpenAIEmbedder(endpoint, model, apiKey string) *OpenAIEmbedder {
+	// Accept bare host or /v1 suffix; Embed appends /embeddings under /v1 when needed.
 	ep := strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	// Accept bare host or /v1 suffix.
-	if !strings.HasSuffix(ep, "/v1") && !strings.HasSuffix(ep, "/embeddings") {
-		// keep as-is; request path appends /embeddings under /v1 when needed
-	}
 	return &OpenAIEmbedder{
 		Endpoint: ep,
 		Model:    model,
@@ -140,7 +137,7 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float64
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("embeddings HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))

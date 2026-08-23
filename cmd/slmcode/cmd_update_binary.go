@@ -89,7 +89,7 @@ func fetchLatestRelease(repo string) (releaseInfo, error) {
 	if err != nil {
 		return rel, fmt.Errorf("release lookup failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return rel, fmt.Errorf("release lookup returned HTTP %d", resp.StatusCode)
 	}
@@ -116,7 +116,7 @@ func downloadTo(url, dstDir, pattern string) (path, sum string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("download returned HTTP %d for %s", resp.StatusCode, url)
 	}
@@ -124,10 +124,10 @@ func downloadTo(url, dstDir, pattern string) (path, sum string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxAssetBytes)); err != nil {
-		os.Remove(f.Name())
+		removeStale(f.Name())
 		return "", "", err
 	}
 	return f.Name(), hex.EncodeToString(h.Sum(nil)), nil
@@ -197,7 +197,7 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 		cli.KeyVal("asset", name)
 		cli.KeyVal("install to", target)
 		if !confirm(fmt.Sprintf("Download v%s and replace this binary?", latest), false) {
-			fmt.Println(cli.Dim("cancelled"))
+			fmt.Println(cli.Dim("canceled"))
 			return nil
 		}
 	}
@@ -207,7 +207,7 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 	if err != nil {
 		return failf(1, "downloading SHA256SUMS: %s", err.Error())
 	}
-	defer os.Remove(sumPath)
+	defer removeStale(sumPath)
 	sumBody, err := os.ReadFile(sumPath)
 	if err != nil {
 		return err
@@ -226,14 +226,15 @@ func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system, assum
 			return failf(1, "downloading %s: %s", name, err.Error())
 		}
 	}
-	defer os.Remove(binPath)
+	defer removeStale(binPath)
 
 	if got != expected {
 		return failf(1, "checksum mismatch for %s\n  expected %s\n  got      %s", name, expected, got)
 	}
 	fmt.Println(cli.Success("checksum verified"))
 
-	if err := os.Chmod(binPath, 0o755); err != nil {
+	// The downloaded release asset is the replacement executable; it needs +x.
+	if err := os.Chmod(binPath, 0o755); err != nil { //nolint:gosec // must be executable: this is the replacement slmcode binary
 		return err
 	}
 	if err := atomicReplace(binPath, target); err != nil {
@@ -275,24 +276,35 @@ func atomicReplace(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }() // read-only descriptor; nothing actionable on close error
 	tmp := dst + ".new"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	// The output is the replacement executable itself, so it must carry +x;
+	// 0600-or-less would make the installed binary unrunnable.
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec // must be executable: this is the replacement slmcode binary
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close() // best effort; the copy error above is what we report
+		removeStale(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		removeStale(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
+		removeStale(tmp)
 		return err
 	}
 	return nil
+}
+
+// removeStale best-effort removes a leftover temp file on an error path; a
+// failure here is not actionable (the original error already dominates) but
+// is worth a warning since it can leave debris behind.
+func removeStale(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove temp file %s: %v\n", path, err)
+	}
 }

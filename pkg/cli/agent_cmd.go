@@ -185,9 +185,9 @@ func PromptAgentForm(in io.Reader, out io.Writer, base agents.CustomSpec, creati
 	sc := bufio.NewScanner(in)
 	ask := func(label, cur string) string {
 		if cur != "" {
-			fmt.Fprintf(out, "  %s [%s]: ", label, cur)
+			_, _ = fmt.Fprintf(out, "  %s [%s]: ", label, cur) // interactive prompt; a write failure surfaces via the next read
 		} else {
-			fmt.Fprintf(out, "  %s: ", label)
+			_, _ = fmt.Fprintf(out, "  %s: ", label)
 		}
 		if !sc.Scan() {
 			return cur
@@ -200,10 +200,10 @@ func PromptAgentForm(in io.Reader, out io.Writer, base agents.CustomSpec, creati
 	}
 	c := base
 	if creating {
-		fmt.Fprintln(out, Bold("New agent")+" — blank = default; builtins can be overridden by id")
+		_, _ = fmt.Fprintln(out, Bold("New agent")+" — blank = default; builtins can be overridden by id") // interactive header; a write failure here is surfaced by the next prompt read failing
 		c.ID = ask("id", c.ID)
 	} else {
-		fmt.Fprintln(out, Bold("Edit agent "+c.ID)+" — blank keeps current")
+		_, _ = fmt.Fprintln(out, Bold("Edit agent "+c.ID)+" — blank keeps current") // interactive header; a write failure here is surfaced by the next prompt read failing
 	}
 	c.Title = ask("title", c.Title)
 	c.Description = ask("description", c.Description)

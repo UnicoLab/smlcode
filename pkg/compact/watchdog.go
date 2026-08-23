@@ -24,7 +24,7 @@ const ResumeMessage = "Your context was automatically compacted mid-task to stay
 //
 // ToolCalls / ToolCallID / Name were added so compaction can round-trip an
 // OpenAI-style tool exchange. Flattening tool calls into text (the old
-// behaviour) made it impossible to restore a valid transcript, and the kept
+// behavior) made it impossible to restore a valid transcript, and the kept
 // tail routinely began on a role:"tool" message — which every
 // OpenAI-compatible server rejects with HTTP 400.
 type ChatMsg struct {
@@ -138,12 +138,12 @@ func (w *Watchdog) MaybeRearm(usagePercent float64) {
 // CompactChatMessages keeps a tool-pair-safe tail plus a STRUCTURED digest of
 // the dropped prefix.
 //
-// Two default-on behaviours differ from the historical implementation:
+// Two default-on behaviors differ from the historical implementation:
 //
 //  1. The kept window is widened backwards until it starts on a boundary that
 //     orphans no tool result (see SafeKeepStart), so the result is always a
 //     transcript an OpenAI-compatible server accepts.
-//  2. The prefix is summarised with the MustPreserve schema (files read/edited,
+//  2. The prefix is summarized with the MustPreserve schema (files read/edited,
 //     commands + exit status, failed tool calls, decisions) rather than a
 //     160-rune first line of everything joined together.
 func CompactChatMessages(msgs []ChatMsg, keepLast int) ([]ChatMsg, bool) {

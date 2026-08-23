@@ -413,14 +413,22 @@ func editProposal(p pendingPatch) (string, bool, error) {
 		return "", false, err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	defer func() {
+		if rmErr := os.Remove(name); rmErr != nil && !os.IsNotExist(rmErr) {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove temp file %s: %v\n", name, rmErr)
+		}
+	}()
 	if _, err := tmp.WriteString(p.Content); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // best effort; the WriteString error above is what matters
 		return "", false, err
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return "", false, err
+	}
 
-	c := exec.Command(editor, name)
+	// editor comes from $EDITOR/$VISUAL, which the invoking user controls on
+	// their own machine — same trust level as any other locally-launched tool.
+	c := exec.Command(editor, name) //nolint:gosec // editor path is from the user's own env, not attacker input
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		return "", false, fmt.Errorf("editor failed: %w", err)
@@ -601,7 +609,9 @@ func gitChangedFiles(root string, paths []string) []string {
 		args = append(args, "--")
 		args = append(args, paths...)
 	}
-	out, err := exec.Command("git", args...).Output()
+	// args is built from root/paths, argv elements passed straight to git
+	// (no shell), not attacker-controlled — paths are the user's own CLI args.
+	out, err := exec.Command("git", args...).Output() //nolint:gosec // argv-only git invocation, no shell, args are local CLI input
 	if err != nil {
 		// No HEAD yet (fresh repo) — fall back to the index-free listing.
 		args = []string{"-C", root, "diff", "--name-only"}
@@ -609,7 +619,7 @@ func gitChangedFiles(root string, paths []string) []string {
 			args = append(args, "--")
 			args = append(args, paths...)
 		}
-		out, err = exec.Command("git", args...).Output()
+		out, err = exec.Command("git", args...).Output() //nolint:gosec // argv-only git invocation, no shell, args are local CLI input
 		if err != nil {
 			return nil
 		}
@@ -623,7 +633,7 @@ func gitUntrackedFiles(root string, paths []string) []string {
 		args = append(args, "--")
 		args = append(args, paths...)
 	}
-	out, err := exec.Command("git", args...).Output()
+	out, err := exec.Command("git", args...).Output() //nolint:gosec // argv-only git invocation, no shell, args are local CLI input
 	if err != nil {
 		return nil
 	}

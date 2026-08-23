@@ -8,7 +8,7 @@ import (
 )
 
 // setProcessGroup puts the child in its own process group so the whole tree
-// (bash -c → go test → compiled test binary) can be signalled at once.
+// (bash -c → go test → compiled test binary) can be signaled at once.
 func setProcessGroup(cmd *exec.Cmd) {
 	if cmd == nil {
 		return

@@ -7,6 +7,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
@@ -29,11 +30,111 @@ type RoleSpec struct {
 	Skills       []string `json:"skills,omitempty"`
 	Custom       bool     `json:"custom"`
 	Override     bool     `json:"override,omitempty"`
+
+	// JSONOnly marks a role whose entire output is one JSON document. Factory
+	// attaches constrained decoding (response_format / guided_json / GBNF) for
+	// these, negotiated per endpoint — see pkg/backends.
+	JSONOnly bool `json:"json_only,omitempty"`
+	// SchemaRole names the pkg/schema contract this role normally emits. It is
+	// a default: the contract is re-detected per request from the prompt, so a
+	// role re-tasked with another contract (planner running the clarify
+	// interview) is still constrained correctly.
+	SchemaRole string `json:"schema_role,omitempty"`
+	// SerialTools caps the assistant message at one tool call per turn.
+	// GoLangGraph's ReAct loop executes EVERY ToolCall in an assistant message
+	// with nothing capping it, so three malformed ws_edit calls all run.
+	SerialTools bool `json:"serial_tools,omitempty"`
+	// StopSequences end generation before the trailing prose tail that
+	// pkg/repair currently has to strip is ever produced.
+	StopSequences []string `json:"stop_sequences,omitempty"`
+}
+
+// JSONTailStop ends a JSON-only completion the moment the model starts a
+// markdown section after its object.
+var JSONTailStop = []string{"\n## ", "\n```\n\n", "\nNote:"}
+
+// Directives renders the decoding contract this role needs at the provider.
+func (s RoleSpec) Directives() backends.Directives {
+	toolChoice := ""
+	if len(s.Tools) > 0 {
+		toolChoice = "auto"
+	}
+	return backends.Directives{
+		Role:          s.ID,
+		SchemaRole:    s.SchemaRole,
+		JSONOnly:      s.JSONOnly,
+		SerialTools:   s.SerialTools,
+		StopSequences: s.StopSequences,
+		ToolChoice:    toolChoice,
+	}
+}
+
+// NormalizeDecoding fills JSONOnly / SchemaRole / SerialTools / StopSequences
+// for a spec that did not set them — built-in, custom YAML, or block-defined.
+// A tool-less role whose id maps to a known schema contract becomes JSON-only;
+// a role with tools gets one-call-per-turn.
+func NormalizeDecoding(s *RoleSpec) {
+	if s == nil || strings.TrimSpace(s.ID) == "" {
+		return
+	}
+	id := strings.ToLower(strings.TrimSpace(s.ID))
+	if s.SchemaRole == "" {
+		if spec, ok := schema.For(id); ok {
+			s.SchemaRole = spec.Name
+		} else if spec, ok := schema.For(genericRole(id)); ok {
+			s.SchemaRole = spec.Name
+		}
+	}
+	if len(s.Tools) > 0 {
+		s.SerialTools = true
+		s.JSONOnly = false
+		return
+	}
+	// Free-text roles: their output is markdown, never a JSON document.
+	switch genericRole(id) {
+	case plan.RoleContext, "memory", "describer":
+		s.JSONOnly = false
+		s.SchemaRole = ""
+		return
+	}
+	if s.SchemaRole != "" {
+		s.JSONOnly = true
+		if len(s.StopSequences) == 0 {
+			s.StopSequences = append([]string(nil), JSONTailStop...)
+		}
+	}
+}
+
+// genericRole maps a language-specialised id (go-worker, python-tester) back to
+// its generic role so schema/decoding defaults apply to block-defined agents.
+func genericRole(id string) string {
+	for _, suffix := range []string{
+		"worker", "tester", "reviewer", "corrector", "explorer",
+		"planner", "splitter", "architect", "editor", "describer",
+	} {
+		if id == suffix || strings.HasSuffix(id, "-"+suffix) {
+			return suffix
+		}
+	}
+	return id
 }
 
 // Specs returns the built-in specialist roster (Claude Code / Antigravity inspired).
+//
+// Every entry's decoding contract (JSONOnly / SchemaRole / SerialTools /
+// StopSequences) is filled by NormalizeDecoding, so a new role only has to
+// declare its tools and — when its id does not match a pkg/schema contract —
+// its SchemaRole.
 func Specs() []RoleSpec {
 	coding := append(workspace.ToolNames(), workspace.SpecialistToolNames()...)
+	out := specs(coding)
+	for i := range out {
+		NormalizeDecoding(&out[i])
+	}
+	return out
+}
+
+func specs(coding []string) []RoleSpec {
 	return []RoleSpec{
 		{ID: "coordinator", Title: "Coordinate board & specialists", Description: "Supervises the kanban board; does not implement code.", SystemPrompt: PromptCoordinator, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 512},
 		{ID: "orchestrator", Title: "High-level orchestration", Description: "Coordinates specialists with short structured decisions.", SystemPrompt: PromptOrchestrator, Tools: nil, MaxIter: 4, Temperature: 0.2, MaxTokens: 512},
@@ -51,9 +152,33 @@ func Specs() []RoleSpec {
 		{ID: plan.RolePlaceholder, Title: "Fill placeholders / flag gaps", Description: "Detects stub code, fills real implementations, or flags precise gaps for HITL.", SystemPrompt: PromptPlaceholder, Tools: coding, MaxIter: 14, Temperature: 0.1, MaxTokens: 3072},
 		{ID: plan.RoleEscalate, Title: "Escalate arbitrator", Description: "Decides retry/re-scope/abort/mark_done when human escalate HITL times out.", SystemPrompt: PromptEscalate, Tools: nil, MaxIter: 1, Temperature: 0.1, MaxTokens: 384},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
-		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048},
+		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048, SchemaRole: schema.RoleComposition},
+
+		// reviewer-strict is the second reviewer the speculative review race in
+		// pkg/loop has always asked for. Until it was registered here,
+		// SubAgentExecutor answered "subagent 'reviewer-strict' not found" and
+		// the documented second opinion never ran.
+		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, MaxTokens: 768, SchemaRole: schema.RoleReview},
+
+		// Architect/editor pair (Aider's measured decomposition win). The
+		// describer reasons with no format constraints and no tools; the editor
+		// only formats, with constrained decoding and tools. Their models are
+		// independently selectable, so a 32B can reason and a 7B can format.
+		{ID: RoleDescriber, Title: "Change describer (architect half)", Description: "Describes the change in prose for the editor to apply. No tools, no format constraints.", SystemPrompt: PromptDescriber, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1536},
+		{ID: RoleEditor, Title: "Edit applier (editor half)", Description: "Applies a described change with the edit tools. Minimal reasoning, strict format.", SystemPrompt: PromptEditor, Tools: coding, MaxIter: 12, Temperature: 0.05, MaxTokens: 3072, SchemaRole: schema.RoleWorker},
 	}
 }
+
+// Built-in role ids added alongside the original 17-specialist roster.
+const (
+	// RoleReviewerStrict is the second reviewer used by the speculative review
+	// race in pkg/loop when max_parallel >= 3.
+	RoleReviewerStrict = "reviewer-strict"
+	// RoleDescriber is the prose half of the architect/editor pair.
+	RoleDescriber = "describer"
+	// RoleEditor is the formatting half of the architect/editor pair.
+	RoleEditor = "editor"
+)
 
 // PublicSpecs strips prompts for API/UI (built-ins only — callers merge customs).
 func PublicSpecs() []map[string]interface{} {
@@ -313,7 +438,66 @@ func (f *Factory) AllSpecs() []RoleSpec {
 		out = append(out, c.ToRoleSpec(coding))
 		index[c.ID] = len(out) - 1
 	}
+	// Custom YAML and block-defined agents get the same decoding contract as
+	// built-ins: a tool-less go-reviewer is JSON-only, a go-worker is serial.
+	for i := range out {
+		NormalizeDecoding(&out[i])
+	}
 	return out
+}
+
+// IsKnownRole reports whether id names a built-in specialist. Wire-up code that
+// names a slot role (pkg/loop's speculative review race, pipeline phase
+// bindings) should assert with this so a typo fails loudly at configuration
+// time instead of silently at runtime, the way "reviewer-strict" did for as
+// long as it went unregistered.
+//
+// It covers built-ins only; use Factory.HasRole for a roster that includes
+// custom and block-defined agents.
+func IsKnownRole(id string) bool {
+	return BuiltinIDs()[strings.ToLower(strings.TrimSpace(id))]
+}
+
+// HasRole reports whether this factory can create id (built-in, custom YAML, or
+// block-defined).
+func (f *Factory) HasRole(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return false
+	}
+	if f == nil {
+		return IsKnownRole(id)
+	}
+	for _, s := range f.AllSpecs() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// ArchitectEditorPair returns the role ids of the describer/editor decomposition.
+//
+// The pair exists because one model that must simultaneously solve the problem
+// and conform to an edit format divides its attention between the two; Aider
+// measured every model tested scoring substantially higher paired than solo.
+// Each half's model is selectable independently through the usual per-agent
+// `model:` override, so a 32B can reason while a 7B formats.
+func ArchitectEditorPair() (describer, editor string) {
+	return RoleDescriber, RoleEditor
+}
+
+// EditorInput builds the editor's input from the describer's prose. The editor
+// prompt tells it to apply the description and nothing else, so the task text
+// is included only as context.
+func EditorInput(task, description string) string {
+	var b strings.Builder
+	b.WriteString("## Task\n")
+	b.WriteString(strings.TrimSpace(task))
+	b.WriteString("\n\n## Change to apply (from the architect)\n")
+	b.WriteString(strings.TrimSpace(description))
+	b.WriteString("\n\nApply exactly this change. Do not redesign it.")
+	return b.String()
 }
 
 // ProviderNeed is a per-agent LLM backend hint for ProviderManager registration.
@@ -373,6 +557,12 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	// Friendly YAML/UI names stay on RoleSpec; AgentConfig.Provider is the unique
 	// registry key when endpoint differs (openai@http://host:port/v1).
 	cfg.Provider = backends.ResolveAgentProviderKey(f.Provider, spec.Provider, spec.Endpoint, "")
+	// Attach this role's decoding contract by binding a role-scoped provider.
+	// GoLangGraph builds llm.CompletionRequest itself and never sets
+	// response_format, stop, or tool_choice — but it does resolve the provider
+	// by the name set here, which is the one hook the read-only dependency
+	// leaves open. Everything downstream (orchestrator, loop) gets it for free.
+	cfg.Provider = backends.BindRole(f.LLM, cfg.Provider, spec.Directives())
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature

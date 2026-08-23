@@ -85,7 +85,7 @@ func addHash(vec []float64, key string, weight float64) {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(key))
 	v := h.Sum64()
-	idx := int(v % uint64(len(vec)))
+	idx := int(v % uint64(len(vec))) //nolint:gosec // result is bounded by len(vec) (an int), so it always fits in int
 	// Signed hash to reduce collisions (Weinberger / feature hashing).
 	sign := 1.0
 	if v&1 == 1 {
@@ -93,7 +93,7 @@ func addHash(vec []float64, key string, weight float64) {
 	}
 	vec[idx] += sign * weight
 	// Secondary bucket for denser signal.
-	idx2 := int((v >> 17) % uint64(len(vec)))
+	idx2 := int((v >> 17) % uint64(len(vec))) //nolint:gosec // result is bounded by len(vec) (an int), so it always fits in int
 	sign2 := 1.0
 	if (v>>1)&1 == 1 {
 		sign2 = -1.0
@@ -124,7 +124,7 @@ const errEmbeddingsUnavailable = embedUnavailable("embeddings unavailable")
 // mode is one of: "openai", "local", "lexical".
 func ResolveEmbedder(ctx context.Context, cfg Config) (Embedder, string) {
 	if cfg.Enabled && strings.TrimSpace(cfg.Endpoint) != "" && strings.TrimSpace(cfg.Model) != "" {
-		// The probe timeout must ALWAYS apply. Honouring only a parent context
+		// The probe timeout must ALWAYS apply. Honoring only a parent context
 		// without a deadline meant a run-length parent deadline let an
 		// unreachable endpoint stall embedder resolution for minutes.
 		probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)

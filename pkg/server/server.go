@@ -82,7 +82,7 @@ type Server struct {
 	// withConfigWrite rather than touching s.h.* directly.
 	cfgMu sync.RWMutex
 
-	// baseCtx is cancelled by Shutdown so in-flight runs stop cleanly instead
+	// baseCtx is canceled by Shutdown so in-flight runs stop cleanly instead
 	// of being hard-killed mid-write.
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
@@ -249,7 +249,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return srv.Shutdown(ctx)
 }
 
-// ── Synchronised access to shared harness state ──
+// ── Synchronized access to shared harness state ──
 
 // cfg returns the shared config pointer. Field *mutation* must go through
 // withConfigWrite; multi-field reads that must be internally consistent
@@ -789,7 +789,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		http.Error(w, "run already in progress", 409)
+		http.Error(w, "run already in progress", http.StatusConflict)
 		return
 	}
 	s.running = true
@@ -959,7 +959,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		http.Error(w, "run already in progress", 409)
+		http.Error(w, "run already in progress", http.StatusConflict)
 		return
 	}
 	s.running = true
@@ -1585,12 +1585,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if name != "" {
-			fmt.Fprintf(w, "event: %s\n", name)
+			_, _ = fmt.Fprintf(w, "event: %s\n", name)
 		}
 		if id > 0 {
-			fmt.Fprintf(w, "id: %d\n", id)
+			_, _ = fmt.Fprintf(w, "id: %d\n", id)
 		}
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		// SSE stream write: a broken pipe here just means the client
+		// disconnected, which the next flush/heartbeat will notice.
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	}
 
 	// Immediate hello so the UI can show "API connected" without waiting for a
@@ -1643,7 +1645,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ticker.C:
 			// Comment heartbeats keep proxies/browsers from idle-closing the stream.
-			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
+			// A write error here just means the client disconnected.
+			_, _ = fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
 			flusher.Flush()
 		case se, ok := <-sub.ch:
 			if !ok {
@@ -2456,7 +2459,7 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	}
 	fullPath, err := s.workspacePath(path)
 	if err != nil {
-		http.Error(w, "path traversal", 403)
+		http.Error(w, "path traversal", http.StatusForbidden)
 		return
 	}
 	info, err := os.Stat(fullPath)
@@ -2492,7 +2495,7 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	fullPath, err := s.workspacePath(path)
 	if err != nil {
-		http.Error(w, "path traversal", 403)
+		http.Error(w, "path traversal", http.StatusForbidden)
 		return
 	}
 	showHidden := boolParam(r, "hidden", true)

@@ -44,7 +44,7 @@ func (s *Store) Init(projectName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.dir, 0o750); err != nil { // project state dir, owner-only
 		return err
 	}
 	for name, body := range defaultDocuments(projectName) {
@@ -55,7 +55,7 @@ func (s *Store) Init(projectName string) error {
 			}
 		}
 	}
-	return os.MkdirAll(filepath.Join(s.dir, "sessions"), 0o755)
+	return os.MkdirAll(filepath.Join(s.dir, "sessions"), 0o750) // session state, owner-only
 }
 
 // Path returns the absolute path for a document name.

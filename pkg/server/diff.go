@@ -21,7 +21,7 @@ type DiffHunk struct {
 	Ops      []DiffOp `json:"ops"`
 }
 
-// DiffStat summarises a change.
+// DiffStat summarizes a change.
 type DiffStat struct {
 	Added   int  `json:"added"`
 	Removed int  `json:"removed"`

@@ -50,14 +50,18 @@ func AppendEvent(slmDir, runID string, rec EventRecord) error {
 	eventMu.Lock()
 	defer eventMu.Unlock()
 	dir := TurnDir(slmDir, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Session state is local to the invoking user; keep it out of reach of
+	// other accounts on shared machines.
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(EventsPath(slmDir, runID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(EventsPath(slmDir, runID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	// A close error here can't be surfaced to the caller once the write
+	// below has already reported success/failure; append is best-effort.
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return err
 	}

@@ -41,7 +41,7 @@ func (m *Manager) SnapshotPaths(turnID string, wave int, taskIDs, relPaths []str
 	}
 	id := fmt.Sprintf("%s-w%02d-%d", sanitize(turnID), wave, time.Now().Unix())
 	dir := filepath.Join(m.base(), id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // rewind snapshot dir, owner-only
 		return nil, err
 	}
 	files := map[string]string{}
@@ -64,7 +64,7 @@ func (m *Manager) SnapshotPaths(turnID string, wave int, taskIDs, relPaths []str
 		}
 		files[rel] = string(data)
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
-		_ = os.MkdirAll(filepath.Dir(dst), 0o755)
+		_ = os.MkdirAll(filepath.Dir(dst), 0o750) // rewind snapshot dir, owner-only
 		_ = atomicfile.Write(dst, data, 0o644)
 	}
 	snap := &Snapshot{
@@ -131,7 +131,9 @@ func (m *Manager) Restore(id string) (int, error) {
 			n++
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		// abs is inside the project workspace (m.Root); conventional project
+		// directory perms, not secret state.
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // restoring into the project workspace tree, conventional perms
 			return n, err
 		}
 		if err := atomicfile.Write(abs, []byte(content), 0o644); err != nil {
@@ -157,7 +159,7 @@ func CopyTree(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		defer in.Close()
+		defer func() { _ = in.Close() }() // read-only descriptor; nothing actionable on close error
 		_ = os.MkdirAll(filepath.Dir(target), 0o755)
 		out, err := os.Create(target)
 		if err != nil {

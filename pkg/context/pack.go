@@ -501,7 +501,7 @@ func (p *Packer) BuildPack(req BuildRequest) (*TaskPack, error) {
 		case skillTokens <= skillCap:
 			// Fits whole — never truncate a short skill pack.
 		case skillCap < MinSkillTokens:
-			// A 20-token fragment of a behavioural directive is pure noise for
+			// A 20-token fragment of a behavioral directive is pure noise for
 			// a small model: better to ship none than half of one.
 			skillCap = 0
 		}
@@ -597,14 +597,15 @@ func packedBytes(p *TaskPack) int {
 func (p *Packer) cacheKey(req BuildRequest, priority, skillsMarkdown string) string {
 	h := sha256.New()
 	// Multi-KB markdown blobs used to be embedded verbatim in the key.
-	fmt.Fprintf(h, "role=%s\x00query=%s\x00title=%s\x00desc=%s\x00acc=%s\x00",
+	// h is a hash.Hash: Write never returns an error, so these are safe to ignore.
+	_, _ = fmt.Fprintf(h, "role=%s\x00query=%s\x00title=%s\x00desc=%s\x00acc=%s\x00",
 		req.Role, req.Query, req.TaskTitle, req.TaskDescription, req.Acceptance)
-	fmt.Fprintf(h, "docs=%s\x00files=%s\x00ctx=%s\x00terms=%s\x00",
+	_, _ = fmt.Fprintf(h, "docs=%s\x00files=%s\x00ctx=%s\x00terms=%s\x00",
 		strings.Join(sortedUnique(req.Docs), ","),
 		strings.Join(sortedUnique(req.Files), ","),
 		strings.Join(sortedUnique(req.AlreadyInContext), ","),
 		strings.Join(req.FocusTerms, ","))
-	fmt.Fprintf(h, "ids=%v\x00bodies=%v\x00budget=%d\x00",
+	_, _ = fmt.Fprintf(h, "ids=%v\x00bodies=%v\x00budget=%d\x00",
 		req.IdentifiersOnly, req.Bodies, p.opts.budget.Available(req.Role))
 	sum := sha256.Sum256([]byte(priority))
 	h.Write(sum[:])
@@ -644,26 +645,27 @@ func (p *Packer) freshnessKey(docNames []string, filePaths []string) string {
 	if p == nil {
 		return ""
 	}
+	// h is a hash.Hash: Write/Fprintf never return an error, so these are safe to ignore.
 	h := sha256.New()
 	for _, name := range sortedUnique(docNames) {
-		fmt.Fprintf(h, "doc:%s:", name)
+		_, _ = fmt.Fprintf(h, "doc:%s:", name)
 		if p.Store == nil {
 			h.Write([]byte("no-store;"))
 			continue
 		}
 		data, err := os.ReadFile(p.Store.Path(name))
 		if err != nil {
-			fmt.Fprintf(h, "err:%v;", err)
+			_, _ = fmt.Fprintf(h, "err:%v;", err)
 			continue
 		}
 		sum := sha256.Sum256(data)
 		h.Write(sum[:])
 	}
 	for _, rel := range sortedUnique(filePaths) {
-		fmt.Fprintf(h, "file:%s:", filepath.ToSlash(rel))
+		_, _ = fmt.Fprintf(h, "file:%s:", filepath.ToSlash(rel))
 		data, err := os.ReadFile(filepath.Join(p.Root, rel)) //nolint:gosec // plan-supplied
 		if err != nil {
-			fmt.Fprintf(h, "err:%v;", err)
+			_, _ = fmt.Fprintf(h, "err:%v;", err)
 			continue
 		}
 		sum := sha256.Sum256(data)

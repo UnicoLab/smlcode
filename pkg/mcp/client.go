@@ -505,7 +505,10 @@ func (m *Manager) start(ctx context.Context, sc ServerConfig) (*client, error) {
 	if sc.Command == "" {
 		return nil, fmt.Errorf("command or url required")
 	}
-	cmd := exec.CommandContext(ctx, sc.Command, sc.Args...)
+	// sc.Command/sc.Args are the user's own MCP server config (like an
+	// .mcp.json entry) — launching them is the feature, same trust level as
+	// any other tool the user configures for their own IDE/CLI.
+	cmd := exec.CommandContext(ctx, sc.Command, sc.Args...) //nolint:gosec // MCP server command is user-configured, not attacker input
 	if len(sc.Env) > 0 {
 		// cmd.Env was REASSIGNED inside the loop, so only the last variable
 		// survived. Build the environment once, then append.
@@ -676,7 +679,7 @@ func (c *client) httpRequest(ctx context.Context, body []byte) (json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Bound the body: a hostile or buggy server must not be able to OOM us.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxResultBytes*8))
 	if err != nil {

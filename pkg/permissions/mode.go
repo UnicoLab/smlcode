@@ -59,7 +59,7 @@ func NormalizeShell(m string) string {
 // RecordPending stores a proposed file change for human apply.
 func RecordPending(slmDir, path, kind, content string) (string, error) {
 	dir := filepath.Join(slmDir, "pending")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // pending proposals, owner-only
 		return "", err
 	}
 	safe := strings.ReplaceAll(path, string(os.PathSeparator), "__")

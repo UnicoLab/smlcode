@@ -90,7 +90,7 @@ func CheckWithURL(current, apiURL, cachePath string) Info {
 		writeFailureCache(cachePath, err.Error())
 		return Info{Current: current, Error: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		msg := fmt.Sprintf("unexpected status %d from release API", resp.StatusCode)
 		writeFailureCache(cachePath, msg)
@@ -193,7 +193,7 @@ func skipUpdateCheck() bool {
 func defaultCachePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {
 		path := filepath.Join(dir, "slmcode", "update.json")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err == nil { // update-check cache dir, owner-only
 			return path
 		}
 	}

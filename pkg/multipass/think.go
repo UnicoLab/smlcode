@@ -5,14 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
 
 // Runner performs multi-pass think → critique → refine cycles so SLMs can
 // approach LLM-level quality without holding huge context in one shot.
+//
+// One Execute issues up to 1 + 2×Passes LLM calls, and it is used for the two
+// slowest roles in the harness. PassTimeout, Budget, OnCall and OnUsage exist so
+// a caller can bound and account for that instead of discovering it as latency.
 type Runner struct {
-	Passes int // total refine iterations after the first draft (default 2)
+	// Passes is the number of critique/refine iterations after the draft.
+	Passes int
+	// PassTimeout bounds each individual LLM call. Zero means unbounded.
+	PassTimeout time.Duration
+	// Budget bounds the whole run across all passes. When it runs out the best
+	// answer so far is returned, not an error.
+	Budget time.Duration
+	// OnCall, when set, is invoked after every LLM round-trip.
+	OnCall func(CallInfo)
+	// OnUsage, when set, is invoked once per Execute with the aggregate.
+	OnUsage func(Usage)
+	// Factory enables ExecuteRole and cross-run agent reuse.
+	Factory AgentFactory
+
+	runnerState
 }
 
 func New(passes int) *Runner {
@@ -28,20 +47,33 @@ func New(passes int) *Runner {
 // Early-exit: if the draft already looks like complete structured JSON, skip
 // critique/refine (saves 1–2 SLM round-trips on planner/splitter/worker).
 func (r *Runner) Execute(ctx context.Context, a agent.Agent, input string) (string, error) {
-	draftExec, err := a.Execute(ctx, input+"\n\nPass: DRAFT. Produce your best answer now.")
+	return r.execute(ctx, "", a, input)
+}
+
+func (r *Runner) execute(ctx context.Context, role string, a agent.Agent, input string) (string, error) {
+	ctx, cancel := r.budgetCtx(ctx)
+	defer cancel()
+
+	usage := Usage{Role: role}
+	defer func() { r.reportUsage(usage) }()
+
+	draft, err := r.call(ctx, &usage, a,
+		CallInfo{Role: role, Pass: PassDraft},
+		input+"\n\nPass: DRAFT. Produce your best answer now.")
 	if err != nil {
 		return "", err
 	}
-	draft := asString(draftExec.Output)
 	current := draft
 
 	if LooksCompleteJSON(draft) {
+		usage.EarlyExit = true
 		return draft, nil
 	}
 
 	for i := 1; i <= r.Passes; i++ {
 		if err := ctx.Err(); err != nil {
-			return current, err
+			usage.TimedOut = true
+			return current, nil // budget spent — keep the best answer so far
 		}
 		critiquePrompt := fmt.Sprintf(`Pass: CRITIQUE (%d/%d).
 You previously produced:
@@ -53,11 +85,11 @@ You previously produced:
 List concrete defects only (missing acceptance, wrong APIs, scope creep, incomplete edits).
 Be brief. If quality is already high, reply exactly: LOOKS_GOOD`, i, r.Passes, truncate(current, 4000))
 
-		critExec, err := a.Execute(ctx, critiquePrompt)
+		critique, err := r.call(ctx, &usage, a,
+			CallInfo{Role: role, Pass: PassCritique, Index: i}, critiquePrompt)
 		if err != nil {
 			return current, nil // keep best draft
 		}
-		critique := asString(critExec.Output)
 		if strings.Contains(strings.ToUpper(critique), "LOOKS_GOOD") {
 			break
 		}
@@ -74,11 +106,12 @@ Critique to address:
 
 Produce an improved final answer. Keep the required output schema.`, i, r.Passes, truncate(input, 3000), truncate(current, 4000), truncate(critique, 1500))
 
-		refExec, err := a.Execute(ctx, refinePrompt)
+		refined, err := r.call(ctx, &usage, a,
+			CallInfo{Role: role, Pass: PassRefine, Index: i}, refinePrompt)
 		if err != nil {
 			return current, nil
 		}
-		current = asString(refExec.Output)
+		current = refined
 		if LooksCompleteJSON(current) && i >= r.Passes {
 			break
 		}

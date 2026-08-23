@@ -226,7 +226,7 @@ func (l *Loader) MatchForAgent(agent, query string, limit int) []Skill {
 
 // PackForAgent renders a budgeted skill pack for one specialist.
 //
-// Default-on behaviour change: this is now the two-stage progressive-disclosure
+// Default-on behavior change: this is now the two-stage progressive-disclosure
 // pack (cards for every match, full bodies only for explicit @skill: references
 // and above-default-tier scores). Use RenderPack directly for the old
 // dump-every-body rendering.
@@ -310,7 +310,7 @@ func RenderPack(list []Skill, maxChars int) string {
 
 // ParseFile reads SKILL.md with optional YAML-ish front matter.
 func ParseFile(path string) (Skill, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path comes from WalkDir over our own bundled/project skills dirs, not external input
 	if err != nil {
 		return Skill{}, err
 	}
@@ -394,7 +394,7 @@ func WriteSkill(skillsDir string, sk Skill) (string, error) {
 	}
 	safe := sanitizeName(name)
 	dir := filepath.Join(skillsDir, safe)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // project skills dir, owner-only
 		return "", err
 	}
 	path := filepath.Join(dir, "SKILL.md")

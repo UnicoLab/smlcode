@@ -254,7 +254,7 @@ func CheckHarnessStateWrite(path string) error {
 			"Files under .slmcode/ (hooks.json, config.yaml, pending/, checkpoints/) configure the "+
 			"harness itself and are never edited by tools.\n"+
 			"If you need scratch space, write under %s/ instead. "+
-			"If you meant to change project code, use the real source path.",
+			"If you meant to change project code, use the real source path",
 		rel, ScratchDir,
 	)
 }

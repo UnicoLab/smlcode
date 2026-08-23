@@ -100,8 +100,12 @@ func TestExcerptMarksElisions(t *testing.T) {
 	}
 	for _, m := range matches {
 		var lo, hi int
-		fmt.Sscanf(m[1], "%d", &lo)
-		fmt.Sscanf(m[2], "%d", &hi)
+		if _, err := fmt.Sscanf(m[1], "%d", &lo); err != nil {
+			t.Fatalf("parsing elision start %q: %v", m[1], err)
+		}
+		if _, err := fmt.Sscanf(m[2], "%d", &hi); err != nil {
+			t.Fatalf("parsing elision end %q: %v", m[2], err)
+		}
 		if lo > hi || lo < 1 {
 			t.Fatalf("bad elision range %s-%s", m[1], m[2])
 		}

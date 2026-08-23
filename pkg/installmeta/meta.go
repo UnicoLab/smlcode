@@ -91,7 +91,7 @@ func Save(m *Meta) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	if err := os.MkdirAll(d, 0o750); err != nil { // install metadata dir, owner-only
 		return err
 	}
 	p := filepath.Join(d, FileName)

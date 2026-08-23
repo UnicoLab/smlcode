@@ -23,7 +23,6 @@ type StatusTracker struct {
 	failed   int
 	tokens   int
 	started  time.Time
-	lastLine string
 }
 
 func NewStatusTracker() *StatusTracker {
@@ -186,9 +185,10 @@ func FormatEvent(e stream.Event) string {
 	// Collapse noisy log spam into a single readable line.
 	msg = collapseWhitespace(msg)
 	msg = ClipWidth(msg, 120)
-	if e.Level == stream.LevelError || e.Level == stream.LevelProblem {
+	switch e.Level {
+	case stream.LevelError, stream.LevelProblem:
 		msg = Red(msg)
-	} else if e.Level == stream.LevelWarn {
+	case stream.LevelWarn:
 		msg = Yellow(msg)
 	}
 

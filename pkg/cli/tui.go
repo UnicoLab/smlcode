@@ -68,12 +68,14 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	bar := strings.Repeat("─", inner)
 	narrow := NarrowLayout(width)
 
+	// Terminal paint writes: nothing actionable can be done with a write
+	// failure mid-dashboard render, so these are intentionally ignored.
 	row := func(s string) {
-		fmt.Fprintln(w, Accent("│")+PadWidth(s, inner)+Accent("│"))
+		_, _ = fmt.Fprintln(w, Accent("│")+PadWidth(s, inner)+Accent("│"))
 	}
-	sep := func() { fmt.Fprintln(w, Accent("├"+bar+"┤")) }
+	sep := func() { _, _ = fmt.Fprintln(w, Accent("├"+bar+"┤")) }
 
-	fmt.Fprintln(w, Accent("┌"+bar+"┐"))
+	_, _ = fmt.Fprintln(w, Accent("┌"+bar+"┐"))
 	title := Bold(" SLMCODE ") + Dim("premium TUI") + "  " + Cyan(shortPath(st.Root))
 	row(title)
 	sep()
@@ -249,9 +251,9 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	if st.Message != "" {
 		row(" " + Yellow(ClipWidth(st.Message, inner-2)))
 	}
-	fmt.Fprintln(w, Accent("└"+bar+"┘"))
+	_, _ = fmt.Fprintln(w, Accent("└"+bar+"┘"))
 	if st.Query != "" {
-		fmt.Fprintln(w, Dim(" last query: ")+ClipWidth(st.Query, width-14))
+		_, _ = fmt.Fprintln(w, Dim(" last query: ")+ClipWidth(st.Query, width-14))
 	}
 }
 
@@ -342,7 +344,6 @@ type LiveSession struct {
 	out      io.Writer
 	tty      bool
 	showDash bool
-	tokens   strings.Builder
 
 	wakeCh chan struct{}
 }
@@ -670,7 +671,7 @@ func (s *LiveSession) wake() {
 }
 
 // AskGate publishes a human-in-the-loop gate and blocks until the user answers
-// or ctx is cancelled. Called from the orchestrator's goroutine.
+// or ctx is canceled. Called from the orchestrator's goroutine.
 func (s *LiveSession) AskGate(ctx context.Context, g Gate) (GateAnswer, bool) {
 	reply := make(chan GateAnswer, 1)
 	s.mu.Lock()
@@ -996,7 +997,7 @@ func (s *LiveSession) RunInteractive() error {
 					continue
 				}
 				// 2) Esc redirection: queued, then applied as soon as the
-				// cancelled run unwinds (never blocks this loop).
+				// canceled run unwinds (never blocks this loop).
 				if awaitRedirect {
 					awaitRedirect = false
 					if line == "" {
@@ -1139,13 +1140,6 @@ func appendUnique(list []string, v string) []string {
 		}
 	}
 	return append(list, v)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // TickClock is a tiny helper for elapsed display in tests / footers.

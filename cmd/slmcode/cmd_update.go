@@ -121,13 +121,15 @@ func updateFromSource(meta *installmeta.Meta, checkOnly, userMode, system bool, 
 		return fmt.Errorf("install script missing: %s (is --src a slmcode checkout?)", script)
 	}
 	if !assumeYes && !confirm("Rebuild from "+src+" and reinstall onto PATH?", false) {
-		fmt.Println(cli.Dim("cancelled"))
+		fmt.Println(cli.Dim("canceled"))
 		return nil
 	}
 
 	fmt.Println(cli.Info("rebuilding + installing (" + mode + ")…"))
 	argsInstall := []string{script, "--" + mode}
-	c := exec.Command("bash", argsInstall...)
+	// script is the project's own install.sh, resolved from --src (a local checkout
+	// path the user provides); mode is one of our own constants.
+	c := exec.Command("bash", argsInstall...) //nolint:gosec // script is the local install.sh from the user's own --src checkout
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	c.Stdin = os.Stdin

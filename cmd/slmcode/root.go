@@ -336,7 +336,7 @@ func applyFlags(c *config.Config) {
 	c.ResolveAPIKey()
 }
 
-// signalContext returns a context cancelled by the first SIGINT/SIGTERM, and
+// signalContext returns a context canceled by the first SIGINT/SIGTERM, and
 // hard-exits on the second.
 //
 // The previous implementation read exactly one signal and then let its

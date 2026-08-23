@@ -35,7 +35,7 @@ type Runner struct {
 
 // Load reads .slmcode/hooks.json (or path). Missing file → empty config.
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is our own <slmDir>/hooks.json (via DefaultPath), not external input
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Config{}, nil
@@ -80,8 +80,11 @@ func (r *Runner) RunEvent(ctx context.Context, event, toolName string, args map[
 		}
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		// bash -c, not -lc: a login shell sources the user's profile, which is
-		// slow and makes hook behaviour depend on the operator's dotfiles.
-		cmd := exec.CommandContext(cctx, "bash", "-c", h.Command)
+		// slow and makes hook behavior depend on the operator's dotfiles.
+		// h.Command is the project's own hook config (like a Makefile target
+		// or a git hook) — running arbitrary shell here is the feature, not a
+		// vulnerability; trust boundary is "who can edit this project's config".
+		cmd := exec.CommandContext(cctx, "bash", "-c", h.Command) //nolint:gosec // hook command is project-configured, same trust level as a Makefile/git hook
 		cmd.Dir = r.Root
 		cmd.Env = append(os.Environ(),
 			"SLMCODE_HOOK_EVENT="+event,

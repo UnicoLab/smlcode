@@ -55,7 +55,7 @@ func Build(cfg *config.Config, skillCount int) Report {
 		{
 			ID: "context_compaction", Label: "Context Compaction", OK: cfg.ContextCompact && cfg.ReactCompact, Severity: "warning",
 			Message:  boolMessage(cfg.ContextCompact && cfg.ReactCompact, "Document and ReAct compaction are enabled", "Long local-model runs may exceed useful context"),
-			FixLabel: "Enable compaction", FixPatch: fixPatchIf(!(cfg.ContextCompact && cfg.ReactCompact),
+			FixLabel: "Enable compaction", FixPatch: fixPatchIf(!cfg.ContextCompact || !cfg.ReactCompact,
 				"context_compact", true, "react_compact", true, "react_compact_at_percent", 80),
 		},
 		{
@@ -67,19 +67,19 @@ func Build(cfg *config.Config, skillCount int) Report {
 		{
 			ID: "file_guards", Label: "File Guards", OK: cfg.WriteGuard && cfg.ReadBeforeEdit && cfg.FileCheckpoints, Severity: "critical",
 			Message:  boolMessage(cfg.WriteGuard && cfg.ReadBeforeEdit && cfg.FileCheckpoints, "Write guard, read-before-edit, and checkpoints are active", "File edit protection is incomplete"),
-			FixLabel: "Enable file guards", FixPatch: fixPatchIf(!(cfg.WriteGuard && cfg.ReadBeforeEdit && cfg.FileCheckpoints),
+			FixLabel: "Enable file guards", FixPatch: fixPatchIf(!cfg.WriteGuard || !cfg.ReadBeforeEdit || !cfg.FileCheckpoints,
 				"write_guard", true, "read_before_edit", true, "file_checkpoints", true),
 		},
 		{
 			ID: "shell_guards", Label: "Shell Guards", OK: cfg.ShellWriteGuard && cfg.ShellWhitelist, Severity: "warning",
 			Message:  boolMessage(cfg.ShellWriteGuard && cfg.ShellWhitelist, "Shell write guard and safe-prefix whitelist are active", "Shell commands can bypass some local safety rails"),
-			FixLabel: "Enable shell guards", FixPatch: fixPatchIf(!(cfg.ShellWriteGuard && cfg.ShellWhitelist),
+			FixLabel: "Enable shell guards", FixPatch: fixPatchIf(!cfg.ShellWriteGuard || !cfg.ShellWhitelist,
 				"shell_write_guard", true, "shell_whitelist", true),
 		},
 		{
 			ID: "quality_gates", Label: "Quality Gates", OK: cfg.QAGate && cfg.RequireSmoke && cfg.ClaimsGate && cfg.OverEditGuard, Severity: "critical",
 			Message:  boolMessage(cfg.QAGate && cfg.RequireSmoke && cfg.ClaimsGate && cfg.OverEditGuard, "QA gate, smoke requirement, claims gate, and over-edit guard are active", "Verification guardrails are incomplete"),
-			FixLabel: "Enable QA guards", FixPatch: fixPatchIf(!(cfg.QAGate && cfg.RequireSmoke && cfg.ClaimsGate && cfg.OverEditGuard),
+			FixLabel: "Enable QA guards", FixPatch: fixPatchIf(!cfg.QAGate || !cfg.RequireSmoke || !cfg.ClaimsGate || !cfg.OverEditGuard,
 				"qa_gate", true, "require_smoke", true, "claims_gate", true, "over_edit_guard", true),
 		},
 		{

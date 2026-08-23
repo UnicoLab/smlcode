@@ -27,12 +27,15 @@ type Session struct {
 func Dir(slmDir string) string { return filepath.Join(slmDir, "sessions") }
 
 func Save(slmDir string, s Session) (string, error) {
-	if err := os.MkdirAll(Dir(slmDir), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(slmDir), 0o750); err != nil { // session state, owner-only
 		return "", err
 	}
 	if s.ID == "" {
 		s.ID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
+	// Sanitize before it becomes part of a filesystem path — mirrors TurnDir's
+	// use of sanitizeID and closes the same path-traversal gap Load() had.
+	s.ID = sanitizeID(s.ID)
 	now := time.Now().Format(time.RFC3339)
 	if s.CreatedAt == "" {
 		s.CreatedAt = now
@@ -47,9 +50,9 @@ func Save(slmDir string, s Session) (string, error) {
 }
 
 func Load(slmDir, id string) (*Session, error) {
-	id = strings.TrimSuffix(id, ".json")
+	id = sanitizeID(strings.TrimSuffix(id, ".json"))
 	path := filepath.Join(Dir(slmDir), id+".json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // id is sanitized to [A-Za-z0-9_-] above; path cannot escape Dir(slmDir)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +90,7 @@ func List(slmDir string) ([]Session, error) {
 // so completed queries keep a separate history thread per project.
 func Archive(slmDir, runID, query, summary string) (string, error) {
 	dir := filepath.Join(slmDir, "archives")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // session state, owner-only
 		return "", err
 	}
 	if runID == "" {

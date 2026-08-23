@@ -214,7 +214,7 @@ func TestAskGateUnblocksOnContextCancel(t *testing.T) {
 	select {
 	case ok := <-done:
 		if ok {
-			t.Fatal("a cancelled gate must not report an answer")
+			t.Fatal("a canceled gate must not report an answer")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("AskGate did not unblock on cancel")

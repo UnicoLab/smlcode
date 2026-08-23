@@ -71,7 +71,7 @@ func SaveReactCheckpoint(slmDir string, cp ReactCheckpoint) error {
 	}
 	cp.UpdatedAt = time.Now().Format(time.RFC3339)
 	dir := ReactDir(slmDir, cp.TurnID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // session state, owner-only
 		return err
 	}
 	data, err := json.MarshalIndent(cp, "", "  ")
@@ -115,7 +115,7 @@ func ListReactCheckpoints(slmDir, turnID string) ([]ReactCheckpoint, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // dir is our own .slmcode/react dir; e.Name() comes from os.ReadDir on it, not external input
 		if err != nil {
 			continue
 		}
@@ -156,7 +156,7 @@ func HasReactHistory(slmDir, turnID string) bool {
 
 func updateCheckpointReactTasks(slmDir, turnID, taskID string, add bool) error {
 	path := checkpointPath(slmDir)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is our own internally-computed checkpoint file, not external input
 	var cf checkpointFile
 	if err == nil {
 		_ = json.Unmarshal(data, &cf)
@@ -195,7 +195,7 @@ func updateCheckpointReactTasks(slmDir, turnID, taskID string, add bool) error {
 		}
 	}
 	cf.UpdatedAt = time.Now().Format(time.RFC3339)
-	_ = os.MkdirAll(slmDir, 0o755)
+	_ = os.MkdirAll(slmDir, 0o750) // session state, owner-only
 	out, err := json.MarshalIndent(cf, "", "  ")
 	if err != nil {
 		return err

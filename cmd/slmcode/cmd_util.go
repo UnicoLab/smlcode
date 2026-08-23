@@ -142,7 +142,9 @@ func skillsCmd() *cobra.Command {
 			if editor == "" {
 				editor = "vi"
 			}
-			c := exec.Command(editor, projPath)
+			// editor is from $EDITOR (or the "vi" default), which the invoking
+			// user controls on their own machine.
+			c := exec.Command(editor, projPath) //nolint:gosec // editor path is from the user's own env, not attacker input
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 			return c.Run()
 		},
@@ -567,12 +569,12 @@ func watchCmd() *cobra.Command {
 // openBrowser tries to open url in the default browser.
 func openBrowser(url string) {
 	var cmd *exec.Cmd
-	switch {
-	case runtime.GOOS == "darwin":
+	switch runtime.GOOS {
+	case "darwin":
 		cmd = exec.Command("open", url)
-	case runtime.GOOS == "linux":
+	case "linux":
 		cmd = exec.Command("xdg-open", url)
-	case runtime.GOOS == "windows":
+	case "windows":
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	}
 	if cmd != nil {

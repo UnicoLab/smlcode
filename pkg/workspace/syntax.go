@@ -13,7 +13,7 @@ import (
 // Post-edit syntax diagnostics (SWE-agent's single highest-value ACI guardrail).
 //
 // After a write/edit/patch we run a cheap, file-local parser on the edited file
-// only. Two behaviours follow from the result:
+// only. Two behaviors follow from the result:
 //
 //  1. The file did not parse before and still does not → report the error
 //     in-band so the model fixes it on the very next turn instead of
@@ -97,7 +97,10 @@ func CheckSyntax(ctx context.Context, absPath string, timeout time.Duration) Syn
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...)
+	// argv is built by resolveChecker/syntaxChecker from the file's own
+	// extension against a fixed table of interpreters (python3, node, gofmt,
+	// ...) — not attacker-controlled input.
+	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...) //nolint:gosec // argv comes from our fixed checker table, not external input
 	cmd.Dir = filepath.Dir(absPath)
 	buf := newHeadTailBuffer(16 * 1024)
 	cmd.Stdout = buf
@@ -173,7 +176,8 @@ func (w *Workspace) applyWithSyntaxGuard(ctx context.Context, rel, abs, prev, ne
 		return "", false, err
 	}
 	if w == nil || !w.SyntaxCheck || syntaxChecker(abs) == nil {
-		if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
+		// Ordinary project source file — conventional 0644, not secret state.
+		if err := os.WriteFile(abs, []byte(next), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
 			return "", false, err
 		}
 		return "", false, nil
@@ -184,7 +188,7 @@ func (w *Workspace) applyWithSyntaxGuard(ctx context.Context, rel, abs, prev, ne
 	if existed {
 		before = w.checkSyntaxOfText(ctx, abs, prev)
 	}
-	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
+	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
 		return "", false, err
 	}
 	after := CheckSyntax(ctx, abs, w.syntaxTimeout())
@@ -193,7 +197,7 @@ func (w *Workspace) applyWithSyntaxGuard(ctx context.Context, rel, abs, prev, ne
 	}
 	if before.Status == SyntaxOK {
 		// Regression introduced by this edit → put the file back.
-		if rerr := os.WriteFile(abs, []byte(prev), 0o644); rerr != nil {
+		if rerr := os.WriteFile(abs, []byte(prev), 0o644); rerr != nil { //nolint:gosec // project source file, conventional perms
 			// Could not restore: keep the broken file but say so loudly.
 			return SyntaxWarning(rel, after) +
 				"\n(NOTE: automatic revert failed: " + rerr.Error() + ")", false, nil
@@ -218,9 +222,11 @@ func (w *Workspace) checkSyntaxOfText(ctx context.Context, abs, text string) Syn
 	if err != nil {
 		return SyntaxResult{Status: SyntaxSkipped}
 	}
-	defer os.RemoveAll(dir)
+	// Best-effort temp-dir cleanup; nothing actionable if it fails.
+	defer func() { _ = os.RemoveAll(dir) }()
 	tmp := filepath.Join(dir, "before"+filepath.Ext(abs))
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+	// Scratch copy under a private temp dir, read only by the checker below.
+	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
 		return SyntaxResult{Status: SyntaxSkipped}
 	}
 	return CheckSyntax(ctx, tmp, w.syntaxTimeout())

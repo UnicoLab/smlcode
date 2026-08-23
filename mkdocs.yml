@@ -158,6 +158,7 @@ nav:
       - ❓ FAQ: faq.md
   - 🔧 Internals:
       - 🏗️ Architecture: architecture.md
+      - 🧬 Self-improvement & memory: self-improvement.md
   - 💚 Project:
       - 📝 Changelog: changelog.md
       - 🤝 Contributing: contributing.md

@@ -154,14 +154,14 @@ func GuardShellWrites(root, command string) error {
 					"shell write refused — %s already exists and `%s` would overwrite it.\n"+
 						"File mutations must go through the tool layer so they can be checkpointed, "+
 						"reviewed and reverted.\n"+
-						"Recipe: ws_read %s, then ws_edit with exact old_str/new_str (or ws_patch for a diff).",
+						"Recipe: ws_read %s, then ws_edit with exact old_str/new_str (or ws_patch for a diff)",
 					rel, w.Kind, rel,
 				)
 			}
 			if strings.Contains(reason, "is a directory") {
 				return fmt.Errorf(
 					"shell write refused — `%s` targets the directory %s. "+
-						"Use ws_write with an explicit file path, or ws_mv to relocate a file.",
+						"Use ws_write with an explicit file path, or ws_mv to relocate a file",
 					w.Kind, rel,
 				)
 			}

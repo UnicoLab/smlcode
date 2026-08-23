@@ -318,7 +318,9 @@ func (s *Server) applyPending(id string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return pf.Path, err
 	}
-	if err := os.WriteFile(target, []byte(pf.Content), 0o644); err != nil {
+	// target is a project source file (re-validated above to stay inside the
+	// workspace) — conventional perms, not secret state.
+	if err := os.WriteFile(target, []byte(pf.Content), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
 		return pf.Path, err
 	}
 	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {

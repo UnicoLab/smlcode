@@ -60,7 +60,7 @@ func askGate(ctx context.Context, host gateHost, g cli.Gate) cli.GateAnswer {
 		if ans, ok := host.AskGate(ctx, g); ok {
 			return ans
 		}
-		// Context cancelled mid-gate: treat as a stop, never an approval.
+		// Context canceled mid-gate: treat as a stop, never an approval.
 		return cli.GateAnswer{Value: g.NonTTYDefault, Notes: "interrupted"}
 	}
 	return resolveHeadless(g)

@@ -17,6 +17,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/repair"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 )
 
 // RoleID is the built-in specialist id for the dynamic pipeline composer.
@@ -165,15 +166,27 @@ func cleanListPreserveCase(in []string) []string {
 // Parse extracts and decodes a composer JSON output (markdown fences and common
 // SLM JSON mistakes tolerated).
 func Parse(raw string) (Composition, error) {
+	c, _, err := ParseTracked(raw)
+	return c, err
+}
+
+// ParseTracked is Parse plus the name of the repair rung that fixed the output
+// (repair.RungNone when the model produced clean JSON). A composition arriving
+// via close_braces or truncated is a signal the composer's max_tokens is short.
+func ParseTracked(raw string) (Composition, string, error) {
 	var c Composition
-	if err := repair.RepairAndUnmarshal(raw, &c); err != nil {
-		return Composition{}, fmt.Errorf("composer: %w", err)
+	fixed, rung, err := repair.RepairRole(raw, schema.RoleComposition)
+	if err != nil {
+		return Composition{}, rung, fmt.Errorf("composer: %w", err)
+	}
+	if err := json.Unmarshal(fixed, &c); err != nil {
+		return Composition{}, rung, fmt.Errorf("composer: %w", err)
 	}
 	c.Normalize()
 	if strings.TrimSpace(c.Summary) == "" {
 		c.Summary = "Dynamic pipeline composed for this task"
 	}
-	return c, nil
+	return c, rung, nil
 }
 
 // SaveDynamic persists the full latest composition for inspection/debugging.

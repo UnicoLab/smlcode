@@ -434,10 +434,10 @@ func TestToolsAcceptStringifiedArgs(t *testing.T) {
 		"path": "big.txt", "offset": "200", "limit": "3",
 	}))
 	if !strings.Contains(out, "   200|line") || !strings.Contains(out, "   202|line") {
-		t.Fatalf("string offset/limit must be honoured:\n%s", out)
+		t.Fatalf("string offset/limit must be honored:\n%s", out)
 	}
 	if strings.Contains(out, "   203|") {
-		t.Fatalf("string limit must be honoured:\n%s", out)
+		t.Fatalf("string limit must be honored:\n%s", out)
 	}
 
 	mustWrite(t, filepath.Join(root, "dup.txt"), "x\nx\nx\n")
@@ -446,7 +446,7 @@ func TestToolsAcceptStringifiedArgs(t *testing.T) {
 		"path": "dup.txt", "old_str": "x", "new_str": "y", "replace_all": "true",
 	}))
 	if !strings.Contains(out, "3 replacement") {
-		t.Fatalf(`replace_all:"true" must be honoured: %q`, out)
+		t.Fatalf(`replace_all:"true" must be honored: %q`, out)
 	}
 }
 

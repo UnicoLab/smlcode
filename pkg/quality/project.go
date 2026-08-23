@@ -108,12 +108,10 @@ func checkLangGraphTemplate(root string) []CompletenessIssue {
 
 	pyFiles := listPythonSources(root)
 	hasStateGraph := false
-	hasBadImport := false
 	hasAgentClass := false
 	for _, rel := range pyFiles {
 		text := readFile(filepath.Join(root, rel))
 		if reBadLangGraphImport.MatchString(text) {
-			hasBadImport = true
 			issues = append(issues, CompletenessIssue{
 				Code: "bad_import", Path: rel,
 				Reason: "invalid `from langgraph import Graph` — use langgraph.graph.StateGraph",
@@ -146,10 +144,6 @@ func checkLangGraphTemplate(root string) []CompletenessIssue {
 			Reason: "no class-based agent with graph build/invoke found",
 		})
 	}
-	if hasBadImport {
-		// already recorded per-file
-	}
-
 	issues = append(issues, emptyPackageIssues(root)...)
 	return dedupeIssues(issues)
 }
@@ -206,8 +200,8 @@ func checkPythonCLI(root string) []CompletenessIssue {
 }
 
 func checkGenericPythonScaffold(root, query string) []CompletenessIssue {
-	if !(strings.Contains(query, "scaffold") || strings.Contains(query, "template") ||
-		strings.Contains(query, "project") || strings.Contains(query, "setup")) {
+	if !strings.Contains(query, "scaffold") && !strings.Contains(query, "template") &&
+		!strings.Contains(query, "project") && !strings.Contains(query, "setup") {
 		return nil
 	}
 	var issues []CompletenessIssue

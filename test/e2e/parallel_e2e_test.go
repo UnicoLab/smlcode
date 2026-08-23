@@ -72,7 +72,6 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	}
 	readJSON := func(resp *http.Response, dest interface{}) {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 		if resp.StatusCode >= 400 {
 			t.Fatalf("%s %d: %s", resp.Request.URL.Path, resp.StatusCode, string(body))
 		}
@@ -84,6 +83,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 1. Health ──
 	t.Run("health", func(t *testing.T) {
 		resp := get("/api/health")
+		defer func() { _ = resp.Body.Close() }()
 		var h map[string]interface{}
 		readJSON(resp, &h)
 		if v, _ := h["ok"].(bool); !v {
@@ -97,6 +97,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 2. Config: verify parallelization fields ──
 	t.Run("config", func(t *testing.T) {
 		resp := get("/api/config")
+		defer func() { _ = resp.Body.Close() }()
 		var c map[string]interface{}
 		readJSON(resp, &c)
 		// Verify parallelization config fields exist
@@ -114,6 +115,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 3. Agents ──
 	t.Run("agents", func(t *testing.T) {
 		resp := get("/api/agents")
+		defer func() { _ = resp.Body.Close() }()
 		var agents []map[string]interface{}
 		readJSON(resp, &agents)
 		if len(agents) < 10 {
@@ -121,6 +123,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 		}
 		// Check agent detail includes system_prompt
 		resp2 := get("/api/agents/worker")
+		defer func() { _ = resp2.Body.Close() }()
 		var agent map[string]interface{}
 		readJSON(resp2, &agent)
 		if sp, _ := agent["system_prompt"].(string); sp == "" {
@@ -131,6 +134,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 4. Pipeline ──
 	t.Run("pipeline", func(t *testing.T) {
 		resp := get("/api/pipeline")
+		defer func() { _ = resp.Body.Close() }()
 		var pv map[string]interface{}
 		readJSON(resp, &pv)
 		if _, ok := pv["config"]; !ok {
@@ -141,6 +145,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 5. Blocks catalog ──
 	t.Run("blocks", func(t *testing.T) {
 		resp := get("/api/blocks")
+		defer func() { _ = resp.Body.Close() }()
 		var bl map[string]interface{}
 		readJSON(resp, &bl)
 		if blocks, _ := bl["blocks"].([]interface{}); len(blocks) == 0 {
@@ -152,6 +157,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	t.Run("workspace_tree", func(t *testing.T) {
 		// Root
 		resp := get("/api/workspace/tree")
+		defer func() { _ = resp.Body.Close() }()
 		var tree map[string]interface{}
 		readJSON(resp, &tree)
 		entries, _ := tree["entries"].([]interface{})
@@ -175,6 +181,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 
 		// Subdirectory
 		resp2 := get("/api/workspace/tree?path=internal")
+		defer func() { _ = resp2.Body.Close() }()
 		var tree2 map[string]interface{}
 		readJSON(resp2, &tree2)
 		entries2, _ := tree2["entries"].([]interface{})
@@ -186,6 +193,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 7. Workspace file content ──
 	t.Run("workspace_file", func(t *testing.T) {
 		resp := get("/api/workspace/file?path=main.go")
+		defer func() { _ = resp.Body.Close() }()
 		var f map[string]interface{}
 		readJSON(resp, &f)
 		content, _ := f["content"].(string)
@@ -198,15 +206,16 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 
 		// Path traversal blocked
 		resp2 := get("/api/workspace/file?path=../../../etc/passwd")
+		defer func() { _ = resp2.Body.Close() }()
 		if resp2.StatusCode != 403 && resp2.StatusCode != 404 {
 			t.Errorf("path traversal not blocked: %d", resp2.StatusCode)
 		}
-		resp2.Body.Close()
 	})
 
 	// ── 8. Docs ──
 	t.Run("docs", func(t *testing.T) {
 		resp := get("/api/docs")
+		defer func() { _ = resp.Body.Close() }()
 		var docs []string
 		readJSON(resp, &docs)
 		if len(docs) == 0 {
@@ -217,6 +226,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 9. Stacks ──
 	t.Run("stacks", func(t *testing.T) {
 		resp := get("/api/stacks")
+		defer func() { _ = resp.Body.Close() }()
 		var stacks map[string]interface{}
 		readJSON(resp, &stacks)
 		t.Logf("stacks: %v", stacks)
@@ -229,6 +239,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 			"clarify_mode": "ask",
 			"max_parallel": 6,
 		})
+		defer func() { _ = resp.Body.Close() }()
 		var c map[string]interface{}
 		readJSON(resp, &c)
 		if pa, _ := c["plan_approve"].(string); pa != "ask" {
@@ -250,6 +261,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 		}
 		for _, ep := range endpoints {
 			resp := get(ep)
+			defer func() { _ = resp.Body.Close() }()
 			var pending map[string]interface{}
 			readJSON(resp, &pending)
 			if p, _ := pending["pending"].(bool); p {
@@ -261,6 +273,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 12. Board / Tasks ──
 	t.Run("board", func(t *testing.T) {
 		resp := get("/api/board")
+		defer func() { _ = resp.Body.Close() }()
 		var board map[string]interface{}
 		readJSON(resp, &board)
 		if _, ok := board["tasks"]; !ok {
@@ -271,6 +284,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 13. Skills ──
 	t.Run("skills", func(t *testing.T) {
 		resp := get("/api/skills")
+		defer func() { _ = resp.Body.Close() }()
 		var skills []interface{}
 		readJSON(resp, &skills)
 		t.Logf("%d skills loaded", len(skills))
@@ -282,6 +296,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 		resp := post("/api/packs/go/apply", map[string]interface{}{
 			"materialize_agents": false,
 		})
+		defer func() { _ = resp.Body.Close() }()
 		var result map[string]interface{}
 		readJSON(resp, &result)
 		// pipeline_id is nested under "result" key
@@ -299,6 +314,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 15. Status ──
 	t.Run("status", func(t *testing.T) {
 		resp := get("/api/status")
+		defer func() { _ = resp.Body.Close() }()
 		var status map[string]interface{}
 		readJSON(resp, &status)
 		if text, _ := status["text"].(string); text == "" {
@@ -309,6 +325,7 @@ func TestE2EParallelizationAndAPI(t *testing.T) {
 	// ── 16. Archives ──
 	t.Run("archives", func(t *testing.T) {
 		resp := get("/api/archives")
+		defer func() { _ = resp.Body.Close() }()
 		var archives []interface{}
 		readJSON(resp, &archives)
 		t.Logf("%d archives", len(archives))

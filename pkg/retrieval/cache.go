@@ -131,7 +131,7 @@ func (c *CachedEmbedder) Flush() error {
 	if !c.dirty {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(c.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(c.Path), 0o750); err != nil { // embedding cache dir, owner-only
 		return err
 	}
 	c.data.Version = CacheSchemaVersion

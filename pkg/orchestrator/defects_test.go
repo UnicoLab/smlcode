@@ -130,54 +130,36 @@ func TestEscalateAskTimeoutFloor(t *testing.T) {
 
 // --- P10: a listed phase with no explicit "enabled" is ENABLED --------------
 
-func TestApplyOmittedEnabledDefault(t *testing.T) {
-	cases := []struct {
-		name        string
-		raw         string
-		comp        composer.Composition
-		wantEnabled map[string]bool
-		wantFlipped []string
-	}{
-		{
-			name: "omitted enabled is treated as true",
-			raw:  `{"phases":[{"id":"plan"},{"id":"split"},{"id":"execute","enabled":true}]}`,
-			comp: composer.Composition{Phases: []composer.PhaseChoice{
-				{ID: "plan"}, {ID: "split"}, {ID: "execute", Enabled: true},
-			}},
-			wantEnabled: map[string]bool{"plan": true, "split": true, "execute": true},
-			wantFlipped: []string{"plan", "split"},
-		},
-		{
-			name: "an explicit false is respected",
-			raw:  `{"phases":[{"id":"explore","enabled":false},{"id":"plan"}]}`,
-			comp: composer.Composition{Phases: []composer.PhaseChoice{
-				{ID: "explore"}, {ID: "plan"},
-			}},
-			wantEnabled: map[string]bool{"explore": false, "plan": true},
-			wantFlipped: []string{"plan"},
-		},
-		{
-			name: "nothing to do when every phase is explicit",
-			raw:  `{"phases":[{"id":"plan","enabled":true},{"id":"split","enabled":false}]}`,
-			comp: composer.Composition{Phases: []composer.PhaseChoice{
-				{ID: "plan", Enabled: true}, {ID: "split"},
-			}},
-			wantEnabled: map[string]bool{"plan": true, "split": false},
-		},
+// TestParseDefaultsOmittedEnabled pins the repair at the parse boundary where
+// it now lives.
+//
+// The orchestrator used to re-scan the composer's RAW text with a regex and
+// flip any phase that had no "enabled" key (applyOmittedEnabledDefault). That
+// workaround is deleted: composer.PhaseChoice.UnmarshalJSON defaults a missing
+// key to true, so composer.Parse — the production path — already returns
+// Enabled=true. This test asserts the property against Parse itself, which is
+// what actually protects planning and splitting from a silent kill.
+func TestParseDefaultsOmittedEnabled(t *testing.T) {
+	raw := `{"summary":"s","phases":[{"id":"plan"},{"id":"split"},` +
+		`{"id":"execute","enabled":true},{"id":"explore","enabled":false}]}`
+	comp, err := composer.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			comp := tc.comp
-			flipped := applyOmittedEnabledDefault(&comp, tc.raw)
-			for _, p := range comp.Phases {
-				if want, ok := tc.wantEnabled[p.ID]; ok && p.Enabled != want {
-					t.Fatalf("phase %s enabled=%v want %v", p.ID, p.Enabled, want)
-				}
-			}
-			if len(flipped) != len(tc.wantFlipped) {
-				t.Fatalf("flipped=%v want %v", flipped, tc.wantFlipped)
-			}
-		})
+	got := map[string]bool{}
+	for _, p := range comp.Phases {
+		got[p.ID] = p.Enabled
+	}
+	want := map[string]bool{
+		"plan": true, "split": true, "execute": true,
+		// An EXPLICIT false is still respected — the default applies to
+		// presence, not to value.
+		"explore": false,
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Fatalf("phase %s enabled=%v want %v (all: %v)", id, got[id], w, got)
+		}
 	}
 }
 

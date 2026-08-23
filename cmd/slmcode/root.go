@@ -168,7 +168,7 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 	var all []*cobra.Command
 	all = append(all, inGroup("run", tuiCmd(), initCmd(), runCmd(), chatCmd(), studioCmd(), watchCmd())...)
 	all = append(all, inGroup("review", applyCmd(), rejectCmd(), diffCmd(), commitCmd())...)
-	all = append(all, inGroup("config", configCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), updateCmd())...)
+	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
 		memoryCmd(), evolveCmd(), metricsCmd(), versionCmd())...)
@@ -279,8 +279,25 @@ func openHarness() (*harness.Harness, error) {
 	if innerErr != nil {
 		return nil, innerErr
 	}
-	h.Orchestrator = orch
+	// SetOrchestrator, not a bare assignment: harness.New already built one, and
+	// dropping that pointer strands its stdio MCP subprocesses and evolve store
+	// for the lifetime of the process.
+	if cerr := h.SetOrchestrator(orch); cerr != nil {
+		fmt.Fprintln(os.Stderr, cli.Warn("previous orchestrator did not close cleanly: "+cerr.Error()))
+	}
 	return h, nil
+}
+
+// closeHarness reaps the harness's engine (MCP subprocesses, evolve store) on
+// command exit. Every openHarness caller defers it — a CLI that leaves stdio
+// MCP children behind on exit orphans them to init.
+func closeHarness(h *harness.Harness) {
+	if h == nil {
+		return
+	}
+	if err := h.Close(); err != nil && cli.CurrentLogLevel() >= cli.LogWarn {
+		fmt.Fprintln(os.Stderr, cli.Warn("harness shutdown: "+cli.Clip(err.Error(), 200)))
+	}
 }
 
 // emitQuietLine re-surfaces the warn/error lines captured from the dependency.

@@ -286,12 +286,32 @@ func (s *Server) orch() *orchestrator.Orchestrator {
 	return s.h.Orchestrator
 }
 
+// setOrch installs a rebuilt orchestrator and CLOSES the one it replaces.
+//
+// Assigning s.h.Orchestrator directly stranded the previous engine: an
+// orchestrator OWNS PROCESSES — every stdio MCP server it started is a child
+// process that only dies in mcp.Manager.Close — and Studio rebuilds on every
+// PUT /api/config, so a daemon that had its settings edited a dozen times was
+// holding a dozen orphaned MCP subprocesses and evolve stores.
+// Harness.SetOrchestrator does the swap-and-reap under its own lock.
 func (s *Server) setOrch(o *orchestrator.Orchestrator) {
 	s.cfgMu.Lock()
-	if s.h != nil {
-		s.h.Orchestrator = o
-	}
+	h := s.h
 	s.cfgMu.Unlock()
+	if h != nil {
+		if err := h.SetOrchestrator(o); err != nil {
+			// The new engine is live; only reaping the old one failed. Never
+			// fatal — but it must not be silent, since a leak here is exactly
+			// the defect this call site had.
+			s.emit(orchestrator.Event{
+				Phase:   "init",
+				Kind:    "debug",
+				Level:   "warning",
+				Message: "previous orchestrator did not close cleanly: " + err.Error(),
+				Time:    time.Now(),
+			})
+		}
+	}
 	s.wireOrchestratorEvents()
 }
 
@@ -2489,7 +2509,7 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 //
 // Dot-entries are shown by default: `.slmcode/pending/` is the review queue and
 // `.github/` is real project content, and hiding both made a core workflow
-// invisible. `?hidden=false` restores the old behaviour; `.git` and
+// invisible. `?hidden=false` restores the old behavior; `.git` and
 // `node_modules` are always excluded.
 func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")

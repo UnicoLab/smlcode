@@ -32,7 +32,7 @@ func (o *Orchestrator) runPlaceholderPass(ctx context.Context, query string, boa
 		quality.InterventionReview, truncate(report, 1200))
 
 	o.emitAgent("polish", plan.RolePlaceholder, "", "fill placeholder gaps", "", "")
-	pack, _ := o.packer.Build(plan.RolePlaceholder, query,
+	pack, _ := o.packBuild(plan.RolePlaceholder, query,
 		contextstore.DefaultDocsForRole(plan.RolePlaceholder), nil,
 		o.skillPackFor(plan.RolePlaceholder, query))
 	prompt := pack.Render() + "\n" + report +

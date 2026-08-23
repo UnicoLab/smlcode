@@ -109,7 +109,7 @@ func (o *Orchestrator) describeForEditor(ctx context.Context, query string, t pl
 	if o == nil || !o.knownAgent(describer) {
 		return ""
 	}
-	pack, _ := o.packer.BuildPack(contextstore.BuildRequest{
+	pack, _ := o.packBuildReq(contextstore.BuildRequest{
 		Role:            describer,
 		Query:           query,
 		TaskID:          t.ID,

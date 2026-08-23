@@ -58,6 +58,11 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.ReactCompact = o.cfg.ReactCompact
 	runner.ReactCompactAtPercent = o.cfg.ReactCompactAtPercent
 	runner.MaxContextKB = o.cfg.MaxContextKB
+	// qa_bootstrap reaches the inner loop's acceptance smoke. Unset it defaults
+	// to "" → NormalizeBootstrapPolicy → ask, which is the safe policy but not
+	// necessarily the CONFIGURED one: an operator who set qa_bootstrap: auto
+	// got nothing installed and a red acceptance run they could not explain.
+	runner.BootstrapDeps = o.QABootstrapMode()
 
 	runner.Log = func(format string, args ...interface{}) {
 		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")
@@ -162,7 +167,7 @@ func (o *Orchestrator) buildTaskInput(query string) func(plan.Task) string {
 				lean = framed
 			}
 		}
-		tp, _ := o.packer.BuildPack(contextstore.BuildRequest{
+		tp, _ := o.packBuildReq(contextstore.BuildRequest{
 			Role:            t.Role,
 			Query:           query,
 			TaskID:          t.ID,
@@ -254,6 +259,6 @@ func (o *Orchestrator) refreshRepoMap() {
 	o.repoMap = rm
 	o.mu.Unlock()
 	if o.packer != nil {
-		o.packer.SetRepoMap(rm)
+		o.setPackerRepoMap(rm)
 	}
 }

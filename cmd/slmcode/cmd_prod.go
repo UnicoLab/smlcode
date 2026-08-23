@@ -86,6 +86,7 @@ func sessionCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer closeHarness(h)
 			id := ""
 			if len(args) > 0 {
 				id = args[0]

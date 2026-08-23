@@ -90,15 +90,25 @@ func NormalizeWritePath(filePath, root string) (resolved string, rewrittenFrom s
 	return filepath.Clean(filepath.Join(root, filePath)), ""
 }
 
-// WriteRefuseReason builds the little-coder Edit recipe when Write hits an existing file.
+// WriteRefuseReason builds the little-coder Edit recipe when Write hits an
+// existing file the model has NOT read this session.
+//
+// The recipe deliberately offers the read-then-rewrite route as well: since
+// checkOverwrite gained its read-this-session escape hatch, ws_write on a file
+// that was read IS allowed, and it is the tool the `whole_file` edit-format arm
+// (pkg/loop) instructs the worker to use. Telling the model ws_write can never
+// touch an existing file would make that arm unusable by construction.
 func WriteRefuseReason(path string) string {
 	return fmt.Sprintf(
-		"Write refused — %s already exists.\n\n"+
-			"ws_write is for creating NEW files only. To change an existing file, use ws_edit:\n"+
-			`  {"path": "%s", "old_str": "<exact text currently in the file>", "new_str": "<replacement>"}`+"\n\n"+
-			"If you do not already know the file's current content, ws_read it first so old_str "+
-			"matches exactly (whitespace and indentation). Include 2–3 surrounding lines to make "+
-			"old_str unique. For multi-hunk changes prefer ws_patch. Do NOT retry ws_write — it will be refused again.",
+		"Write refused — %s already exists and has not been read in this session.\n\n"+
+			"Two ways forward. To change PART of the file, use ws_edit:\n"+
+			`  {"path": "%s", "old_str": "<exact text currently in the file>", "new_str": "<replacement>"}`+"\n"+
+			"To replace the WHOLE file, ws_read it first and then repeat this ws_write with the "+
+			"complete new content.\n\n"+
+			"Either way ws_read comes first, so old_str (or the new content) matches the file "+
+			"exactly — whitespace and indentation included. Include 2–3 surrounding lines to make "+
+			"old_str unique. For multi-hunk changes prefer ws_patch. "+
+			"Do NOT repeat this ws_write unchanged — it will be refused again.",
 		path, path,
 	)
 }
@@ -120,7 +130,8 @@ func EditNotFoundReason(path string) string {
 		"old_str not found in %s.\n\n"+
 			"RECOVERY: ws_read the file to get the exact current content (whitespace often differs), "+
 			"then retry ws_edit with the exact string. Include 2–3 surrounding lines if the match "+
-			"is ambiguous. Do NOT fall back to ws_write — it is refused on existing files.",
+			"is ambiguous. If the change is large enough that an anchor is not worth finding, "+
+			"ws_write the complete file instead — allowed now that you have read it.",
 		path,
 	)
 }

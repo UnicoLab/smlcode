@@ -27,8 +27,13 @@ import (
 type metricsCollector struct {
 	mu sync.Mutex
 
-	fileChanges   int
-	editFailures  int
+	fileChanges  int
+	editFailures int
+	// firstApplies counts file changes that did NOT follow an unrecovered edit
+	// failure, i.e. edits that landed as the model emitted them. pendingEdit
+	// carries the failures still waiting for their recovery.
+	firstApplies  int
+	pendingEdit   int
 	toolErrors    int
 	redundant     int
 	interventions int
@@ -49,6 +54,16 @@ func (c *metricsCollector) observe(e orchestrator.Event) {
 	case stream.KindFileChange:
 		// The workspace fired OnFileChange, i.e. an edit really landed on disk.
 		c.fileChanges++
+		// Attribute it: a change that follows an edit failure the harness has
+		// not yet seen recovered is that failure's recovery, not a
+		// first-attempt apply. A LOWER BOUND on first-attempt applies, matching
+		// the rest of this collector — the pairing is by order, not by path,
+		// because the event stream does not expose which failure a change fixes.
+		if c.pendingEdit > 0 {
+			c.pendingEdit--
+			break
+		}
+		c.firstApplies++
 	case stream.KindAgentStart:
 		// One agent turn ≈ one model round-trip. It is a LOWER BOUND: a ReAct
 		// agent that loops on tools makes several calls per start.
@@ -68,6 +83,7 @@ func (c *metricsCollector) observe(e orchestrator.Event) {
 		}
 		if looksLikeEditFailure(e) {
 			c.editFailures++
+			c.pendingEdit++
 			c.toolErrors++
 		}
 	}
@@ -112,6 +128,10 @@ func (c *metricsCollector) snapshot(res Result, out *orchestrator.Result, cfgMod
 		// intervention are visible from out here.
 		EditsAttempted: c.fileChanges + c.editFailures,
 		EditsApplied:   c.fileChanges,
+		// "% of responses using the correct edit format" — the Aider number.
+		// Unlike EditsApplied it does not credit an edit that only landed after
+		// the harness surfaced a failure and the model tried again.
+		EditsFirstAttempt: c.firstApplies,
 
 		ToolCalls:      c.fileChanges + c.toolErrors,
 		ToolErrors:     c.toolErrors,

@@ -130,12 +130,13 @@ func (r *Runner) DrainFailureEvents() []evolve.FailureEvent {
 }
 
 // DecisionRecords returns a copy of every bandit decision recorded so far, for
-// evolve.RunReport.Decisions.
+// evolve.RunReport.Decisions. Edit-format decisions carry their MEASURED
+// outcome (see finalizeEditDecisions), not a zero one.
 func (r *Runner) DecisionRecords() []evolve.DecisionRecord {
 	if r == nil {
 		return nil
 	}
-	return r.evo.snapshotDecisions()
+	return r.finalizeEditDecisions(r.evo.snapshotDecisions())
 }
 
 // DrainDecisionRecords returns the accumulated bandit decisions and clears them.
@@ -143,7 +144,7 @@ func (r *Runner) DrainDecisionRecords() []evolve.DecisionRecord {
 	if r == nil {
 		return nil
 	}
-	return r.evo.drainDecisions()
+	return r.finalizeEditDecisions(r.evo.drainDecisions())
 }
 
 // ── failure path ────────────────────────────────────────────────────────────
@@ -239,31 +240,74 @@ func (r *Runner) memorySection(role string) string {
 	return "\n\n" + block + "\n"
 }
 
+// Edit-format arms. The names are the bandit's arm ids AND the switch keys in
+// editFormatSection, so a typo cannot silently render the default section while
+// the bandit thinks it chose something else.
+const (
+	EditFormatSearchReplace = "search_replace"
+	EditFormatUnifiedDiff   = "unified_diff"
+	EditFormatWholeFile     = "whole_file"
+)
+
+// EditFormatArms is the arm set offered to the bandit, in the order the
+// bandit sees them (the first is also the fallback).
+func EditFormatArms() []string {
+	return []string{EditFormatSearchReplace, EditFormatUnifiedDiff, EditFormatWholeFile}
+}
+
 // chooseEditFormat asks the bandit which edit format this model/language does
-// best with, records the decision for the orchestrator to drain, and returns
-// the arm. Falls back to search_replace when Evolve is nil.
+// best with, records the decision ONCE for the orchestrator to drain, and
+// returns the arm. Falls back to search_replace when Evolve is nil.
+//
+// The choice is memoized for the life of the runner. It used to be re-drawn on
+// every prompt render, which meant an ε-greedy bandit could hand different
+// tasks in the same run different formats, and — worse — appended one
+// DecisionRecord per render, so a five-task run folded five updates into the
+// posterior for one decision. A decision is per run; so is its reward.
 func (r *Runner) chooseEditFormat() string {
-	const fallback = "search_replace"
 	if r == nil || r.Evolve == nil {
-		return fallback
+		return EditFormatSearchReplace
 	}
-	choice := r.Evolve.Choose(evolve.DecEditFormat, fallback, "unified_diff", "whole_file")
-	if choice.Arm == "" {
-		return fallback
+	r.editFmtOnce.Do(func() {
+		arms := EditFormatArms()
+		choice := r.Evolve.Choose(evolve.DecEditFormat, arms...)
+		if choice.Arm == "" {
+			r.editFmt = EditFormatSearchReplace
+			return
+		}
+		r.editFmt = choice.Arm
+		r.evo.addDecision(evolve.DecisionRecord{Key: choice.Key, Arm: choice.Arm})
+	})
+	return r.editFmt
+}
+
+// EditFormat reports the arm this run is using ("" when Evolve is nil, i.e.
+// when no arm was drawn at all). The orchestrator copies it into
+// evolve.RunReport.EditFormat so the reward lands on the arm that was used.
+func (r *Runner) EditFormat() string {
+	if r == nil || r.Evolve == nil {
+		return ""
 	}
-	r.evo.addDecision(evolve.DecisionRecord{Key: choice.Key, Arm: choice.Arm})
-	return choice.Arm
+	return r.chooseEditFormat()
 }
 
 // editFormatSection tells the worker which edit format to prefer this run.
+//
+// Each arm names a DIFFERENT tool and a different payload, so the arm really
+// does change what the worker is instructed to emit — and every one of the
+// three tools is a path the workspace layer accepts:
+//   - search_replace → ws_edit  (old_str/new_str)
+//   - unified_diff   → ws_patch (a diff body)
+//   - whole_file     → ws_read then ws_write the complete file, which the
+//     write guard allows precisely because the file was read this session.
 func (r *Runner) editFormatSection() string {
 	if r == nil || r.Evolve == nil {
 		return ""
 	}
 	switch r.chooseEditFormat() {
-	case "unified_diff":
+	case EditFormatUnifiedDiff:
 		return "\n## Edit format\nPrefer ws_patch with a minimal unified diff for this model.\n"
-	case "whole_file":
+	case EditFormatWholeFile:
 		return "\n## Edit format\nThis model does best rewriting the whole file: ws_read then ws_write the complete new content.\n"
 	default:
 		return "\n## Edit format\nPrefer ws_edit with an exact SEARCH/REPLACE pair (smallest unique anchor).\n"
@@ -378,6 +422,12 @@ func (r *Runner) ReportToolFailure(ctx context.Context, ev memory.ToolEvent, sig
 	r.recordTool(ev)
 	if adv.Apply && adv.NewArgs != "" {
 		r.logf("evolve: repaired %s arguments deterministically (%s)", ev.Tool, adv.RuleID)
+		if editToolNames[strings.ToLower(strings.TrimSpace(ev.Tool))] {
+			// The next edit that lands did so on arguments the HARNESS wrote.
+			// It still counts as applied; it must never count as first-attempt
+			// format compliance.
+			r.edits.noteRepair()
+		}
 		return adv.NewArgs, "", true
 	}
 	if g, retryNow := r.applyAdviceAction(ctx, adv); g != "" || retryNow {

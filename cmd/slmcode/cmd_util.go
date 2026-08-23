@@ -341,7 +341,14 @@ func runDoctor() error {
 	// until output quality drops, so doctor is the place to say it out loud.
 	decoding := models.DescribeDecoding(ws.Config)
 	cli.KeyVal("decoding", fmt.Sprintf("%s (policy=%s)", decoding.Summary(), ws.Config.StructuredDecoding))
-	if !decoding.Probed {
+	switch {
+	case config.NormalizeStructuredDecoding(ws.Config.StructuredDecoding) == config.DecodingOff:
+		// Under `off` the orchestrator pins prompt-only capabilities at
+		// construction, so no probe will ever happen. Saying "the first run
+		// probes the endpoint" here would describe the opposite of the truth.
+		fmt.Println(cli.Dim("  constrained decoding is OFF — every role uses prompt-only JSON; " +
+			"no capability probe is issued"))
+	case !decoding.Probed:
 		fmt.Println(cli.Dim("  not negotiated yet — the first run probes the endpoint"))
 	}
 	for _, line := range backends.CapabilityReport() {

@@ -162,6 +162,7 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer closeHarness(h)
 			_ = h.EnsureInitialized()
 			query := strings.Join(args, " ")
 
@@ -413,6 +414,7 @@ and mints a random session token per launch — the printed URL carries it as
 			if err != nil {
 				return err
 			}
+			defer closeHarness(h)
 			_ = h.EnsureInitialized()
 			addr := flagListen
 			if addr == "" {

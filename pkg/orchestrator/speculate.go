@@ -141,7 +141,7 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		budget = 0
 	}
 	if wantDocs && budget > 0 {
-		docsPack, _ := o.packer.Build("docs", query,
+		docsPack, _ := o.packBuild("docs", query,
 			[]string{contextstore.DocProject, contextstore.DocContext}, nil, o.skillPackFor("docs", query))
 		slots = append(slots, SpecSlot{
 			Role: "docs", Required: false, Phase: "explore",
@@ -150,7 +150,7 @@ func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt s
 		budget--
 	}
 	if wantArch && budget > 0 {
-		archPack, _ := o.packer.Build("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
+		archPack, _ := o.packBuild("architect", query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor("architect", query))
 		hint := truncate(strings.Join(inventory, "\n"), 2000)
 		slots = append(slots, SpecSlot{
 			Role: "architect", Required: false, Phase: "explore",

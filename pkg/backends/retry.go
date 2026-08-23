@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -371,6 +372,48 @@ func (t *Throughput) TokensPerSec(model string) (float64, int) {
 	}
 	return e.tps, e.samples
 }
+
+// Observed is one model's measured decode rate.
+type Observed struct {
+	Model string `json:"model"`
+	// TokensPerSec is the EWMA of completion tokens per second.
+	TokensPerSec float64 `json:"tokens_per_sec"`
+	// Samples is how many completions back the estimate. Zero never appears in
+	// a snapshot: an unobserved model is simply absent.
+	Samples int `json:"samples"`
+}
+
+// Snapshot returns every model observed so far, sorted by model name.
+//
+// Read-only and cheap: one read-locked copy of a map that holds one entry per
+// model in the run. The CLI activity line renders the current model's rate
+// ("≈14 tok/s") and `slmcode doctor` renders the whole table, so the timeout
+// estimate EstimateTimeout already derives from observed throughput becomes
+// something an operator can see rather than infer.
+func (t *Throughput) Snapshot() []Observed {
+	if t == nil {
+		return nil
+	}
+	t.mu.RLock()
+	out := make([]Observed, 0, len(t.m))
+	for model, e := range t.m {
+		out = append(out, Observed{Model: model, TokensPerSec: e.tps, Samples: e.samples})
+	}
+	t.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
+}
+
+// ObservedThroughput is the process-wide decode rate for one model, and whether
+// it is measured at all. When ok is false the caller should say so rather than
+// render DefaultTokensPerSec as if it had been observed.
+func ObservedThroughput(model string) (tps float64, samples int, ok bool) {
+	tps, samples = GlobalThroughput.TokensPerSec(model)
+	return tps, samples, samples > 0 && tps > 0
+}
+
+// ThroughputSnapshot is the process-wide equivalent of Throughput.Snapshot.
+func ThroughputSnapshot() []Observed { return GlobalThroughput.Snapshot() }
 
 // Reset clears observations (tests).
 func (t *Throughput) Reset() {

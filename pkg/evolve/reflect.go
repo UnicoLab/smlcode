@@ -95,6 +95,11 @@ type RunReport struct {
 	EditFormat     string
 	EditsAttempted int
 	EditsApplied   int
+	// EditsFirstAttempt counts the edits that applied exactly as the model
+	// emitted them. It is what the edit-format bandit is rewarded on: an
+	// arm that only works after two repairs is not an arm this model can use,
+	// so crediting it for the eventual success teaches the wrong thing.
+	EditsFirstAttempt int
 
 	Summary string
 	Tags    []string

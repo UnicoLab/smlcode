@@ -148,6 +148,7 @@ func (r *Runner) execOne(ctx context.Context, taskID, what string, req ggagent.S
 	if r.Executor == nil {
 		return ggagent.SubAgentResult{Error: fmt.Errorf("nil executor")}, true
 	}
+	defer r.streamTokens(req.AgentID, taskID)()
 	res, err := r.Executor.ExecuteSubAgents(r.taskCtx(ctx, taskID),
 		[]ggagent.SubAgentRequest{req}, r.Shared)
 	if len(res) == 0 {

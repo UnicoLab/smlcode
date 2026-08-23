@@ -43,6 +43,12 @@ type Step struct {
 	// successful retry. A repair that reproduces these is a genuine save.
 	FixedArgs string `json:"fixed_args,omitempty"`
 	// EditAttempt marks a step that counts toward the edit-apply rate.
+	//
+	// An EditAttempt step with OK=true is also a FIRST-ATTEMPT apply: the tool
+	// took the arguments the model emitted and the edit landed. One that only
+	// succeeds via FixedArgs or a repaired retry still counts toward
+	// EditsApplied but never toward EditsFirstAttempt — that gap is the whole
+	// point of tracking both.
 	EditAttempt bool `json:"edit_attempt,omitempty"`
 }
 
@@ -173,6 +179,10 @@ func Replay(t Trajectory, opt ReplayOptions) Metrics {
 		if s.OK {
 			if s.EditAttempt {
 				m.EditsApplied++
+				// Applied exactly as emitted: this is the "% of responses using
+				// the correct edit format" number, and it is the ONLY place it
+				// is incremented. Everything below is a recovery.
+				m.EditsFirstAttempt++
 			}
 			continue
 		}

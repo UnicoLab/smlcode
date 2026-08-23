@@ -84,6 +84,12 @@ type ToolOpts struct {
 	CheckpointSession string
 	// OnIntervention reports harness gate refusals to TUI/Studio.
 	OnIntervention func(reason, message string)
+	// OnToolCall / OnToolRetry are the self-improvement seam (observer.go).
+	// Both may also be installed after registration with SetToolObserver,
+	// which is what the orchestrator does — its Workspace exists before the
+	// inner loop's Runner does.
+	OnToolCall  ToolObserver
+	OnToolRetry ToolRetrySink
 }
 
 // RegisterCodingTools adds workspace-aware file, shell, and git tools that
@@ -110,6 +116,9 @@ func RegisterCodingToolsWithWorkspace(reg *tools.ToolRegistry, root string, opts
 	wrap := func(name string, fn tools.ToolExecutor) tools.ToolExecutor {
 		fn = ws.capped(fn)
 		fn = hooks.WrapHandler(opts.Hooks, name, fn)
+		// observed sits under the loop guard: a harness-repaired retry must
+		// not look like the agent repeating itself. See observer.go.
+		fn = ws.observed(name, fn)
 		if loop != nil {
 			fn = loop.Wrap(name, fn)
 		}
@@ -160,6 +169,8 @@ func NewWorkspace(root string, opts ToolOpts) (*Workspace, *CallTracker, error) 
 		ShellWhitelist:  opts.ShellWhitelist,
 		ShellAllow:      opts.ShellAllow,
 		OnIntervention:  opts.OnIntervention,
+		observer:        opts.OnToolCall,
+		retrySink:       opts.OnToolRetry,
 	}
 	if opts.Checkpoints && opts.SlmDir != "" {
 		ws.Checkpointer = NewFileCheckpointer(opts.SlmDir, root, opts.CheckpointSession)
@@ -418,6 +429,12 @@ type Workspace struct {
 	MaxToolChars int
 	// ShellTimeout bounds ws_shell (0 = DefaultShellTimeout).
 	ShellTimeout time.Duration
+
+	// observer / retrySink are the self-improvement seam; see observer.go.
+	// Guarded because the orchestrator installs them after registration.
+	obsMu     sync.RWMutex
+	observer  ToolObserver
+	retrySink ToolRetrySink
 
 	todoMu sync.Mutex
 	todos  []TodoItem
@@ -1056,7 +1073,7 @@ func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (in
 	}
 	w.backup(from)
 	w.backup(to)
-	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return nil, err
 	}
 	moved := false

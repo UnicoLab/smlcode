@@ -143,19 +143,13 @@ func RequiredNames(node map[string]any) []string {
 	return out
 }
 
-// Coerce repairs the type slips small models make constantly — "true" instead
-// of true, "3" instead of 3, a bare scalar where an array is required, a number
-// where a string is required — using the schema for role as the target shape.
-// The returned bytes are compact JSON. Unknown keys are preserved.
-func Coerce(role string, raw []byte) ([]byte, error) {
-	spec, ok := For(role)
-	if !ok {
-		return nil, fmt.Errorf("schema: unknown role %q", role)
-	}
-	return CoerceSpec(spec, raw)
-}
-
-// CoerceSpec coerces raw toward an explicit Spec.
+// CoerceSpec repairs the type slips small models make constantly — "true"
+// instead of true, "3" instead of 3, a bare scalar where an array is required,
+// a number where a string is required — using spec as the target shape. The
+// returned bytes are compact JSON, and unknown keys are preserved.
+//
+// The role-keyed wrapper this used to have was unused: pkg/repair.RepairRole
+// is the role-keyed entry point, and it resolves the Spec itself.
 func CoerceSpec(spec Spec, raw []byte) ([]byte, error) {
 	var v any
 	dec := json.NewDecoder(strings.NewReader(string(raw)))

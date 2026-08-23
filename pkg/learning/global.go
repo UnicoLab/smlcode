@@ -50,7 +50,7 @@ func AppendGlobalMemory(sectionTitle, body string) error {
 		return nil
 	}
 	path := paths[0]
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { // ~/.slmcode global memory, owner-only
 		return err
 	}
 	existing, _ := os.ReadFile(path)

@@ -1,6 +1,6 @@
 // Package schema holds hand-written JSON Schema (draft-07 subset) definitions
 // for every structured output the slmcode harness parses, plus the derived
-// artefacts each constrained-decoding backend needs:
+// artifacts each constrained-decoding backend needs:
 //
 //   - OpenAI `response_format: {"type":"json_schema", ...}` (strict variant)
 //   - vLLM `guided_json`

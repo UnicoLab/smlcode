@@ -608,7 +608,7 @@ func ParseTesterJSON(raw string) TesterResult {
 		if r.Passed && !TesterHasShellEvidence(nonJSONRaw) && !testerDiskPass(extracted+nonJSONRaw+r.Summary) {
 			r.Passed = false
 			r.Summary = firstNonEmpty(r.Summary, "tester claimed pass without execution")
-			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
+			r.Failures = []string{TesterNoEvidenceFailure}
 		}
 		if !r.Passed && !eTrue && len(r.Failures) == 0 {
 			r.Summary = firstNonEmpty(r.Summary, "malformed or incomplete tester JSON")
@@ -623,7 +623,7 @@ func ParseTesterJSON(raw string) TesterResult {
 		r.Passed = true
 		if !TesterHasShellEvidence(raw) && !testerDiskPass(raw) {
 			r.Passed = false
-			r.Failures = []string{"passed:true without ws_shell / smoke execution trace — treat as failed"}
+			r.Failures = []string{TesterNoEvidenceFailure}
 		}
 	case hasPassedFalse(lower):
 		r.Passed = false
@@ -683,6 +683,13 @@ var shellEvidenceMarkers = []string{
 	"observation:",                      // ReAct tool-result frame
 	"exit error:",                       // executor's non-zero exit report
 }
+
+// TesterNoEvidenceFailure is the failure recorded when a tester claims
+// passed:true with no execution trace beside the JSON. It is exported because
+// a caller that repairs the finalize JSON first (pkg/loop.parseTesterOutput)
+// throws the trace away in the process, and needs to recognize THIS failure in
+// order to re-check the evidence against the unrepaired output.
+const TesterNoEvidenceFailure = "passed:true without ws_shell / smoke execution trace — treat as failed"
 
 // exitCodeLine matches a real runner exit report: `exit status 1`,
 // `exit code: 0`, `exit_code=2`.

@@ -346,13 +346,13 @@ func fromSessionToolCalls(calls []session.ReactToolCall) []llm.ToolCall {
 func isCancelResult(err error, res ggagent.SubAgentResult) bool {
 	if err != nil && (errors.Is(err, context.Canceled) ||
 		strings.Contains(strings.ToLower(err.Error()), "canceled") ||
-		strings.Contains(strings.ToLower(err.Error()), "cancelled")) {
+		strings.Contains(strings.ToLower(err.Error()), "cancelled")) { //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
 		return true
 	}
 	if res.Error != nil {
 		e := res.Error.Error()
 		lower := strings.ToLower(e)
-		return strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled") ||
+		return strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled") || //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
 			errors.Is(res.Error, context.Canceled)
 	}
 	return false

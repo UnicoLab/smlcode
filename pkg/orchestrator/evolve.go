@@ -271,6 +271,11 @@ func (o *Orchestrator) buildRunReport(res *Result, board *plan.Board, runner *lo
 		}
 	}
 
+	// Edit accounting: read BEFORE draining, because DrainDecisionRecords
+	// finalizes the edit-format arm's outcome from the same ledger.
+	rep.EditFormat, rep.EditsAttempted, rep.EditsApplied, rep.EditsFirstAttempt =
+		runnerEditStats(runner)
+
 	// Failures + decisions the inner loop accumulated.
 	fe, dr := drainRunnerEvolve(runner)
 	rep.Failures = append(rep.Failures, fe...)

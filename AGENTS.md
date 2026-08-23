@@ -6,8 +6,8 @@ Go, SLM-first coding harness. Deeper: `CONTRIBUTING.md`, `docs/`.
 
 - `make bootstrap` — build Studio UI once per clone. `go build` alone embeds a **placeholder**.
 - `make check` — the single gate: gofmt, vet, lint, `go test ./...`, `-race ./pkg/...`, web lint+build. CI runs this.
-- `make lint-strict` fails on any lint finding. Ratchet `.golangci.yml` down; never silence.
-- `make e2e` offline; `RUN_E2E=1 make e2e` adds live-model tests.
+- Lint baseline is **zero**: `make lint` (and `make lint-strict`, its alias) fail on any finding. Fix it, or add `//nolint:<linter> // <why this site is a false positive>`.
+- `make e2e` offline; `RUN_E2E=1 make e2e` adds live-model tests. `test/e2e/harness_smoke_test.go` drives the whole harness against a fake OpenAI server and runs under plain `make test` — keep it green.
 
 ## Layout
 
@@ -18,7 +18,7 @@ Go, SLM-first coding harness. Deeper: `CONTRIBUTING.md`, `docs/`.
 - **Normalize → Validate**: config/pipeline/block structs default in `Normalize()`, enforce in `Validate()`. Call both before persisting.
 - `config.Config` is the only source of truth (`ApplyEnv`, `ApplyPatch`). Precedence: defaults → user file → project file → `SLMCODE_*` → flags.
 - **ANTI-WANDER / HARD SCOPE**: `agents.AntiWanderCore` — workers/correctors touch only focus files and same-package siblings. Tests assert both markers verbatim.
-- Every structured role needs a `pkg/schema` contract (`TestPromptContractsMatchSchema`).
+- Every structured role needs a `pkg/schema` contract (`TestPromptContractsMatchSchemaAndGrammar`).
 - **Never end a turn on a tool call** — emit final JSON after tool use. One tool call per turn.
 
 ## Gotchas

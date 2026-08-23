@@ -1,21 +1,25 @@
 # golangci-lint v2 config (schema requires golangci-lint >= v2; verified
 # against v2.5.0). See scripts/lint.sh / `make lint` / `make lint-strict`.
 #
-# Baseline captured 2026-08-23 on a clean build (own the config, not the
-# findings — see AGENTS.md ownership split): 95 issues total.
-#   errcheck:    29
-#   gosec:       23
-#   staticcheck: 22
-#   unused:       8
-#   misspell:     6
-#   bodyclose:    3
-#   ineffassign:  4
+# Baseline: 0 issues.
 #
-# `make lint` runs this non-blocking (CI step uses continue-on-error) so it
-# doesn't gate merges yet. `make lint-strict` runs it blocking, for ratchet
-# work: fix real issues, then progressively tighten (e.g. via `linters.enable`
-# additions, or by shrinking the exclusion below) until `make lint-strict`
-# is what CI runs.
+# The 2026-08-23 baseline comment recorded 95, and a later re-measure read 36 —
+# both were read through golangci-lint's DEFAULT output caps
+# (max-issues-per-linter: 50, max-same-issues: 3), which hid most of a class
+# once three of its members had been printed. The real total behind that filter
+# was 133: 101 gosec (64 of them G304), 23 misspell, 5 errcheck, 3 staticcheck,
+# 1 unused. `issues.max-*: 0` below is what makes the number honest, and is the
+# reason this file can now claim zero.
+#
+# Getting there: G304 is excluded WITH A WRITTEN REASON (see below) because it
+# is unactionable for a program whose purpose is reading files by computed
+# path; everything else was fixed rather than silenced. The handful of
+# remaining //nolint directives in the tree each name their linter and state
+# why that specific site is a false positive.
+#
+# `make lint` and `make lint-strict` are both BLOCKING, and CI runs `make check`
+# (which includes lint) with no continue-on-error. Keep it at zero: a new
+# finding fails the build, which is the point.
 #
 # Linter notes:
 #   - errcheck, staticcheck, unused, ineffassign, govet are golangci-lint v2
@@ -25,6 +29,13 @@
 version: "2"
 run:
   tests: true
+issues:
+  # golangci-lint truncates by default (max-issues-per-linter: 50,
+  # max-same-issues: 3). A ratchet measured through that filter is a lie: the
+  # count read 36 while the real total was 133, because gosec alone had 64
+  # G304 findings and only 3 were shown. Report everything.
+  max-issues-per-linter: 0
+  max-same-issues: 0
 linters:
   enable:
     - bodyclose
@@ -33,7 +44,25 @@ linters:
   settings:
     gosec:
       excludes:
+        # G104 (unhandled error) duplicates errcheck, which is on.
         - G104
+        # G304 "potential file inclusion via variable" — 64 findings across 32
+        # packages, and not one of them is actionable. slmcode's job is reading
+        # files whose paths are computed: from the project root, from a
+        # directory walk, from config, or from an agent's tool call. There is
+        # no version of this program in which every os.ReadFile takes a
+        # constant.
+        #
+        # The control that actually matters is the workspace jail —
+        # Workspace.resolve + checkSymlinkEscape in pkg/workspace/tools.go,
+        # which every agent-supplied path passes through before any read, and
+        # which has its own hardening suite (pkg/workspace/tools_hardening_test.go,
+        # guard_test.go). Annotating 64 sites with the same sentence would say
+        # less than this comment does, and would rot faster.
+        #
+        # G301/G302/G306 (directory and file permissions) stay ENABLED: those
+        # are actionable, and harness state under .slmcode is 0o750/0o600.
+        - G304
     misspell:
       locale: US
   exclusions:

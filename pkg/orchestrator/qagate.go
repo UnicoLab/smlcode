@@ -195,8 +195,8 @@ func (o *Orchestrator) qaPreflight(ctx context.Context, round int, cmd string) {
 
 // formatWaveChanges formats the files THIS RUN changed, and nothing else.
 //
-// quality.AutoFixFormatting is a documented no-op now: it used to run
-// `gofmt -w .` / `goimports -w .` over the project root, so a repo that was not
+// The pre-QA formatter used to run `gofmt -w .` / `goimports -w .` over the
+// project root (quality.AutoFixFormatting, since deleted), so a repo that was not
 // already gofmt-clean got an enormous unrelated diff attributed to the agent,
 // with no checkpoint and no timeout. Its replacement is scoped to the changed
 // set and snapshots every file first, so the pass stays undoable.

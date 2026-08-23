@@ -26,7 +26,7 @@ Needs Go 1.23+ and a Node with `npm ci` support (the SPA is React 18 + Vite + Ty
 make check
 ```
 
-It runs, in order: `make tidy`, `make lint` (gofmt check → `go vet ./...` → golangci-lint →
+It runs, in order: `make tidy`, `make lint` (gofmt check → `go vet ./...` → golangci-lint, blocking →
 embedded-UI smoke check), `make test` (`go test ./...`), `make race`
 (`go test -race -count=1 ./pkg/...`), then `npm run lint && npm run build` in `web/`.
 
@@ -44,25 +44,34 @@ Other targets worth knowing:
 | `make docs-build` | strict MkDocs build |
 | `make docs-serve` | docs at <http://127.0.0.1:8000> |
 
-## The lint ratchet
+## The lint ratchet — done, and it stays done
 
-`make lint` runs golangci-lint **non-blocking**: it prints findings but does not fail. The
-project is mid-ratchet against a captured baseline recorded at the top of `.golangci.yml`
-(95 issues: errcheck 29, gosec 23, staticcheck 22, unused 8, misspell 6, bodyclose 3,
-ineffassign 4).
+`make lint` runs golangci-lint **blocking**: the baseline is **zero issues**, so any new
+finding fails the build. `make lint-strict` is now just an alias for `make lint`, kept
+because CI and muscle memory both still say it.
 
-The rules of the ratchet:
+Getting to zero also meant fixing how the count was measured: golangci-lint's defaults
+(`max-issues-per-linter: 50`, `max-same-issues: 3`) hid most of a class once three of its
+members had printed, so the "95" and later "36" baselines in this file's history were both
+reading a truncated view of a real 133. `.golangci.yml` now sets both caps to 0.
 
-- `make lint-strict` (or `LINT_STRICT=1 ./scripts/lint.sh`) fails on any finding. Use it
-  while fixing a category.
-- Fix findings, then **lower the baseline numbers** in the `.golangci.yml` comment.
-- Do **not** add exclusion presets to get a green run. `.golangci.yml` deliberately sets no
-  default exclusion presets — with them on, errcheck alone drops from 29 findings to 5, which
-  is a pre-filtered view, not progress.
+The rules, now that it is green:
+
+- Fix the finding. That is the default and it is almost always right.
+- If — and only if — a finding is a genuine false positive at that site, add
+  `//nolint:<linter> // <why THIS site is safe>`. A bare `//nolint` with no linter and no
+  reason is not acceptable.
+- One class is excluded at the config level, with the reasoning written out in
+  `.golangci.yml`: gosec **G304** ("file inclusion via variable"). slmcode's purpose is
+  reading files by computed path; the control that matters is the workspace jail
+  (`Workspace.resolve` + `checkSymlinkEscape`), which has its own hardening tests. G301,
+  G302 and G306 (directory and file permissions) stay enabled and are enforced —
+  harness state under `.slmcode/` is `0o750` / `0o600`.
+- Do **not** add golangci-lint's default exclusion PRESETS to get a green run. They
+  blanket-suppress whole categories; the G304 exclusion above is one named rule with a
+  written justification, which is a different thing.
 - `_test.go` files are exempt from gosec only. Nothing else is exempt.
 - `gofmt` and `go vet` are always blocking.
-
-The goal is for `make lint-strict` to become what CI runs.
 
 ## Test layout
 
@@ -72,6 +81,13 @@ The goal is for `make lint-strict` to become what CI runs.
   stores are all concurrent — new concurrency needs a race test.
 - **E2E** lives in `test/e2e/`, split into offline tests (always run) and live tests gated on
   `RUN_E2E=1`. `scripts/e2e_prime_smoke.sh` covers the Studio/stack/auth/MCP surface.
+- **The whole-harness smoke test** is `test/e2e/harness_smoke_test.go`: it drives
+  `harness` → `orchestrator` → `loop` → `pkg/workspace` against an in-process fake
+  OpenAI-compatible server and asserts the four things a finished run leaves behind — the
+  file on disk, a completed board, an episode in `.slmcode/memory/episodes.jsonl`, and a
+  metrics row with real edit accounting. It is hermetic (it redirects `HOME`) and runs in
+  well under a second under plain `make test`. If a change to any layer breaks the
+  contract between layers, this is the test that says so.
 - **Frontend**: Vitest + Testing Library in `web/src/**/*.test.tsx`.
 - Determinism matters more than coverage here: an offline test that depends on a model's
   wording is worse than no test. Prefer fixtures and fakes over live calls.

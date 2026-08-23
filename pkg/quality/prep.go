@@ -13,7 +13,7 @@ import (
 //
 // Both used to be unattended and unbounded:
 //
-//   - AutoFixFormatting ran `gofmt -w .` and `goimports -w .` against the
+//   - the old AutoFixFormatting ran `gofmt -w .` and `goimports -w .` against the
 //     PROJECT ROOT before the first QA round — every file in the repo, not just
 //     the ones an agent touched, outside the focus guard, with no checkpoint and
 //     no context timeout. On a repo that was not already gofmt-clean that
@@ -25,9 +25,11 @@ import (
 //     by the worker in the SAME run, so a hallucinated or typosquatted package
 //     was fetched and its install scripts executed with nobody asked.
 //
-// The package now formats only the files a wave changed (snapshotting each one
-// first, and with goimports opt-in), and states a dependency-bootstrap policy
-// explicitly instead of assuming consent.
+// The package now formats only the files a wave changed (FormatChangedFiles,
+// snapshotting each one first, and with goimports opt-in), and states a
+// dependency-bootstrap policy explicitly instead of assuming consent. The
+// AutoFixFormatting name is gone rather than kept as a no-op shim: a deprecated
+// export nothing calls is one more thing to read and rediscover.
 
 // DefaultFormatTimeout bounds a formatting pass.
 const DefaultFormatTimeout = 30 * time.Second
@@ -113,17 +115,6 @@ func FormatChangedFiles(ctx context.Context, req FormatRequest) string {
 		}
 	}
 	return strings.Join(done, "; ")
-}
-
-// AutoFixFormatting is the old repo-wide entry point.
-//
-// Deprecated: it now does NOTHING and returns "". Formatting the whole project
-// root before QA is the defect described above, and silently keeping the old
-// behavior behind the old name would preserve it. Callers must move to
-// FormatChangedFiles with the wave's changed files.
-func AutoFixFormatting(root string) string {
-	_ = root
-	return ""
 }
 
 // splitFormattable filters the requested paths down to real, in-root, safe

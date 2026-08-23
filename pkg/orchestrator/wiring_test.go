@@ -232,8 +232,8 @@ func TestContextReservesChangeTheBuiltPack(t *testing.T) {
 		// Hold back far more of the window; the pack must shrink.
 		c.ContextReserveResponseTokens = 20000
 	})
-	baseTokens := base.packerFor(plan.RoleWorker).BudgetTokensFor(plan.RoleWorker)
-	tightTokens := tight.packerFor(plan.RoleWorker).BudgetTokensFor(plan.RoleWorker)
+	baseTokens := base.packerNow().BudgetTokensFor(plan.RoleWorker)
+	tightTokens := tight.packerNow().BudgetTokensFor(plan.RoleWorker)
 	if tightTokens >= baseTokens {
 		t.Fatalf("context_reserve_response_tokens did not reach the packer: base=%d tight=%d",
 			baseTokens, tightTokens)
@@ -243,33 +243,32 @@ func TestContextReservesChangeTheBuiltPack(t *testing.T) {
 func TestContextSlackPercentChangesTheBuiltPack(t *testing.T) {
 	base := testOrch(t, nil)
 	slack := testOrch(t, func(c *config.Config) { c.ContextSlackPercent = 60 })
-	b := base.packerFor(plan.RoleWorker).BudgetTokensFor(plan.RoleWorker)
-	s := slack.packerFor(plan.RoleWorker).BudgetTokensFor(plan.RoleWorker)
+	b := base.packerNow().BudgetTokensFor(plan.RoleWorker)
+	s := slack.packerNow().BudgetTokensFor(plan.RoleWorker)
 	if s >= b {
 		t.Fatalf("context_slack_percent did not reach the packer: base=%d slack=%d", b, s)
 	}
 }
 
 func TestRoleContextBudgetChangesTheBuiltPack(t *testing.T) {
+	base := testOrch(t, nil)
 	o := testOrch(t, func(c *config.Config) {
 		c.ContextRoleBudget = map[string]int{"worker": 25}
 	})
-	if o.rolePackers == nil {
-		t.Fatal("context_role_budget produced no role-scoped packer")
-	}
-	scoped := o.packerFor("worker")
-	shared := o.packer
-	if scoped == shared {
-		t.Fatal("packerFor(worker) must return the role-scoped packer")
-	}
-	got := scoped.BudgetTokensFor("worker")
-	want := shared.BudgetTokensFor("worker")
+	got := o.packerNow().BudgetTokensFor("worker")
+	want := base.packerNow().BudgetTokensFor("worker")
 	if got >= want {
 		t.Fatalf("worker budget %d not reduced from the default %d", got, want)
 	}
-	// A role with no override still uses the shared packer.
-	if o.packerFor("reviewer") != shared {
-		t.Fatal("an unconfigured role must keep the shared packer")
+	// A role with no override keeps the built-in share.
+	if r, br := o.packerNow().BudgetTokensFor("reviewer"), base.packerNow().BudgetTokensFor("reviewer"); r != br {
+		t.Fatalf("an unconfigured role must keep its default budget: %d != %d", r, br)
+	}
+	// The model's real window must NOT be rewritten to fake the role share:
+	// overflow checks and compaction thresholds read it.
+	if o.contextLimitTokens() != base.contextLimitTokens() {
+		t.Fatalf("context_role_budget changed the reported context window: %d != %d",
+			o.contextLimitTokens(), base.contextLimitTokens())
 	}
 }
 

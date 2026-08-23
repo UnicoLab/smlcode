@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -36,6 +37,13 @@ func OpenWorkspace(root string) (*Workspace, error) {
 		return nil, err
 	}
 	cfg.Root = root
+	// Point the persistent backend caches at this project BEFORE anything
+	// reads them. Without this a lightweight workspace (every non-run command,
+	// `slmcode doctor` included) queried an empty in-memory capability cache
+	// and reported "unprobed" however many times the endpoint had been
+	// negotiated. The throughput store has the same problem and the same fix.
+	backends.SetCapabilityCacheDir(cfg.SlmDir())
+	backends.SetThroughputCacheDir(cfg.SlmDir())
 	store := contextstore.New(cfg.SlmDir())
 	board := plan.NewLiveStore(cfg.SlmDir())
 	_ = board.Load()

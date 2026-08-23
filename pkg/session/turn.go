@@ -68,10 +68,10 @@ func BeginTurn(slmDir, runID, query string) (*Turn, error) {
 		},
 	}
 	dir := TurnDir(slmDir, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(slmDir, "summaries"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(slmDir, "summaries"), 0o750); err != nil {
 		return nil, err
 	}
 	if err := writeTurnFiles(slmDir, t); err != nil {
@@ -114,7 +114,7 @@ func WriteTurnSummary(slmDir string, t *Turn, board plan.Board, extraNotes strin
 	t.Summary = firstSummaryLine(body)
 
 	dir := TurnDir(slmDir, t.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, "summary.md")
@@ -289,7 +289,7 @@ func LoadTurn(slmDir, runID string) (*Turn, error) {
 
 func writeTurnFiles(slmDir string, t *Turn) error {
 	dir := TurnDir(slmDir, t.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	_ = atomicfile.Write(filepath.Join(dir, "QUERY.md"),

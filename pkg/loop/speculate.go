@@ -27,7 +27,7 @@ type SpecResult struct {
 	Skipped bool
 }
 
-// speculate races slots (capped by maxParallel), cancelling optional losers when
+// speculate races slots (capped by maxParallel), canceling optional losers when
 // required slots succeed — or on first optional success when none are required.
 func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 	if len(slots) == 0 {

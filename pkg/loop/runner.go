@@ -206,6 +206,14 @@ type Runner struct {
 	// fpMu/fpCache cache per-wave content fingerprints (sha256 of file bytes).
 	fpMu    sync.Mutex
 	fpCache map[string]string
+
+	// repairMu/pendingRepairs remember which rule produced a given set of
+	// repaired tool arguments, so ToolRetryOutcome can credit or blame it
+	// without the tool layer having to carry an opaque token. Keyed on the
+	// repaired-argument JSON ReportToolFailure handed back, and consumed on
+	// first lookup so the map cannot grow across a long run.
+	repairMu       sync.Mutex
+	pendingRepairs map[string]pendingRepair
 }
 
 func NewRunner(exec SubAgentRunner, shared *ggagent.SharedState) *Runner {
@@ -1209,12 +1217,12 @@ func (r *Runner) speculativeReview(ctx context.Context, current plan.Task, g gat
 	var acceptOut, revOut, strictOut string
 	var revErr error
 	for _, sr := range res {
-		switch {
-		case sr.Role == "acceptance":
+		switch sr.Role {
+		case "acceptance":
 			if !sr.Skipped && sr.Err == nil {
 				acceptOut = sr.Output
 			}
-		case sr.Role == revRole:
+		case revRole:
 			revOut, revErr = sr.Output, sr.Err
 		default:
 			if !sr.Skipped && strings.TrimSpace(sr.Output) != "" {
@@ -1223,7 +1231,7 @@ func (r *Runner) speculativeReview(ctx context.Context, current plan.Task, g gat
 		}
 	}
 	if strings.TrimSpace(acceptOut) != "" {
-		r.logf("%s review acceptance won — cancelled reviewer LLM", current.ID)
+		r.logf("%s review acceptance won — canceled reviewer LLM", current.ID)
 		return plan.ParseReviewJSON(acceptOut), acceptOut, nil
 	}
 	reviewRaw := revOut
@@ -1424,7 +1432,7 @@ func (r *Runner) parseTesterOutput(t plan.Task) (plan.TesterResult, bool) {
 		if rung != "" && rung != "clean" {
 			r.logf("%s tester JSON repaired (%s)", t.ID, rung)
 		}
-		return plan.ParseTesterJSON(string(fixed)), true
+		return restoreTesterEvidence(plan.ParseTesterJSON(string(fixed)), t.Output), true
 	}
 	if errors.Is(err, repair.ErrTruncated) {
 		r.logf("%s tester output truncated mid-string — not treating truncation as a test failure", t.ID)
@@ -1433,6 +1441,32 @@ func (r *Runner) parseTesterOutput(t plan.Task) (plan.TesterResult, bool) {
 		return plan.TesterResult{}, false
 	}
 	return plan.ParseTesterJSON(t.Output), true
+}
+
+// restoreTesterEvidence undoes the one way JSON repair can turn a real pass
+// into a failure.
+//
+// ParseTesterJSON refuses passed:true unless an execution trace sits NEXT TO
+// the JSON — the whole point being that a tester must not be able to claim a
+// pass it never ran. But repair.RepairRole extracts the JSON object and
+// discards everything around it, which is precisely that trace: a tester that
+// ran ws_shell and echoed the observation had its evidence deleted by the
+// repair and was then failed for having none.
+//
+// So when the ONLY complaint is the missing trace, look for it in the
+// unrepaired output, harness-appended smoke section included. The bar is
+// unchanged — the same harness-minted markers, just checked against the text
+// that still carries them.
+func restoreTesterEvidence(res plan.TesterResult, rawOutput string) plan.TesterResult {
+	if res.Passed || len(res.Failures) != 1 || res.Failures[0] != plan.TesterNoEvidenceFailure {
+		return res
+	}
+	if !plan.TesterHasShellEvidence(rawOutput) {
+		return res
+	}
+	res.Passed = true
+	res.Failures = nil
+	return res
 }
 
 // reviewAndCorrect reviews a task and runs correction rounds against the board.
@@ -1637,9 +1671,6 @@ func StripScopedPack(desc string) string {
 		desc = strings.TrimSpace(desc[idx+len("## Task instructions"):])
 	}
 	if strings.HasPrefix(desc, "# Scoped context") {
-		if idx := strings.Index(desc, "\n# "); idx > 0 {
-			// keep looking for task body markers
-		}
 		if idx := strings.Index(desc, "## Task instructions"); idx >= 0 {
 			desc = strings.TrimSpace(desc[idx+len("## Task instructions"):])
 		}
@@ -2302,7 +2333,7 @@ func baselineAmbiguous(baseline map[string]string, t plan.Task) bool {
 	if len(t.Files) == 0 {
 		return true
 	}
-	if baseline == nil || len(baseline) == 0 {
+	if len(baseline) == 0 {
 		return true
 	}
 	missing := 0
@@ -2419,10 +2450,10 @@ func (r *Runner) gitChangedFiles() []string {
 	if r.Root == "" {
 		return nil
 	}
-	cmd := exec.Command("git", "-C", r.Root, "diff", "--name-only", "HEAD")
+	cmd := exec.Command("git", "-C", r.Root, "diff", "--name-only", "HEAD") //nolint:gosec // fixed argv git invocation, no shell; only the project root varies
 	out, err := cmd.Output()
 	if err != nil {
-		cmd = exec.Command("git", "-C", r.Root, "status", "--porcelain")
+		cmd = exec.Command("git", "-C", r.Root, "status", "--porcelain") //nolint:gosec // fixed argv git invocation, no shell; only the project root varies
 		out, err = cmd.Output()
 		if err != nil {
 			return nil

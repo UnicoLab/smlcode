@@ -63,8 +63,7 @@ jobs:
       - name: Go Build
         run: make build
 
-      - name: golangci-lint ratchet (blocking locally, non-blocking here)
-        continue-on-error: true
+      - name: golangci-lint ratchet (blocking — the baseline is zero)
         run: make lint-strict
 
       - name: Studio API offline smoke test

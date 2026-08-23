@@ -428,6 +428,7 @@ func (r *Runner) ReportToolFailure(ctx context.Context, ev memory.ToolEvent, sig
 			// format compliance.
 			r.edits.noteRepair()
 		}
+		r.rememberRepair(adv.NewArgs, adv.Fingerprint, adv.RuleID)
 		return adv.NewArgs, "", true
 	}
 	if g, retryNow := r.applyAdviceAction(ctx, adv); g != "" || retryNow {
@@ -442,4 +443,55 @@ func (r *Runner) ReportToolFailure(ctx context.Context, ev memory.ToolEvent, sig
 // ResolveToolFailure credits whatever finally fixed a tool failure.
 func (r *Runner) ResolveToolFailure(fp evolve.Fingerprint, ruleID, what string) {
 	r.noteResolved(evolve.Advice{Fingerprint: fp, RuleID: ruleID}, what)
+}
+
+// pendingRepair is one outstanding deterministic repair, awaiting its verdict.
+type pendingRepair struct {
+	fp     evolve.Fingerprint
+	ruleID string
+}
+
+// rememberRepair files a repair so ToolRetryOutcome can find it again.
+func (r *Runner) rememberRepair(args string, fp evolve.Fingerprint, ruleID string) {
+	if r == nil || args == "" || fp.Zero() {
+		return
+	}
+	r.repairMu.Lock()
+	defer r.repairMu.Unlock()
+	if r.pendingRepairs == nil {
+		r.pendingRepairs = map[string]pendingRepair{}
+	}
+	// A run that never reports outcomes must not accumulate repairs forever.
+	if len(r.pendingRepairs) >= maxPendingRepairs {
+		r.pendingRepairs = map[string]pendingRepair{}
+	}
+	r.pendingRepairs[args] = pendingRepair{fp: fp, ruleID: ruleID}
+}
+
+// maxPendingRepairs bounds the outstanding-repair map.
+const maxPendingRepairs = 256
+
+// ToolRetryOutcome closes the loop the tool layer opened.
+//
+// args must be the newArgs a previous ReportToolFailure handed back. When the
+// retry worked, the rule that produced those arguments is credited — which is
+// what makes the failure count as "resolved from memory" in the run's
+// reflection and metrics, rather than as one more unresolved failure that a
+// stored rule silently fixed. When it did not, the entry is dropped so the
+// rule earns no credit and the failure stays open for the LLM path.
+func (r *Runner) ToolRetryOutcome(args string, ok bool, resolution string) {
+	if r == nil || args == "" {
+		return
+	}
+	r.repairMu.Lock()
+	pr, found := r.pendingRepairs[args]
+	delete(r.pendingRepairs, args)
+	r.repairMu.Unlock()
+	if !found || !ok {
+		return
+	}
+	if strings.TrimSpace(resolution) == "" {
+		resolution = "harness repaired the arguments and retried with no model call"
+	}
+	r.ResolveToolFailure(pr.fp, pr.ruleID, resolution)
 }

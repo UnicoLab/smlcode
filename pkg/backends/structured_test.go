@@ -170,7 +170,7 @@ func TestStructuredDegradesSilentlyWhenServerRejects(t *testing.T) {
 	ResetTelemetry()
 	// Prior says json_schema, but this server actually only does json_object.
 	// Seed capabilities so the probe does not correct it — this simulates a
-	// server whose behaviour changed after the cache was written.
+	// server whose behavior changed after the cache was written.
 	srv := newFakeServer(t, "json_object")
 	SetCapabilities("openai", srv.endpoint(), "fake-model", Capabilities{
 		JSONSchema: true, JSONObject: true, NativeTools: true, Streaming: true,

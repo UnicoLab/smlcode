@@ -72,6 +72,9 @@ func RegisterLLM(m *llm.ProviderManager, cfg *config.Config) error {
 	// not one per run. No caller wiring needed.
 	if root := strings.TrimSpace(cfg.Root); root != "" {
 		SetCapabilityCacheDir(cfg.SlmDir())
+		// Observed decode rates persist beside them, so `slmcode doctor` can
+		// report a measured tokens/sec instead of the pessimistic prior.
+		SetThroughputCacheDir(cfg.SlmDir())
 	}
 
 	if config.IsOllama(name) {

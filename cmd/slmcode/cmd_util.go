@@ -22,6 +22,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/readiness"
 	"github.com/UnicoLab/slmcode/pkg/retrieval"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 )
 
@@ -98,7 +99,7 @@ func skillsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(ws.Config.SkillsDir(), 0o755); err != nil {
+			if err := os.MkdirAll(ws.Config.SkillsDir(), 0o750); err != nil { // .slmcode/skills, owner-only
 				return err
 			}
 			if _, ok := ws.Skills.Get(args[0]); ok {
@@ -241,6 +242,11 @@ func runDoctorJSON() error {
 			"summary":   decoding.Summary(),
 			"support":   decoding,
 			"cached":    backends.CapabilityReport(),
+			"grammars":  grammarSizes(),
+		},
+		"throughput": map[string]any{
+			"model":    throughputForModel(ws.Config.Model),
+			"observed": backends.ThroughputSnapshot(),
 		},
 		"learning": learningStatus(ws.Config),
 		"config": map[string]any{
@@ -352,6 +358,17 @@ func runDoctor() error {
 		fmt.Println(cli.Dim("  not negotiated yet — the first run probes the endpoint"))
 	}
 	for _, line := range backends.CapabilityReport() {
+		fmt.Println(cli.Dim("  " + line))
+	}
+	// Constrained decoding is only as strong as the contract behind it, so
+	// say how many role grammars actually render and how big they are. A role
+	// with no schema contract silently degrades to prompt-only JSON.
+	cli.KeyVal("grammars", describeGrammars())
+	// Measured decode rate. EstimateTimeout already derives request deadlines
+	// from this; without it here an operator can only infer throughput from
+	// how long a run felt.
+	cli.KeyVal("throughput", describeThroughput(ws.Config.Model))
+	for _, line := range throughputLines() {
 		fmt.Println(cli.Dim("  " + line))
 	}
 	learn := learningStatus(ws.Config)
@@ -594,4 +611,72 @@ func openBrowser(url string) {
 	if cmd != nil {
 		_ = cmd.Run()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// doctor: schema grammars and measured throughput
+// ---------------------------------------------------------------------------
+
+// grammarSizes is the rendered GBNF size, in bytes, of every registered role
+// contract. This is the diagnostic schema.AllGrammars exists for: an empty map
+// (or a missing role) means constrained decoding has nothing to constrain.
+func grammarSizes() map[string]int {
+	out := map[string]int{}
+	for role, src := range schema.AllGrammars() {
+		out[role] = len(src)
+	}
+	return out
+}
+
+// describeGrammars summarizes the role contracts for the human doctor, naming
+// the reviewer grammar explicitly because pkg/models negotiates the decoding
+// mechanism against exactly that spec.
+func describeGrammars() string {
+	sizes := grammarSizes()
+	total := 0
+	for _, n := range sizes {
+		total += n
+	}
+	line := fmt.Sprintf("%d role contract(s), %d GBNF bytes", len(sizes), total)
+	if g, ok := schema.GBNFForRole(schema.RoleReview); ok {
+		line += fmt.Sprintf(" · %s=%d B (negotiation spec)", schema.RoleReview, len(g))
+	} else {
+		line += " · no " + schema.RoleReview + " grammar — decoding falls back to prompt-only"
+	}
+	return line
+}
+
+// throughputForModel is the machine-readable measured decode rate, or nil when
+// nothing has been measured for this model yet. Never substitutes
+// backends.DefaultTokensPerSec: that prior sizes request deadlines, and
+// reporting it here would present a guess as an observation.
+func throughputForModel(model string) map[string]any {
+	tps, samples, ok := backends.ObservedThroughput(model)
+	if !ok {
+		return nil
+	}
+	return map[string]any{"tokens_per_sec": tps, "samples": samples}
+}
+
+// describeThroughput renders the active model's measured decode rate.
+func describeThroughput(model string) string {
+	tps, samples, ok := backends.ObservedThroughput(model)
+	if !ok {
+		return "not measured yet — run something, then re-check"
+	}
+	return fmt.Sprintf("≈%.1f tok/s over %d completion(s)", tps, samples)
+}
+
+// throughputLines lists every model observed on this machine, so a stack swap
+// can be compared against the model it replaced.
+func throughputLines() []string {
+	snap := backends.ThroughputSnapshot()
+	if len(snap) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(snap))
+	for _, o := range snap {
+		out = append(out, fmt.Sprintf("%-44s %6.1f tok/s  (n=%d)", o.Model, o.TokensPerSec, o.Samples))
+	}
+	return out
 }

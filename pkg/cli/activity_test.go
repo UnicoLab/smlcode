@@ -3,7 +3,9 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
@@ -195,5 +197,41 @@ func TestFormatEventErrorLevelIsRed(t *testing.T) {
 	})
 	if !strings.Contains(line, "\033[31m") {
 		t.Fatalf("expected red output: %q", line)
+	}
+}
+
+// The sticky line reports MEASURED throughput or nothing at all. It must never
+// present backends.DefaultTokensPerSec — the pessimistic prior that sizes
+// request deadlines — as if a completion had actually been timed.
+func TestActivityLineShowsMeasuredThroughputOnlyWhenMeasured(t *testing.T) {
+	t.Cleanup(func() {
+		backends.ResetThroughputStore()
+		backends.GlobalThroughput.Reset()
+	})
+	backends.ResetThroughputStore()
+	backends.GlobalThroughput.Reset()
+
+	a := NewActivity()
+	a.Start()
+	a.SetModel("unmeasured-model")
+	line := StripANSI(a.Line(200))
+	if !strings.Contains(line, "— tok/s") {
+		t.Fatalf("an unmeasured model must render an em dash, got: %q", line)
+	}
+	if strings.Contains(line, "12 tok/s") {
+		t.Fatalf("the default prior leaked into the status line: %q", line)
+	}
+
+	backends.GlobalThroughput.Observe("measured-model", 100, 5*time.Second)
+	a.SetModel("measured-model")
+	line = StripANSI(a.Line(200))
+	if !strings.Contains(line, "≈20 tok/s") {
+		t.Fatalf("measured rate missing from the status line: %q", line)
+	}
+
+	// No model at all: no segment, rather than a misleading dash.
+	a.SetModel("")
+	if line := StripANSI(a.Line(200)); strings.Contains(line, "tok/s") {
+		t.Fatalf("throughput segment rendered with no model set: %q", line)
 	}
 }

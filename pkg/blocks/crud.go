@@ -37,7 +37,7 @@ func Save(projectRoot string, block any) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(ProjectBlocksDir(projectRoot), kindSubdir(kind))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // blocks under .slmcode, owner-only
 		return "", err
 	}
 	path := filepath.Join(dir, id+".yaml")

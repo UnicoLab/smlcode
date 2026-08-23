@@ -153,14 +153,14 @@ func CopyTree(src, dst string) error {
 		rel, _ := filepath.Rel(src, path)
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return os.MkdirAll(target, 0o755) //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		}
 		in, err := os.Open(path)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = in.Close() }() // read-only descriptor; nothing actionable on close error
-		_ = os.MkdirAll(filepath.Dir(target), 0o755)
+		defer func() { _ = in.Close() }()            // read-only descriptor; nothing actionable on close error
+		_ = os.MkdirAll(filepath.Dir(target), 0o755) //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		out, err := os.Create(target)
 		if err != nil {
 			return err

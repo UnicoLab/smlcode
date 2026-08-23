@@ -218,7 +218,7 @@ func WriteCustom(dir string, c CustomSpec) (string, error) {
 	if err := NormalizeCustom(&c); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // agent definitions under .slmcode, owner-only
 		return "", err
 	}
 	path := filepath.Join(dir, c.ID+".yaml")

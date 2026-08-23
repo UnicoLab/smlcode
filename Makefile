@@ -40,8 +40,8 @@ help: ## Show this help
 	@echo "    make cover           Run tests with coverage, enforce the floor"
 	@echo "    make e2e             Run e2e tests"
 	@echo "    make studio          Build & launch Studio UI"
-	@echo "    make lint            Format-check + vet + golangci-lint (non-blocking) + UI smoke"
-	@echo "    make lint-strict     Same as lint, but golangci-lint failures are blocking"
+	@echo "    make lint            Format-check + vet + golangci-lint (blocking) + UI smoke"
+	@echo "    make lint-strict     Alias for lint (both blocking — the lint baseline is zero)"
 	@echo "    make check           Full local gate — same as CI (fmt, vet, lint, test, race, web)"
 	@echo "    make govulncheck     Scan dependencies for known vulnerabilities"
 	@echo "    make doctor          Run system health check"
@@ -213,11 +213,10 @@ bootstrap: ## Build the Studio UI from source if it hasn't been built yet (npm c
 		$(MAKE) ui-react; \
 	fi
 
-lint: ## Go format + vet + golangci-lint (non-blocking) + UI smoke check
+lint: ## Go format + vet + golangci-lint (blocking) + UI smoke check
 	@./scripts/lint.sh
 
-lint-strict: ## Same as lint, but golangci-lint issues fail the build (used to ratchet .golangci.yml's baseline down)
-	@LINT_STRICT=1 ./scripts/lint.sh
+lint-strict: lint ## Alias for lint — kept for muscle memory and CI history; lint is blocking now that the baseline is zero
 
 build: tidy ui-check ## Build the slmcode binary
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) ./cmd/slmcode
@@ -264,7 +263,7 @@ e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \
 	fi
 
-# The one gate: gofmt check + vet + golangci-lint (non-blocking) + unit tests
+# The one gate: gofmt check + vet + golangci-lint (blocking) + unit tests
 # + race tests + web lint/build. This is exactly what CI's lint-test job and
 # .pre-commit-config.yaml both run, so local and CI cannot diverge — if you
 # want to know whether a PR will pass CI, run `make check`.

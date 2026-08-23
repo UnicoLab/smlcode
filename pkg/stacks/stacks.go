@@ -601,7 +601,7 @@ func clearAgentLLM(agentsDir string) ([]string, error) {
 }
 
 func applyAgentDefaults(agentsDir string, defaults map[string]AgentDefault, force bool) ([]string, error) {
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o750); err != nil { // agent definitions under .slmcode, owner-only
 		return nil, err
 	}
 	existing, _ := agents.LoadCustomSpecs(agentsDir)

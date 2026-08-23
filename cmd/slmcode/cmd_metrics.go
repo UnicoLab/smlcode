@@ -92,14 +92,20 @@ func metricsShowCmd() *cobra.Command {
 			row := func(label, value string) {
 				fmt.Printf("  %s  %s\n", cli.Dim(cli.PadWidth(label, 22)), value)
 			}
-			row("tasks passed", fmt.Sprintf("%d/%d  (%.0f%%)", latest.TasksPassed, latest.Tasks, latest.TaskPassRate()*100))
-			row("edit apply rate", fmt.Sprintf("%d/%d  (%.0f%%)  format=%s",
-				latest.EditsApplied, latest.EditsAttempted, latest.EditApplyRate()*100, orDash(latest.EditFormat)))
-			row("tool errors", fmt.Sprintf("%d/%d  (%.0f%%)", latest.ToolErrors, latest.ToolCalls, latest.ToolErrorRate()*100))
-			row("redundant calls", fmt.Sprintf("%d  (%.0f%%)", latest.RedundantCalls, latest.RedundantCallRate()*100))
-			row("repair hit rate", fmt.Sprintf("%d/%d  (%.0f%%)", latest.RepairHits, latest.Failures, latest.RepairHitRate()*100))
-			row("resolved from memory", fmt.Sprintf("%d  (%.0f%%)", latest.ResolvedFromMemory, latest.MemoryResolutionRate()*100))
-			row("gate pass rate", fmt.Sprintf("%.0f%%", latest.GatePassRate()*100))
+			row("tasks passed", fmt.Sprintf("%d/%d  (%s)", latest.TasksPassed, latest.Tasks, pct(latest.TaskPassRate())))
+			row("edit apply rate", fmt.Sprintf("%d/%d  (%s)  format=%s",
+				latest.EditsApplied, latest.EditsAttempted, pct(latest.EditApplyRate()), orDash(latest.EditFormat)))
+			// First-attempt compliance is the diagnostic number for a small
+			// model: an edit the harness had to repair still lands, so the
+			// apply rate alone cannot tell a compliant model from one the
+			// repair ladder is carrying.
+			row("first-attempt applies", fmt.Sprintf("%d/%d  (%s)",
+				latest.EditsFirstAttempt, latest.EditsAttempted, pct(latest.FirstAttemptApplyRate())))
+			row("tool errors", fmt.Sprintf("%d/%d  (%s)", latest.ToolErrors, latest.ToolCalls, pct(latest.ToolErrorRate())))
+			row("redundant calls", fmt.Sprintf("%d  (%s)", latest.RedundantCalls, pct(latest.RedundantCallRate())))
+			row("repair hit rate", fmt.Sprintf("%d/%d  (%s)", latest.RepairHits, latest.Failures, pct(latest.RepairHitRate())))
+			row("resolved from memory", fmt.Sprintf("%d  (%s)", latest.ResolvedFromMemory, pct(latest.MemoryResolutionRate())))
+			row("gate pass rate", pct(latest.GatePassRate()))
 			row("llm calls / task", fmt.Sprintf("%.1f", latest.LLMCallsPerTask()))
 			row("tokens / task", fmt.Sprintf("%.0f", latest.TokensPerTask()))
 			row("wall seconds / task", fmt.Sprintf("%.1f", latest.WallSecondsPerTask()))
@@ -179,4 +185,16 @@ size, and report every metric that moved. This is the only honest answer to
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	return c
+}
+
+// pct renders a metrics rate, which is -1 when the denominator was zero.
+//
+// Every rate on metrics.Metrics uses that convention, and printing it as
+// "%.0f%%" turned "no gates ran" into a confident "-100%" — the one number on
+// the screen that cannot happen.
+func pct(rate float64) string {
+	if rate < 0 {
+		return "–"
+	}
+	return fmt.Sprintf("%.0f%%", rate*100)
 }

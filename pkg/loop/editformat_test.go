@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/evolve"
+	"github.com/UnicoLab/slmcode/pkg/memory"
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
@@ -383,4 +384,56 @@ func clip60(s string) string {
 		return s[:60] + "…"
 	}
 	return s
+}
+
+// The tool layer calls ReportToolFailure, not edits.noteRepair, so the two
+// have to agree: a deterministic argument repair must cost the arm its
+// first-attempt credit even though the edit that follows lands cleanly.
+func TestReportToolFailureBooksTheRepairAgainstFirstAttemptCredit(t *testing.T) {
+	// A real engine WITH its seeded repair rules — the point of the test is
+	// that the shipped rule fires, not that a hand-built one does.
+	dir := t.TempDir()
+	eng, err := evolve.OpenWith(dir, dir, evolve.EngineOptions{Deterministic: true, ProjectPolicy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = eng.Close() }()
+	r := &Runner{Evolve: eng, Log: func(string, ...interface{}) {}}
+	newArgs, _, retry := r.ReportToolFailure(context.Background(),
+		memory.ToolEvent{
+			Tool: "ws_edit", Path: "a.go",
+			Args:  `{"path":"a.go","old_str":"   4|\tb := 2","new_str":"\tb := 3"}`,
+			Error: workspace.LineNumberedOldStrReason("a.go"),
+		},
+		evolve.Signal{Tool: "ws_edit", Path: "a.go",
+			Message: workspace.LineNumberedOldStrReason("a.go")},
+	)
+	if !retry || newArgs == "" {
+		t.Fatalf("the seeded strip-line-numbers rule did not produce repaired args (retry=%v)", retry)
+	}
+	if strings.Contains(newArgs, "4|") {
+		t.Fatalf("repaired args still carry the line-number gutter: %s", newArgs)
+	}
+	r.noteEdits(editTranscript(
+		editCall{id: "c1", tool: "ws_edit", args: `{"path":"a.go"}`, result: "edited a.go (1 replacement(s))"},
+	))
+	if attempted, applied, first := r.EditStats(); attempted != 1 || applied != 1 || first != 0 {
+		t.Fatalf("repaired edit scored %d/%d/%d, want 1/1/0", attempted, applied, first)
+	}
+
+	// The rule only earns credit once the retry is reported as having worked.
+	r.ToolRetryOutcome(newArgs, true, "retried with stripped line numbers")
+	events := r.DrainFailureEvents()
+	if len(events) == 0 {
+		t.Fatal("the tool failure never reached the run report")
+	}
+	fromMemory := 0
+	for _, e := range events {
+		if e.FromMemory() {
+			fromMemory++
+		}
+	}
+	if fromMemory == 0 {
+		t.Fatalf("no failure was credited to memory: %+v", events)
+	}
 }

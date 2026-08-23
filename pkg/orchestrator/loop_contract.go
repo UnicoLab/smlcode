@@ -40,10 +40,6 @@ func applyLoopContract(runner *loop.Runner, c loopContract) {
 
 // drainRunnerEvolve pulls the failure events and bandit decisions the inner
 // loop accumulated, clearing them so a second call cannot double-count.
-//
-// Edit-format accounting is not read here: pkg/loop owns the edit format
-// decision (evolve.DecEditFormat) and records its own bandit outcome, so the
-// orchestrator's RunReport leaves EditFormat/EditsAttempted/EditsApplied to it.
 func drainRunnerEvolve(runner *loop.Runner) (
 	failures []evolve.FailureEvent,
 	decisions []evolve.DecisionRecord,
@@ -52,4 +48,19 @@ func drainRunnerEvolve(runner *loop.Runner) (
 		return nil, nil
 	}
 	return runner.DrainFailureEvents(), runner.DrainDecisionRecords()
+}
+
+// runnerEditStats is the run's edit-format accounting, read off the inner loop.
+//
+// pkg/loop owns the edit-format decision (evolve.DecEditFormat) and rewards its
+// own bandit arm, but the RunReport is built HERE — so leaving these four
+// fields unset is what made `slmcode metrics` print a 0/0 apply rate and a
+// blank edit format for every run ever recorded. The numbers exist; they just
+// never crossed the layer boundary.
+func runnerEditStats(runner *loop.Runner) (format string, attempted, applied, firstAttempt int) {
+	if runner == nil {
+		return "", 0, 0, 0
+	}
+	attempted, applied, firstAttempt = runner.EditStats()
+	return runner.EditFormat(), attempted, applied, firstAttempt
 }

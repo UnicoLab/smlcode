@@ -98,7 +98,7 @@ func loadPending(slmDir string) ([]pendingPatch, error) {
 // file gets 0o644; an existing executable keeps its +x bits.
 func writePatch(root string, p pendingPatch) error {
 	abs := p.abs(root)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return err
 	}
 	mode := os.FileMode(0o644)
@@ -641,7 +641,7 @@ func gitUntrackedFiles(root string, paths []string) []string {
 }
 
 func gitFileAtHead(root, rel string) string {
-	out, err := exec.Command("git", "-C", root, "show", "HEAD:"+rel).Output()
+	out, err := exec.Command("git", "-C", root, "show", "HEAD:"+rel).Output() //nolint:gosec // fixed argv git invocation, no shell; only the project root varies
 	if err != nil {
 		return ""
 	}

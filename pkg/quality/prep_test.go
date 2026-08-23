@@ -87,26 +87,6 @@ func TestFormatChangedFilesScopeAndOptIn(t *testing.T) {
 	}
 }
 
-// TestAutoFixFormattingIsNoLongerRepoWide pins the deprecation: the old blunt
-// entry point must not quietly keep formatting the whole project.
-func TestAutoFixFormattingIsNoLongerRepoWide(t *testing.T) {
-	root := t.TempDir()
-	const ugly = "package p\nfunc  A( ) int {\nreturn 1\n}\n"
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module demo\n\ngo 1.22\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(ugly), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := AutoFixFormatting(root); got != "" {
-		t.Fatalf("AutoFixFormatting = %q, want empty", got)
-	}
-	body, _ := os.ReadFile(filepath.Join(root, "a.go"))
-	if string(body) != ugly {
-		t.Fatal("AutoFixFormatting reformatted the repo — it must be a no-op now")
-	}
-}
-
 func TestBootstrapPolicy(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "requirements.txt"), []byte("requests\n"), 0o644); err != nil {

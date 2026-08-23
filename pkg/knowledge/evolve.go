@@ -39,7 +39,7 @@ func Evolve(slmDir string, query string, board *plan.Board, lessonsMD string, sk
 	out.SkillsIndex = "SKILLS.md"
 
 	learnedDir := filepath.Join(slmDir, "skills", "learned")
-	if err := os.MkdirAll(learnedDir, 0o755); err != nil {
+	if err := os.MkdirAll(learnedDir, 0o750); err != nil { // learned skills under .slmcode, owner-only
 		return nil, err
 	}
 	learnedPath := filepath.Join(learnedDir, "SKILL.md")

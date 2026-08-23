@@ -69,9 +69,6 @@ const (
 	// MaxPriorityTokens caps first-class run handoff/context.
 	MaxPriorityTokens = 600
 
-	// MaxPriorityBytes is the byte-equivalent cap (back-compat).
-	MaxPriorityBytes = 2400
-
 	// FileFloorPercent is pre-reserved for files before any doc is packed, so
 	// one bloated PROJECT.md can never consume the whole budget and leave the
 	// specialist with zero code. Applies to every role, not just lean ones.
@@ -139,6 +136,38 @@ func WithReserves(systemTokens, toolTokens, responseTokens int) Option {
 		if responseTokens > 0 {
 			o.budget.ReserveResponseTokens = responseTokens
 		}
+	}
+}
+
+// WithRoleBudgets overrides the per-role share of the available window, as a
+// percentage (config's context_role_budget). Keys are role ids; case and
+// surrounding space do not matter. Roles absent from the map keep the built-in
+// RoleBudgetPercent share, and a non-positive percentage is ignored.
+//
+// This is the option context_role_budget needs: RoleBudgetPercent is a
+// package-level table with no per-instance override, so the orchestrator used
+// to fake a role budget by scaling the whole context window by want/default —
+// arithmetically equivalent for the pack, but it made every other consumer of
+// Budget.ContextLimitTokens (overflow checks, compaction thresholds) believe
+// the model had a different window than it does.
+func WithRoleBudgets(pct map[string]int) Option {
+	return func(o *packerOptions) {
+		if len(pct) == 0 {
+			o.budget.RoleBudgets = nil
+			return
+		}
+		m := make(map[string]int, len(pct))
+		for role, p := range pct {
+			key := strings.ToLower(strings.TrimSpace(role))
+			if key == "" || p <= 0 {
+				continue
+			}
+			m[key] = p
+		}
+		if len(m) == 0 {
+			m = nil
+		}
+		o.budget.RoleBudgets = m
 	}
 }
 
@@ -746,20 +775,6 @@ func splitPriorityMarkdown(markdown string) (priority, rest string) {
 		rest = strings.TrimSpace(prefix + "\n\n" + rest)
 	}
 	return priority, rest
-}
-
-// TakePriority clips the run collaboration contract to a byte budget. Exported
-// for callers that build a contract block outside the packer.
-func TakePriority(markdown string, remaining int) string {
-	markdown = strings.TrimSpace(markdown)
-	if markdown == "" || remaining <= 0 {
-		return ""
-	}
-	limit := remaining
-	if limit > MaxPriorityBytes {
-		limit = MaxPriorityBytes
-	}
-	return textutil.TruncateDefault(markdown, limit)
 }
 
 func isLeanRole(role string) bool {

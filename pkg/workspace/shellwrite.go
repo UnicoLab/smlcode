@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -331,16 +330,6 @@ func splitWords(s string) []string {
 	}
 	flush()
 	return words
-}
-
-// FileExistsUnder reports whether path exists under root (relative or abs).
-func FileExistsUnder(root, path string) bool {
-	abs := path
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, abs)
-	}
-	st, err := os.Stat(filepath.Clean(abs))
-	return err == nil && !st.IsDir()
 }
 
 // mutatingCommandTargets finds files a command rewrites WITHOUT using shell

@@ -18,6 +18,7 @@ slmcode/
 │   ├── instructions/ retrieval/ AGENTS.md loading with path gating; embeddings
 │   ├── schema/ backends/ repair/ JSON+GBNF contracts, capability probe, repair ladder
 │   ├── memory/ evolve/ eval/    four memory layers; repair rules + bandit; metrics
+│                                 (fed from the tool layer via workspace.ToolObserver)
 │   ├── blocks/ pipeline/ stacks/ YAML building blocks, phase graph, provider presets
 │   ├── permissions/ hitl/ hooks/ write & shell policy, human gates, lifecycle hooks
 │   ├── server/                  Studio HTTP/SSE API + security policy
@@ -25,7 +26,8 @@ slmcode/
 ├── web/                         Vite + React + TS Studio SPA → cmd/slmcode/ui/
 ├── skills/default/              Default skill packs (source, embedded)
 ├── stacks/                      Provider/model presets (YAML)
-├── test/e2e/                    Board, Studio API, prime ports, live oMLX
+├── test/e2e/                    Board, Studio API, prime ports, live oMLX,
+│                                 harness_smoke_test.go (whole harness vs a fake model)
 ├── docs/                        MkDocs Material pages (→ GitHub Pages)
 │   ├── index.md · install.md · quickstart.md · concepts.md · providers.md
 │   ├── guide.md · tui.md · studio.md · skills.md · agents.md · blocks.md
@@ -59,6 +61,7 @@ slmcode/
 ├── checkpoints/ · sessions/ · queries/
 ├── scratch/                          the ONLY tool-writable path under .slmcode/
 ├── memory/ · evolve/ · metrics/      self-improvement state
+├── capabilities.json · throughput.json  probed decoding + measured tok/s
 └── auth.json                         provider keys (never commit)
 
 ~/.slmcode/

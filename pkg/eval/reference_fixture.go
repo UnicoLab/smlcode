@@ -177,10 +177,10 @@ def test_no_stub_markers():
 	}
 	for rel, body := range files {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
 			return err
 		}
-		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(abs, []byte(body), 0o600); err != nil {
 			return err
 		}
 	}
@@ -203,10 +203,10 @@ func WriteLangGraphGarbageFixture(root string) error {
 	}
 	for rel, body := range files {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
 			return err
 		}
-		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(abs, []byte(body), 0o600); err != nil {
 			return err
 		}
 	}

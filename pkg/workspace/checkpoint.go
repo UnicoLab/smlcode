@@ -51,7 +51,7 @@ func (c *FileCheckpointer) BackupIfNeeded(rel string) {
 	}
 	c.seen[rel] = true
 	abs := filepath.Join(c.Root, filepath.FromSlash(rel))
-	_ = os.MkdirAll(c.dir(), 0o755)
+	_ = os.MkdirAll(c.dir(), 0o750) // .slmcode checkpoint store, owner-only
 	name := safeCheckpointName(rel)
 	data, err := os.ReadFile(abs)
 	if err != nil {
@@ -82,7 +82,7 @@ func (c *FileCheckpointer) Restore(rel string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return err
 	}
 	return atomicfile.Write(abs, data, 0o644)

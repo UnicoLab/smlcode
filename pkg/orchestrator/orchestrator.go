@@ -67,12 +67,9 @@ type Orchestrator struct {
 	cfg        *config.Config
 	store      *contextstore.Store
 	boardStore *plan.LiveStore
-	packer     *contextstore.Packer
-	// rolePackers holds a packer per role that carries an explicit
-	// context_role_budget override (nil when none is configured). See
-	// context_wiring.go — Budget's role table is package-level in
-	// pkg/context, so a per-role share is expressed as a scaled window.
-	rolePackers   map[string]*contextstore.Packer
+	// packer carries every context-engineering knob, per-role budgets
+	// (context_role_budget) included — see context_wiring.go.
+	packer        *contextstore.Packer
 	skills        *skills.Loader
 	llm           *llm.ProviderManager
 	tools         *tools.ToolRegistry
@@ -697,7 +694,7 @@ func (o *Orchestrator) memoryBlockFor(role string) string {
 		return ""
 	}
 	budget := o.memoryTokens()
-	if p := o.packerFor(role); p != nil {
+	if p := o.packerNow(); p != nil {
 		if b := p.BudgetTokensFor(role) / 6; b > 0 {
 			budget = b
 		}

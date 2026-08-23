@@ -382,7 +382,7 @@ func (p *streamTeeProvider) observe(req llm.CompletionRequest, resp *llm.Complet
 	if strings.TrimSpace(model) == "" {
 		model = req.Model
 	}
-	GlobalThroughput.Observe(model, resp.Usage.CompletionTokens, time.Since(start))
+	observeAndPersist(model, resp.Usage.CompletionTokens, time.Since(start))
 }
 
 func (p *streamTeeProvider) IsHealthy(ctx context.Context) error { return p.inner.IsHealthy(ctx) }

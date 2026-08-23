@@ -167,7 +167,9 @@ func commitCmd() *cobra.Command {
 			if out, err := c.CombinedOutput(); err != nil {
 				return fmt.Errorf("git add: %s %v", out, err)
 			}
-			c = exec.Command("git", "commit", "-m", msg)
+			// msg is the user's own --message flag value, passed as a discrete
+			// argv element (no shell involved), not attacker-controlled input.
+			c = exec.Command("git", "commit", "-m", msg) //nolint:gosec // msg is a local CLI flag value, argv-only (no shell)
 			c.Dir = root
 			out, err := c.CombinedOutput()
 			fmt.Print(string(out))

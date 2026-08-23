@@ -138,7 +138,7 @@ func readConfigFileValues(slmDir string) map[string]any {
 	}
 	// The config is YAML but every scalar we care about is a simple `key: value`
 	// line; parsing that directly avoids depending on the config package's
-	// internal marshalling.
+	// internal marshaling.
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") || line != trimmed {

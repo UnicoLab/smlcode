@@ -689,7 +689,7 @@ func asInt(v any) (int, bool) {
 	case int64:
 		return int(t), true
 	case uint64:
-		return int(t), true
+		return int(t), true //nolint:gosec // config values (max_tokens/max_parallel/etc.), not attacker-sized; no OOB use
 	case float64:
 		return int(t), true
 	default:

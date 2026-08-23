@@ -47,7 +47,7 @@ func Load(slmDir string) (*Store, error) {
 
 func loadLocked(slmDir string) (*Store, error) {
 	p := Path(slmDir)
-	b, err := os.ReadFile(p)
+	b, err := os.ReadFile(p) //nolint:gosec // p is our own .slmcode/auth.json path, not external input
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Store{Keys: map[string]string{}}, nil
@@ -78,7 +78,9 @@ func saveLocked(slmDir string, s *Store) error {
 	if s.Keys == nil {
 		s.Keys = map[string]string{}
 	}
-	if err := os.MkdirAll(slmDir, 0o755); err != nil {
+	// This directory holds auth.json (API keys); keep it out of reach of
+	// other accounts on shared machines.
+	if err := os.MkdirAll(slmDir, 0o750); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(s, "", "  ")

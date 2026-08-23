@@ -57,7 +57,7 @@ type keyPath struct{ path, role string }
 
 func detectOverview(root, name string) string {
 	for _, candidate := range []string{"README.md", "readme.md", "STRUCTURE.md"} {
-		data, err := os.ReadFile(filepath.Join(root, candidate))
+		data, err := os.ReadFile(filepath.Join(root, candidate)) //nolint:gosec // candidate is from our own fixed shortlist
 		if err != nil {
 			continue
 		}
@@ -116,7 +116,7 @@ func detectOverview(root, name string) string {
 }
 
 func readGoModule(root string) string {
-	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	data, err := os.ReadFile(filepath.Join(root, "go.mod")) //nolint:gosec // fixed filename under project root
 	if err != nil {
 		return ""
 	}

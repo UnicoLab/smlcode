@@ -90,7 +90,7 @@ func ExtractTerms(texts ...string) []string {
 
 // Excerpt returns a relevance-windowed view of content.
 //
-// Head truncation (the historical behaviour) shows the model the licence
+// Head truncation (the historical behavior) shows the model the license
 // header, the package clause and the imports, never the function it must edit,
 // and then asks it for an exact old_str match. This instead:
 //   - always keeps the first HeadLines lines (package/imports orientation),

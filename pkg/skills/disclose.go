@@ -10,7 +10,7 @@ import (
 // Progressive disclosure.
 //
 // Rendering the ENTIRE SKILL.md body for four to six matched skills puts
-// hundreds of tokens of always-on behavioural directives in front of a 7B with
+// hundreds of tokens of always-on behavioral directives in front of a 7B with
 // a 3K budget, and multiple simultaneous directives measurably degrade
 // small-model instruction-following. Two stages instead:
 //
@@ -44,7 +44,7 @@ type PackOptions struct {
 	MaxChars int
 	// Expand names additional skills to inline in full (case-insensitive).
 	Expand []string
-	// ExpandAll restores the historical dump-everything behaviour.
+	// ExpandAll restores the historical dump-everything behavior.
 	ExpandAll bool
 	// CardsOnly suppresses every body, even explicit refs.
 	CardsOnly bool

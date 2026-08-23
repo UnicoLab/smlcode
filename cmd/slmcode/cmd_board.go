@@ -490,7 +490,9 @@ func editDoc(name string) error {
 	if editor == "" {
 		editor = "vi"
 	}
-	c := exec.Command(editor, path)
+	// editor is from $EDITOR (or the "vi" default), which the invoking user
+	// controls on their own machine — same trust level as any other locally-launched tool.
+	c := exec.Command(editor, path) //nolint:gosec // editor path is from the user's own env, not attacker input
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
 }

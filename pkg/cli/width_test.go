@@ -33,10 +33,9 @@ func TestRuneWidth(t *testing.T) {
 
 func TestVisibleWidthIgnoresANSI(t *testing.T) {
 	plain := "● worker"
-	styled := Green("●") + " " + Bold("worker")
 	SetColorMode(ColorAlways)
 	defer SetColorMode(ColorNever)
-	styled = Green("●") + " " + Bold("worker")
+	styled := Green("●") + " " + Bold("worker")
 	if got, want := VisibleWidth(styled), StringWidth(plain); got != want {
 		t.Fatalf("VisibleWidth(styled)=%d want %d (styled=%q)", got, want, styled)
 	}

@@ -31,7 +31,7 @@ func WriteAsk(slmDir, kind string, payload any) error {
 	if slmDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(Dir(slmDir, kind), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(slmDir, kind), 0o750); err != nil { // HITL ask/answer state, owner-only
 		return err
 	}
 	_ = os.Remove(AnswersPath(slmDir, kind))
@@ -66,7 +66,7 @@ func WriteAnswers(slmDir, kind string, payload any) error {
 	if slmDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(Dir(slmDir, kind), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(slmDir, kind), 0o750); err != nil { // HITL ask/answer state, owner-only
 		return err
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
@@ -81,7 +81,7 @@ func WriteAnswersOnce(slmDir, kind string, payload any) error {
 	if slmDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(Dir(slmDir, kind), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(slmDir, kind), 0o750); err != nil { // HITL ask/answer state, owner-only
 		return err
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")

@@ -96,7 +96,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if blockExists(reg, kind, id) {
-		http.Error(w, fmt.Sprintf("block %q already exists (edit it instead)", id), 409)
+		http.Error(w, fmt.Sprintf("block %q already exists (edit it instead)", id), http.StatusConflict)
 		return
 	}
 	path, err := blocks.Save(s.cfg().Root, block)

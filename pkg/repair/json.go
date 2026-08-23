@@ -185,7 +185,13 @@ func RepairToolArgs(args string) (string, error) {
 	return fixed, nil
 }
 
-var trailingCommaRE = regexp.MustCompile(`,\s*([}\]])`)
+var (
+	trailingCommaRE = regexp.MustCompile(`,\s*([}\]])`)
+	// danglingCommaRE catches a comma the model never got to follow up on:
+	// `{"path":"a.go","old_str":"x",` truncated by max_tokens right after a
+	// complete pair. Dropping it recovers the object without inventing content.
+	danglingCommaRE = regexp.MustCompile(`,\s*$`)
+)
 
 func stripTrailingCommas(s string) string {
 	prev := ""
@@ -193,7 +199,7 @@ func stripTrailingCommas(s string) string {
 		prev = s
 		s = trailingCommaRE.ReplaceAllString(s, "$1")
 	}
-	return s
+	return danglingCommaRE.ReplaceAllString(s, "")
 }
 
 func singleToDoubleQuotes(s string) string {

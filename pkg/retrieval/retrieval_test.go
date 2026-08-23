@@ -121,7 +121,7 @@ func TestResolveEmbedderModes(t *testing.T) {
 	if mode != "lexical" || emb.Name() != "lexical" {
 		t.Fatalf("force lexical: %s %s", mode, emb.Name())
 	}
-	emb, mode = ResolveEmbedder(context.Background(), Config{})
+	_, mode = ResolveEmbedder(context.Background(), Config{})
 	if mode != "local" {
 		t.Fatalf("default offline=%s", mode)
 	}

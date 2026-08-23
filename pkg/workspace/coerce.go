@@ -27,11 +27,11 @@ func intArg(args map[string]interface{}, key string, def int) int {
 	case int64:
 		return int(n)
 	case uint:
-		return int(n)
+		return int(n) //nolint:gosec // caller clamps offset/limit to valid ranges before use; overflow can't cause OOB access
 	case uint32:
 		return int(n)
 	case uint64:
-		return int(n)
+		return int(n) //nolint:gosec // caller clamps offset/limit to valid ranges before use; overflow can't cause OOB access
 	case float64:
 		return int(n)
 	case float32:

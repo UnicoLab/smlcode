@@ -15,7 +15,7 @@ var bundled embed.FS
 // MaterializeBundled syncs embedded default skills into dest (always overwrite).
 // Project skills live beside this directory and win on name via Loader order.
 func MaterializeBundled(dest string) error {
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := os.MkdirAll(dest, 0o750); err != nil { // project skills dir, owner-only
 		return err
 	}
 	return fs.WalkDir(bundled, "bundled", func(path string, d fs.DirEntry, err error) error {
@@ -28,7 +28,7 @@ func MaterializeBundled(dest string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil { // project skills dir, owner-only
 			return err
 		}
 		return atomicfile.Write(target, data, 0o644)

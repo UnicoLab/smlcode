@@ -49,7 +49,7 @@ func AutoFixFormatting(root string) string {
 		if _, err := exec.LookPath("goimports"); err == nil {
 			cmd2 := exec.Command("goimports", "-w", ".")
 			cmd2.Dir = root
-			cmd2.CombinedOutput() // best effort
+			_, _ = cmd2.CombinedOutput() // best effort; goimports failures don't block the format pass
 		}
 	}
 	// Python: ruff format
@@ -860,7 +860,7 @@ func safeShellWord(s string) bool {
 
 // SafeFocusPath reports whether a task focus path may be placed on a command
 // line at all. Anything outside [A-Za-z0-9._/@+-] is rejected before quoting,
-// as defence in depth: no shell metacharacter, newline, or NUL ever reaches
+// as defense in depth: no shell metacharacter, newline, or NUL ever reaches
 // bash, regardless of quoting bugs.
 func SafeFocusPath(p string) bool {
 	p = strings.TrimSpace(p)

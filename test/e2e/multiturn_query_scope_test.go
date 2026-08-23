@@ -98,9 +98,6 @@ func TestMultiTurnQueryScopedPlanTasksSummary(t *testing.T) {
 	if !strings.Contains(prior, "doc comment") && !strings.Contains(prior, "Document Hello") {
 		t.Fatal("prior summary should enrich turn2 context")
 	}
-	if strings.Contains(prior, "PLAN.md rewritten") {
-		// knowledge only — not a live plan carry-over signal
-	}
 	if _, err := os.Stat(filepath.Join(session.TurnDir(slm, "run-turn1"), "PLAN.md")); err != nil {
 		t.Fatal("turn1 PLAN.md should remain under queries/", err)
 	}
@@ -230,7 +227,7 @@ func TestMultiTurnQueryScopedPlanTasksSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("queries list %d", resp.StatusCode)
 	}
@@ -245,7 +242,7 @@ func TestMultiTurnQueryScopedPlanTasksSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != 200 {
 		t.Fatalf("query detail %d", resp2.StatusCode)
 	}

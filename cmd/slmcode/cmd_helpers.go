@@ -35,10 +35,10 @@ func ensureSlmGitignore(slmDir string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	if err := os.MkdirAll(slmDir, 0o755); err != nil {
+	if err := os.MkdirAll(slmDir, 0o750); err != nil { // project state dir, owner-only
 		return err
 	}
-	return os.WriteFile(path, []byte(slmGitignore), 0o644)
+	return os.WriteFile(path, []byte(slmGitignore), 0o644) //nolint:gosec // conventional .gitignore perms, not secret state
 }
 
 // gitIgnores reports whether git would ignore the given repo-relative path.

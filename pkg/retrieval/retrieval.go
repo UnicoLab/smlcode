@@ -277,18 +277,18 @@ func CollectChunks(slmDir string) []Chunk {
 			continue
 		}
 		id := e.Name()
-		data, err := os.ReadFile(filepath.Join(qdir, id, "summary.md"))
+		data, err := os.ReadFile(filepath.Join(qdir, id, "summary.md")) //nolint:gosec // id comes from os.ReadDir(qdir), our own queries dir
 		if err != nil || len(data) == 0 {
 			continue
 		}
 		q := ""
-		if qb, qerr := os.ReadFile(filepath.Join(qdir, id, "QUERY.md")); qerr == nil {
+		if qb, qerr := os.ReadFile(filepath.Join(qdir, id, "QUERY.md")); qerr == nil { //nolint:gosec // id comes from os.ReadDir(qdir), our own queries dir
 			q = strings.TrimSpace(strings.TrimPrefix(string(qb), "# Query"))
 			q = strings.TrimSpace(q)
 		}
 		out = append(out, SplitSections("summary:"+id, "summary", string(data), q)...)
 	}
-	if data, err := os.ReadFile(filepath.Join(slmDir, "summaries", "INDEX.md")); err == nil && len(data) > 0 {
+	if data, err := os.ReadFile(filepath.Join(slmDir, "summaries", "INDEX.md")); err == nil && len(data) > 0 { //nolint:gosec // slmDir is our own project state dir, not external input
 		out = append(out, SplitSections("index", "index", string(data), "")...)
 	}
 	if data, err := os.ReadFile(filepath.Join(slmDir, "MEMORY.md")); err == nil && len(data) > 80 {

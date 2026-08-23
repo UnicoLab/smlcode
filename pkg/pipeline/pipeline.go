@@ -165,7 +165,7 @@ func Load(slmDir string) (*Config, error) {
 }
 
 func readPipelineBytes(path string) ([]byte, bool, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is our own <slmDir>/pipeline*.yaml, not external input
 	if err == nil {
 		var probe Config
 		if yaml.Unmarshal(data, &probe) == nil {
@@ -204,7 +204,7 @@ func saveFile(slmDir, fileName string, cfg *Config, header string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(slmDir, 0o755); err != nil {
+	if err := os.MkdirAll(slmDir, 0o750); err != nil { // project config dir, owner-only
 		return err
 	}
 	data, err := yaml.Marshal(cfg)

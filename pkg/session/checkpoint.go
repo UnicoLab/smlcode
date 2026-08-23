@@ -187,7 +187,7 @@ func writeCheckpoint(slmDir string, t *Turn) error {
 	if t == nil {
 		return nil
 	}
-	_ = os.MkdirAll(slmDir, 0o755)
+	_ = os.MkdirAll(slmDir, 0o750) // session state, owner-only
 	mode := "board"
 	var reactTasks []string
 	if list, err := ListReactCheckpoints(slmDir, t.ID); err == nil {
@@ -232,12 +232,15 @@ func readCheckpointID(slmDir string) string {
 	return cf.TurnID
 }
 
+// Deliberately matches both the American spelling (what Go's stdlib
+// context.Canceled actually says) and the British "-ll-" variant: error
+// strings come from many backends/libraries, not all of which agree.
 func looksLikeCancel(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	return strings.Contains(lower, "context canceled") ||
-		strings.Contains(lower, "context cancelled") ||
+		strings.Contains(lower, "context cancelled") || //nolint:misspell // matching alternate spelling on purpose, see comment above
 		strings.Contains(lower, "canceled") ||
-		strings.Contains(lower, "cancelled") ||
+		strings.Contains(lower, "cancelled") || //nolint:misspell // matching alternate spelling on purpose, see comment above
 		strings.Contains(lower, "interrupted") ||
 		strings.Contains(lower, "stopped")
 }

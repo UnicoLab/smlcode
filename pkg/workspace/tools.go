@@ -399,7 +399,7 @@ type Workspace struct {
 	// SyntaxCheck runs a cheap parse check after every write/edit/patch and
 	// REVERTS an edit that introduces a new syntax error. Default ON via
 	// RegisterCodingToolsOpts; the zero value is off so a bare &Workspace{}
-	// (tests, embedders) keeps the old behaviour.
+	// (tests, embedders) keeps the old behavior.
 	SyntaxCheck        bool
 	SyntaxCheckTimeout time.Duration
 	ShellWhitelist     bool
@@ -1061,7 +1061,9 @@ func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (in
 	}
 	moved := false
 	if w.hasGit() {
-		cmd := exec.Command("git", "-C", w.Root, "mv", from, to)
+		// from/to are tool-call paths already resolved/guarded against escaping
+		// w.Root; passed as discrete argv elements to git, no shell involved.
+		cmd := exec.Command("git", "-C", w.Root, "mv", from, to) //nolint:gosec // argv-only git invocation; paths already root-confined by guardWrite/resolve above
 		if _, err := cmd.CombinedOutput(); err == nil {
 			moved = true
 		}
@@ -1659,7 +1661,7 @@ func (w *Workspace) gitDiff(ctx context.Context, args map[string]interface{}) (i
 }
 
 // shellSingleQuote wraps s in POSIX single quotes, which suppress every form
-// of expansion (unlike double quotes, which still honour $(…) and backticks).
+// of expansion (unlike double quotes, which still honor $(…) and backticks).
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

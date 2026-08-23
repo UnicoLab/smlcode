@@ -170,10 +170,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 	}
 
 	// Refine builder
-	out := refine.Build(refine.Input{Query: "e2e", Round: 1})
-	if !out.Skip {
-		// empty lessons → skip is OK
-	}
+	_ = refine.Build(refine.Input{Query: "e2e", Round: 1}) // empty lessons → skip is OK, nothing to assert
 
 	// Session events
 	if err := session.AppendEvent(cfg.SlmDir(), "run-e2e", session.EventRecord{
@@ -193,7 +190,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		body, _ := io.ReadAll(res.Body)
 		if res.StatusCode != 200 {
 			t.Fatalf("%s → %d %s", path, res.StatusCode, body)
@@ -258,7 +255,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpRes.Body.Close()
+	_ = httpRes.Body.Close()
 	if httpRes.StatusCode != 200 {
 		t.Fatalf("put auth %d", httpRes.StatusCode)
 	}
@@ -276,7 +273,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(httpRes.Body)
-	httpRes.Body.Close()
+	_ = httpRes.Body.Close()
 	if httpRes.StatusCode != 200 {
 		t.Fatalf("put config %d %s", httpRes.StatusCode, body)
 	}
@@ -291,7 +288,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpRes.Body.Close()
+	_ = httpRes.Body.Close()
 	if httpRes.StatusCode != 200 {
 		t.Fatalf("compact %d", httpRes.StatusCode)
 	}
@@ -303,7 +300,7 @@ func TestPrimePortsEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	applyResp, _ := io.ReadAll(httpRes.Body)
-	httpRes.Body.Close()
+	_ = httpRes.Body.Close()
 	if httpRes.StatusCode != 200 {
 		t.Fatalf("stack apply %d %s", httpRes.StatusCode, applyResp)
 	}

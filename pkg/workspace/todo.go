@@ -53,10 +53,10 @@ func (w *Workspace) persistTodos(rendered string) {
 	if dir == "" {
 		return
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // scratch state, owner-only
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dir, "TODO.md"), []byte(rendered+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "TODO.md"), []byte(rendered+"\n"), 0o600)
 }
 
 // scratchDir is the only agent-writable location under .slmcode/.

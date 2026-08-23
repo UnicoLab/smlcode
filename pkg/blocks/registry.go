@@ -70,10 +70,6 @@ func (r *Registry) loadRoot(root Root) error {
 		if err != nil {
 			return err
 		}
-		// Also allow flat layout: blocks/<kind>-*.yaml at root of blocks dir.
-		if kind == KindPipeline {
-			// flat files with kind in content still loaded via walk below
-		}
 		for _, path := range files {
 			data, err := os.ReadFile(path)
 			if err != nil {

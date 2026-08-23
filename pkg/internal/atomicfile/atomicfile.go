@@ -13,7 +13,7 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 		return nil
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp, err := writeTemp(dir, filepath.Base(path), data, perm)
@@ -40,7 +40,7 @@ func WriteWithBackup(path string, data []byte, perm fs.FileMode) error {
 	if path == "" {
 		return nil
 	}
-	if prev, err := os.ReadFile(path); err == nil {
+	if prev, err := os.ReadFile(path); err == nil { //nolint:gosec // path is the caller's own target file, not external input
 		if err := Write(BackupPath(path), prev, perm); err != nil {
 			return err
 		}
@@ -54,7 +54,7 @@ func WriteOnce(path string, data []byte, perm fs.FileMode) error {
 		return nil
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp, err := writeTemp(dir, filepath.Base(path), data, perm)
@@ -111,7 +111,7 @@ func writeTemp(dir, base string, data []byte, perm fs.FileMode) (string, error) 
 }
 
 func syncDir(dir string) {
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) //nolint:gosec // dir is derived from an already-resolved caller path, not external input
 	if err != nil {
 		return
 	}

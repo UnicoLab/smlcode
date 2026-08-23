@@ -14,7 +14,7 @@ type TokenCounter func(string) int
 //
 //	system prompt + tool schemas + response max_tokens + slack
 //
-// Budgeting in BYTES (the historical behaviour) is what starved a 32K Qwen
+// Budgeting in BYTES (the historical behavior) is what starved a 32K Qwen
 // down to ~3.2K tokens of context while the compaction watchdog believed it
 // was at 80% capacity.
 const (

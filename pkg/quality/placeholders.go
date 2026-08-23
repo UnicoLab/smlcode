@@ -37,7 +37,7 @@ func ScanProjectPlaceholders(root string, board *plan.Board) []PreciseGap {
 			return
 		}
 		abs := filepath.Join(root, rel)
-		data, err := os.ReadFile(abs)
+		data, err := os.ReadFile(abs) //nolint:gosec // rel is checked above to reject ".." and is joined under root
 		if err != nil || len(data) == 0 {
 			return
 		}

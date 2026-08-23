@@ -9,14 +9,14 @@ import (
 )
 
 // TokenHeader is the canonical header carrying the Studio session token.
-const TokenHeader = "X-SLMCode-Token"
+const TokenHeader = "X-SLMCode-Token" //nolint:gosec // header name, not a credential value
 
 // TokenQueryParam carries the token for clients that cannot set headers
 // (EventSource / <img> style loads).
 const TokenQueryParam = "t"
 
 // TokenMetaName is the <meta> tag the SPA reads on first load.
-const TokenMetaName = "slmcode-token"
+const TokenMetaName = "slmcode-token" //nolint:gosec // meta-tag name, not a credential value
 
 // secure wraps the mux with the Studio security policy:
 //

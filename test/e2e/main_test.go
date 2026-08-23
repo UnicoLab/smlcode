@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 			if strings.Contains(line, "level=info") {
 				continue
 			}
-			fmt.Fprintln(origStderr, line)
+			_, _ = fmt.Fprintln(origStderr, line) // best-effort log passthrough; nothing to do if stderr write fails
 		}
 	}()
 

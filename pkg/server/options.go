@@ -24,7 +24,7 @@ var DevOrigins = []string{
 //     config write, API-key write and run-start capability. It therefore
 //     refuses any request that is not loopback and emits no permissive CORS
 //     headers, so no third-party web page can read a response or drive a run.
-//   - A random session Token adds defence in depth against other local
+//   - A random session Token adds defense in depth against other local
 //     processes/users. It is accepted as `X-SLMCode-Token`, as
 //     `Authorization: Bearer …` or as the `t` query parameter (EventSource
 //     cannot set headers). The token is handed to the SPA either through the

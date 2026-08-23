@@ -219,7 +219,9 @@ func killExistingStudio(addr string, force bool) bool {
 	if port == 0 {
 		return false
 	}
-	out, err := exec.Command("lsof", "-ti", "tcp:"+strconv.Itoa(port)).Output()
+	// port comes from the local --addr/--port flag, formatted as a plain int;
+	// argv-only invocation, no shell involved.
+	out, err := exec.Command("lsof", "-ti", "tcp:"+strconv.Itoa(port)).Output() //nolint:gosec // port is a local CLI flag value, argv-only (no shell)
 	if err != nil {
 		fmt.Println(cli.Warn("cannot identify the process on port " + strconv.Itoa(port) + " (lsof unavailable)"))
 		fmt.Println(cli.Dim("  use --port-auto to pick a free port instead"))

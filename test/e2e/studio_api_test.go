@@ -41,7 +41,7 @@ func TestStudioAPIAndKnowledge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("health %d", resp.StatusCode)
 	}
@@ -51,7 +51,7 @@ func TestStudioAPIAndKnowledge(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var ag []map[string]interface{}
 	if err := json.Unmarshal(body, &ag); err != nil {
 		t.Fatal(string(body), err)
@@ -73,7 +73,7 @@ func TestStudioAPIAndKnowledge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("add task %d", resp.StatusCode)
 	}
@@ -101,7 +101,7 @@ func TestStudioAPIAndKnowledge(t *testing.T) {
 		t.Fatal(err)
 	}
 	docsBody, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !bytes.Contains(docsBody, []byte("SKILLS.md")) {
 		t.Fatalf("docs=%s", docsBody)
 	}

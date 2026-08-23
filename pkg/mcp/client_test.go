@@ -353,7 +353,11 @@ func TestRequestRespectsContextCancellation(t *testing.T) {
 	if _, err := m.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() {
+		if err := m.Close(); err != nil {
+			t.Logf("Manager.Close: %v", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	start := time.Now()

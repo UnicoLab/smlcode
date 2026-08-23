@@ -18,36 +18,39 @@ type AgentProviderOverride struct {
 	APIKey   string
 }
 
-// llmTimeout aligns HTTP LLM calls with task timeout so multi-iteration
-// ReAct workers are not killed mid-tool-loop by a short provider deadline.
+// llmTimeout is the transport-level ceiling on a single HTTP call. It is a
+// backstop only: the real per-call deadline is derived from the role's
+// max_tokens and the model's observed tokens/sec by retryProvider (see
+// EstimateTimeout), so a hung 1.5B no longer holds a worker slot for the old
+// three-minute floor.
 func llmTimeout(cfg *config.Config) time.Duration {
-	if cfg != nil && cfg.TaskTimeout > 0 {
-		// Single completion should finish before the whole task budget.
-		d := cfg.TaskTimeout
-		if d > 10*time.Minute {
-			d = 10 * time.Minute
-		}
-		if d < 3*time.Minute {
-			d = 3 * time.Minute
-		}
-		return d
+	d := MaxCallTimeout
+	if cfg != nil && cfg.TaskTimeout > 0 && cfg.TaskTimeout < d {
+		d = cfg.TaskTimeout
 	}
-	return 5 * time.Minute
+	if d < MinCallTimeout {
+		d = MinCallTimeout
+	}
+	return d
 }
 
-func llmRetry(cfg *config.Config) (count int, delay time.Duration) {
-	count = 3
-	delay = time.Second
+// retryPolicy maps config into the slmcode retry policy. Unlike the provider's
+// own fixed-delay retry it classifies the failure first, so a 400
+// context_length_exceeded is surfaced immediately instead of costing three full
+// prefills against a local model.
+func retryPolicy(cfg *config.Config) RetryPolicy {
+	p := DefaultRetryPolicy()
 	if cfg == nil {
-		return count, delay
+		return p
 	}
 	if cfg.LLMRetryCount >= 0 {
-		count = cfg.LLMRetryCount
+		// Config counts retries; the policy counts attempts.
+		p.MaxAttempts = cfg.LLMRetryCount + 1
 	}
 	if cfg.LLMRetryDelayMS > 0 {
-		delay = time.Duration(cfg.LLMRetryDelayMS) * time.Millisecond
+		p.BaseDelay = time.Duration(cfg.LLMRetryDelayMS) * time.Millisecond
 	}
-	return count, delay
+	return p
 }
 
 // RegisterLLM wires the configured provider into a ProviderManager.
@@ -64,6 +67,12 @@ func RegisterLLM(m *llm.ProviderManager, cfg *config.Config) error {
 	cfg.ResolveAPIKey()
 	name := config.NormalizeProvider(cfg.Provider)
 	cfg.Provider = name
+	// Persist probed endpoint capabilities next to the rest of the workspace
+	// state so capability negotiation costs one round of probes per machine,
+	// not one per run. No caller wiring needed.
+	if root := strings.TrimSpace(cfg.Root); root != "" {
+		SetCapabilityCacheDir(cfg.SlmDir())
+	}
 
 	if config.IsOllama(name) {
 		return registerOllama(m, cfg, true)
@@ -129,6 +138,9 @@ func EnsureAgentProviders(m *llm.ProviderManager, cfg *config.Config, overrides 
 			if _, err := m.GetProvider(name); err != nil {
 				if p, gerr := m.GetProvider(regKey); gerr == nil {
 					_ = m.RegisterProvider(name, p)
+					if meta, ok := lookupBackend(regKey); ok {
+						rememberBackend(name, meta)
+					}
 				}
 			}
 		}
@@ -152,28 +164,33 @@ func registerOllamaNamed(m *llm.ProviderManager, regName string, cfg *config.Con
 	if regName == "" {
 		regName = "ollama"
 	}
-	retryN, retryD := llmRetry(cfg)
-	p, err := llm.NewOllamaProvider(&llm.ProviderConfig{
+	raw, err := llm.NewOllamaProvider(&llm.ProviderConfig{
 		Type:        "ollama",
 		Endpoint:    endpoint,
 		Model:       cfg.Model,
 		Temperature: cfg.Temperature,
 		MaxTokens:   cfg.MaxTokens,
 		Timeout:     llmTimeout(cfg),
-		RetryCount:  retryN,
-		RetryDelay:  retryD,
+		// Retry is owned by retryProvider, which classifies the failure first.
+		// Leaving the provider's own fixed-delay retry on would multiply attempts.
+		RetryCount: 0,
+		RetryDelay: 0,
 	})
 	if err != nil {
 		return err
 	}
+	p := NewRetryProvider(raw, regName, cfg.Model, retryPolicy(cfg))
 	if err := m.RegisterProvider(regName, p); err != nil {
 		return err
 	}
+	meta := backendMeta{Provider: "ollama", Endpoint: endpoint, Model: cfg.Model, APIKey: cfg.APIKey}
+	rememberBackend(regName, meta)
 	// Dual-register instance key so agents with explicit same endpoint resolve.
 	inst := ProviderInstanceKey("ollama", endpoint, cfg.APIKey)
 	if inst != regName {
 		if _, err := m.GetProvider(inst); err != nil {
 			_ = m.RegisterProvider(inst, p)
+			rememberBackend(inst, meta)
 		}
 	}
 	if setDefault {
@@ -203,8 +220,7 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 	if apiKey == "" {
 		apiKey = "local"
 	}
-	retryN, retryD := llmRetry(cfg)
-	p, err := llm.NewOpenAIProvider(&llm.ProviderConfig{
+	raw, err := llm.NewOpenAIProvider(&llm.ProviderConfig{
 		Type:        "openai",
 		Name:        regName,
 		Endpoint:    endpoint,
@@ -213,20 +229,25 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 		Temperature: cfg.Temperature,
 		MaxTokens:   cfg.MaxTokens,
 		Timeout:     llmTimeout(cfg),
-		RetryCount:  retryN,
-		RetryDelay:  retryD,
+		// Retry lives in retryProvider (classified, jittered, Retry-After aware).
+		RetryCount: 0,
+		RetryDelay: 0,
 	})
 	if err != nil {
 		return err
 	}
+	p := NewRetryProvider(raw, regName, cfg.Model, retryPolicy(cfg))
 	if err := m.RegisterProvider(regName, p); err != nil {
 		return err
 	}
+	meta := backendMeta{Provider: baseName, Endpoint: endpoint, Model: cfg.Model, APIKey: apiKey}
+	rememberBackend(regName, meta)
 	// Dual-register canonical instance key (friendly name may already be regName).
 	inst := ProviderInstanceKey(baseName, endpoint, apiKey)
 	if inst != regName {
 		if _, err := m.GetProvider(inst); err != nil {
 			_ = m.RegisterProvider(inst, p)
+			rememberBackend(inst, meta)
 		}
 	}
 	// Alias only true synonyms of THIS provider — never map openai↔omlx.
@@ -241,6 +262,7 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 				continue
 			}
 			_ = m.RegisterProvider(alias, p)
+			rememberBackend(alias, meta)
 		}
 	}
 	if setDefault {

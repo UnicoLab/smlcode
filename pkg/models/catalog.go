@@ -48,7 +48,11 @@ type Catalog struct {
 	Auth          AuthStatus  `json:"auth"`
 	EnabledModels []string    `json:"enabled_models,omitempty"`
 	Costs         []ModelCost `json:"costs,omitempty"`
-	Error         string      `json:"error,omitempty"`
+	// Decoding reports which constrained-decoding mechanism the active endpoint
+	// negotiated, so the UI can show why a role is on prompt-only JSON. It is
+	// read from the capability cache — Find never probes.
+	Decoding DecodingSupport `json:"decoding"`
+	Error    string          `json:"error,omitempty"`
 }
 
 // ResolveAuth inspects config + env + auth.json for the active provider (does not mutate cfg).
@@ -231,6 +235,7 @@ func Find(ctx context.Context, cfg *config.Config, query string, limit int) Cata
 	out.ActiveStack = cfg.ActiveStack
 	out.EnabledModels = append([]string{}, cfg.EnabledModels...)
 	out.Auth = ResolveAuth(cfg)
+	out.Decoding = DescribeDecoding(cfg)
 
 	if out.Auth.Required && !out.Auth.Configured {
 		out.Error = out.Auth.Message

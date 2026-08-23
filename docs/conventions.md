@@ -137,8 +137,10 @@ Everything that reaches a prompt is budgeted **in tokens**, and every collection
 
 ## The build
 
-- `cmd/slmcode/ui/index.html` is **tracked** — a placeholder page so `go:embed all:ui` always has
-  something on a fresh clone. `cmd/slmcode/ui/assets/` and `vendor/` are gitignored build output.
+- `cmd/slmcode/ui/` is a `go:embed all:ui` directory whose **only tracked file is `.gitkeep`** —
+  it keeps the directory (and therefore the embed pattern) alive on a fresh clone. `index.html`,
+  `assets/` and `vendor/` there are gitignored build output; with none of them present the server
+  serves a placeholder page from `pkg/server/placeholder.go`.
   `make bootstrap` builds the real SPA; `make ui-react` rebuilds it.
 - `.slmcode/` is gitignored runtime state.
 - Lint findings are ratcheted against a baseline in `.golangci.yml`, never excluded. See

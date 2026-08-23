@@ -312,10 +312,63 @@ An explicit `event: gap {from,to}` frame means events could not be replayed from
 ring buffer. The run is fine; the log is incomplete. Token deltas are evicted first so the
 structural timeline survives.
 
-### Studio shows a placeholder page
+### Studio shows "The Studio UI has not been built"
 
-`cmd/slmcode/ui/index.html` is a checked-in placeholder. Run `make bootstrap` (or `make ui-react`)
-to build the real SPA.
+The binary embeds no SPA, so the server is serving the placeholder page compiled into
+`pkg/server`. `slmcode studio` prints the same warning on startup. Only the web page is missing —
+the CLI, the TUI and the whole Studio API are working. Build it:
+
+```bash
+make bootstrap      # installs web/ npm deps (needs Node 18+), then builds the UI
+make build
+```
+
+Nothing appears at `cmd/slmcode/ui/` in git, and that is correct: everything the Vite build writes
+there is gitignored output. The one tracked file is `.gitkeep`, which keeps `//go:embed all:ui`
+compiling on a clone that has never built the UI.
+
+<a id="studio-ui-wont-build"></a>
+
+### `make bootstrap` / `make ui-react` fails with `Cannot find module 'vitest'`
+
+```
+src/api/session.test.ts:1:50 - error TS2307: Cannot find module 'vitest' or its
+corresponding type declarations.
+```
+
+Two things were wrong, and both are fixed — if you still see this, your `web/node_modules` is
+stale and `make bootstrap` will replace it.
+
+1. **`web/node_modules` was never installed or refreshed.** `make bootstrap` used to short-circuit
+   whenever `cmd/slmcode/ui/assets/` already existed, so a months-old build artifact made it a
+   no-op. It now always ensures dependencies (via `make web-deps`) and then builds.
+2. **The production build was typechecking test files.** `npm run build` runs `tsc -b`, and
+   `web/tsconfig.json` now **excludes** `src/**/*.test.ts(x)` and `src/test`, so a missing *test*
+   devDependency can no longer block shipping the *app* bundle. Tests are still typechecked, by
+   `npm run typecheck:test` (`web/tsconfig.test.json`).
+
+### `npm ci can only install packages when your package.json and package-lock.json are in sync`
+
+```
+npm error `npm ci` can only install packages when your package.json and
+npm error package-lock.json are in sync. Please update your lock file with
+npm error `npm install` before continuing.
+```
+
+This is expected right now: **`web/package-lock.json` is out of date with `web/package.json`.**
+The lock predates `vitest`, `@testing-library/*`, `eslint` and the rest of the test toolchain, and
+`npm ci` installs strictly from the lock, so it refuses to run at all.
+
+`make bootstrap` handles it — it reports the mismatch and falls back to `npm install`, which
+resolves from `package.json` and **rewrites `web/package-lock.json`**.
+
+> **Commit the regenerated `web/package-lock.json`.** That is the real fix. Until it is committed,
+> every clone and every CI run pays for the fallback; once it is, `npm ci` works again and is both
+> faster and reproducible.
+
+If `npm install` itself fails, the npm registry is unreachable (offline, proxy, or an egress
+allowlist). The Go build does not need it: `make build` still works and the binary serves the
+placeholder page.
 
 ### `port 7420 is in use`
 

@@ -2,6 +2,26 @@
 
 ## v0.17.0 — 2026-08-23
 
+The largest release since the project started: a rebuilt engine, 13 language packs, a
+reworked Studio, and a security pass that changed several defaults. **Read the breaking
+changes below before upgrading an existing workspace** — nothing needs a config migration
+(`.slmcode/config.yaml` is migrated forward on load), but five defaults are now more
+conservative and two of them will change what your scripts see.
+
+→ Full detail and the opt-back-in for every item: **[Migration notes](migration.md)**
+
+### ⚠️ Breaking behaviour changes
+
+| What changed | Who it breaks | What to do |
+|---|---|---|
+| **Repository hooks fail closed.** `hooks_enabled` now defaults to `false`, and even with it on, `.slmcode/hooks.json` must be approved per user against a SHA-256 of its exact contents. | Anyone relying on a hooks file that used to run automatically after a clone. | `slmcode hooks list` prints every command that would run; `slmcode hooks trust` approves the current contents. Any edit revokes the approval. CI: `SLMCODE_TRUST_HOOKS=1`. |
+| **`mcp_servers` is honoured only from the user config layer.** A project file can no longer add, replace or clear the list. | Repos that shipped their own MCP servers in `.slmcode/config.yaml`. | Move the entries to your user config, or set `SLMCODE_TRUST_PROJECT_MCP=1`. `status`, `doctor` and `config show` name whatever the project file tried to declare. |
+| **The shell allowlist is tiered.** Interpreters (`python` `node` `bash` `make` `npx` `sudo` …) and file mutators (`sed` `rm` `cp` `chmod` `git reset` …) no longer auto-run. Command substitution (`$(…)`, backticks, `<(…)`) and a bare `&` are refused and are **not** allowlistable. | Runs that depended on `make`, `python -c`, or shelling out to a mutator. | Add prefixes to `shell_allow` (`- "make "`, `- "python -c"`), or `export SLMCODE_BASH_ALLOW="make ,python -c"`. Verification forms like `python -m pytest`, `node --check`, `npm test`, `go test`, `bash -n` stay auto-allowed. See [migration §1](migration.md#1-the-shell-whitelist-is-tiered-interpreters-and-file-mutators-are-refused). |
+| **`slmcode apply` is interactive by default**, and **exits 2 without a TTY** rather than guessing. | Scripts and CI that ran `slmcode apply` and expected it to apply everything. | Pass `--all` for the old behaviour (`--list` / `--json` for read-only). See [migration §3](migration.md#3-slmcode-apply-is-interactive-by-default). |
+| **HITL gates block instead of auto-approving when a human is attached.** | Interactive sessions that used to sail through plan/escalation gates. | Answer the gate, or set the gate to `auto`. Headless runs are unchanged and still follow `--on-gate-timeout`. See [migration §4](migration.md#4-hitl-gates-block-instead-of-auto-approving-when-a-human-is-attached). |
+| **Studio requires a session token.** The `<meta name="slmcode-token">` shell injection is gone; `GET /` is no longer an unauthenticated token dispenser. CORS `*` is gone with it, and non-loopback `Host` values get a 403. | Bookmarks to `http://127.0.0.1:7420/`, and anything scripting the Studio API. | Open the URL `slmcode studio` prints (it carries `?t=…`); that mints an HttpOnly `SameSite=Strict` session cookie. API clients send `X-SLMCode-Token` or `Authorization: Bearer`. See [migration §2](migration.md#2-studio-cors-is-gone-and-there-is-a-session-token). |
+| **New state directories** `.slmcode/memory/` and `.slmcode/evolve/` (plus `metrics/`, `summaries/`, `capabilities.json`). | Anyone whose `.slmcode/.gitignore` predates them — `slmcode commit` runs `git add -A` and would commit them. | Run `slmcode init` once. It rewrites `.slmcode/.gitignore` with all 26 rules. See [migration §5](migration.md#5-new-state-directories-under-slmcode-and-slmcode). |
+
 ### Security
 
 - **Repository-supplied hooks fail closed.** `.slmcode/hooks.json` lives inside the project, so a
@@ -71,6 +91,7 @@
 
 - Add self-evolving harness memory
 - Sync Homebrew formula checksums for v0.15.0 [skip ci]
+
 ## v0.15.0 — Production SLM Harness, HITL UX & Studio Control Plane
 
 ### Highlights

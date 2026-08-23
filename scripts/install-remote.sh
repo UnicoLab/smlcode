@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
 #
 # Pin a version:
-#   curl -fsSL …/install-remote.sh | bash -s -- --version v0.5.17
+#   curl -fsSL …/install-remote.sh | bash -s -- --version v0.17.0
 #
 # System-wide (may prompt for sudo):
 #   curl -fsSL …/install-remote.sh | bash -s -- --system
@@ -27,14 +27,14 @@ SLMCode installer (prebuilt binary from GitHub Releases)
 
   curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
   curl -fsSL …/install-remote.sh | bash -s -- --system
-  curl -fsSL …/install-remote.sh | bash -s -- --version v0.5.17
+  curl -fsSL …/install-remote.sh | bash -s -- --version v0.17.0
   curl -fsSL …/install-remote.sh | bash -s -- --uninstall
 
 Options:
   --system, -s       Install to Homebrew prefix or /usr/local/bin
   --user, -u         Install to ~/.local/bin (default)
   --prefix DIR       Custom prefix (binary → DIR/bin/slmcode)
-  --version VER      Tag or semver (v0.5.17 / 0.5.17 / latest)
+  --version VER      Tag or semver (v0.17.0 / 0.17.0 / latest)
   --uninstall        Remove the installed binary
   -h, --help         Show help
 
@@ -93,7 +93,13 @@ fi
 BIN_DIR="${PREFIX}/bin"
 TARGET="${BIN_DIR}/${BIN_NAME}"
 
+# Only a --system install may escalate. The old form asked "is BIN_DIR
+# unwritable, and is its parent unwritable too?" without consulting MODE, so on
+# a fresh account with no ~/.local yet BOTH tests were true (a directory that
+# does not exist is not writable) and a plain `| bash` user install ran
+# `sudo mkdir -p ~/.local/bin`, leaving the user's own directory owned by root.
 need_sudo() {
+  [[ "${MODE}" == "system" ]] || return 1
   [[ ! -w "${BIN_DIR}" ]] && [[ ! -w "$(dirname "${BIN_DIR}")" ]]
 }
 
@@ -118,6 +124,14 @@ if [[ "${DO_UNINSTALL}" -eq 1 ]]; then
     rm -f "${USER_BIN}"
     echo "Removed symlink ${USER_BIN}"
   fi
+  META="${XDG_CONFIG_HOME:-${HOME}/.config}/slmcode/install.json"
+  if [[ -f "${META}" ]]; then
+    rm -f "${META}"
+    echo "Removed ${META}"
+  fi
+  echo
+  echo "Left in place (yours, not the installer's): per-project .slmcode/ directories"
+  echo "and ~/.config/slmcode/ settings. Remove them by hand if you want a clean slate."
   exit 0
 fi
 
@@ -165,7 +179,16 @@ if [[ "${TAG}" != "latest" ]]; then
 fi
 
 echo "→ Resolving release (${TAG}) from ${REPO}…"
-RELEASE_JSON="$(curl -fsSL -H "Accept: application/vnd.github+json" "${API}")"
+if ! RELEASE_JSON="$(curl -fsSL -H "Accept: application/vnd.github+json" "${API}")"; then
+  echo "error: could not read ${API}" >&2
+  if [[ "${TAG}" != "latest" ]]; then
+    echo "  Is ${TAG} a real tag? See https://github.com/${REPO}/releases" >&2
+  else
+    echo "  GitHub may be unreachable, or rate-limiting this IP (60 requests/hour" >&2
+    echo "  unauthenticated). Retry, or pass --version vX.Y.Z to skip the lookup." >&2
+  fi
+  exit 1
+fi
 TAG_NAME="$(printf '%s' "${RELEASE_JSON}" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 if [[ -z "${TAG_NAME}" ]]; then
   echo "error: could not resolve release tag (check ${API})" >&2
@@ -181,26 +204,41 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 BIN_PATH="${TMPDIR}/${BIN_NAME}"
 
 echo "→ Downloading ${ASSET}…"
-curl -fsSL -o "${BIN_PATH}" "${DOWNLOAD_URL}"
+if ! curl -fsSL -o "${BIN_PATH}" "${DOWNLOAD_URL}"; then
+  echo "error: failed to download ${DOWNLOAD_URL}" >&2
+  echo "  Release ${TAG_NAME} may not publish an asset for ${OS}/${ARCH}." >&2
+  echo "  Assets for this release: https://github.com/${REPO}/releases/tag/${TAG_NAME}" >&2
+  exit 1
+fi
 chmod +x "${BIN_PATH}"
 
 if curl -fsSL -o "${TMPDIR}/SHA256SUMS" "${SUMS_URL}" 2>/dev/null; then
   EXPECTED="$(awk -v f="${ASSET}" '$2 == f { print $1; exit }' "${TMPDIR}/SHA256SUMS")"
   if [[ -n "${EXPECTED}" ]]; then
-    if command -v shasum >/dev/null 2>&1; then
-      GOT="$(shasum -a 256 "${BIN_PATH}" | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
+    if command -v sha256sum >/dev/null 2>&1; then
       GOT="$(sha256sum "${BIN_PATH}" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      GOT="$(shasum -a 256 "${BIN_PATH}" | awk '{print $1}')"
     else
       GOT=""
     fi
-    if [[ -n "${GOT}" && "${GOT}" != "${EXPECTED}" ]]; then
+    if [[ -z "${GOT}" ]]; then
+      # Neither hasher exists. The old code fell through to "✔ Checksum OK"
+      # here, which is the single worst thing an installer can print: it told
+      # the user the binary had been verified when nothing had been hashed.
+      echo "⚠ could not verify checksum: neither sha256sum nor shasum is installed on this system." >&2
+      echo "  The binary was NOT verified. Install coreutils (or perl) and re-run to verify," >&2
+      echo "  or check it by hand against ${SUMS_URL}" >&2
+    elif [[ "${GOT}" != "${EXPECTED}" ]]; then
       echo "error: checksum mismatch for ${ASSET}" >&2
       echo "  expected ${EXPECTED}" >&2
       echo "  got      ${GOT}" >&2
+      echo "  Refusing to install. Re-run; if it persists, a proxy or TLS-inspecting" >&2
+      echo "  middlebox may be rewriting the download." >&2
       exit 1
+    else
+      echo "✔ Checksum OK (sha256 ${GOT})"
     fi
-    echo "✔ Checksum OK"
   else
     echo "⚠ could not verify checksum: ${ASSET} not listed in SHA256SUMS" >&2
   fi
@@ -222,8 +260,13 @@ if [[ "${MODE}" == "system" && "${TARGET}" != "${USER_BIN}" ]]; then
   echo "→ Linked ${USER_BIN} → ${TARGET}"
 fi
 
+# 0700/0600, matching pkg/installmeta.Save. install.json names the upstream
+# repo that `slmcode update` downloads from, so anyone who can write it can
+# choose where the next update comes from.
 META_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/slmcode"
 mkdir -p "${META_DIR}"
+chmod 700 "${META_DIR}" 2>/dev/null || true
+umask 077
 cat > "${META_DIR}/install.json" <<EOF
 {
   "source": "",
@@ -237,6 +280,7 @@ cat > "${META_DIR}/install.json" <<EOF
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
+chmod 600 "${META_DIR}/install.json" 2>/dev/null || true
 
 hash -r 2>/dev/null || true
 

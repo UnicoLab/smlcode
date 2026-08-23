@@ -111,6 +111,23 @@ Pick your fighter. Both talk to the same harness. 🥊
     to go back to the terminal. Opening the tokenised URL once mints a cookie and the token stops
     appearing in the address bar. → [Studio security model](studio.md#security-model)
 
+!!! note "Built from source? Run `make bootstrap` first"
+    A released binary ships the Studio SPA. A binary you built yourself with `go build` does
+    not — the SPA is a Vite app in `web/` that has to be built into `cmd/slmcode/ui/` before
+    `go:embed` can pick it up. Without it, `slmcode studio` starts normally and serves a page
+    saying the UI has not been built, and prints the same on startup. Fix:
+
+    ```bash
+    make bootstrap      # installs web/ npm deps (needs Node 18+), then builds the UI
+    make build
+    ```
+
+    `web/package-lock.json` is currently out of date with `web/package.json`, so `npm ci`
+    cannot run; `make bootstrap` says so and falls back to `npm install`, which regenerates
+    the lock — commit it.
+    → [Studio: building the UI](studio.md#building-the-ui) ·
+    [Troubleshooting](troubleshooting.md#studio-ui-wont-build)
+
 </li>
 
 </ol>

@@ -36,26 +36,9 @@ else
 fi
 
 echo "==> ui-check"
-# Validate embedded Vite/React UI files. cmd/slmcode/ui/index.html is always
-# tracked (a placeholder ships in the repo so go:embed always finds
-# something on a fresh clone); cmd/slmcode/ui/assets/ is the gitignored
-# built-UI output and is optional here — its absence just means the binary
-# will embed the placeholder page instead of the real Studio UI.
-if [[ ! -f cmd/slmcode/ui/index.html ]]; then
-  echo "ERROR: cmd/slmcode/ui/index.html missing — this should always be tracked in git"
-  exit 1
-fi
-
-# Validate index.html references SLMCode Studio
-if ! grep -q 'SLMCode Studio' cmd/slmcode/ui/index.html; then
-  echo "ERROR: index.html missing SLMCode Studio reference"
-  exit 1
-fi
-
-if [[ -d cmd/slmcode/ui/assets ]]; then
-  echo "==> ui-check: OK (React Studio UI embedded)"
-else
-  echo "==> ui-check: OK (placeholder UI embedded — run 'make bootstrap' or 'make ui-react' for the real Studio UI)"
-fi
+# Validate the go:embed'ed Studio UI directory. Shared with `make ui-check` —
+# scripts/ui-check.sh is the single source of truth for what a valid
+# cmd/slmcode/ui/ looks like in both states (built UI, or placeholder-only).
+./scripts/ui-check.sh
 
 echo "lint: OK"

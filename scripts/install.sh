@@ -89,7 +89,12 @@ fi
 BIN_DIR="${PREFIX}/bin"
 TARGET="${BIN_DIR}/${BIN_NAME}"
 
+# Only a --system install may escalate. Without the MODE test, a user install
+# onto a machine with no ~/.local yet saw both "BIN_DIR unwritable" and "its
+# parent unwritable" (a nonexistent directory is not writable) and ran
+# `sudo mkdir -p ~/.local/bin`, leaving the user's own tree owned by root.
 need_sudo() {
+  [[ "${MODE}" == "system" ]] || return 1
   [[ ! -w "${BIN_DIR}" ]] && [[ ! -w "$(dirname "${BIN_DIR}")" ]]
 }
 
@@ -114,6 +119,14 @@ if [[ "${DO_UNINSTALL}" -eq 1 ]]; then
     rm -f "${USER_BIN}"
     echo "Removed symlink ${USER_BIN}"
   fi
+  META="${XDG_CONFIG_HOME:-${HOME}/.config}/slmcode/install.json"
+  if [[ -f "${META}" ]]; then
+    rm -f "${META}"
+    echo "Removed ${META}"
+  fi
+  echo
+  echo "Left in place (yours, not the installer's): per-project .slmcode/ directories,"
+  echo "~/.config/slmcode/ settings and any shell completions already sourced."
   exit 0
 fi
 
@@ -144,31 +157,60 @@ cd "${ROOT}"
 
 # Build the Vite/React Studio UI before Go compilation.
 #
-# This step is OPTIONAL and must never abort the install: cmd/slmcode/ui/
-# ships a tracked placeholder index.html so `go:embed all:ui` always has
-# something, and the CLI, the API and every command work without the SPA — only
-# the Studio web page is missing, and `slmcode studio` says so. A failed
-# `npm ci` (no Node, no registry, a proxy) used to kill the whole install under
-# `set -e`, which turned "your npm mirror is down" into "slmcode will not
-# install".
-if [[ -f web/package.json && -f web/package-lock.json ]]; then
-  if command -v npm >/dev/null 2>&1; then
-    echo "→ Building Studio UI (Vite + React)…"
-    if ( cd web && npm ci --silent --no-audit --no-fund && npm run build ); then
-      rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor
-      cp -r web/dist/* cmd/slmcode/ui/
-      echo "→ Studio UI built"
-    else
-      echo "WARNING: the Studio UI build failed — installing with the placeholder page." >&2
-      echo "  The CLI and the API are unaffected; rebuild the SPA later with:" >&2
-      echo "    make ui-react" >&2
-    fi
-  else
+# This step is OPTIONAL and must never abort the install: cmd/slmcode/ui/ is a
+# go:embed directory whose only tracked file is .gitkeep, and when it holds no
+# build output the binary serves the placeholder page compiled into pkg/server.
+# The CLI, the API and every command work without the SPA — only the Studio web
+# page is missing, and `slmcode studio` says so. A failed `npm ci` (no Node, no
+# registry, a proxy) used to kill the whole install under `set -e`, which turned
+# "your npm mirror is down" into "slmcode will not install".
+#
+# NOTE: a RELEASE binary never takes this path. CI builds the SPA and fails the
+# release outright if it is missing, so `curl … | bash` and `brew install`
+# always deliver a working Studio. Only source installs can end up with the
+# placeholder.
+build_studio_ui() {
+  [[ -f web/package.json ]] || return 0
+  if ! command -v npm >/dev/null 2>&1; then
     echo "WARNING: npm not found — installing with the placeholder Studio page." >&2
     echo "  The CLI and the API are unaffected. To get the web UI:" >&2
-    echo "    brew install node && make ui-react" >&2
+    echo "    brew install node && make bootstrap" >&2
+    return 0
   fi
-fi
+
+  echo "→ Building Studio UI (Vite + React)…"
+  # `npm ci` refuses to run at all when package-lock.json does not list every
+  # dependency in package.json. That is a repo-maintenance problem, and it used
+  # to silently downgrade every source install to the placeholder page. Fall
+  # back to `npm install`, which resolves from package.json.
+  local installed=0
+  if [[ -f web/package-lock.json ]] && ( cd web && npm ci --silent --no-audit --no-fund ); then
+    installed=1
+  elif ( cd web && npm install --silent --no-audit --no-fund ); then
+    echo "  (npm ci could not be used — resolved from package.json instead)"
+    installed=1
+  fi
+  if [[ "${installed}" -ne 1 ]] || ! ( cd web && npm run build ); then
+    echo "WARNING: the Studio UI build failed — installing with the placeholder page." >&2
+    echo "  The CLI and the API are unaffected; rebuild the SPA later with:" >&2
+    echo "    make bootstrap" >&2
+    return 0
+  fi
+
+  # cmd/slmcode/ui/ holds exactly one tracked file (.gitkeep); index.html,
+  # assets/ and vendor/ are all build output and are replaced wholesale.
+  rm -rf cmd/slmcode/ui/assets cmd/slmcode/ui/vendor cmd/slmcode/ui/index.html
+  mkdir -p cmd/slmcode/ui
+  cp -r web/dist/* cmd/slmcode/ui/
+  # vite.config.ts uses sourcemap:'hidden', which suppresses the
+  # sourceMappingURL comment but still WRITES the .map files. `go:embed all:ui`
+  # takes the directory as-is, so leaving them here compiles the entire TSX
+  # source into the installed binary.
+  find cmd/slmcode/ui -name '*.map' -delete
+  echo "→ Studio UI built"
+}
+
+build_studio_ui
 
 mkdir -p "${ROOT}/bin"
 go build -ldflags "${LDFLAGS}" -o "${ROOT}/bin/${BIN_NAME}" ./cmd/slmcode
@@ -195,8 +237,13 @@ fi
 hash -r 2>/dev/null || true
 
 # Persist source location for `slmcode update` from any directory
+# 0700/0600, matching pkg/installmeta.Save: install.json records the source
+# checkout `slmcode update` rebuilds from and the repo it downloads from, so
+# write access to it is write access to what the next update runs.
 META_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/slmcode"
 mkdir -p "${META_DIR}"
+chmod 700 "${META_DIR}" 2>/dev/null || true
+(umask 077; : > "${META_DIR}/install.json")
 cat > "${META_DIR}/install.json" <<EOF
 {
   "source": "${ROOT}",
@@ -211,6 +258,7 @@ cat > "${META_DIR}/install.json" <<EOF
   "installed_at": "${BUILD_TIME}"
 }
 EOF
+chmod 600 "${META_DIR}/install.json" 2>/dev/null || true
 echo "Install meta → ${META_DIR}/install.json"
 
 install_completions() {

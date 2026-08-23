@@ -12,37 +12,83 @@ class Slmcode < Formula
   version "0.17.0"
   license "MIT"
 
-  # The sha256 values below are synced by scripts/update-formula.sh from the
-  # release workflow AFTER the binaries are built and uploaded. Between a
-  # version bump and that sync they belong to the previous release and this
-  # formula will not install — that is expected and the pipeline fixes it.
+  # ── About the sha256 values below ────────────────────────────────────────
+  # They are written by scripts/update-formula.sh, which the release workflow
+  # runs AFTER the binaries for this version are built and uploaded. There is a
+  # window between the version bump landing on main and that sync completing in
+  # which no real checksum can exist yet, because the binaries do not exist yet.
+  #
+  # In that window these are all-zero PLACEHOLDERS, on purpose. The obvious
+  # alternative — leaving the previous release's real checksums in place — is
+  # worse: `brew install` fails either way, but a stale-yet-plausible 64-hex
+  # value produces a mismatch that is indistinguishable from a tampered
+  # download, and the honest answer ("this formula has not been synced yet") is
+  # unavailable to the person reading the error. Sixty-four zeros can only mean
+  # one thing. scripts/check-version.sh enforces the shape and reports how many
+  # are still placeholders.
+  #
+  # If you hit a mismatch against a zeroed value: the release workflow has not
+  # finished. Install with the curl one-liner, or wait for the
+  # "chore: sync Homebrew formula checksums" commit on main.
   on_macos do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"
-      sha256 "8661041c3c1c3ff7fc6b46ec6c403b43f39605e4d0d37028829e44c0d0049b0e"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_amd64"
-      sha256 "91c128cd321d9a8e2a4ac6199d911ef174450af77519516bd70c1743c0c89f1f"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_arm64"
-      sha256 "24cb68c1a600bf2ba7b85a60f3ed4b7d4e05eb7529aa5158a8e51037f12638c6"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_amd64"
-      sha256 "503c4ea1911a82fbb47847d20584b0d9ed4ff7f8404db917ce9efe55db7062c6"
+      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   def install
-    bin.install Dir["slmcode_*"].first => "slmcode"
+    # The release asset is a bare binary, so Homebrew stages it under the URL's
+    # basename (slmcode_<version>_<os>_<arch>). Exactly one such file exists in
+    # the staging directory; `.first` on an empty glob would be a nil NoMethodError
+    # with no explanation, so name the failure.
+    staged = Dir["slmcode_*"].first
+    odie "no slmcode_* binary in the downloaded asset — the release may be incomplete" if staged.nil?
+    bin.install staged => "slmcode"
   end
 
   test do
+    # Never let `brew test` reach the network: `slmcode version --check` and the
+    # startup notice both query the GitHub release API, and a sandboxed or
+    # offline test machine would fail on that rather than on the binary.
+    ENV["SLMCODE_SKIP_UPDATE_CHECK"] = "1"
+
+    # 1. The binary runs, and reports the version this formula claims to install.
     assert_match version.to_s, shell_output("#{bin}/slmcode version")
+
+    # 2. The machine-readable form agrees — this is what catches a formula that
+    #    installed the previous release's asset under the new version's name.
+    require "json"
+    info = JSON.parse(shell_output("#{bin}/slmcode version --json"))
+    assert_equal version.to_s, info["version"]
+    refute_empty info["commit"].to_s
+    refute_equal "unknown", info["commit"].to_s
+
+    # 3. The CLI actually works, rather than merely printing a version string:
+    #    initialise a throwaway workspace and read the status back out. No model,
+    #    no network and no provider are needed — `init` warns that nothing is
+    #    listening on the endpoint and still exits 0.
+    system bin/"slmcode", "init"
+    assert_predicate testpath/".slmcode", :directory?
+    assert_match "provider", shell_output("#{bin}/slmcode status")
+
+    # 4. An unknown subcommand exits 2 rather than silently doing something.
+    #    shell_output raises unless the status matches, so this is the assertion.
+    shell_output("#{bin}/slmcode definitely-not-a-command 2>&1", 2)
   end
 end

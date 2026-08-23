@@ -2,16 +2,28 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import HITLPopup from './HITLPopup';
+import type {
+  ClarifyAsk,
+  ContinueAsk,
+  EscalateAsk,
+  PendingResponse,
+  PlanAsk,
+  ShellAsk,
+} from '@/types';
 
-const notPending = { pending: false } as const;
+// Annotated against the real client return types. Without the annotation TS
+// infers each mock's return type from its FIRST value, so a later
+// `mockResolvedValue(notPending)` is rejected for missing `ask` — even though
+// `ask` is optional on PendingResponse and "not pending" is exactly the shape
+// the server sends once a gate has been consumed.
+const notPending: PendingResponse<never> = { pending: false };
 
-const shellPending = {
+const shellPending: PendingResponse<ShellAsk> = {
   pending: true,
   ask: {
     id: 'ask-shell-1',
     kind: 'shell',
     command: 'rm -rf build/',
-    reason: 'clean the build directory',
     created_at: new Date().toISOString(),
     timeout_sec: 120,
     on_timeout: 'deny',
@@ -19,11 +31,11 @@ const shellPending = {
 };
 
 const approveShell = vi.fn(async () => ({ ok: true }));
-const getShellPending = vi.fn(async () => shellPending);
-const getClarifyPending = vi.fn(async () => notPending);
-const getPlanPending = vi.fn(async () => notPending);
-const getContinuePending = vi.fn(async () => notPending);
-const getEscalatePending = vi.fn(async () => notPending);
+const getShellPending = vi.fn(async (): Promise<PendingResponse<ShellAsk>> => shellPending);
+const getClarifyPending = vi.fn(async (): Promise<PendingResponse<ClarifyAsk>> => notPending);
+const getPlanPending = vi.fn(async (): Promise<PendingResponse<PlanAsk>> => notPending);
+const getContinuePending = vi.fn(async (): Promise<PendingResponse<ContinueAsk>> => notPending);
+const getEscalatePending = vi.fn(async (): Promise<PendingResponse<EscalateAsk>> => notPending);
 
 vi.mock('@/api/client', () => ({
   getClarifyPending: (...a: unknown[]) => getClarifyPending(...(a as [])),

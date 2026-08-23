@@ -7,18 +7,77 @@ models** more reliable: tighter tool contracts, better prompts, evals, gates tha
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap        # builds the Studio UI (npm ci + vite build) → cmd/slmcode/ui/
+make bootstrap        # installs web/ npm deps and builds the Studio UI → cmd/slmcode/ui/
 make build            # → ./bin/slmcode
 ```
 
-`make bootstrap` is not optional on a fresh clone if you care about Studio. `cmd/slmcode/ui/`
-is embedded with `go:embed all:ui`, and only `cmd/slmcode/ui/index.html` is tracked in git —
-a checked-in **placeholder** page so `go build` always succeeds. Without `make bootstrap`
-(or `make ui-react` to rebuild), `slmcode studio` serves that placeholder, not Studio.
+Needs Go 1.23+. `make bootstrap` additionally needs Node.js 18+ on your PATH — nothing else
+in SLMCode does; it fails with an actionable message if `npm` is missing. `make install-user`
+puts the binary in `~/.local/bin`; `make install-system` installs system-wide.
 
-Needs Go 1.23+ and a Node with `npm ci` support (the SPA is React 18 + Vite + TypeScript).
-`make bootstrap` fails with a clear message if `npm` is missing. `make install-user` puts the binary in
-`~/.local/bin`; `make install-system` installs system-wide.
+### How the Studio UI gets into the binary
+
+The Studio SPA is React 18 + Vite + TypeScript in `web/`. `make ui-react` builds it and copies
+`web/dist/*` into `cmd/slmcode/ui/`, which `cmd/slmcode/root.go` embeds with
+`//go:embed all:ui`. `make bootstrap` is `web-deps` + `ui-react`: it always ensures the npm
+dependencies are current and then builds. It is a bootstrap, not a cache check — it used to
+short-circuit on `cmd/slmcode/ui/assets/` merely *existing*, so a months-old build artifact made
+it a no-op and dependencies were never refreshed.
+
+**`cmd/slmcode/ui/` contains exactly one tracked file: `.gitkeep`.** Everything else in there —
+`index.html`, `assets/`, `vendor/` — is gitignored build output. `.gitkeep` exists because a
+`go:embed` pattern that matches nothing is a *compile* error, and `all:` is the prefix that makes
+embed include a dotfile; with it, `go build ./cmd/slmcode` works on a fresh clone with no Node
+installed at all.
+
+`index.html` used to be tracked too, as a checked-in placeholder page, and `make ui-react`
+overwrote it. That gave everyone who built Studio a permanently dirty working tree and put a
+machine-specific bundle reference one `git commit -a` away from being pushed. The placeholder now
+lives in **Go source** (`pkg/server/placeholder.go`): when the embedded FS has no `index.html`,
+the server serves that page — it says the UI has not been built and gives the `make bootstrap`
+command — and `slmcode studio` says the same thing on startup. Both use one predicate,
+`server.UIIsBuilt`, so the terminal and the browser can never disagree.
+
+So: `go build` alone always works and produces a usable binary (CLI, TUI and the whole Studio API
+are unaffected); only the web page is missing until you run `make bootstrap`.
+
+### `web/package-lock.json` is currently out of date — and how that is fixed
+
+`web/package.json` gained `vitest`, `@testing-library/*`, `eslint` and the rest of the test
+toolchain, and **`web/package-lock.json` predates them**. `npm ci` installs strictly from the
+lock and refuses to run at all when the two disagree:
+
+```
+npm ci can only install packages when your package.json and package-lock.json are in sync
+```
+
+`make bootstrap` handles this: `scripts/web-deps.sh` tries `npm ci`, and on failure explains why
+and falls back to **`npm install`**, which resolves from `package.json` and **rewrites
+`web/package-lock.json`**.
+
+> **Commit the regenerated `web/package-lock.json`.** That is the actual fix. Until it lands,
+> every clone and every CI run pays for the fallback; once it does, `npm ci` works again and is
+> both faster and reproducible.
+
+### Test files never block the app build
+
+`npm run build` is `tsc -b && vite build`, and `web/tsconfig.json` **excludes** `src/**/*.test.ts`,
+`src/**/*.test.tsx` and `src/test`. A missing or unresolvable *test* devDependency must not be
+able to stop you shipping the *app* bundle — which is exactly what happened when the stale lock
+meant `vitest` was not installed and `make ui-react` died with 21 × `TS2307: Cannot find module
+'vitest'` in files the production bundle does not even contain.
+
+The test suite is still typechecked, just not by the production build:
+
+| Command | What it checks |
+|---|---|
+| `npm run build` | app only — `tsc -b` (tests excluded) then `vite build` |
+| `npm run typecheck` | app only, no bundle |
+| `npm run typecheck:test` | app **and** tests, via `web/tsconfig.test.json` |
+| `npm run lint` | `tsc -b` + `eslint .` |
+| `npm test` | `vitest run` |
+
+`make web-check` runs `lint`, `typecheck:test`, `test` and `build` — all four.
 
 ## `make check` — the one gate
 
@@ -34,7 +93,7 @@ It runs, in order:
 | `make lint` | gofmt check → `go vet ./...` → golangci-lint (blocking) → embedded-UI smoke | golangci-lint missing → skipped with an install link; the rest always run |
 | `make cover` | `go test ./...` with coverage, against the floor in `scripts/coverage-check.sh` | never skipped |
 | `make race` | `go test -race -count=1 ./pkg/...` | never skipped |
-| `make web-check` | `npm ci` (if needed) → `npm run lint` → `npm run build` in `web/` | **SKIP** with a reason, when `npm` is missing or the registry is unreachable |
+| `make web-check` | `make web-deps` → `npm run lint` → `typecheck:test` → `test` → `build` in `web/` | **SKIP** with a reason, when `npm` is missing or the registry is unreachable |
 
 Two of those steps degrade instead of failing, on purpose. `make check` is the one command this
 document tells you to run, so it has to be runnable — on a plane, in an air-gapped runner, in a
@@ -58,6 +117,9 @@ Other targets worth knowing:
 |---|---|
 | `make cover` | coverage with a total floor (`scripts/coverage-check.sh`, floor `COVERAGE_FLOOR`, currently 63.0%, measured 64.5%) — also run as part of `make check` |
 | `make web-check` | the web half of `make check` on its own |
+| `make web-deps` | install `web/node_modules` if missing or stale (`npm ci`, falling back to `npm install`) — every web target depends on it |
+| `make ui-react` | rebuild the Studio SPA into `cmd/slmcode/ui/` after editing `web/` |
+| `make ui-check` | smoke-test `cmd/slmcode/ui/` — passes in both the built and the placeholder state; needs no npm |
 | `make tidy` | `go mod tidy` — rewrites `go.mod`/`go.sum`; needs the module proxy |
 | `make e2e` | offline e2e (`test/e2e/`) + `scripts/e2e_prime_smoke.sh` |
 | `RUN_E2E=1 make e2e` | additionally runs `TestLiveOMLX` / `TestIsolatedMultiAgent` against a live model |

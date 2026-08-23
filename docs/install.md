@@ -75,7 +75,7 @@ One-liners fetch a shiny GitHub Release. Keep the compiler for contributing (or 
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
-      | bash -s -- --version v0.7.3
+      | bash -s -- --version v0.17.0
     ```
 
 === "🪟 PowerShell"
@@ -106,6 +106,19 @@ slmcode version
 slmcode doctor
 ```
 
+Every install path above verifies a SHA-256 checksum for you: the shell installer and
+the PowerShell installer both fetch the release's `SHA256SUMS` and refuse to install on a
+mismatch, and Homebrew checks the `sha256` in the formula. If a checksum could **not** be
+fetched, the installer says so loudly rather than pretending it checked.
+
+To check by hand, or to verify a binary you downloaded from the Releases page:
+
+```bash
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.17.0/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS
+sha256sum -c SHA256SUMS --ignore-missing         # Linux
+```
+
 You want: binary on `PATH`, a provider/model listed, and a model server that answers the phone.
 `doctor` exits **4** when the provider check fails — an unreachable endpoint, a rejected or
 missing API key, or a model the endpoint does not serve — and the message says which.
@@ -134,8 +147,10 @@ slmcode                 # premium TUI — board goes brrr
     slmcode update --check
     ```
 
-    Binary installs re-download the latest release. Source installs rebuild from your checkout.
-    Fancy!
+    Binary installs re-download the latest release asset for your OS/arch, verify it against
+    the release `SHA256SUMS`, and replace the running binary atomically — no `curl | bash`.
+    Source installs rebuild from the checkout recorded in `~/.config/slmcode/install.json`.
+    `--check` reports without installing; `--yes` skips the confirmation prompt.
 
 === "🗑️ Uninstall (curl)"
 
@@ -176,11 +191,18 @@ make install-system
 # or make install
 ```
 
-**Node is optional.** The install script builds the Studio SPA when `npm` is available and the
-registry is reachable; when it is not, it says so and installs anyway with the checked-in
-placeholder page. The CLI, the API and every command are unaffected — only the Studio *web page*
-is missing, and `slmcode studio` tells you that on startup. Build it later with `make ui-react`
-(or `make bootstrap`).
+**Node is optional — for a source build.** `make install` builds the Studio SPA when `npm` is
+available and the registry is reachable; when it is not, it says so and installs anyway with the
+built-in placeholder page. The CLI, the API and every command are unaffected — only the Studio
+*web page* is missing, and `slmcode studio` tells you that on startup. Build it later with
+`make bootstrap`.
+
+!!! success "Released binaries always ship the real Studio"
+    This caveat applies to **source builds only**. Every binary published to GitHub Releases —
+    which is what the curl one-liner, the PowerShell one-liner, Homebrew and `slmcode update`
+    all install — is built by CI with the Studio SPA compiled in, and the release workflow
+    **fails outright** rather than publishing a binary that would serve the placeholder. If you
+    installed with a one-liner, `slmcode studio` gives you the real UI.
 
 Optional: `GOLANGGRAPH=/path/to/GoLangGraph` for local framework hacking. Bring snacks.
 

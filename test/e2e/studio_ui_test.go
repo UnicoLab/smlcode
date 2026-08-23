@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -19,11 +20,94 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/server"
 )
 
+// TestStudioPlaceholderWhenUINotBuilt covers the OTHER valid state of
+// cmd/slmcode/ui/: a fresh clone where nothing has been built, so the embedded
+// FS holds only .gitkeep.
+//
+// Previously cmd/slmcode/ui/index.html was a TRACKED placeholder page, which is
+// why this file could assume a document at "/" and grep it for "SLMCode
+// Studio". That placeholder was build output's own path — `make ui-react`
+// overwrote it — so it is gone; the page now lives in Go source and the server
+// serves it when the embedded FS has no index.html. This test pins that, so the
+// placeholder-only state cannot silently regress to a 404 at the root.
+func TestStudioPlaceholderWhenUINotBuilt(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default(root)
+	cfg.DryRun = true
+	if err := orchestrator.InitWorkspace(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Config = cfg
+
+	// Exactly what `//go:embed all:ui` yields on a fresh clone.
+	ui := fstest.MapFS{".gitkeep": &fstest.MapFile{}}
+	if server.UIIsBuilt(ui) {
+		t.Fatal("UIIsBuilt says a .gitkeep-only FS is a built Studio UI")
+	}
+	ts := httptest.NewServer(server.New(h, ui).Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / -> %d, want 200 with the placeholder page", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("GET / Content-Type=%q", ct)
+	}
+	page := string(body)
+	// It must say plainly what is wrong and give the exact fix.
+	for _, marker := range []string{"Studio UI has not been built", "make bootstrap", "make ui-react"} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("placeholder page missing %q: %s", marker, page)
+		}
+	}
+	// Self-contained: no external asset can load, since none is served.
+	for _, forbidden := range []string{"<script", "http://", "https://"} {
+		if strings.Contains(page, forbidden) {
+			t.Fatalf("placeholder page is not self-contained (%q): %s", forbidden, page)
+		}
+	}
+	// The API is unaffected — that is half the message the page makes.
+	resp, err = http.Get(ts.URL + "/api/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/health -> %d with an unbuilt UI", resp.StatusCode)
+	}
+	// A non-document path has no business getting an HTML body.
+	resp, err = http.Get(ts.URL + "/assets/index-abc123.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("asset path with no built UI -> %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestStudioUIInteraction exercises Studio Live flows at HTTP + asset level
 // (settings, docs markdown editor markers, board/deps, stop/status, SSE).
+//
+// It needs the real Vite output in cmd/slmcode/ui/ (index.html + assets/), which
+// is gitignored build product: skipped until `make bootstrap` has run.
 func TestStudioUIInteraction(t *testing.T) {
-	if _, err := os.Stat(filepath.Join(findRepoRoot(t), "cmd", "slmcode", "ui", "assets")); os.IsNotExist(err) {
-		t.Skip("Studio UI assets not built — run `make bootstrap` or `make ui-react` before running this test")
+	uiRoot := filepath.Join(findRepoRoot(t), "cmd", "slmcode", "ui")
+	if _, err := os.Stat(filepath.Join(uiRoot, "index.html")); os.IsNotExist(err) {
+		t.Skip("Studio UI not built — run `make bootstrap` before running this test")
+	}
+	if _, err := os.Stat(filepath.Join(uiRoot, "assets")); os.IsNotExist(err) {
+		t.Fatal("cmd/slmcode/ui/index.html exists without assets/ — half-built UI; run `make bootstrap`")
 	}
 
 	root := t.TempDir()
@@ -44,7 +128,6 @@ func TestStudioUIInteraction(t *testing.T) {
 	}
 	h.Orchestrator = orch
 
-	uiRoot := filepath.Join(findRepoRoot(t), "cmd", "slmcode", "ui")
 	ui := os.DirFS(uiRoot)
 	srv := server.New(h, ui)
 	ts := httptest.NewServer(srv.Handler())

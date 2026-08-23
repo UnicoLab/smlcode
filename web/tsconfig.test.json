@@ -1,0 +1,15 @@
+{
+  // Typechecking for the Vitest suite.
+  //
+  // Kept separate from tsconfig.json on purpose: `npm run build` runs `tsc -b`
+  // against the app config, so a missing or unresolvable test devDependency can
+  // never block shipping the Studio bundle. That is exactly what happened when
+  // package.json gained vitest and @testing-library/* while package-lock.json
+  // still predated them — `make ui-react` failed with 21 TS2307s in test files
+  // that the production bundle does not contain.
+  //
+  // Run with: npm run typecheck:test
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "exclude": []
+}

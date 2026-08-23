@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -148,5 +152,109 @@ func TestCheckWithURLServerError(t *testing.T) {
 	}
 	if info.Current != "0.12.2" {
 		t.Errorf("Current = %q, want 0.12.2", info.Current)
+	}
+}
+
+// TestNegativeCacheShortCircuits pins the behavior failTTL exists for: after a
+// failed lookup, the NEXT call must not dial at all. Before the negative cache,
+// every `slmcode version` on a machine behind a firewall paid the full
+// httpTimeout, once per invocation. Counting requests is the only way to tell a
+// short-circuit from a second failure that merely looks the same.
+func TestNegativeCacheShortCircuits(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		http.Error(w, "boom", 500)
+	}))
+	defer srv.Close()
+	cachePath := filepath.Join(t.TempDir(), "update.json")
+
+	first := CheckWithURL("0.17.0", srv.URL, cachePath)
+	if first.Error == "" {
+		t.Fatal("first check: expected an error")
+	}
+	second := CheckWithURL("0.17.0", srv.URL, cachePath)
+	if second.Error == "" {
+		t.Fatal("second check: expected the cached failure to be reported")
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("server received %d requests, want 1 — the failure was not negative-cached", got)
+	}
+	if second.UpdateAvailable || second.Latest != "" {
+		t.Errorf("cached failure must not claim an update: %+v", second)
+	}
+}
+
+// TestNegativeCachePreservesKnownLatest: a failure must not throw away a
+// previously fetched tag. A stale-but-real answer beats no answer.
+func TestNegativeCachePreservesKnownLatest(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "update.json")
+	ok := testReleaseServer("v0.18.0", "https://github.com/UnicoLab/smlcode/releases/tag/v0.18.0")
+	if info := CheckWithURL("0.17.0", ok.URL, cachePath); !info.UpdateAvailable {
+		t.Fatalf("seed check: expected update, got %+v", info)
+	}
+	ok.Close()
+
+	// A failure now lands on top of the successful entry.
+	writeFailureCache(cachePath, "simulated outage")
+
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "0.18.0") {
+		t.Errorf("failure cache dropped the known latest tag: %s", data)
+	}
+}
+
+// TestCheckAgainstShippedVersion walks the comparisons this release actually
+// makes: 0.17.0 installed, various tags upstream.
+func TestCheckAgainstShippedVersion(t *testing.T) {
+	for _, tc := range []struct {
+		tag  string
+		want bool
+	}{
+		{"v0.17.1", true},
+		{"v0.18.0", true},
+		{"v1.0.0", true},
+		{"v0.17.0", false},
+		{"v0.16.9", false},
+		{"v0.17.0-rc1", false}, // a prerelease of the installed version is not newer
+	} {
+		srv := testReleaseServer(tc.tag, "https://example.invalid/"+tc.tag)
+		info := CheckWithURL("0.17.0", srv.URL, filepath.Join(t.TempDir(), "update.json"))
+		srv.Close()
+		if info.Error != "" {
+			t.Fatalf("%s: unexpected error %s", tc.tag, info.Error)
+		}
+		if info.UpdateAvailable != tc.want {
+			t.Errorf("installed 0.17.0 vs latest %s: UpdateAvailable = %v, want %v",
+				tc.tag, info.UpdateAvailable, tc.want)
+		}
+		if strings.HasPrefix(info.Latest, "v") {
+			t.Errorf("%s: Latest kept its v prefix (%q) — callers render \"v\"+Latest", tc.tag, info.Latest)
+		}
+	}
+}
+
+// TestCacheFilePermissions: the cache lives in the user's cache dir and is
+// written with atomicfile at 0600. It is not a secret, but it IS an input to
+// "should I tell the user to update", and world-writable inputs to prompts are
+// how a user gets talked into running something.
+func TestCacheFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes")
+	}
+	cachePath := filepath.Join(t.TempDir(), "update.json")
+	srv := testReleaseServer("v0.18.0", "https://example.invalid/v0.18.0")
+	defer srv.Close()
+	CheckWithURL("0.17.0", srv.URL, cachePath)
+
+	st, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Errorf("cache file mode = %04o, want 0600", perm)
 	}
 }

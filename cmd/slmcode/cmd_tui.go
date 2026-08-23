@@ -76,7 +76,7 @@ func slashCatalog() *cli.SlashRegistry {
 		{Name: "/agent", Args: "show|new|edit|delete <id>", Help: "agent CRUD (Studio parity)", Group: "inspect"},
 		{Name: "/skills", Help: "list skills", Group: "inspect"},
 		{Name: "/blocks", Help: "list building blocks", Group: "inspect"},
-		{Name: "/pack", Args: "<go|python|react>", Help: "apply a language pack", Group: "config"},
+		{Name: "/pack", Args: "<pack-id>", Help: "apply a language pack (/blocks lists all 13)", Group: "config"},
 		{Name: "/mcp", Help: "MCP connection status", Group: "inspect"},
 		{Name: "/doctor", Help: "re-probe the endpoint and print health", Group: "inspect", LiveOK: true},
 		{Name: "/studio", Help: "print the Studio URL", Group: "inspect", LiveOK: true},
@@ -536,7 +536,7 @@ func makeSlashHandler(
 			return false, nil
 		case "/pack":
 			if arg == "" {
-				return false, fmt.Errorf("usage: /pack <go|python|react>")
+				return false, fmt.Errorf("usage: /pack <pack-id> — `/blocks` lists every pack (go, python, react, typescript, web, rust, java, kotlin, dotnet, ruby, php, swift, cpp)")
 			}
 			reg2, err := blocks.Load(h.Config.Root)
 			if err != nil {

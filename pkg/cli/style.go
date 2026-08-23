@@ -175,3 +175,66 @@ func Clip(s string, n int) string {
 	}
 	return ClipWidth(s, n)
 }
+
+// NormalizeBullets collapses doubled list markers in text the CLI renders.
+//
+// `slmcode memory show` printed lines like "- - The project is a tiny module".
+// pkg/memory's fact renderer writes "- %s" per fact, and the fact TEXT that a
+// distillation pass stored already carries its own "- " because it was lifted
+// verbatim out of a markdown list. Neither side is wrong on its own; the
+// display is. Fixing it where the string is printed keeps the stored fact
+// byte-identical to what the model wrote (which matters — facts are matched by
+// text) and fixes every renderer at once.
+func NormalizeBullets(body string) string {
+	if body == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		lines[i] = collapseBullet(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// collapseBullet reduces a run of leading list markers on one line to one.
+func collapseBullet(line string) string {
+	indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+	rest := line[len(indent):]
+	marker := ""
+	for {
+		next, ok := stripBulletMarker(rest)
+		if !ok {
+			break
+		}
+		if marker == "" {
+			marker = rest[:len(rest)-len(next)]
+		}
+		rest = next
+	}
+	if marker == "" {
+		return line
+	}
+	return indent + marker + rest
+}
+
+// stripBulletMarker removes one leading "- ", "* " or "• " and reports success.
+func stripBulletMarker(s string) (string, bool) {
+	for _, m := range []string{"- ", "* ", "• ", "+ "} {
+		if strings.HasPrefix(s, m) {
+			return strings.TrimLeft(s[len(m):], " "), true
+		}
+	}
+	return s, false
+}
+
+// TrimBulletMarker removes a single leading list marker from a stored string.
+//
+// Used where the CLI supplies its own layout (a column, a table cell) and the
+// stored text's own bullet would collide with it.
+func TrimBulletMarker(s string) string {
+	trimmed := strings.TrimLeft(s, " \t")
+	if out, ok := stripBulletMarker(trimmed); ok {
+		return out
+	}
+	return s
+}

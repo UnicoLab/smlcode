@@ -12,7 +12,9 @@ import (
 type loopContract struct {
 	// ContextLimitTokens is the model's context window; 0 = unknown.
 	ContextLimitTokens int
-	// MaxTaskCalls is the per-task LLM call budget; 0 => loop's default of 6.
+	// MaxTaskCalls is the per-task LLM call budget; 0 => loop.DefaultMaxTaskCalls
+	// (10 = worker + self-critique + MaxRetries × (review + correct) at the
+	// default MaxRetries=4, so the budget does not silently cap max_retries).
 	MaxTaskCalls int
 	// ResolveRole maps a slot role id -> a registered agent id.
 	ResolveRole func(string) string

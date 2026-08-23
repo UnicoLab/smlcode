@@ -802,10 +802,35 @@ func queryLanguageSpecialists(query string) (worker, tester string) {
 		return "java-worker", "java-tester"
 	case strings.Contains(q, "c++") || strings.Contains(q, "cpp") || strings.Contains(q, "cmake"):
 		return "cpp-worker", "cpp-tester"
+	case strings.Contains(q, "c#") || strings.Contains(q, "csharp") ||
+		strings.Contains(q, ".net") || strings.Contains(q, "dotnet") ||
+		strings.Contains(q, "nuget") || strings.Contains(q, "blazor") ||
+		strings.Contains(q, "entity framework"):
+		return "dotnet-worker", "dotnet-tester"
+	case strings.Contains(q, "kotlin") || strings.Contains(q, "ktor") ||
+		strings.Contains(q, "jetpack compose"):
+		return "kotlin-worker", "kotlin-tester"
+	case strings.Contains(q, "ruby") || strings.Contains(q, "rails") ||
+		strings.Contains(q, "gemfile") || strings.Contains(q, "rspec") ||
+		strings.Contains(q, "bundler"):
+		return "ruby-worker", "ruby-tester"
+	case strings.Contains(q, "php") || strings.Contains(q, "laravel") ||
+		strings.Contains(q, "symfony") || strings.Contains(q, "phpunit"):
+		return "php-worker", "php-tester"
+	case strings.Contains(q, "swift") || strings.Contains(q, "xcode") ||
+		strings.Contains(q, "swiftpm"):
+		return "swift-worker", "swift-tester"
 	case strings.Contains(q, "react") || strings.Contains(q, "next.js") ||
 		strings.Contains(q, "nextjs") || strings.Contains(q, "vite") ||
-		strings.Contains(q, "typescript") || strings.Contains(q, "tsx"):
+		strings.Contains(q, "tsx") || strings.Contains(q, "jsx"):
 		return "react-worker", "react-tester"
+	// TypeScript that is not React: the repo ships a ts-* pack for exactly this
+	// (a Node service, a CLI, a library) and routing it to react-worker handed
+	// the task a prompt about components and hooks.
+	case strings.Contains(q, "typescript") || strings.Contains(q, "ts-node") ||
+		strings.Contains(q, "deno") || strings.Contains(q, "node.js") ||
+		strings.Contains(q, "nodejs"):
+		return "ts-worker", "ts-tester"
 	case strings.Contains(q, "html") || strings.Contains(q, "browser") ||
 		strings.Contains(q, "game") || strings.Contains(q, "website") ||
 		strings.Contains(q, "webpage") || strings.Contains(q, "frontend") ||
@@ -824,6 +849,10 @@ func queryLanguageSpecialists(query string) (worker, tester string) {
 	return "", ""
 }
 
+// projectLanguageSpecialists maps a detected project language to its
+// worker/tester pair. Every id here must exist under
+// pkg/blocks/bundled/agents/ — filterKnownSpecialistPair drops the ones that do
+// not, which is a silent downgrade to the generic worker rather than an error.
 func projectLanguageSpecialists(lang string) (worker, tester string) {
 	switch strings.ToLower(strings.TrimSpace(lang)) {
 	case "go":
@@ -831,13 +860,27 @@ func projectLanguageSpecialists(lang string) (worker, tester string) {
 	case "python":
 		return "python-worker", "python-tester"
 	case "typescript":
-		return "react-worker", "react-tester"
+		// ts-*, not react-*. A tsconfig.json says TypeScript, not React; the
+		// react pack's prompts are about components, hooks and JSX, so a Node
+		// service or CLI was being briefed on the wrong framework. A React
+		// project is routed by the query keywords above, which run first.
+		return "ts-worker", "ts-tester"
 	case "javascript", "html":
 		return "web-worker", "web-tester"
 	case "rust":
 		return "rust-worker", "rust-tester"
 	case "java":
 		return "java-worker", "java-tester"
+	case "kotlin":
+		return "kotlin-worker", "kotlin-tester"
+	case "c#", "csharp", "dotnet", ".net":
+		return "dotnet-worker", "dotnet-tester"
+	case "ruby":
+		return "ruby-worker", "ruby-tester"
+	case "php":
+		return "php-worker", "php-tester"
+	case "swift":
+		return "swift-worker", "swift-tester"
 	case "c++", "c/make":
 		return "cpp-worker", "cpp-tester"
 	default:

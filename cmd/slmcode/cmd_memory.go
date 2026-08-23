@@ -109,7 +109,11 @@ func memoryShowCmd() *cobra.Command {
 				fmt.Println(cli.Dim("  (nothing remembered yet — run slmcode run once)"))
 				return nil
 			}
-			fmt.Println(block)
+			// The stored fact text can already carry its own "- " (facts are
+			// distilled out of markdown lists), and pkg/memory's renderer adds
+			// one of its own, so the block arrives with "- - The project is …".
+			// Normalizing here leaves the stored fact byte-identical.
+			fmt.Println(cli.NormalizeBullets(block))
 			return nil
 		},
 	}
@@ -218,7 +222,9 @@ func memoryFactsCmd() *cobra.Command {
 				fmt.Printf("  %s %s %s  %s\n", pin,
 					cli.Accent(cli.PadWidth(string(f.Kind), 11)),
 					cli.Dim(fmt.Sprintf("%3.0f%%", f.Confidence*100)),
-					cli.Clip(f.Text, 90))
+					// The stored text may open with its own list marker, which
+					// collides with this table's own layout.
+					cli.Clip(cli.TrimBulletMarker(f.Text), 90))
 				fmt.Println("      " + cli.Dim(fmt.Sprintf("%s · seen %d · last %s",
 					f.Subject, f.Support, f.LastSeen.Local().Format("2006-01-02"))))
 			}

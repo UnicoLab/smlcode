@@ -1,12 +1,10 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"io/fs"
 	"mime"
@@ -2412,11 +2410,14 @@ func init() {
 	_ = mime.AddExtensionType(".css", "text/css")
 }
 
-// spaHandler serves the embedded SPA. HTML documents get the session token
-// injected as <meta name="slmcode-token">, which is how a tab opened without
-// the `?t=` parameter still bootstraps. This is safe: the document itself is
-// only readable same-origin (no CORS headers are emitted), so a third-party
-// page can neither read the meta tag nor the URL.
+// spaHandler serves the embedded SPA.
+//
+// It NEVER embeds the session token in the document. It used to inject
+// `<meta name="slmcode-token" content="…">`, which made `GET /` a token
+// dispenser for any process on the machine that could open a socket to
+// loopback — the exact adversary the token exists to stop. Every request that
+// reaches here has already presented a valid token (see secure/tokenSourceOf),
+// and the browser keeps it in an HttpOnly cookie from then on.
 func (s *Server) spaHandler(fileServer http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -2436,49 +2437,8 @@ func (s *Server) spaHandler(fileServer http.Handler) http.Handler {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		}
-		if isHTML && s.AuthEnabled() {
-			fileServer.ServeHTTP(&tokenInjector{ResponseWriter: w, token: s.opts.Token}, r)
-			return
-		}
 		fileServer.ServeHTTP(w, r)
 	})
-}
-
-// tokenInjector rewrites <head> of an HTML response to carry the session token.
-type tokenInjector struct {
-	http.ResponseWriter
-	token   string
-	done    bool
-	skipped bool
-}
-
-func (t *tokenInjector) WriteHeader(code int) {
-	// Content-Length would be wrong after injection.
-	t.ResponseWriter.Header().Del("Content-Length")
-	t.ResponseWriter.WriteHeader(code)
-}
-
-func (t *tokenInjector) Write(p []byte) (int, error) {
-	if t.done || t.skipped {
-		return t.ResponseWriter.Write(p)
-	}
-	idx := bytes.Index(p, []byte("<head>"))
-	if idx < 0 {
-		// Injection only works when <head> lands in the first chunk; the
-		// SPA's index.html always does. Otherwise fall back to ?t= only.
-		t.skipped = true
-		return t.ResponseWriter.Write(p)
-	}
-	t.done = true
-	meta := fmt.Sprintf("<head><meta name=%q content=%q>", TokenMetaName, html.EscapeString(t.token))
-	out := append([]byte(nil), p[:idx]...)
-	out = append(out, []byte(meta)...)
-	out = append(out, p[idx+len("<head>"):]...)
-	if _, err := t.ResponseWriter.Write(out); err != nil {
-		return 0, err
-	}
-	// Report the caller's byte count so io.Copy accounting stays consistent.
-	return len(p), nil
 }
 
 // maxWorkspaceFileBytes bounds a single file read so the browser is not handed

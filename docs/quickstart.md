@@ -59,9 +59,11 @@ Secondary goal: smile at least once. 😄
 mkdir -p /tmp/slm-demo && cd /tmp/slm-demo
 printf 'package main\n\nfunc Hello() string { return "hi" }\n' > hello.go
 printf '# Agents\n\nPrefer tiny Go edits and clear godoc comments.\n' > AGENTS.md
-slmcode init
-slmcode blocks apply go   # apply Go-optimized pipeline + quality checks
+slmcode init              # detects Go and applies the go pack for you
 ```
+
+`init` prints the pack it picked (`pack: go (detected)`). Override it with
+`slmcode blocks apply <pack>` if you disagree — `slmcode blocks list` shows all thirteen.
 
 Edit `.slmcode/PROJECT.md` with two honest sentences about the stack.
 (Lying to your own memory file is a bold strategy. We don’t recommend it.)
@@ -77,10 +79,17 @@ slmcode run -v "Add a Go doc comment to Hello() explaining it returns a greeting
 
 **Pass checklist** ✅
 
+- [ ] the run ends with a **Changes** block naming `hello.go` and a `+N −M` count
 - [ ] `hello.go` has a real `// Hello …` comment
 - [ ] `slmcode board` shows completed work
 - [ ] `slmcode session list` has a run
 - [ ] `.slmcode/SKILLS.md` exists (the flywheel sneezed)
+
+Got `⚠ no files changed` instead? That is the harness telling you the truth: the model claimed an
+edit it never made, and the evidence gate refused it. The **Next** lines under it are the ones to
+follow — `slmcode task show T1` prints the reviewer's verdict, the gate that refused the task and
+the (empty) diff of its focus files. Smaller scope and a sharper acceptance line fix this more
+often than a bigger model does.
 
 </li>
 

@@ -97,7 +97,7 @@ func TestSpeculateTesterDuplicateCancelsLoser(t *testing.T) {
 			"tester-strict": 400 * time.Millisecond,
 		},
 		out: map[string]string{
-			plan.RoleTester: "Observation: go test ./... -short\nok\n" +
+			plan.RoleTester: "Observation: ws_shell `go test ./... -short`\nok\nexit status 0\n" +
 				`{"passed":true,"commands":["go test ./... -short"],"summary":"lean win","failures":[]}`,
 			"tester-strict": `{"passed":false,"summary":"slow","failures":["x"]}`,
 		},

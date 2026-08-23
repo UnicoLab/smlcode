@@ -1,6 +1,9 @@
 package workspace
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAdversaryShellBypassBattery(t *testing.T) {
 	cases := []string{
@@ -57,6 +60,86 @@ func TestAdversaryShellStillAllowed(t *testing.T) {
 	for _, c := range ok {
 		if refuse, blocked := GuardShellWhitelist(c, nil); blocked {
 			t.Errorf("OVER-BLOCKED: %q -> %s", c, refuse)
+		}
+	}
+}
+
+// `cmake --build <dir>` is the single canonical way to build a CMake project —
+// no more dangerous than `go build` or `mvn test`, which run the project's own
+// build too. Its path operands must stay inside the workspace, and cmake's
+// script / file-mutator / installer modes stay refused.
+func TestCmakeBuildAllowedOperandsPoliced(t *testing.T) {
+	allowed := []string{
+		`cmake --build build`,
+		`cmake --build build -j 4`,
+		`cmake --build build --target test`,
+		`cmake --build=build`,
+		`cmake -S . -B build`,
+		`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`,
+		`cmake -B build -S .`,
+		`cmake .`,
+		`cmake --version`,
+		`cmake -S . -B build -G Ninja`,
+		`cmake --build build && ctest --test-dir build`,
+	}
+	for _, c := range allowed {
+		if refuse, blocked := GuardShellWhitelist(c, nil); blocked {
+			t.Errorf("OVER-BLOCKED: %q -> %s", c, refuse)
+		}
+		if _, blocked := DangerousInvocation(c); blocked {
+			t.Errorf("OVER-BLOCKED by DangerousInvocation: %q", c)
+		}
+	}
+
+	refused := []string{
+		// script / command-mode / installer: arbitrary code or writes.
+		`cmake -P evil.cmake`,
+		`cmake -E copy /etc/passwd out`,
+		`cmake -E rm -rf build`,
+		`cmake -C /tmp/initial-cache.cmake -S . -B build`,
+		`cmake --install build --prefix /usr/local`,
+		// build modes whose operand leaves the workspace.
+		`cmake --build /tmp/pwned`,
+		`cmake --build ../outside`,
+		`cmake --build=/tmp/pwned`,
+		`cmake -S . -B /var/tmp/out`,
+		`cmake -B ../out -S .`,
+		`cmake -S /etc -B build`,
+		`cmake ..`,
+		`cmake /tmp/othertree`,
+		`cmake --build ~/elsewhere`,
+	}
+	for _, c := range refused {
+		reason, blocked := GuardShellWhitelist(c, nil)
+		if !blocked {
+			t.Errorf("NOT BLOCKED: %q", c)
+			continue
+		}
+		if reason == "" {
+			t.Errorf("refusal without an explanation: %q", c)
+		}
+	}
+}
+
+// The refusal text must name the actual reason, not the generic
+// "names another program to execute" line, which is false for -E/--install and
+// teaches the model to retry the same class of command.
+func TestCmakeRefusalsExplainThemselves(t *testing.T) {
+	cases := map[string]string{
+		`cmake -E copy a b`:                 "command mode",
+		`cmake --install build`:             "--prefix",
+		`cmake -P x.cmake`:                  "execute_process",
+		`cmake -C init.cmake -S . -B build`: "initial-cache",
+		`cmake --build /tmp/x`:              "outside the project root",
+	}
+	for cmd, want := range cases {
+		reason, blocked := DangerousInvocation(cmd)
+		if !blocked {
+			t.Errorf("NOT BLOCKED: %q", cmd)
+			continue
+		}
+		if !strings.Contains(reason, want) {
+			t.Errorf("refusal for %q does not mention %q: %s", cmd, want, reason)
 		}
 	}
 }

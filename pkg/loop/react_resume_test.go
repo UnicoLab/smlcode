@@ -25,6 +25,11 @@ type fakeReactExec struct {
 	sawMsgs   int
 	coldOnly  bool
 	root      string
+	// interrupt models the real thing: a SIGINT cancels the RUN's context and
+	// the in-flight sub-agent then returns context.Canceled. Simulating only
+	// the second half is what let a self-inflicted cancellation (a speculative
+	// loser) look identical to a user interrupt.
+	interrupt func()
 }
 
 func (f *fakeReactExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
@@ -43,6 +48,9 @@ func (f *fakeReactExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.Sub
 		}}, nil
 	}
 	if f.calls == 1 {
+		if f.interrupt != nil {
+			f.interrupt()
+		}
 		msgs := []llm.Message{
 			{Role: "user", Content: req.Input},
 			{Role: "assistant", Content: "I'll move the file", ToolCalls: []llm.ToolCall{{
@@ -93,7 +101,9 @@ func TestReactMidExecuteInterruptResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fake := &fakeReactExec{root: root}
+	runCtx, interrupt := context.WithCancel(context.Background())
+	defer interrupt()
+	fake := &fakeReactExec{root: root, interrupt: interrupt}
 	r := NewRunner(fake, ggagent.NewSharedState())
 	r.Root = root
 	r.SlmDir = slm
@@ -115,7 +125,7 @@ func TestReactMidExecuteInterruptResume(t *testing.T) {
 		}},
 	}
 
-	err = r.RunBoard(context.Background(), board)
+	err = r.RunBoard(runCtx, board)
 	if err == nil {
 		t.Fatal("expected cancel error from mid-execute interrupt")
 	}
@@ -135,6 +145,9 @@ func TestReactMidExecuteInterruptResume(t *testing.T) {
 	}
 
 	// /resume: normalize board columns; keep react history — no cold replan.
+	fake.mu.Lock()
+	fake.interrupt = nil
+	fake.mu.Unlock()
 	board2 := session.NormalizeForResume(*board)
 	r2 := NewRunner(fake, ggagent.NewSharedState())
 	r2.Root = root

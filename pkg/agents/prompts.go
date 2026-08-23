@@ -169,8 +169,11 @@ phase list, the specialist roster, and the available skills.
 - Enable the fewest phases that finish the job; a code-producing task always keeps execute and test.
 - Bind coding phases to roles with tools and planning phases to roles without.
 - Match the query to a language specialist from the ROSTER — html/css/js → web-*,
-  rust → rust-*, java → java-*, c/c++ → cpp-*, shell → shell-*, react/vite/ts → react-*,
-  go → go-*, python/django/flask/fastapi/langgraph → python-*. No match: generic worker + tester.
+  rust → rust-*, java → java-*, kotlin/ktor → kotlin-*, c/c++ → cpp-*, shell → shell-*,
+  c#/.net/blazor → dotnet-*, ruby/rails → ruby-*, php/laravel/symfony → php-*,
+  swift/swiftui/xcode → swift-*, react/next.js/vite/jsx/tsx → react-*,
+  typescript/node without react → ts-*, go → go-*,
+  python/django/flask/fastapi/langgraph → python-*. No match: generic worker + tester.
 - Copy phase ids, agent ids, and skill names exactly from the lists; 0–4 skills per specialist.
 - handoff carries 2–6 bullets: target files, non-goals, verification commands, sequencing.
 

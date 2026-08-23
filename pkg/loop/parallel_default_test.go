@@ -87,10 +87,17 @@ func defaultRunner(t *testing.T, root string, exec SubAgentRunner) *Runner {
 }
 
 // failingSmokeSection renders the exact section the harness appends when a
-// deterministic smoke command fails.
+// deterministic smoke command fails, STAMPED as harness-authored.
+//
+// The stamp matters: since the forged-marker fix, a `## Deterministic smoke`
+// header sitting in a model's own answer is defused on the next append (it
+// becomes `> (quoted) Deterministic smoke`) precisely because a model can write
+// those five words as easily as the harness can. Only a section the harness
+// minted this process keeps its authority, so a fake that wants to stand in for
+// one has to be minted the same way.
 func failingSmokeSection(cmd, detail string) string {
-	return "\n\n" + quality.SmokeSectionHeader + "\n" + quality.SmokeFailedMarker +
-		"\ncmd: " + cmd + "\n" + detail + "\n"
+	return quality.StampHarnessSection("\n\n" + quality.SmokeSectionHeader + "\n" +
+		quality.SmokeFailedMarker + "\ncmd: " + cmd + "\n" + detail + "\n")
 }
 
 // ── defect 1: the wave must not mutate a COPY of the task ───────────────────

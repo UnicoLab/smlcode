@@ -65,12 +65,25 @@ The allowlist is **tiered**. Only the first two tiers auto-run.
 
 ### Auto-allowed
 
-**Read-only** — cannot mutate the tree:
-`ls` `cat` `head` `tail` `wc` `pwd` `echo` `printf` `date` `which` `type` `env` `printenv`
+**Inspection** — reads the tree, does not modify existing files:
+`ls` `cat` `head` `tail` `wc` `pwd` `echo` `printf` `date` `which` `type` `printenv`
 `uname` `whoami` `id` · `git log|status|diff|show|branch|remote|stash list|tag|ls-files|rev-parse`
-· `find` `grep` `rg` `ag` `fd` `tree` · `pip show` `pip list` `npm list` `npm ls`
-`cargo metadata` · `df` `du` `free` `top -bn` `ps` · `curl -I` `curl --head` · `mkdir` `touch`
+· `grep` `rg` `ag` `fd` `tree` · `pip show` `pip list` `npm list` `npm ls`
+`cargo metadata` · `df` `du` `free` `top -bn` `ps` · `curl -I` `curl --head` ·
 `true` `false` `test` `[` · `sort` `uniq` `cut` `diff` `stat` `file` `basename` `dirname`
+
+Three entries in this tier are auto-allowed **only in their inspecting form**, and the flag audit
+(`DangerousInvocation`, `pkg/workspace/shellexec.go`) refuses the rest:
+
+| Command | Allowed | Refused |
+|---|---|---|
+| `env` | `env`, `env -0`, `env FOO=1` — printing the environment | `env <program>`, `env -- <program>`, `env -S …` — these *exec* a program the allowlist never sees |
+| `find` | listing and filtering paths | `-exec` `-execdir` `-ok` `-okdir` `-delete` `-fprintf` `-fprint` `-fprint0` `-fls` — these run a program or delete files for every match |
+| `mkdir`, `touch` | creating a path **inside** the project root | any operand that is absolute, starts with `~`, or climbs out with `..` |
+
+`mkdir` and `touch` do create files. They are auto-allowed because inside the workspace that is
+harmless and often necessary, and refused outright when the path leaves it — but they are not
+read-only, and this page used to say they were.
 
 **Build/test** — the runners a worker is expected to use:
 `go test|build|vet|fmt|mod|list` `gofmt` · `pytest` `python -m pytest|py_compile|compileall|unittest`
@@ -78,6 +91,28 @@ The allowlist is **tiered**. Only the first two tiers auto-run.
 `mvn` `./mvnw` `gradle` `./gradlew` · `ctest` `cmake` · `bash -n` `shellcheck` ·
 `tsc` `eslint` `ruff` `mypy` `black` `flake8` · `gcc` `g++` `clang` `clang++` ·
 `uv run pytest` `uv sync` `uv pip`
+
+Several of these take a flag whose **value names another program to run**, which would clear the
+allowlist while executing something it never inspected. Those flags are refused per binary:
+
+| Binary | Refused flags | Why |
+|---|---|---|
+| `go` | `-exec` `-toolexec` `-vettool` `-overlay` `-gcflags` `-asmflags` `-ldflags` `-compiler` | each forwards a program (or a nested `-toolexec` / `-fuse-ld` / `-fplugin`) to the toolchain |
+| `go` | `go generate` | executes `//go:generate` directives chosen by the repository |
+| `cmake` | `-P` `-C` | run a CMake script, and a CMake script is `execute_process` with extra steps |
+| `cmake` | `-E` | cmake's command mode (`cmake -E copy`, `cmake -E rm`) — a file mutator that bypasses `ws_write` and the checkpointer |
+| `cmake` | `--install` | copies build output to an arbitrary `--prefix` |
+| `cmake` | out-of-tree `-S` / `-B` / `--build` paths | `cmake --build /tmp/x` writes outside the workspace |
+| `ctest` | `--build-and-test` `--test-command` `--build-generator` | name a command to execute |
+| `cargo` | `--config` | injects configuration that can name a runner |
+| `npm` `pnpm` `yarn` | `--node-options` | passes `--require`/`--eval` to node |
+| `tsc` | `--plugin` | loads arbitrary code into the compiler |
+| `eslint` | `--rulesdir` `--resolve-plugins-relative-to` | load rule modules from a path of the caller's choosing |
+| `mypy` | `--custom-typeshed-dir` | same |
+| `pytest` | `-p` `--rootdir` | `-p` imports an arbitrary plugin module |
+
+`cmake .`, `cmake -S . -B build`, `cmake --build build` and a plain `ctest` still run: driving the
+project's own build is the point. See §5.1 for what that inherently means.
 
 ### Refused unless explicitly allowed
 
@@ -142,6 +177,73 @@ idiom for "this word, not words starting with it".
 
 Turn the whole gate off with `shell_whitelist: false` — at which point `shell_permission` is the
 only thing between the model and your shell.
+
+## 5.1 What the allowlist does **not** protect you from
+
+Everything in §5 is a *command* allowlist. Two consequences follow from that, and neither is a
+bug to be fixed — they are properties of what this tool is. Read them before pointing SLMCode at
+code you did not write.
+
+### `ws_shell` is a command allowlist, not a filesystem jail
+
+The tool layer (`ws_read`, `ws_write`, `ws_edit`, `ws_mv`, `ws_delete`) **is** jailed to the
+project root: §2 resolves symlinks and refuses `..` escapes, and every write is checkpointed.
+
+`ws_shell` is not. It decides **which command may run**, not which files that command may touch.
+An allowed `cat`, `grep`, `find`, `head`, `ls`, `stat` or `wc` reads **any path the user account
+can read** — `~/.ssh/id_rsa`, `~/.aws/credentials`, `/etc/passwd`, another project's `.env` — and
+the contents come back to the model as a tool result, which means they go to whatever endpoint
+`provider`/`endpoint` points at.
+
+The write side is narrower but not zero: `mkdir` and `touch` are refused outside the root, the
+mutator tier (`sed`, `cp`, `mv`, `rm`, `tee`, `dd`, …) is refused entirely unless you allow it,
+and shell redirection onto an existing file is refused by `shell_write_guard`. So the realistic
+exposure is **read exfiltration, not out-of-tree modification** — but it is real.
+
+One layer does hold on the read side, and it is worth being precise about its scope: every tool
+result — `ws_shell` included — passes through a **secret scrub** on the way back to the model
+(`pkg/workspace/redact.go`). The values it knows about are the configured `api_key`, everything
+in `.slmcode/auth.json`, and the provider environment variables (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …); each is replaced with
+`[redacted: slmcode credential]` wherever it appears. That closes the channel for **the harness's
+own credentials by value**, whatever command produced them. It does nothing for a secret the
+harness has never been told about — your `~/.ssh/id_rsa`, a colleague's `.env`, a token in a
+config file — because it cannot recognise one.
+
+If that matters for your threat model, the enforcing boundaries are the operating system's, not
+this tool's:
+
+- run SLMCode as a user that can only read the project (a container, a VM, a dedicated account);
+- `shell_permission: ask` — approve each command yourself;
+- `shell_permission: deny` — no shell at all; the `ws_*` tools still work and stay jailed.
+
+### Verifying a project runs the project's own code
+
+The quality gates work by executing the project's verification commands. That is the entire
+mechanism, and it cannot be made safe by inspecting the command line, because the *command* is
+innocuous and the *code it runs* comes from the repository:
+
+| Allowed command | What it executes |
+|---|---|
+| `npm test`, `npm run <x>`, `npm ci`, `npm install` | the `scripts` and lifecycle hooks (`preinstall`, `postinstall`) in `package.json`, plus every dependency's install scripts |
+| `pytest` | `conftest.py` at import time, before a single test runs |
+| `go build`, `go test` | `#cgo` directives, which invoke the system C compiler with repository-supplied flags |
+| `mvn`, `./mvnw`, `gradle`, `./gradlew` | the wrapper script committed to the repo, then the build plugins the build file declares |
+| `cmake --build build` | the generated build system, i.e. the rules `CMakeLists.txt` chose |
+| `cargo build`, `cargo test` | `build.rs`, compiled and run as part of the build |
+| `make` *(not auto-allowed)* | any recipe in the `Makefile` |
+
+**Pointing SLMCode at an untrusted repository is equivalent to running that repository's build.**
+Clone-and-run is the risk, not clone-and-inspect. If you would not run `npm install && npm test`
+in that checkout by hand, do not point an agent at it either.
+
+### Telling the two apart
+
+The refusals catalogued in §5 (`env python -c`, `find -exec`, `go test -exec`, `cmake -P`,
+`touch /etc/x`, command substitution, bare `&`) were **allowlist bugs**: each named its payload
+directly on the command line, none of them is needed to build or test anything, and each has been
+closed. The two risks on this page are **inherent**: they do not come from a hole in the list, and
+no addition to the list removes them.
 
 ## 6. Command execution bounds
 

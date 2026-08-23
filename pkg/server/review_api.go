@@ -63,6 +63,22 @@ func (s *Server) pendingIDPath(id string) (string, error) {
 	return filepath.Join(s.pendingDir(), id), nil
 }
 
+// pendingTargetAllowed is the single rule for what a review-queue entry may
+// name: inside the workspace, and not harness control state. Both the diff
+// endpoint (which READS the target) and apply (which WRITES it) go through it,
+// so the display path and the write path can never disagree.
+func (s *Server) pendingTargetAllowed(rel string) error {
+	target, err := s.workspacePath(rel)
+	if err != nil {
+		return ErrPathEscape
+	}
+	inRoot, rerr := filepath.Rel(s.rootDir(), target)
+	if rerr != nil {
+		return ErrPathEscape
+	}
+	return workspace.CheckHarnessStateWrite(inRoot)
+}
+
 // readPending loads and diffs one queue entry.
 func (s *Server) readPending(id string, withHunks bool, context int) (PendingChange, error) {
 	full, err := s.pendingIDPath(id)
@@ -96,6 +112,20 @@ func (s *Server) readPending(id string, withHunks bool, context int) (PendingCha
 		ch.CreatedAt = time.Unix(0, ts).UTC().Format(time.RFC3339)
 	}
 
+	// A queue entry is a FILE in `.slmcode/pending/`, which means a cloned
+	// repository can ship one — nothing here proves the harness wrote it. An
+	// entry naming .slmcode/auth.json used to make this endpoint render the
+	// operator's provider API keys as the "before" side of a diff, and an entry
+	// naming .slmcode/hooks.json turned the approve button into a one-click
+	// arbitrary-bash install. applyPending already refuses to WRITE those
+	// paths; refusing to READ or display them closes the other half.
+	if herr := s.pendingTargetAllowed(pf.Path); herr != nil {
+		ch.Error = herr.Error()
+		ch.Exists = false
+		ch.After = ""
+		ch.Bytes = 0
+		return ch, nil
+	}
 	target, err := s.workspacePath(pf.Path)
 	if err != nil {
 		ch.Error = "target path escapes workspace root"
@@ -320,10 +350,9 @@ func (s *Server) applyPending(id string) (string, error) {
 	// a way to land .slmcode/hooks.json or .slmcode/config.yaml (arbitrary bash
 	// on the next run, or a switch that turns the guards off). The tool layer
 	// already refuses those writes — this is the second, independent check on
-	// the path that actually reaches os.WriteFile.
-	if rel, rerr := filepath.Rel(s.rootDir(), target); rerr != nil {
-		return pf.Path, ErrPathEscape
-	} else if herr := workspace.CheckHarnessStateWrite(rel); herr != nil {
+	// the path that actually reaches os.WriteFile, and the same rule the diff
+	// endpoint applies before it reads anything.
+	if herr := s.pendingTargetAllowed(pf.Path); herr != nil {
 		return pf.Path, herr
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state

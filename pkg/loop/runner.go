@@ -574,11 +574,19 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 	canceled = r.driveReview(ctx, board, ws) || canceled
 
 	r.persist(board)
+	// A cancellation is only the RUN's cancellation when the run's context says
+	// so. Sub-agent cancellations the harness caused itself — a speculative
+	// racer cut short by its winner, a slot that hit its own per-slot timeout —
+	// used to be reported here as context.Canceled regardless, which the
+	// orchestrator's interrupt checkpoint then classified as a user interrupt:
+	// the run aborted with "interrupted at execute" and exit 130 with nobody
+	// having pressed anything. The affected task is already parked in blocked
+	// by handleTaskCancel; the board, not the wave, decides what happens next.
 	if canceled {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return context.Canceled
+		r.logf("wave %d: sub-agent cancellation with a live run context — not a user interrupt", r.waveN)
 	}
 	return nil
 }
@@ -773,7 +781,11 @@ func (r *Runner) collectWaveResults(ctx context.Context, board *plan.Board, ws *
 			r.handleTaskTimeout(board, *t, role, res, timeoutErr(execErr, res))
 			continue
 		}
-		if isCancelResult(execErr, res) || (res.Error != nil && isCancelResult(res.Error, res)) {
+		// Per-RESULT, not per-wave: execErr is the first error across the whole
+		// dispatch, so folding it into every iteration marked healthy siblings
+		// canceled too. It still counts when this wave dispatched one request,
+		// where "the first error" and "this task's error" are the same thing.
+		if isCancelResult(res.Error, res) || (len(results) == 1 && IsContextCancelErr(execErr)) {
 			r.handleTaskCancel(board, t, role, res, execErr)
 			canceled = true
 			continue
@@ -950,7 +962,12 @@ func (r *Runner) driveReview(ctx context.Context, board *plan.Board, ws *waveSta
 		// Use the pre-wave snapshot so disk evidence survives finalize JSON.
 		if err := r.reviewAndCorrect(ctx, board, t, snaps[t.ID]); err != nil {
 			r.logf("review/correct %s: %v", t.ID, err)
-			if isCancelResult(err, ggagent.SubAgentResult{}) {
+			// ctx.Err() is the only authority on whether the RUN was canceled.
+			// A reviewer slot that died on its own per-slot timeout, or a
+			// speculative loser, reports a cancellation too — and reporting it
+			// here as the run's cancellation is what produced the phantom
+			// "interrupted at execute".
+			if ctx.Err() != nil && isCancelResult(err, ggagent.SubAgentResult{}) {
 				canceled = true
 			}
 		}
@@ -1147,7 +1164,7 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 	// never ran CheckStaticQuality — catch Placeholder stubs before fast-path.
 	if r.StaticQuality && !g.staticFail && !g.renameDisk {
 		if issues := quality.CheckStaticQuality(r.Root, *current); len(issues) > 0 {
-			current.Output = strings.TrimSpace(current.Output) + quality.FormatStaticSection(issues)
+			current.Output = appendHarnessSection(current.Output, quality.FormatStaticSection(issues))
 			g.staticFail = true
 			r.logf("%s review-time static FAILED (%d issue(s))", current.ID, len(issues))
 			r.fireIntervention(current.ID, "review",
@@ -1177,7 +1194,7 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 	if smokeApplicable && !quality.SmokePassedInOutput(current.Output) && !g.smokeFail {
 		sr := quality.RunPostWorkerSmoke(ctx, r.Root, *current, r.Timeout)
 		if sec := quality.FormatSmokeSection(sr); sec != "" {
-			current.Output = strings.TrimSpace(current.Output) + sec
+			current.Output = appendHarnessSection(current.Output, sec)
 			if sr.Ran && !sr.OK {
 				g.smokeFail = true
 				r.logf("%s review-time smoke FAILED: %s", current.ID, sr.Command)
@@ -1239,21 +1256,47 @@ func (r *Runner) speculativeReview(ctx context.Context, current plan.Task, g gat
 	slots := r.reviewSlots(current, g, baseline, reviewIn, revRole)
 	r.fire(stream.KindAgentStart, revRole, current.ID, "speculative review race",
 		strings.Join(current.Files, ", "), "")
-	r.logf("%s speculative review (%d paths, max_parallel=%d)", current.ID, len(slots), r.MaxParallel)
+	// Budget honesty: the race costs ONE unit but issues one real LLM request
+	// per non-local slot — reviewer plus reviewer-strict at the default
+	// max_parallel=4. Against a server that runs inference serially a 10-unit
+	// budget is therefore up to ~13 round-trips, and the operator waits on the
+	// round-trips. spend() already counted one; record the rest so the budget
+	// event reports both numbers instead of understating the wait.
+	llmSlots := 0
+	for _, sl := range slots {
+		if sl.Local == nil {
+			llmSlots++
+		}
+	}
+	if llmSlots > 1 {
+		r.noteExtraRequests(current.ID, llmSlots-1)
+	}
+	r.logf("%s speculative review (%d paths, %d LLM requests, 1 budget unit, max_parallel=%d)",
+		current.ID, len(slots), llmSlots, r.MaxParallel)
 	res := r.speculate(r.taskCtx(ctx, current.ID), slots)
 
+	// Only a slot that RAN TO COMPLETION carries a verdict. A racer the winner
+	// canceled comes back Skipped (see speculate), and a streaming one can
+	// come back with a partial body: reading `{"approved":true,"score":92,` off
+	// a cut-short stream and calling it a verdict is how the winner's complete
+	// approval was rendered and acted on as `approved=false score=0`, costing a
+	// correction round the model never needed.
 	var acceptOut, revOut, strictOut string
 	var revErr error
 	for _, sr := range res {
+		done := !sr.Skipped && sr.Err == nil && strings.TrimSpace(sr.Output) != ""
 		switch sr.Role {
 		case "acceptance":
-			if !sr.Skipped && sr.Err == nil {
+			if done {
 				acceptOut = sr.Output
 			}
 		case revRole:
-			revOut, revErr = sr.Output, sr.Err
+			revErr = sr.Err
+			if done {
+				revOut = sr.Output
+			}
 		default:
-			if !sr.Skipped && strings.TrimSpace(sr.Output) != "" {
+			if done {
 				strictOut = sr.Output
 			}
 		}

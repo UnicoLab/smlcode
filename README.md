@@ -181,13 +181,19 @@ Custom and per-language specialists come from YAML blocks. → **[docs/agents.md
 
 | Kind | Purpose | Built-in |
 |---|---|---|
-| **Pack** | Composes pipeline + quality + agents + skills | `go`, `python`, `react` |
-| **Pipeline** | Phase graph with language-specific slots | `go`, `python`, `react` |
-| **Agent** | Custom specialist or built-in override | `go-worker`, `python-tester`, … |
-| **Quality** | Lint/test/build commands per language | `go`, `python`, `react` |
+| **Pack** | Composes pipeline + quality + agents + skills | 13 |
+| **Pipeline** | Phase graph with language-specific slots | 13 |
+| **Agent** | Custom specialist or built-in override | 35 (`go-worker`, `ts-reviewer`, `kotlin-tester`, …) |
+| **Quality** | Lint/test/build commands per language | 13 |
 
-Quality commands are auto-detected per workspace (`go.mod` / `pyproject.toml` / `package.json`).
-Applying a full language pack is an explicit step: `slmcode blocks apply go|python|react`.
+The thirteen packs: `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
+`dotnet`, `ruby`, `php`, `swift`, `cpp`. Also shipped: 29 skills and 13 provider stacks.
+
+`slmcode init` picks the pack for you. Detection is scored, not first-match: a marker file in the
+root counts, a `detect.contains` proof of the file's *content* counts more, stray source files
+count least, and a nested sub-project's files do not count at all — so a Go module with a Vite
+app in `web/` stays Go, and a `package.json` is `react` or `typescript` depending on whether it
+actually declares React. Apply one explicitly with `slmcode blocks apply <pack>`.
 → **[docs/blocks.md](docs/blocks.md)**
 
 ### Safety model
@@ -203,7 +209,38 @@ The whitelist is tiered: `ls`/`cat`/`grep`/`go test`/`pytest`/`npm test` run; `p
 `make`, `npx`, `sh`, `awk` (executors) and `sed`, `cp`, `mv`, `rm`, `tee` (mutators) are refused
 with an explanation and a suggested allowed equivalent — because a shell that can run anything
 makes every other guard decorative. Allowlist them with `shell_allow` or `SLMCODE_BASH_ALLOW`.
+Flags that smuggle a second program past the list (`env python -c`, `find -exec`, `go test -exec`,
+`cmake -P`, `go generate`, `pytest -p`) are refused per binary.
 → **[docs/permissions.md](docs/permissions.md)**
+
+#### Residual risk — what is *not* enforced
+
+The guards above are real, and they are not a sandbox. Two things remain true after every one of
+them, by design rather than by oversight:
+
+- **`ws_shell` is a command allowlist, not a filesystem jail.** The `ws_*` file tools are jailed
+  to the project root; the shell is not. It decides which *command* may run, not which files that
+  command may touch — an allowed `cat`, `grep` or `find` reads anything the user account can read
+  (`~/.ssh/id_rsa`, `~/.aws/credentials`, another project's `.env`) and the contents go to the
+  model, and therefore to whatever endpoint you configured. The write side is narrow (`mkdir` and
+  `touch` are refused outside the root, mutators are refused entirely, redirection onto an
+  existing file is refused), so the honest description is **read exfiltration, not out-of-tree
+  modification** — but it is real. What the harness *does* enforce here is narrower and worth
+  knowing: every tool result is scrubbed of the credential values it knows about (configured
+  keys, `.slmcode/auth.json`, provider env vars), so those specific values do not reach the
+  model even via `cat`. Any other secret in reach of the account does.
+- **Verifying a project runs the project's own code.** `npm test` executes `package.json`
+  scripts, `pytest` imports `conftest.py` before a single test runs, `go build` honours `#cgo`,
+  `cargo build` compiles and runs `build.rs`, `./gradlew` runs a script committed to the repo.
+  **Pointing slmcode at an untrusted repository is equivalent to running that repository's
+  build.** If you would not run `npm install && npm test` in that checkout by hand, do not point
+  an agent at it either.
+
+These are inherent to what the tool does; no addition to the allowlist removes them. The
+enforcing boundary, if you need one, is the operating system's: run slmcode as a user that can
+only reach the project (container, VM, dedicated account), or set `shell_permission: ask` to
+approve each command, or `shell_permission: deny` to keep only the jailed `ws_*` tools.
+Full detail, including every refused flag and why: **[docs/permissions.md](docs/permissions.md)**
 
 ### Human-in-the-loop
 

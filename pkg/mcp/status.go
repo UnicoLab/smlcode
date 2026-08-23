@@ -55,7 +55,7 @@ func (m *Manager) Status(infos []ToolInfo) StatusReport {
 		seen[name] = true
 		st := ServerStatus{
 			Name:     name,
-			ReadOnly: sc.ReadOnly,
+			ReadOnly: sc.IsReadOnly(),
 			Tools:    byServer[name],
 		}
 		st.ToolCount = len(st.Tools)

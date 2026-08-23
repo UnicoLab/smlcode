@@ -46,6 +46,7 @@ func boardCmd() *cobra.Command {
 				fmt.Println()
 			}
 			by := b.ByColumn()
+			var stuck []plan.Task
 			for _, col := range plan.Columns() {
 				tasks := by[col]
 				fmt.Printf("%s %s\n", cli.ColumnColor("●"), cli.Bold(plan.ColumnLabel(col))+cli.Dim(fmt.Sprintf(" (%d)", len(tasks))))
@@ -59,16 +60,27 @@ func boardCmd() *cobra.Command {
 					if total > 0 {
 						check = cli.Dim(fmt.Sprintf(" [%d/%d]", done, total))
 					}
-					fmt.Printf("    %s  %s  %s%s\n",
+					fmt.Printf("    %s  %s  %s%s%s\n",
 						cli.Accent(t.ID),
 						t.Title,
 						cli.Dim("@"+t.Role),
 						check,
+						boardTaskFlag(t),
 					)
+					stuck = append(stuck, t)
 				}
 			}
 			fmt.Println()
-			fmt.Println(cli.Dim("Tip: slmcode task move T1 ready_to_dev · slmcode task add \"…\""))
+			// The board's job is to hand the reader the next command. It used
+			// to suggest moving a task without ever offering a way to find out
+			// WHY it was where it was.
+			hint := "T1"
+			if id := firstStuckID(stuck); id != "" {
+				hint = id
+			}
+			fmt.Println(cli.Dim("Tip: slmcode task show " + hint +
+				"   — scope, verdict, the gate that blocked it, and its diff"))
+			fmt.Println(cli.Dim("     slmcode task move " + hint + " ready_to_dev · slmcode task add \"…\""))
 			return nil
 		},
 	}
@@ -76,12 +88,49 @@ func boardCmd() *cobra.Command {
 	return cmd
 }
 
+// boardTaskFlag marks a task the reader should look at.
+//
+// Two states are invisible on a bare kanban and both matter: a task an agent
+// fought with and gave up on, and a task that reached "done" only because a
+// human answered [d]one at the escalate gate. The second one is the reason the
+// summary's "1/1 done" was never quite honest.
+func boardTaskFlag(t plan.Task) string {
+	switch {
+	case humanForcedDone(t):
+		return "  " + cli.Yellow("⚑ forced done")
+	case t.Column == plan.ColBlocked:
+		return "  " + cli.Red("⚑ blocked")
+	case t.Column != plan.ColDone && taskWasAttempted(t):
+		return "  " + cli.Yellow("⚑ needs you")
+	}
+	return ""
+}
+
+// firstStuckID names the task the tip should point at: the first one that is
+// actually stuck, falling back to the first task on the board.
+func firstStuckID(tasks []plan.Task) string {
+	for _, t := range tasks {
+		if t.Column != plan.ColDone && taskWasAttempted(t) {
+			return t.ID
+		}
+	}
+	for _, t := range tasks {
+		if t.Column == plan.ColBlocked {
+			return t.ID
+		}
+	}
+	if len(tasks) > 0 {
+		return tasks[0].ID
+	}
+	return ""
+}
+
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "task",
 		Aliases: []string{"t"},
 		Short:   "Add / edit / move / delegate / checklist tasks (live while agents run)",
-		Example: "  slmcode task list\n  slmcode task add \"write the migration\"\n  slmcode task move T3 done",
+		Example: "  slmcode task show T1\n  slmcode task add \"write the migration\"\n  slmcode task move T3 done",
 	}
 
 	var (
@@ -140,53 +189,6 @@ func taskCmd() *cobra.Command {
 	add.Flags().StringVar(&files, "files", "", "comma-separated focus files")
 	add.Flags().StringVar(&notes, "notes", "", "human notes for the agent")
 	add.Flags().IntVar(&priority, "priority", 3, "1=high … 5=low")
-
-	show := &cobra.Command{
-		Use:   "show [id]",
-		Short: "Show one task",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := openWorkspace()
-			if err != nil {
-				return err
-			}
-			_ = ws.Board.Load()
-			t, ok := ws.Board.GetTask(args[0])
-			if !ok {
-				return fmt.Errorf("task %s not found", args[0])
-			}
-			cli.Header(t.ID + " — " + t.Title)
-			cli.KeyVal("column", t.Column)
-			cli.KeyVal("role", t.Role)
-			cli.KeyVal("status", t.Status)
-			cli.KeyVal("priority", fmt.Sprintf("%d", t.Priority))
-			if len(t.Files) > 0 {
-				cli.KeyVal("files", strings.Join(t.Files, ", "))
-			}
-			if t.Acceptance != "" {
-				cli.KeyVal("acceptance", t.Acceptance)
-			}
-			fmt.Println()
-			fmt.Println(t.Description)
-			if len(t.Checklist) > 0 {
-				fmt.Println()
-				fmt.Println(cli.Bold("Checklist"))
-				for _, c := range t.Checklist {
-					mark := cli.Dim("[ ]")
-					if c.Done {
-						mark = cli.Green("[x]")
-					}
-					fmt.Printf("  %s %s %s\n", mark, c.Text, cli.Dim("("+c.ID+")"))
-				}
-			}
-			if t.Notes != "" {
-				fmt.Println()
-				fmt.Println(cli.Bold("Notes"))
-				fmt.Println(t.Notes)
-			}
-			return nil
-		},
-	}
 
 	move := &cobra.Command{
 		Use:   "move [id] [column]",
@@ -335,7 +337,7 @@ func taskCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(add, show, move, delegate, edit, check, uncheck, rm, promote)
+	cmd.AddCommand(add, taskShowCmd(), move, delegate, edit, check, uncheck, rm, promote)
 	return cmd
 }
 

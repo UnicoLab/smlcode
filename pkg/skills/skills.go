@@ -23,15 +23,20 @@ import (
 //	description: short blurb for matching / UI
 //	triggers: keyword1, keyword2
 //	agents: worker, corrector, tester   # empty / * = all specialists
+//	paths: "**/*.go, cmd/**"          # only when such a file is in scope
 //	user-invocable: true              # allow @skill:name in queries
 //	---
 type Skill struct {
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	Body          string            `json:"body"`
-	Path          string            `json:"path"`
-	Triggers      []string          `json:"triggers,omitempty"`
-	Agents        []string          `json:"agents,omitempty"` // empty or ["*"] = global
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Body        string   `json:"body"`
+	Path        string   `json:"path"`
+	Triggers    []string `json:"triggers,omitempty"`
+	Agents      []string `json:"agents,omitempty"` // empty or ["*"] = global
+	// Paths gates the skill on the files a run actually touches. Globs support
+	// `*`, `?`, `[...]`, `**` and a bare directory prefix (see MatchesScope).
+	// Empty = ungated.
+	Paths         []string          `json:"paths,omitempty"`
 	UserInvocable bool              `json:"user_invocable"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
@@ -116,24 +121,31 @@ func ExtractRefs(query string) (names []string, clean string) {
 // ResolveForRun builds the skill set for a pipeline or specialist run.
 // Includes: explicit @skill refs, agent-targeted skills, query keyword matches, pins.
 func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []Skill {
-	_, _, ranked := l.resolveScored(query, agent, pins, limit)
-	return ranked
+	return l.ResolveForRunScoped(query, agent, pins, limit, nil)
 }
 
 // resolveScored is ResolveForRun with the score table and the explicit-ref set
 // retained, so progressive disclosure can decide what to expand.
-func (l *Loader) resolveScored(query, agent string, pins []string, limit int) (map[string]int, map[string]bool, []Skill) {
+//
+// scope is the set of project-relative paths the run is about; it gates skills
+// carrying `paths:` frontmatter (see scope.go). A nil/empty scope disables
+// gating, which is what every unscoped caller passes.
+func (l *Loader) resolveScored(query, agent string, pins []string, limit int, scope []string) (map[string]int, map[string]bool, []Skill) {
 	if limit <= 0 {
 		limit = 6
 	}
 	refs, clean := ExtractRefs(query)
 	refs = append(refs, pins...)
-	list, _ := l.List()
+	all, _ := l.List()
 
+	// byName is built from the UNGATED set: an explicit @skill:/pin must still
+	// resolve a skill the path gate would otherwise have dropped.
 	byName := map[string]Skill{}
-	for _, s := range list {
+	for _, s := range all {
 		byName[strings.ToLower(s.Name)] = s
 	}
+	// Everything reached by scoring is gated on the files in scope.
+	list := FilterByScope(all, scope)
 
 	scores := map[string]int{}
 	explicit := map[string]bool{}
@@ -191,7 +203,16 @@ func (l *Loader) resolveScored(query, agent string, pins []string, limit int) (m
 		}
 		ranked = append(ranked, pair{s: byName[k], n: n})
 	}
-	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].n > ranked[j].n })
+	// Ties break by name, NOT by map iteration order. Ranking is what decides
+	// which two bodies get inlined (DefaultMaxExpanded), so a nondeterministic
+	// tie-break meant the same query could produce a different prompt on every
+	// run — unreproducible behavior, and unreproducible bug reports.
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].n != ranked[j].n {
+			return ranked[i].n > ranked[j].n
+		}
+		return strings.ToLower(ranked[i].s.Name) < strings.ToLower(ranked[j].s.Name)
+	})
 
 	var out []Skill
 	for _, r := range ranked {
@@ -365,6 +386,8 @@ func ParseFile(path string) (Skill, error) {
 					sk.Triggers = splitCSV(v)
 				case "agents", "agent", "roles", "role":
 					sk.Agents = splitCSV(v)
+				case "paths", "path", "globs", "glob":
+					sk.Paths = splitCSV(v)
 				case "user-invocable", "user_invocable":
 					sk.UserInvocable = v == "" || strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
 				}

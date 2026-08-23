@@ -564,12 +564,21 @@ func showDiff(root, path string) error {
 }
 
 func showDiffPaths(root string, paths []string, stat bool, contextN int) error {
-	diffs, err := collectWorkspaceDiffs(root, paths, contextN)
+	diffs, err := collectWorkspaceDiffs(root, paths, contextN, false)
 	if err != nil {
 		return err
 	}
 	if len(diffs) == 0 {
 		fmt.Println(cli.Dim("no changes"))
+		// Do not let the .slmcode/ filter turn "the harness rewrote its own
+		// state and nothing else" into a bare "no changes".
+		if len(paths) == 0 {
+			if state, _ := collectWorkspaceDiffs(root, []string{".slmcode"}, contextN, true); len(state) > 0 {
+				fmt.Println(cli.Dim(fmt.Sprintf(
+					"  (%d harness-state file(s) under .slmcode/ changed — `slmcode diff .slmcode` to see them)",
+					len(state))))
+			}
+		}
 		return nil
 	}
 	width, _ := cli.TermSize()
@@ -595,9 +604,14 @@ func showDiffPaths(root string, paths []string, stat bool, contextN int) error {
 }
 
 // collectWorkspaceDiffs unions tracked modifications with untracked files.
-func collectWorkspaceDiffs(root string, paths []string, contextN int) ([]cli.FileDiff, error) {
+//
+// quiet suppresses the "there is nothing to compare against" advice, which is
+// right for `slmcode diff` (the user asked for a diff and deserves an
+// explanation) and wrong inside the run summary (which is already explaining
+// itself).
+func collectWorkspaceDiffs(root string, paths []string, contextN int, quiet bool) ([]cli.FileDiff, error) {
 	if !isGitRepo(root) {
-		return checkpointDiffs(root, paths, contextN)
+		return checkpointDiffs(root, paths, contextN, quiet)
 	}
 	var out []cli.FileDiff
 	seen := map[string]bool{}
@@ -629,7 +643,31 @@ func collectWorkspaceDiffs(root string, paths []string, contextN int) ([]cli.Fil
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	return dropHarnessState(out, paths), nil
+}
+
+// dropHarnessState hides .slmcode/ from an unfiltered diff.
+//
+// A first run rewrites a dozen files under .slmcode/ — CONTEXT.md, PLAN.md,
+// TASKS.md, board.json, the materialized agent YAMLs — none of which the user
+// asked for. `slmcode diff` after a one-file change listed the one file
+// eleventh, under ten pages of harness state, which is the same as not showing
+// it. Naming a path explicitly (`slmcode diff .slmcode`) still works: the
+// filter only applies when the user asked for everything.
+func dropHarnessState(diffs []cli.FileDiff, paths []string) []cli.FileDiff {
+	for _, p := range paths {
+		if strings.Contains(filepath.ToSlash(p), ".slmcode") {
+			return diffs
+		}
+	}
+	out := diffs[:0]
+	for _, fd := range diffs {
+		if isSlmState(fd.Path) {
+			continue
+		}
+		out = append(out, fd)
+	}
+	return out
 }
 
 func readFileString(path string) string {
@@ -697,12 +735,14 @@ func splitLinesNonEmpty(s string) []string {
 
 // checkpointDiffs compares the workspace against the newest .slmcode file
 // checkpoints when there is no git repository at all.
-func checkpointDiffs(root string, paths []string, contextN int) ([]cli.FileDiff, error) {
+func checkpointDiffs(root string, paths []string, contextN int, quiet bool) ([]cli.FileDiff, error) {
 	base := filepath.Join(root, ".slmcode", "checkpoints")
 	entries, err := os.ReadDir(base)
 	if err != nil {
-		fmt.Println(cli.Dim("not a git repository and no .slmcode/checkpoints — nothing to compare against"))
-		fmt.Println(cli.Dim("tip: git init   ·   or   slmcode apply --list   for review-mode proposals"))
+		if !quiet {
+			fmt.Println(cli.Dim("not a git repository and no .slmcode/checkpoints — nothing to compare against"))
+			fmt.Println(cli.Dim("tip: git init   ·   or   slmcode apply --list   for review-mode proposals"))
+		}
 		return nil, nil
 	}
 	// Newest checkpoint directory wins.

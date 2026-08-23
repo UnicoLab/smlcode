@@ -50,10 +50,31 @@ func TestIsToolAllowed(t *testing.T) {
 			want: false, msg: "not advertised",
 		},
 		{
-			name: "writable server allows anything",
+			// REGRESSION: the zero value of ServerConfig used to mean
+			// "writable", so any construction path that forgot the field
+			// handed the model every mutating tool the server advertised.
+			name: "zero-value config is read-only, not writable",
+			cfg:  ServerConfig{Name: "s"},
+			info: ToolInfo{Name: "delete_everything"}, known: true,
+			want: false, msg: "read-only",
+		},
+		{
+			name: "clearing read_only does not by itself grant writes",
 			cfg:  ServerConfig{Name: "s", ReadOnly: false},
 			info: ToolInfo{Name: "delete_everything"}, known: true,
+			want: false, msg: "read-only",
+		},
+		{
+			name: "explicitly writable server allows anything",
+			cfg:  ServerConfig{Name: "s", Writable: true},
+			info: ToolInfo{Name: "delete_everything"}, known: true,
 			want: true,
+		},
+		{
+			name: "read_only wins over writable",
+			cfg:  ServerConfig{Name: "s", Writable: true, ReadOnly: true},
+			info: ToolInfo{Name: "delete_everything"}, known: true,
+			want: false, msg: "read-only",
 		},
 		{
 			name: "allow_tools is authoritative",
@@ -63,7 +84,7 @@ func TestIsToolAllowed(t *testing.T) {
 		},
 		{
 			name: "allow_tools excludes everything else",
-			cfg:  ServerConfig{Name: "s", ReadOnly: false, AllowTools: []string{"search"}},
+			cfg:  ServerConfig{Name: "s", Writable: true, AllowTools: []string{"search"}},
 			info: ToolInfo{Name: "wipe", ReadOnlyHint: boolp(true)}, known: true,
 			want: false, msg: "allow_tools",
 		},

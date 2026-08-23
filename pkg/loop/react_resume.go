@@ -202,18 +202,65 @@ func (r *Runner) maybeCompactReact(msgs []session.ReactMessage, agentID string, 
 	return chatToSession(compacted)
 }
 
+// LiveReactCompactionWired reports whether per-iteration ReAct compaction is
+// actually installed in the request path.
+//
+// It is FALSE, and it is a constant rather than a config field because nothing
+// an operator can set changes it: the call site does not exist. Every consumer
+// that describes compaction to a human — pkg/readiness, the config docstring,
+// the run notice — must read this rather than react_compact, because
+// react_compact says what the operator ASKED FOR and this says what the harness
+// DOES. Telling someone their 16-iteration worker is protected from context
+// exhaustion when only the resume path compacts is worse than telling them
+// nothing.
+//
+// What IS wired, with react_compact on:
+//   - document (CONTEXT.md) compaction — pkg/compact, driven by the orchestrator;
+//   - ReAct compaction at CHECKPOINT and RESUME — maybeCompactReact, called from
+//     saveReactFromResult and applyResumeRequest.
+//
+// What is not: compaction between iterations of a live agent call.
+//
+// The blocker and the way through, so the next person does not re-derive it:
+// ggagent's SubAgentRequest carries no per-iteration callback and its
+// Middleware interface is BeforeRun/AfterRun only, so nothing in this package
+// sees iteration N of a 16-iteration worker. The same wall was hit by live
+// token streaming, and the way round it was a PROVIDER WRAPPER — a ReAct
+// iteration is exactly one llm.Provider.Complete call, so a wrapper registered
+// under the role-bound key (pkg/backends.BindRole, which already stacks
+// structuredProvider over streamTeeProvider over retryProvider) sees every
+// iteration's full transcript and can rewrite req.Messages.
+//
+// That wrapper is NOT this method, and it is why this is still false: the
+// policy below is written for a CHECKPOINT transcript, and
+// compact.CompactChatMessagesWithDigest folds the head of the conversation into
+// a system digest and appends a "resuming" user turn. On a live request the
+// head is the role's system prompt — the tool contract — and dropping it
+// mid-call would break the agent far more reliably than a long context does.
+// Wiring this needs a live variant that pins the leading system message and
+// omits the resume notice; that belongs beside the other provider wrappers in
+// pkg/backends.
+const LiveReactCompactionWired = false
+
+// ReactCompactionStatus describes, in one line, what compaction the harness is
+// actually performing for a given react_compact setting. Consumers that show
+// the operator a compaction claim must render THIS.
+func ReactCompactionStatus(reactCompact bool) string {
+	if !reactCompact {
+		return "ReAct compaction is off"
+	}
+	if LiveReactCompactionWired {
+		return "ReAct compaction is on for live iterations, checkpoints and resume"
+	}
+	return "ReAct compaction runs at checkpoint/resume only — a single long agent call is not compacted mid-flight"
+}
+
 // CompactLiveMessages is the LIVE per-iteration compaction entry point.
 //
-// pkg/loop cannot install itself inside the ReAct loop: ggagent's
-// SubAgentRequest carries no per-iteration callback and its Middleware
-// interface is BeforeRun/AfterRun only, so nothing in this package ever sees
-// iteration N of a 16-iteration worker. maybeCompactReact therefore had exactly
-// one call site — restoreReact, the resume path — and a live worker appending a
-// whole file per tool result compacted never, even though react_compact:true is
-// the default and pkg/readiness tells the operator they are protected.
-//
-// This method is the policy; the executor is the call site. Hand it to whatever
-// runs the ReAct loop and call it once per iteration with the live transcript.
+// It is the POLICY half of a protection whose call site does not exist yet —
+// see LiveReactCompactionWired for the blocker, the proposed provider-wrapper
+// design, and the reason this policy cannot simply be pointed at a live
+// transcript as written.
 func (r *Runner) CompactLiveMessages(agentID string, iteration int, msgs []llm.Message) []llm.Message {
 	if r == nil || !r.ReactCompact || len(msgs) < reactCompactMinMessages {
 		return msgs
@@ -365,19 +412,31 @@ func fromSessionToolCalls(calls []session.ReactToolCall) []llm.ToolCall {
 	return out
 }
 
-func isCancelResult(err error, res ggagent.SubAgentResult) bool {
-	if err != nil && (errors.Is(err, context.Canceled) ||
-		strings.Contains(strings.ToLower(err.Error()), "canceled") ||
-		strings.Contains(strings.ToLower(err.Error()), "cancelled")) { //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
+// IsContextCancelErr reports whether err is a CONTEXT cancellation.
+//
+// The bar used to be the bare word "canceled" anywhere in the message, which
+// is not a cancellation test at all: any provider or tool error that merely
+// contains the word ("the upstream job was canceled", a model quoting its own
+// prompt back) read as one. The text arm now needs the full phrase that
+// context.Canceled itself produces, because that is the only thing a provider
+// that flattens the error chain with %v can be echoing.
+func IsContextCancelErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
-	if res.Error != nil {
-		e := res.Error.Error()
-		lower := strings.ToLower(e)
-		return strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled") || //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
-			errors.Is(res.Error, context.Canceled)
-	}
-	return false
+	lower := strings.ToLower(err.Error())
+	// Both spellings are deliberate: this matches provider error TEXT and some
+	// servers use the British double-l. The literal is DATA, hence the
+	// concatenation that keeps the spelling linter out of the way.
+	return strings.Contains(lower, "context canceled") ||
+		strings.Contains(lower, "context cancel"+"led")
+}
+
+func isCancelResult(err error, res ggagent.SubAgentResult) bool {
+	return IsContextCancelErr(err) || IsContextCancelErr(res.Error)
 }
 
 func isTimeoutErr(err error) bool {

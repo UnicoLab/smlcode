@@ -224,7 +224,7 @@ func FormatEvent(e stream.Event) string {
 	}
 	// Collapse noisy log spam into a single readable line.
 	msg = collapseWhitespace(msg)
-	msg = stripAPIAdvice(msg)
+	msg = TranslateEngineAdvice(msg)
 	msg = ClipWidth(msg, 120)
 	switch e.Level {
 	case stream.LevelError, stream.LevelProblem:
@@ -329,4 +329,72 @@ func stripAPIAdvice(msg string) string {
 		}
 	}
 	return msg
+}
+
+// engineAdvice is a phrase the engine writes into user-visible event text that
+// is true for Studio or the TUI and false for `slmcode run`.
+//
+// The engine has one event stream and three consumers, so it authors advice for
+// the richest one. A plain terminal then gets told to "decide in Studio" (there
+// is no Studio running), to answer "in the task drawer" (there is no drawer),
+// or to type "/resume run-…" (a slash command that only exists inside the TUI
+// and the REPL). Each of those is a dead end printed at exactly the moment the
+// user needs a way forward.
+//
+// The right long-term fix is upstream — the engine should emit a neutral fact
+// and let each renderer phrase the remedy. Until then the terminal renderer
+// translates: replacement text names a command this binary actually has.
+var engineAdvice = []struct{ from, to string }{
+	{"decide in Studio (or wait for timeout)", "answer at the gate below, or `slmcode task show <id>` in another terminal"},
+	{"needs human review in Studio", "needs human review — `slmcode task show <id>`"},
+	{"re-scope / precise fix in Studio", "re-scope / precise fix — `slmcode task show <id>`"},
+	{"needs human review or precise fix in Studio", "needs human review — `slmcode task show <id>`"},
+	{"decide in Studio", "answer at the gate, or `slmcode task show <id>`"},
+	{"in Studio", "with `slmcode task show <id>`"},
+	{"Studio task drawer", "`slmcode task show <id>`"},
+	{"; /resume ", "; `slmcode session resume` — or `slmcode session resume "},
+	{"slmcode agents", "slmcode agent"},
+}
+
+// TranslateEngineAdvice rewrites TUI/Studio-only advice in engine-authored text
+// into something a `slmcode run` user can actually type.
+//
+// It is deliberately a renderer-level translation and not a silent deletion:
+// dropping the sentence would leave "T1 needs human review" with no remedy at
+// all, which is the bug one step removed.
+func TranslateEngineAdvice(msg string) string {
+	out := stripAPIAdvice(msg)
+	for _, r := range engineAdvice {
+		if !strings.Contains(out, r.from) {
+			continue
+		}
+		out = strings.ReplaceAll(out, r.from, r.to)
+		// The /resume rewrite opens a backtick that the run id closes.
+		if strings.HasPrefix(r.from, "; /resume ") {
+			out = closeResumeQuote(out)
+		}
+	}
+	return out
+}
+
+// closeResumeQuote closes the backtick opened by the /resume translation.
+//
+// The engine writes "…board saved; /resume run-1234". The run id runs to the
+// end of the message or to the next space, so the closing backtick has to be
+// placed rather than baked into the replacement.
+func closeResumeQuote(msg string) string {
+	marker := "`slmcode session resume "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return msg
+	}
+	rest := msg[i+len(marker):]
+	if strings.Contains(rest, "`") {
+		return msg
+	}
+	end := strings.IndexAny(rest, " \t")
+	if end < 0 {
+		return msg + "`"
+	}
+	return msg[:i+len(marker)+end] + "`" + rest[end:]
 }

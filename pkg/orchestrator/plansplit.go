@@ -113,8 +113,12 @@ func (o *Orchestrator) runPlanPhase(ctx context.Context, in planSplitInput, repl
 		planPrompt := o.buildPlannerPrompt(in.Query, in.RunID, planAgent, in.ExploreOut, in.ArchOut, in.PRD, in.Clarify, replanNotes)
 		out, err := o.runRoleMultipassTracked(ctx, planAgent, "", planPrompt)
 		if err != nil {
-			if isCancelErr(err) {
-				_, cerr := o.checkpointInterrupt(&plan.Board{QueryID: in.RunID, Query: in.Query}, session.PhasePlan, err)
+			// checkpointInterrupt only returns a Result when the RUN context is
+			// really gone. Anything else — including a provider error that
+			// merely mentions a cancellation — is a planner failure and must
+			// keep saying so.
+			if res, cerr := o.checkpointInterrupt(ctx,
+				&plan.Board{QueryID: in.RunID, Query: in.Query}, session.PhasePlan, err); res != nil {
 				return "", pl, cerr
 			}
 			return "", pl, fmt.Errorf("planner: %w", err)
@@ -194,8 +198,8 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 		splitPrompt := o.buildSplitterPrompt(in.Query, splitAgent, planOut, in.PRD, in.Clarify, replanNotes)
 		out, err := o.runRoleMultipassTracked(ctx, splitAgent, "", splitPrompt)
 		if err != nil {
-			if isCancelErr(err) {
-				_, cerr := o.checkpointInterrupt(&plan.Board{QueryID: in.RunID, Query: in.Query, Plan: pl}, session.PhaseSplit, err)
+			if res, cerr := o.checkpointInterrupt(ctx,
+				&plan.Board{QueryID: in.RunID, Query: in.Query, Plan: pl}, session.PhaseSplit, err); res != nil {
 				return nil, cerr
 			}
 			return nil, fmt.Errorf("splitter: %w", err)

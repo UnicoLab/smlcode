@@ -680,9 +680,24 @@ const SmokeSectionHeader = "## Deterministic smoke"
 var shellEvidenceMarkers = []string{
 	strings.ToLower(SmokeSectionHeader), // harness-appended deterministic smoke
 	"ws_shell",                          // tool call / tool result frame
-	"observation:",                      // ReAct tool-result frame
 	"exit error:",                       // executor's non-zero exit report
 }
+
+// reactShellObservation matches a ReAct tool-result frame that is about a SHELL
+// command.
+//
+// The bare substring "observation:" used to be on the list above, and it does
+// not belong there. It is the frame emitted for EVERY tool call — ws_read,
+// ws_list, ws_glob — so "I read the file" satisfied a gate whose whole job is
+// to insist something was EXECUTED; and it is not harness-minted at all, so a
+// tester with no tool calls could type the nine characters into its prose and
+// pass. (The comment above claimed "a marker the model cannot mint" while this
+// entry made that false.)
+//
+// The frame now has to be line-anchored AND name a shell — the tool id, or the
+// exit line a runner prints when a command finishes.
+var reactShellObservation = regexp.MustCompile(
+	`(?im)^[ \t]*>?[ \t]*observation:.*(?:\bws_shell\b|\bexit[ _]?(?:code|status)\b|\bexit error\b)`)
 
 // TesterNoEvidenceFailure is the failure recorded when a tester claims
 // passed:true with no execution trace beside the JSON. It is exported because
@@ -697,15 +712,21 @@ var exitCodeLine = regexp.MustCompile(`(?i)\bexit[ _]?(?:code|status)\s*[:=]?\s*
 
 // TesterHasShellEvidence reports whether raw tester output carries a
 // harness-controlled execution frame: the deterministic smoke section the
-// harness appends, a ws_shell tool-result frame, or a runner exit-code line.
+// harness appends, a ws_shell tool-result frame, a ReAct observation frame that
+// names a shell, or a runner exit-code line.
 //
-// Prose claims of having run something are deliberately NOT evidence.
+// Prose claims of having run something are deliberately NOT evidence — and
+// neither is a bare `Observation:`, which any tool call produces and any model
+// can type.
 func TesterHasShellEvidence(raw string) bool {
 	lower := strings.ToLower(raw)
 	for _, m := range shellEvidenceMarkers {
 		if strings.Contains(lower, m) {
 			return true
 		}
+	}
+	if reactShellObservation.MatchString(lower) {
+		return true
 	}
 	return exitCodeLine.MatchString(lower)
 }

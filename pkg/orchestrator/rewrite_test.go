@@ -143,12 +143,18 @@ func TestParseTesterDrivesRewriteFlag(t *testing.T) {
 	if !plan.TesterFailed(`{"passed":false,"failures":["broken"]}`) {
 		t.Fatal("expected failed")
 	}
-	if plan.TesterFailed("Observation: go test ./... -short\nok\n" +
+	if plan.TesterFailed("Observation: ws_shell `go test ./... -short`\nok\nexit status 0\n" +
 		`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`) {
 		t.Fatal("expected pass with shell evidence")
 	}
 	if !plan.TesterFailed(`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`) {
 		t.Fatal("fabricated commands[] without Observation must fail")
+	}
+	// A bare Observation frame is emitted for every tool call (ws_read included)
+	// and a tester with no tool calls can type it: not execution evidence.
+	if !plan.TesterFailed("Observation: go test ./... -short\nok\n" +
+		`{"passed":true,"commands":["go test ./... -short"],"summary":"ok"}`) {
+		t.Fatal("a bare Observation frame must not satisfy the evidence gate")
 	}
 	if !plan.TesterFailed("") {
 		t.Fatal("empty finalize must fail (no silent skip)")

@@ -14,6 +14,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/stream"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // realFailureTokens are the substrings that mean a test/build command actually
@@ -412,20 +413,84 @@ func bootstrapQADeps(root, cmd string) string {
 	return quality.BootstrapDeps(root, cmd)
 }
 
-// ShellWhitelistNotice is the operator-facing summary of a behavior change in
-// the tool layer: `ws_shell` in whitelist mode now REFUSES the general-purpose
-// interpreters and file movers unless they are explicitly allowed.
+// shellNoticeProbe is one claim the operator-facing notice makes, paired with
+// the command that PROVES it. The claim is only printed when the workspace
+// package actually behaves that way for the sample.
+type shellNoticeProbe struct {
+	label  string
+	sample string
+}
+
+// shellRefusedProbes name the classes ws_shell refuses under the whitelist.
 //
-// Test and build runners (go test, go build, pytest, npm test, cargo test, …)
-// remain auto-allowed, so the ordinary verification path is unaffected. What
-// changes is the unattended dependency bootstrap: pkg/quality's BootstrapDeps
-// proposes `pip install` / `npm install` / `go mod tidy` derived from an
-// AGENT-AUTHORED manifest, and that now routes through the permission layer
-// like any other command instead of running on its own authority.
-const ShellWhitelistNotice = "ws_shell whitelist is ON: python, node, make, npx, `go run`, cp, mv and sed " +
-	"are refused unless listed in shell_allow (or SLMCODE_BASH_ALLOW). Test/build runners " +
-	"(go test, go build, pytest, npm test, cargo test) stay allowed. Dependency bootstrap " +
-	"(pip install / npm install / go mod tidy) now asks for approval instead of running unattended."
+// The notice used to be a hand-written sentence — "python, node, make, npx,
+// `go run`, cp, mv and sed" — and it went stale the moment the shell guard
+// grew the exec-flag and out-of-jail audits (`env <prog>`, `find -exec`,
+// `go test -exec`, `go generate`, `cmake -P`, `mkdir` outside the root). An
+// operator reading it concluded those were allowed. Each entry below is
+// verified against workspace.GuardShellWhitelist at build time, so a refusal
+// that changes shape drops out of the notice instead of lying in it.
+var shellRefusedProbes = []shellNoticeProbe{
+	{"interpreters (python, node, npx, make, `go run`)", "python script.py"},
+	{"file movers (cp, mv, sed -i)", "cp a.go b.go"},
+	{"`env <prog>` (runs a program the whitelist never sees)", "env python -c 'print(1)'"},
+	{"`find -exec/-execdir/-ok/-delete/-fprintf`", "find . -name '*.go' -exec rm {} ;"},
+	{"`go test -exec` / `-toolexec` / `-vettool` / `-ldflags` / `-gcflags`", "go test -exec ./runner ./..."},
+	{"`go generate` (runs directives the repository chose)", "go generate ./..."},
+	{"`cmake -P` / `-E` / `-C` / `--install`", "cmake -P script.cmake"},
+	{"`mkdir` / `touch` outside the project root", "mkdir /tmp/outside"},
+}
+
+// shellAllowedProbes name what still runs untouched, so the notice cannot read
+// as "verification is blocked".
+var shellAllowedProbes = []shellNoticeProbe{
+	{"go test", "go test ./... -short"},
+	{"go build", "go build ./..."},
+	{"pytest", "pytest -q"},
+	{"npm test", "npm test"},
+	{"cargo test", "cargo test"},
+}
+
+// ShellWhitelistNotice is the operator-facing summary of what `ws_shell` in
+// whitelist mode refuses. It is DERIVED from pkg/workspace rather than restated:
+// every clause is a claim the shell guard is asked to confirm.
+//
+// Test and build runners remain auto-allowed, so the ordinary verification path
+// is unaffected. What changes is the unattended dependency bootstrap:
+// pkg/quality's BootstrapDeps proposes `pip install` / `npm install` /
+// `go mod tidy` derived from an AGENT-AUTHORED manifest, and that routes
+// through the permission layer like any other command instead of running on its
+// own authority.
+var ShellWhitelistNotice = buildShellWhitelistNotice()
+
+func buildShellWhitelistNotice() string {
+	var refused, allowed []string
+	for _, p := range shellRefusedProbes {
+		if _, blocked := workspace.GuardShellWhitelist(p.sample, nil); blocked {
+			refused = append(refused, p.label)
+		}
+	}
+	for _, p := range shellAllowedProbes {
+		if _, blocked := workspace.GuardShellWhitelist(p.sample, nil); !blocked {
+			allowed = append(allowed, p.label)
+		}
+	}
+	var b strings.Builder
+	b.WriteString("ws_shell whitelist is ON. Refused unless listed in shell_allow " +
+		"(or SLMCODE_BASH_ALLOW): ")
+	if len(refused) == 0 {
+		b.WriteString("nothing — the guard reported no refusals")
+	} else {
+		b.WriteString(strings.Join(refused, "; "))
+	}
+	b.WriteString(".")
+	if len(allowed) > 0 {
+		b.WriteString(" Still allowed: " + strings.Join(allowed, ", ") + ".")
+	}
+	b.WriteString(" Dependency bootstrap (pip install / npm install / go mod tidy) " +
+		"asks for approval instead of running unattended.")
+	return b.String()
+}
 
 // emitShellPolicyNotice tells the operator, once per run, what the shell policy
 // will and will not let the agents do. Silent policy is how a run ends in

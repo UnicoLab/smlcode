@@ -43,11 +43,18 @@ func Summarize(ctx context.Context, engine string, body string, maxBytes int, ll
 		out, err := llm(ctx, body, maxBytes)
 		if err == nil {
 			out = StripPreamble(out)
-			if len(out) > maxBytes {
-				out = truncateBytes(out, maxBytes)
-			}
+			// Gate the candidate the MODEL produced, then fit it to the budget.
+			//
+			// The order used to be the other way round, and it made the budget
+			// an accuracy test: a good summary a few hundred bytes over target
+			// was chopped mid-document, the chop took its tail with it — which
+			// is where the last `path/like.go` mentions live — and GateLostPaths
+			// then rejected the model's work for damage the harness had just
+			// done to it. Every one of those runs silently fell back to the
+			// heuristic.
 			gate := AcceptCompaction(body, out)
 			if gate == GateOK {
+				out = fitToBudget(out, maxBytes)
 				return Result{
 					BeforeBytes: before, AfterBytes: len(out), Compacted: true,
 					Summary: out, Original: body, Engine: engine,
@@ -110,4 +117,21 @@ func IsContextOverflow(err error) bool {
 		}
 	}
 	return false
+}
+
+// fitToBudget trims an ACCEPTED summary to maxBytes, cutting at the last
+// section boundary that fits so a trim costs a whole section rather than half a
+// sentence. It falls back to a rune-safe byte truncation when no boundary
+// helps.
+func fitToBudget(out string, maxBytes int) string {
+	if maxBytes <= 0 || len(out) <= maxBytes {
+		return out
+	}
+	if cut := strings.LastIndex(out[:maxBytes], "\n## "); cut > maxBytes/2 {
+		return strings.TrimSpace(out[:cut])
+	}
+	if cut := strings.LastIndex(out[:maxBytes], "\n\n"); cut > maxBytes/2 {
+		return strings.TrimSpace(out[:cut])
+	}
+	return truncateBytes(out, maxBytes)
 }

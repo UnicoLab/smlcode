@@ -39,11 +39,120 @@ var execFlagPrefixes = map[string][]string{
 	"mypy":   {"--custom-typeshed-dir"},
 	"pytest": {"-p", "--rootdir"},
 	"ctest":  {"--build-and-test", "--test-command", "--build-generator"},
-	// -P runs a CMake script file and -E is cmake's command mode (`cmake -E rm`,
-	// `cmake -E copy`); --install writes to an arbitrary --prefix. `cmake .` and
-	// `cmake --build <dir>` drive the project's OWN build and stay allowed —
-	// that is inherent to compiling the project, not a flag escape.
-	"cmake": {"-P", "-E", "--install"},
+	// -P runs a CMake script file (a script is `execute_process` with extra
+	// steps), -E is cmake's command mode (`cmake -E rm`, `cmake -E copy`) i.e.
+	// a file mutator, -C loads an "initial cache" script which is likewise
+	// arbitrary CMake code, and --install writes to an arbitrary --prefix.
+	//
+	// `cmake .`, `cmake -S . -B build` and `cmake --build build` are NOT in this
+	// list: they drive the project's own build, which is exactly what `go
+	// build`, `mvn test` and `cargo build` do. Running the project's build is
+	// the documented-inherent risk of a coding harness, not a whitelist bug.
+	// Their path OPERANDS are audited separately (cmakePathEscape) so they
+	// cannot point outside the workspace.
+	//
+	// cmakeInvocation owns the whole cmake audit and consults this entry.
+	"cmake": {"-P", "-E", "-C", "--install"},
+}
+
+// cmakeRefusedFlagWhy explains each refused cmake mode in its own terms. The
+// generic execFlagPrefixes message ("names another program to execute") is only
+// true of -P and -C; saying it about -E or --install teaches the model the
+// wrong rule and it retries with the same class of command.
+var cmakeRefusedFlagWhy = map[string]string{
+	"-P": "runs a CMake script, and a CMake script can `execute_process` anything",
+	"-C": "loads an initial-cache CMake script, which is arbitrary CMake code",
+	"-E": "is cmake's command mode (`cmake -E copy`, `cmake -E rm`), a file mutator " +
+		"that bypasses ws_write/ws_edit and the checkpointer",
+	"--install": "copies build output to an arbitrary --prefix, outside the workspace",
+}
+
+// cmakeInvocation is the whole cmake audit: refuse the script/mutator/installer
+// modes, allow the build modes, and keep the build modes inside the workspace.
+func cmakeInvocation(args []string) (string, bool) {
+	for _, f := range execFlagPrefixes["cmake"] {
+		if flagIndex(args, f) < 0 {
+			continue
+		}
+		return fmt.Sprintf(
+			"shell refused — `cmake %s` %s.\n"+
+				"Building the project is fine: `cmake -S . -B build` to configure and "+
+				"`cmake --build build` to build. Use ws_write/ws_edit/ws_mv for file changes.",
+			f, cmakeRefusedFlagWhy[f]), true
+	}
+	return cmakePathEscape(args)
+}
+
+// cmakeOpaqueValueFlags take a separate value that is not a path the harness
+// needs to police (a generator name, a target, a job count).
+var cmakeOpaqueValueFlags = map[string]bool{
+	"-G": true, "-A": true, "-T": true, "-D": true, "-U": true,
+	"-t": true, "--target": true, "--config": true, "--parallel": true,
+	"-j": true, "--preset": true, "--log-level": true, "--graphviz": true,
+	"--component": true, "--prefix": true, "--toolset": true,
+}
+
+// cmakePathFlags name a directory cmake reads from or writes into.
+var cmakePathFlags = map[string]bool{
+	"-S": true, "-B": true, "--build": true,
+}
+
+// cmakePathEscape refuses a cmake invocation whose source/build directory
+// leaves the workspace. `cmake --build build` is the canonical way to build a
+// CMake project and stays allowed; `cmake --build /tmp/x`, `cmake --build
+// ../out` and `cmake -S . -B /var/tmp/o` write outside the jail, which is the
+// same out-of-workspace primitive `touch /etc/x` was refused for.
+//
+// The shell always runs with cwd == the project root, so "relative and not
+// climbing out" is exactly "inside the workspace".
+func cmakePathEscape(args []string) (string, bool) {
+	check := func(flag, val string) (string, bool) {
+		val = unquote(val)
+		if val == "" || !outsideWorkspaceRel(val) {
+			return "", false
+		}
+		what := "operand"
+		if flag != "" {
+			what = "`" + flag + "` operand"
+		}
+		return fmt.Sprintf(
+			"shell refused — the cmake %s %q is outside the project root. "+
+				"The harness only builds inside the workspace: use a relative directory, "+
+				"e.g. `cmake -S . -B build` then `cmake --build build`.", what, val), true
+	}
+	for i := 0; i < len(args); i++ {
+		a := unquote(args[i])
+		if a == "--" {
+			continue
+		}
+		if name, val, ok := strings.Cut(a, "="); ok && cmakePathFlags[name] {
+			if reason, blocked := check(name, val); blocked {
+				return reason, true
+			}
+			continue
+		}
+		if cmakePathFlags[a] {
+			if i+1 < len(args) {
+				if reason, blocked := check(a, args[i+1]); blocked {
+					return reason, true
+				}
+				i++
+			}
+			continue
+		}
+		if cmakeOpaqueValueFlags[a] {
+			i++ // flag with a separate, non-path value
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		// A bare operand is cmake's source (or build) directory.
+		if reason, blocked := check("", a); blocked {
+			return reason, true
+		}
+	}
+	return "", false
 }
 
 // findExecActions are `find` primaries that run or write something.
@@ -90,6 +199,8 @@ func DangerousInvocation(segment string) (reason string, blocked bool) {
 			}
 		}
 		return "", false
+	case "cmake":
+		return cmakeInvocation(args)
 	case "go":
 		if len(args) > 0 && strings.EqualFold(unquote(args[0]), "generate") {
 			return "shell refused — `go generate` executes //go:generate directives found in the " +

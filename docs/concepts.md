@@ -129,7 +129,10 @@ Project blocks always win, so you can override any builtin for a specific projec
 | `quality` | Format/lint/test/build commands |
 | `pack` | Composes pipeline + quality + agents into a language pack |
 
-Predefined packs for Go 🐹, Python 🐍, and React ⚛️ ship built-in.
+Thirteen packs ship built-in — `go` 🐹, `python` 🐍, `react` ⚛️, `typescript` 🟦, `web` 🌐,
+`rust` 🦀, `java` ☕, `kotlin` 🟪, `dotnet` 🟣, `ruby` 💎, `php` 🐘, `swift` 🕊️, `cpp` ⚙️.
+`slmcode init` picks one by scoring each pack's `detect` stanza (marker files, `detect.contains`
+proof of a file's content, source extensions, author priority), skipping nested sub-projects.
 Switch with `slmcode blocks apply <id>` or use the Studio's PackSelector.
 
 → [🧱 Full blocks reference](blocks.md)

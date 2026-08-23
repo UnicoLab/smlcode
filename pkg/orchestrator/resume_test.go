@@ -22,6 +22,58 @@ func TestIsCancelErr(t *testing.T) {
 	if isCancelErr(errors.New("boom")) {
 		t.Fatal("not cancel")
 	}
+	// The bare word is NOT a context cancellation. Accepting it meant any
+	// provider or tool message that merely contained "canceled" could abort a
+	// healthy run as a phantom user interrupt.
+	for _, s := range []string{
+		"the upstream batch job was canceled by the operator",
+		"subscription canceled — billing error",
+	} {
+		if isCancelErr(errors.New(s)) {
+			t.Fatalf("isCancelErr(%q) must be false", s)
+		}
+	}
+}
+
+// TestCheckpointInterruptNeedsTheRunContext pins defect 1: a run whose context
+// is still live is NOT interrupted, however cancel-shaped the error text is.
+// pkg/loop cancels speculative reviewer losers on purpose and the loser reports
+// `chat failed: …: context canceled`; classifying that by text checkpointed a
+// healthy run as "interrupted at execute" and exited 130.
+func TestCheckpointInterruptNeedsTheRunContext(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default(root)
+	cfg.Normalize()
+	o := &Orchestrator{cfg: cfg}
+	turn, err := session.BeginTurn(cfg.SlmDir(), "run-live", "do work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.currentTurn = turn
+	board := &plan.Board{
+		QueryID: turn.ID, Query: turn.Query,
+		Tasks: []plan.Task{{ID: "T1", Title: "edit", Column: plan.ColInProgress, Role: plan.RoleWorker}},
+	}
+	live := context.Background() // nobody interrupted anything
+	for _, e := range []error{
+		context.Canceled,
+		errors.New("chat failed: OpenAI streaming failed: Post \"http://x/v1/chat/completions\": context canceled"),
+	} {
+		res, gotErr := o.checkpointInterrupt(live, board, session.PhaseExecute, e)
+		if res != nil {
+			t.Fatalf("%v: checkpointed a phantom interrupt: %+v", e, res)
+		}
+		if !errors.Is(gotErr, e) && gotErr != e { //nolint:errorlint // identity is the point
+			t.Fatalf("%v: err must pass through, got %v", e, gotErr)
+		}
+	}
+	loaded, err := session.LoadTurn(cfg.SlmDir(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Interrupted {
+		t.Fatal("the turn was marked interrupted with a live run context")
+	}
 }
 
 func TestRenameDiskOK(t *testing.T) {
@@ -144,7 +196,9 @@ func TestCheckpointInterruptPersists(t *testing.T) {
 			Files: []string{"a.go"},
 		}},
 	}
-	res, err := o.checkpointInterrupt(board, session.PhaseExecute, context.Canceled)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // a REAL interrupt: the run's own context is gone
+	res, err := o.checkpointInterrupt(ctx, board, session.PhaseExecute, context.Canceled)
 	if !isCancelErr(err) {
 		t.Fatalf("err=%v", err)
 	}

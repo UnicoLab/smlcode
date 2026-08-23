@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/skills"
@@ -49,7 +51,11 @@ func Evolve(slmDir string, query string, board *plan.Board, lessonsMD string, sk
 
 	proj := filepath.Join(slmDir, "PROJECT.md")
 	if note := projectNote(query, board); note != "" {
-		_ = appendSection(proj, "Auto-learned", note)
+		// REPLACE, never append. Appending a new "## Auto-learned (timestamp)"
+		// section on every run grew PROJECT.md without bound, and PROJECT.md is
+		// in the default doc set for context/explorer/docs/planner/tester —
+		// so the growth ate every one of those specialists' budgets.
+		_ = replaceAutoLearned(proj, note)
 		out.ProjectNote = note
 	}
 	// Also merge durable key-path hints into the scaffold sections when still empty.
@@ -196,9 +202,9 @@ func mergeLearnedSkill(path, query string, board *plan.Board, lessons string) st
 	}
 
 	merged := body + add.String()
-	// Keep learned skill bounded for SLM packs
-	if len(merged) > 12000 {
-		merged = merged[:4000] + "\n\n…\n\n" + merged[len(merged)-7000:]
+	// Keep learned skill bounded for SLM packs (rune-safe head+tail).
+	if len(merged) > MaxLearnedSkillBytes {
+		merged = textutil.HeadTail(merged, 4000, 7000, "\n\n…\n\n")
 	}
 	return merged
 }
@@ -227,22 +233,55 @@ func projectNote(query string, board *plan.Board) string {
 	return fmt.Sprintf("- %s → active files: `%s`", firstLine(query), strings.Join(files, "`, `"))
 }
 
-func appendSection(path, heading, body string) error {
+// AutoLearnedHeading is the single section knowledge write-back owns.
+const AutoLearnedHeading = "Auto-learned"
+
+// MaxProjectBytes caps PROJECT.md after a knowledge write-back.
+const MaxProjectBytes = contextstore.ProjectAppendMaxBytes
+
+// MaxAutoLearnedNotes is how many run notes the section retains.
+const MaxAutoLearnedNotes = 10
+
+// replaceAutoLearned rewrites the single "## Auto-learned" section, keeping the
+// most recent MaxAutoLearnedNotes bullets, and caps the whole document.
+func replaceAutoLearned(path, note string) error {
 	prev, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	section := fmt.Sprintf("\n\n## %s\n\n%s\n", heading, strings.TrimSpace(body))
-	return atomicfile.Write(path, append(prev, []byte(section)...), 0o644)
+	body := string(prev)
+	existing := sectionBody(body, AutoLearnedHeading)
+
+	var notes []string
+	for _, line := range strings.Split(existing, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") && line != strings.TrimSpace(note) {
+			notes = append(notes, line)
+		}
+	}
+	notes = append(notes, strings.TrimSpace(note))
+	if len(notes) > MaxAutoLearnedNotes {
+		notes = notes[len(notes)-MaxAutoLearnedNotes:]
+	}
+	merged := replaceMDSection(body, AutoLearnedHeading, strings.Join(notes, "\n"))
+	merged = contextstore.PruneTimestampedSections(merged, MaxProjectBytes)
+	return atomicfile.Write(path, []byte(merged), 0o644)
 }
 
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
+func sectionBody(md, heading string) string {
+	marker := "## " + heading
+	i := strings.Index(md, marker)
+	if i < 0 {
+		return ""
 	}
-	if len(s) > 120 {
-		return s[:120] + "…"
+	rest := md[i+len(marker):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		rest = rest[:j]
 	}
-	return s
+	return strings.TrimSpace(rest)
 }
+
+// MaxLearnedSkillBytes bounds .slmcode/skills/learned/SKILL.md.
+const MaxLearnedSkillBytes = 12000
+
+func firstLine(s string) string { return textutil.FirstLine(s, 120) }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -9,23 +10,25 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
-// StatusTracker keeps a compact Claude Code–style footer for TUI runs.
+// StatusTracker keeps a compact Claude Code–style footer for one-shot runs
+// (`slmcode run`, `slmcode chat`). The premium TUI uses Activity instead.
 type StatusTracker struct {
 	mu       sync.Mutex
 	phase    string
 	agent    string
 	taskID   string
 	message  string
-	active   map[string]string // taskID -> agent
+	active   map[string]time.Time // agent key -> start
 	done     int
 	failed   int
+	tokens   int
 	started  time.Time
 	lastLine string
 }
 
 func NewStatusTracker() *StatusTracker {
 	return &StatusTracker{
-		active:  map[string]string{},
+		active:  map[string]time.Time{},
 		started: time.Now(),
 	}
 }
@@ -50,22 +53,31 @@ func (s *StatusTracker) Observe(e stream.Event) {
 	}
 	switch e.Kind {
 	case stream.KindAgentStart:
-		if e.TaskID != "" {
-			s.active[e.TaskID] = e.Agent
+		// Key on agent+task so agents that arrive without a TaskID still show
+		// as active instead of leaving the footer stuck on "idle".
+		if k := agentKey(e); k != "" {
+			s.active[k] = time.Now()
 		}
 	case stream.KindAgentEnd:
-		if e.TaskID != "" {
-			delete(s.active, e.TaskID)
+		if k := agentKey(e); k != "" {
+			delete(s.active, k)
 		}
-		lower := strings.ToLower(e.Message + " " + e.Output)
-		if strings.Contains(lower, "error") || strings.Contains(lower, "blocked") || strings.Contains(lower, "rejected") {
+		// Classify by the event's own level. Substring-matching free prose
+		// counted "no errors found" as a failure.
+		switch e.Level {
+		case stream.LevelError, stream.LevelProblem:
 			s.failed++
-		} else if strings.Contains(lower, "approved") || strings.Contains(lower, "done") || strings.Contains(lower, "finished") {
+		default:
 			s.done++
+		}
+	case stream.KindToken:
+		s.tokens++
+		if t, ok := e.Data.(stream.Token); ok && t.Tokens > 0 {
+			s.tokens = t.Tokens
 		}
 	}
 	if e.Phase == "done" {
-		s.active = map[string]string{}
+		s.active = map[string]time.Time{}
 	}
 }
 
@@ -76,14 +88,11 @@ func (s *StatusTracker) Footer() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	elapsed := time.Since(s.started).Round(time.Second)
-	var agents []string
-	for id, ag := range s.active {
-		if ag == "" {
-			agents = append(agents, id)
-		} else {
-			agents = append(agents, "@"+ag+":"+id)
-		}
+	agents := make([]string, 0, len(s.active))
+	for id := range s.active {
+		agents = append(agents, id)
 	}
+	sort.Strings(agents)
 	active := "idle"
 	if len(agents) > 0 {
 		active = strings.Join(agents, " ")
@@ -92,8 +101,70 @@ func (s *StatusTracker) Footer() string {
 	if phase == "" {
 		phase = "idle"
 	}
-	return fmt.Sprintf("%s  phase=%s  active=%s  done=%d  fail=%d  elapsed=%s",
-		Dim("──"), Accent(phase), Cyan(active), s.done, s.failed, Dim(elapsed.String()))
+	tok := ""
+	if s.tokens > 0 {
+		tok = fmt.Sprintf("  tokens=%s", humanCount(s.tokens))
+	}
+	return fmt.Sprintf("%s  phase=%s  active=%s  done=%d  fail=%d%s  elapsed=%s",
+		Dim("──"), Accent(phase), Cyan(active), s.done, s.failed, Dim(tok), Dim(elapsed.String()))
+}
+
+// eventIcon maps kind+level onto the leading marker. Errors are red whatever
+// the kind — an agent that failed must never render with a green marker.
+func eventIcon(kind, level string) string {
+	switch level {
+	case stream.LevelError, stream.LevelProblem:
+		switch kind {
+		case stream.KindAgentEnd:
+			return Red("◂")
+		case stream.KindAgentStart:
+			return Red("▸")
+		default:
+			return Red("✖")
+		}
+	case stream.LevelWarn:
+		switch kind {
+		case stream.KindAgentEnd:
+			return Yellow("◂")
+		default:
+			return Yellow("⚠")
+		}
+	}
+	switch kind {
+	case stream.KindAgentStart:
+		return Blue("▸")
+	case stream.KindAgentEnd:
+		return Green("◂")
+	case stream.KindCoord:
+		return Magenta("◆")
+	case stream.KindLearn:
+		return Yellow("★")
+	case stream.KindOutput:
+		return Cyan("∴")
+	case stream.KindFileChange:
+		return Green("✎")
+	case stream.KindTool:
+		return Dim("⚙")
+	case stream.KindLatency:
+		return Yellow("⏱")
+	case stream.KindUsage:
+		return Cyan("$")
+	case stream.KindDebug:
+		return Dim("·")
+	case stream.KindIntervention:
+		return Yellow("⚠")
+	case stream.KindLoop:
+		return Yellow("↺")
+	case stream.KindTurn:
+		return Yellow("⟳")
+	case stream.KindComposition:
+		return Cyan("◇")
+	case stream.KindToken:
+		return Dim("›")
+	case stream.KindAsk:
+		return Yellow("?")
+	}
+	return Dim("·")
 }
 
 // FormatEvent renders a clean, Claude Code–inspired live event line.
@@ -102,39 +173,7 @@ func FormatEvent(e stream.Event) string {
 	if kind == "" {
 		kind = stream.KindPhase
 	}
-
-	// Compact one-line primary; details indented only when useful.
-	icon := Dim("·")
-	switch kind {
-	case stream.KindAgentStart:
-		icon = Blue("▸")
-	case stream.KindAgentEnd:
-		icon = Green("◂")
-	case stream.KindCoord:
-		icon = Magenta("◆")
-	case stream.KindLearn:
-		icon = Yellow("★")
-	case stream.KindOutput:
-		icon = Cyan("∴")
-	case stream.KindFileChange:
-		icon = Green("✎")
-	case stream.KindTool:
-		icon = Dim("⚙")
-	case stream.KindLatency:
-		icon = Yellow("⏱")
-	case stream.KindUsage:
-		icon = Cyan("$")
-	case stream.KindDebug:
-		icon = Dim("·")
-	case stream.KindIntervention:
-		icon = Yellow("⚠")
-	case stream.KindLoop:
-		icon = Yellow("↺")
-	case stream.KindTurn:
-		icon = Yellow("⟳")
-	case stream.KindComposition:
-		icon = Cyan("◇")
-	}
+	icon := eventIcon(kind, e.Level)
 
 	who := e.Phase
 	if e.Agent != "" {
@@ -146,8 +185,11 @@ func FormatEvent(e stream.Event) string {
 	}
 	// Collapse noisy log spam into a single readable line.
 	msg = collapseWhitespace(msg)
-	if len(msg) > 120 {
-		msg = msg[:117] + "…"
+	msg = ClipWidth(msg, 120)
+	if e.Level == stream.LevelError || e.Level == stream.LevelProblem {
+		msg = Red(msg)
+	} else if e.Level == stream.LevelWarn {
+		msg = Yellow(msg)
 	}
 
 	head := fmt.Sprintf("%s %s %s", icon, Dim(who), msg)
@@ -179,6 +221,9 @@ func PrintEventWithStatus(e stream.Event, st *StatusTracker) {
 	if st != nil {
 		st.Observe(e)
 	}
+	if e.Kind == stream.KindToken {
+		return // token deltas belong to the live renderer, not the transcript
+	}
 	line := FormatEvent(e)
 	fmt.Println(line)
 	if st != nil && (e.Kind == stream.KindAgentStart || e.Kind == stream.KindAgentEnd || e.Phase == "done" || e.Phase == "execute") {
@@ -207,20 +252,13 @@ func summarizeOutput(out string) string {
 	lower := strings.ToLower(out)
 	// Prefer JSON status line when present.
 	if i := strings.Index(out, `"status"`); i >= 0 {
-		snippet := out[i:]
-		if len(snippet) > 160 {
-			snippet = snippet[:160] + "…"
-		}
-		return collapseWhitespace(snippet)
+		return collapseWhitespace(ClipWidth(out[i:], 160))
 	}
 	if strings.Contains(lower, "approved") || strings.Contains(lower, "rejected") {
 		for _, line := range strings.Split(out, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" {
-				if len(line) > 140 {
-					return line[:137] + "…"
-				}
-				return line
+				return ClipWidth(line, 140)
 			}
 		}
 	}
@@ -230,10 +268,7 @@ func summarizeOutput(out string) string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if len(line) > 140 {
-			return line[:137] + "…"
-		}
-		return line
+		return ClipWidth(line, 140)
 	}
 	return ""
 }

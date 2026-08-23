@@ -20,6 +20,7 @@ const (
 	KindTurn         = "turn"         // turn-budget / progress meter update
 	KindLoop         = "loop"         // tester reject / rewrite / corrective wave / continue-ask
 	KindComposition  = "composition"  // dynamic pipeline/team/skill contract
+	KindToken        = "token"        // incremental model output delta (token-by-token streaming)
 )
 
 // Level constants classify the severity of a live event so UIs can surface
@@ -46,13 +47,29 @@ type Event struct {
 	Time    time.Time `json:"time"`
 }
 
-// Truncate bounds output payloads for SSE/CLI.
+// Token is the payload attached to Event.Data for KindToken so consumers can
+// render incremental model output without parsing the message string.
+type Token struct {
+	Delta  string `json:"delta"`
+	Tokens int    `json:"tokens,omitempty"` // running token count for this agent call
+}
+
+// Truncate bounds output payloads for SSE/CLI. The cut is made on a rune
+// boundary and counted in runes, so multi-byte characters are never split into
+// replacement characters.
 func Truncate(s string, n int) string {
 	s = trimSpace(s)
-	if n <= 0 || len(s) <= n {
+	if n <= 0 {
 		return s
 	}
-	return s[:n] + "…"
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "…"
+		}
+		count++
+	}
+	return s
 }
 
 func trimSpace(s string) string {

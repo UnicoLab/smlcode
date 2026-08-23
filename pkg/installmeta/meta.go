@@ -99,5 +99,7 @@ func Save(m *Meta) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(p, append(data, '\n'), 0o644)
+	// 0600: install.json names the upstream repo used by `slmcode update`, so a
+	// world-writable file would let anyone redirect the updater.
+	return atomicfile.Write(p, append(data, '\n'), 0o600)
 }

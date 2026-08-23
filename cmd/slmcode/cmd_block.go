@@ -42,7 +42,7 @@ Inspect and apply:
 	}
 
 	cmd.AddCommand(
-		&cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List available building blocks", RunE: blockList},
+		blockListCmd(),
 		&cobra.Command{
 			Use:   "show [kind] [id]",
 			Short: "Show details of a specific block (pipeline|agent|quality|pack)",
@@ -110,6 +110,33 @@ Inspect and apply:
 	cmd.AddCommand(applyCmd)
 
 	return cmd
+}
+
+func blockListCmd() *cobra.Command {
+	var asJSON bool
+	c := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List available building blocks",
+		Example: "  slmcode blocks list\n  slmcode blocks list --json",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
+			if asJSON {
+				root, err := projectRoot()
+				if err != nil {
+					return err
+				}
+				reg, err := blocks.Load(root)
+				if err != nil {
+					return err
+				}
+				return emitJSON(map[string]any{"blocks": reg.Catalog("")})
+			}
+			return blockList(cmd, args)
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	return c
 }
 
 func blockList(cmd *cobra.Command, args []string) error {

@@ -30,7 +30,10 @@ export default function PackSelector({ currentPack, currentPipeline, onApplied }
       try {
         const data = await getBlocks('pack');
         if (!cancelled) setPacks(data.blocks?.filter((b: any) => b.kind === 'pack') || []);
-      } catch {} finally {
+      } catch {
+        // Pack catalogue is best-effort; the panel renders empty. Backend
+        // outages are reported once, by the TopBar connection badge.
+      } finally {
         if (!cancelled) setLoading(false);
       }
     })();

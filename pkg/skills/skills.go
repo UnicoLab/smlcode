@@ -37,6 +37,8 @@ type Skill struct {
 // Loader discovers skills from one or more roots (first name wins).
 type Loader struct {
 	Roots []string
+
+	cache loaderCache
 }
 
 func NewLoader(roots ...string) *Loader {
@@ -44,44 +46,31 @@ func NewLoader(roots ...string) *Loader {
 }
 
 // List returns all discovered skills.
+//
+// Results are cached and invalidated by the mtime+size fingerprint of every
+// SKILL.md under the roots, so the repeated Get/ResolveForRun/MatchForAgent/
+// PackForAgent calls in one run cost a stat walk instead of 20+ parse walks.
 func (l *Loader) List() ([]Skill, error) {
-	seen := map[string]bool{}
-	var out []Skill
-	for _, root := range l.Roots {
-		if root == "" {
-			continue
-		}
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			// Skip nested _bundled when walking the project skills root — loaded via its own root.
-			// Do not SkipDir when root itself is …/skills/_bundled.
-			if d.IsDir() {
-				if d.Name() == "_bundled" && filepath.Clean(path) != filepath.Clean(root) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			base := d.Name()
-			if !strings.EqualFold(base, "SKILL.md") && !strings.HasSuffix(strings.ToLower(base), ".skill.md") {
-				return nil
-			}
-			sk, err := ParseFile(path)
-			if err != nil {
-				return nil
-			}
-			key := strings.ToLower(sk.Name)
-			if seen[key] {
-				return nil
-			}
-			seen[key] = true
-			out = append(out, sk)
-			return nil
-		})
+	if l == nil {
+		return nil, nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	stamp := stampRoots(l.Roots)
+	l.cache.mu.RLock()
+	entry := l.cache.entry
+	l.cache.mu.RUnlock()
+	if entry != nil && entry.stamp == stamp {
+		return append([]Skill(nil), entry.skills...), nil
+	}
+
+	l.cache.mu.Lock()
+	defer l.cache.mu.Unlock()
+	// Re-check under the write lock.
+	if l.cache.entry != nil && l.cache.entry.stamp == stamp {
+		return append([]Skill(nil), l.cache.entry.skills...), nil
+	}
+	out, freshStamp := scanRoots(l.Roots)
+	l.cache.entry = &cacheEntry{skills: out, stamp: freshStamp}
+	return append([]Skill(nil), out...), nil
 }
 
 // Get returns a skill by name (case-insensitive).
@@ -125,6 +114,13 @@ func ExtractRefs(query string) (names []string, clean string) {
 // ResolveForRun builds the skill set for a pipeline or specialist run.
 // Includes: explicit @skill refs, agent-targeted skills, query keyword matches, pins.
 func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []Skill {
+	_, _, ranked := l.resolveScored(query, agent, pins, limit)
+	return ranked
+}
+
+// resolveScored is ResolveForRun with the score table and the explicit-ref set
+// retained, so progressive disclosure can decide what to expand.
+func (l *Loader) resolveScored(query, agent string, pins []string, limit int) (map[string]int, map[string]bool, []Skill) {
 	if limit <= 0 {
 		limit = 6
 	}
@@ -138,6 +134,7 @@ func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []
 	}
 
 	scores := map[string]int{}
+	explicit := map[string]bool{}
 	bump := func(s Skill, n int) {
 		k := strings.ToLower(s.Name)
 		if n > scores[k] {
@@ -148,7 +145,8 @@ func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []
 	for _, ref := range refs {
 		ref = strings.ToLower(strings.TrimSpace(ref))
 		if s, ok := byName[ref]; ok {
-			bump(s, 1000)
+			explicit[ref] = true
+			bump(s, ExplicitRefScore)
 		}
 	}
 
@@ -159,7 +157,7 @@ func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []
 		switch {
 		case applies && len(s.Agents) > 0 && !hasAgent(s, "*"):
 			// Specialist-specific default
-			bump(s, 80+sc*10)
+			bump(s, SpecialistDefaultScore+sc*10)
 		case applies && agent != "":
 			// Global skill while targeting a specialist
 			bump(s, 20+sc*10)
@@ -206,13 +204,14 @@ func (l *Loader) ResolveForRun(query, agent string, pins []string, limit int) []
 		for _, s := range list {
 			if skillAppliesTo(s, agent) && len(s.Agents) > 0 && !hasAgent(s, "*") {
 				out = append(out, s)
+				scores[strings.ToLower(s.Name)] = SpecialistDefaultScore
 				if len(out) >= limit {
 					break
 				}
 			}
 		}
 	}
-	return out
+	return scores, explicit, out
 }
 
 // MatchForQuery is the keyword matcher for full-pipeline runs.
@@ -226,8 +225,13 @@ func (l *Loader) MatchForAgent(agent, query string, limit int) []Skill {
 }
 
 // PackForAgent renders a budgeted skill pack for one specialist.
+//
+// Default-on behaviour change: this is now the two-stage progressive-disclosure
+// pack (cards for every match, full bodies only for explicit @skill: references
+// and above-default-tier scores). Use RenderPack directly for the old
+// dump-every-body rendering.
 func (l *Loader) PackForAgent(agent, query string, maxChars int) string {
-	return RenderPack(l.MatchForAgent(agent, query, 6), maxChars)
+	return l.PackForAgentTiered(agent, query, maxChars)
 }
 
 func skillAppliesTo(s Skill, agent string) bool {
@@ -274,7 +278,10 @@ func scoreQuery(query string, s Skill) int {
 	return score
 }
 
-// RenderPack embeds skill bodies into a prompt slice (token-budgeted).
+// RenderPack embeds full skill bodies into a prompt slice (byte-budgeted).
+//
+// Prefer RenderMatches / RenderCards: dumping every body is what puts hundreds
+// of tokens of always-on directives in front of a 7B.
 func RenderPack(list []Skill, maxChars int) string {
 	if len(list) == 0 {
 		return ""
@@ -292,7 +299,9 @@ func RenderPack(list []Skill, maxChars int) string {
 		}
 		section := fmt.Sprintf("### skill:%s\n%s\n<!-- agents: %s -->\n\n%s\n\n", s.Name, s.Description, agents, s.Body)
 		if b.Len()+len(section) > maxChars {
-			break
+			// One oversized skill must not silently drop every lower-ranked
+			// skill behind it: skip this one and keep going.
+			continue
 		}
 		b.WriteString(section)
 	}

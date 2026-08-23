@@ -67,13 +67,18 @@ function extractModifiedPaths(events: RunEvent[]): Set<string> {
         const arr = JSON.parse('[' + m[1] + ']');
         for (const f of arr) paths.add(String(f).trim().replace(/^["'`]+|["'`]+$/g, ''));
       }
-    } catch {}
+    } catch {
+      // Best-effort scrape of an agent's `files_changed` array; malformed or
+      // absent JSON just means this event lists no files.
+    }
     try {
       const obj = JSON.parse(e.output || '');
       if (obj.files_changed && Array.isArray(obj.files_changed)) {
         for (const f of obj.files_changed) paths.add(String(f).trim());
       }
-    } catch {}
+    } catch {
+      // As above — the event output is frequently plain prose.
+    }
   }
   return paths;
 }
@@ -203,6 +208,9 @@ export default function FileInspector({ events, running }: Props) {
   const [draftComment, setDraftComment] = useState('');
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [showOnlyModified, setShowOnlyModified] = useState(false);
+  // Dot-entries are shown by default: `.slmcode/pending/` is the review queue
+  // and `.github/` is real project content. `.git` stays hidden server-side.
+  const [showHidden, setShowHidden] = useState(true);
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
   // ── Track agent-modified files ──
@@ -211,16 +219,17 @@ export default function FileInspector({ events, running }: Props) {
   // ── Load directory tree ──
   const loadDir = useCallback(async (dirPath: string) => {
     try {
-      const res = await getWorkspaceTree(dirPath || undefined);
+      const res = await getWorkspaceTree(dirPath || undefined, { hidden: showHidden });
       setTree(prev => ({ ...prev, [dirPath || '']: res.entries }));
     } catch {
-      // dir may not exist
+      // The directory may not exist (a stale expanded path); the tree simply
+      // shows nothing for it. Connection failures surface in the TopBar badge.
     } finally {
       if (!dirPath) setTreeLoading(false);
     }
-  }, []);
+  }, [showHidden]);
 
-  useEffect(() => { loadDir(''); }, [loadDir]);
+  useEffect(() => { setTree({}); loadDir(''); }, [loadDir]);
 
   // ── Load file content ──
   useEffect(() => {
@@ -421,9 +430,22 @@ export default function FileInspector({ events, running }: Props) {
               <FolderOpen size={12} />
               Workspace
             </h3>
-            <button onClick={() => { setTree({}); loadDir(''); }} className="btn-ghost p-1 rounded" title="Refresh">
-              <RefreshCw size={12} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setShowHidden(v => !v)}
+                aria-pressed={showHidden}
+                className={clsx('focus-ring rounded px-1.5 py-0.5 font-mono text-[10px]',
+                  showHidden ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300'
+                             : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800')}
+                title={showHidden ? 'Hide dot-files (.slmcode, .github…)' : 'Show dot-files (.slmcode, .github…)'}
+              >
+                .*
+              </button>
+              <button onClick={() => { setTree({}); loadDir(''); }} className="btn-ghost focus-ring p-1 rounded" title="Refresh" aria-label="Refresh the file tree">
+                <RefreshCw size={12} />
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto px-1 pb-2">
             {treeLoading ? (

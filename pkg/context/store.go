@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
 )
 
@@ -25,8 +25,9 @@ const (
 
 // Store reads/writes the markdown context workspace used as durable memory.
 type Store struct {
-	dir string
-	mu  sync.RWMutex
+	dir      string
+	mu       sync.RWMutex
+	policies map[string]AppendPolicy // per-document append ceilings
 }
 
 // New creates a store rooted at slmDir (typically <project>/.slmcode).
@@ -83,15 +84,22 @@ func (s *Store) Write(name, content string) error {
 	return atomicfile.Write(s.Path(name), []byte(content), 0o644)
 }
 
-// Append adds a timestamped section to a document.
-func (s *Store) Append(name, sectionTitle, body string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	path := s.Path(name)
-	existing, _ := os.ReadFile(path)
-	stamp := time.Now().Format(time.RFC3339)
-	block := fmt.Sprintf("\n\n## %s (%s)\n\n%s\n", sectionTitle, stamp, strings.TrimSpace(body))
-	return atomicfile.Write(path, append(existing, []byte(block)...), 0o644)
+// readFileString / writeFileString are the lock-free primitives shared with
+// append.go (whose callers already hold s.mu).
+func readFileString(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func writeFileString(path, content string) error {
+	return atomicfile.Write(path, []byte(content), 0o644)
+}
+
+func trimToBytes(s string, n int) string {
+	return textutil.Truncate(s, n, "\n\n_[trimmed to fit the context budget]_\n")
 }
 
 // Bundle packs selected docs into a single prompt-friendly string, truncated
@@ -116,7 +124,7 @@ func (s *Store) Bundle(maxBytes int, names ...string) (string, error) {
 		if b.Len()+len(section) > effective {
 			remain := effective - b.Len() - 32
 			if remain > 0 {
-				b.WriteString(section[:remain])
+				b.WriteString(textutil.Clip(section, remain))
 				b.WriteString("\n…\n")
 			}
 			break

@@ -49,6 +49,7 @@ import {
   removeSlot,
 } from './pipelineUtils';
 import type { AgentOption } from './pipelineUtils';
+import { useConfirm } from '@/components/ui/Modal';
 
 const WHEN_COLORS: Record<string, string> = {
   always: 'text-emerald-500',
@@ -77,6 +78,7 @@ interface Notice {
 }
 
 export default function PipelineEditor() {
+  const confirm = useConfirm();
   const ctx = useContext(AppContext);
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,7 +110,10 @@ export default function PipelineEditor() {
     try {
       const data = await getBlocks('pipeline');
       setPresets(data.blocks?.filter((b: any) => b.kind === 'pipeline') || []);
-    } catch {}
+    } catch {
+      // Preset list is best-effort: the editor still works on the live
+      // pipeline. The TopBar connection badge reports backend trouble.
+    }
   }, []);
 
   // Merge /api/agents (builtin + custom, runtime-effective) with agent blocks
@@ -178,7 +183,12 @@ export default function PipelineEditor() {
   };
 
   const handleDeletePipeline = async (p: BlockCatalogEntry) => {
-    if (!confirm(`Delete pipeline "${p.name}" (${p.id})?`)) return;
+    const ok = await confirm({
+      title: `Delete pipeline "${p.name}"?`,
+      description: `Block id: ${p.id}`,
+      confirmLabel: 'Delete pipeline',
+    });
+    if (!ok) return;
     try {
       await deleteBlock('pipeline', p.id);
       setPresetNotice(`Pipeline "${p.id}" deleted`);
@@ -479,13 +489,17 @@ export default function PipelineEditor() {
                     <ChevronDown size={14} />
                   </button>
                   <button
-                    onClick={() => {
-                      if (confirm(`Remove group "${group.label}"?\nIts phases will stay and move to Unassigned.`)) {
-                        setCfg(deleteGroup(config, gi));
-                      }
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Remove group "${group.label}"?`,
+                        description: 'Its phases stay in the pipeline and move to Unassigned.',
+                        confirmLabel: 'Remove group',
+                      });
+                      if (ok) setCfg(deleteGroup(config, gi));
                     }}
-                    className={iconBtnDanger}
+                    className={clsx(iconBtnDanger, 'focus-ring')}
                     title="Delete group"
+                    aria-label={`Delete group ${group.label}`}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -509,10 +523,13 @@ export default function PipelineEditor() {
                     groupLen={groupPhases.length}
                     onPatch={(patch) => setCfg(updatePhase(config, pid, patch))}
                     onMoveTo={(gid) => setCfg(movePhaseToGroup(config, pid, gid))}
-                    onRemove={() => {
-                      if (confirm(`Remove phase "${pid}"?\nIt will be deleted from the pipeline and all groups.`)) {
-                        setCfg(removePhase(config, pid));
-                      }
+                    onRemove={async () => {
+                      const ok = await confirm({
+                        title: `Remove phase "${pid}"?`,
+                        description: 'It is deleted from the pipeline and from every group.',
+                        confirmLabel: 'Remove phase',
+                      });
+                      if (ok) setCfg(removePhase(config, pid));
                     }}
                     onReorder={(dir) => setCfg(movePhaseInGroup(config, group.id, pi, dir))}
                   />
@@ -563,10 +580,13 @@ export default function PipelineEditor() {
                   defaultAgent={pipeline.defaults?.[pid]}
                   onPatch={(patch) => setCfg(updatePhase(config, pid, patch))}
                   onMoveTo={(gid) => setCfg(movePhaseToGroup(config, pid, gid))}
-                  onRemove={() => {
-                    if (confirm(`Remove phase "${pid}"?\nIt will be deleted from the pipeline.`)) {
-                      setCfg(removePhase(config, pid));
-                    }
+                  onRemove={async () => {
+                    const ok = await confirm({
+                      title: `Remove phase "${pid}"?`,
+                      description: 'It is deleted from the pipeline.',
+                      confirmLabel: 'Remove phase',
+                    });
+                    if (ok) setCfg(removePhase(config, pid));
                   }}
                 />
               ))}

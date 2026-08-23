@@ -179,7 +179,7 @@ func TestFuzzyEditHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.(string), "Closest matching") {
+	if !strings.Contains(out.(string), "Closest text already in the file") {
 		t.Fatalf("expected fuzzy hint, got %v", out)
 	}
 }

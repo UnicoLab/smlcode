@@ -107,8 +107,12 @@ func (g *FocusGuard) Allow(path string) bool {
 	if path == "" {
 		return false
 	}
-	if path == ".slmcode" || strings.HasPrefix(path, ".slmcode/") {
-		return true
+	// .slmcode/ is harness state, not agent workspace. It used to be
+	// unconditionally writable, which let an agent drop a hooks.json (arbitrary
+	// bash on the next run), rewrite config.yaml to disable its own guards, or
+	// forge pending/*.patch.json. Only the scratch subtree is agent-writable.
+	if IsHarnessStatePath(path) {
+		return AllowedScratchPath(path)
 	}
 	if _, ok := g.files[path]; ok {
 		return true
@@ -130,6 +134,9 @@ func (g *FocusGuard) Allow(path string) bool {
 
 // Check returns an error when a write is out of scope.
 func (g *FocusGuard) Check(path string) error {
+	if err := CheckHarnessStateWrite(path); err != nil {
+		return err
+	}
 	if g == nil || g.Allow(path) {
 		return nil
 	}
@@ -212,4 +219,42 @@ func isScaffoldPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// HarnessStateDir is the harness's private control directory.
+const HarnessStateDir = ".slmcode"
+
+// ScratchDir is the ONLY path under HarnessStateDir that tools may write.
+// Agents use it for notes / todo lists; nothing in it is ever executed or
+// interpreted as configuration.
+const ScratchDir = ".slmcode/scratch"
+
+// IsHarnessStatePath reports whether rel lives under .slmcode/.
+func IsHarnessStatePath(rel string) bool {
+	rel = normalizeRel(rel)
+	return rel == HarnessStateDir || strings.HasPrefix(rel, HarnessStateDir+"/")
+}
+
+// AllowedScratchPath reports whether rel is inside the agent scratch subtree.
+func AllowedScratchPath(rel string) bool {
+	rel = normalizeRel(rel)
+	return rel == ScratchDir || strings.HasPrefix(rel, ScratchDir+"/")
+}
+
+// CheckHarnessStateWrite refuses tool writes into .slmcode/ outside scratch.
+// This holds even when the focus guard is disabled — it is a privilege
+// boundary, not an anti-wander heuristic.
+func CheckHarnessStateWrite(path string) error {
+	rel := normalizeRel(path)
+	if !IsHarnessStatePath(rel) || AllowedScratchPath(rel) {
+		return nil
+	}
+	return fmt.Errorf(
+		"write refused — %s is harness control state, not project source.\n"+
+			"Files under .slmcode/ (hooks.json, config.yaml, pending/, checkpoints/) configure the "+
+			"harness itself and are never edited by tools.\n"+
+			"If you need scratch space, write under %s/ instead. "+
+			"If you meant to change project code, use the real source path.",
+		rel, ScratchDir,
+	)
 }

@@ -13,17 +13,32 @@ import (
 )
 
 func boardCmd() *cobra.Command {
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "board",
 		Aliases: []string{"b", "kanban"},
 		Short:   "Show live kanban board (to_scope → … → done)",
+		Example: "  slmcode board\n  slmcode board --json | jq '.tasks[] | .id'",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
 			}
 			_ = ws.Board.Load()
 			b := ws.Board.Snapshot()
+			if asJSON {
+				by := b.ByColumn()
+				counts := map[string]int{}
+				for _, col := range plan.Columns() {
+					counts[col] = len(by[col])
+				}
+				return emitJSON(map[string]any{
+					"plan":    b.Plan,
+					"columns": counts,
+					"tasks":   b.Tasks,
+				})
+			}
 			cli.Header("Kanban board")
 			if b.Plan.Summary != "" {
 				fmt.Println(cli.Dim("Plan: ") + b.Plan.Summary)
@@ -56,6 +71,7 @@ func boardCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	return cmd
 }
 

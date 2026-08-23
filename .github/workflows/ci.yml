@@ -14,6 +14,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  repo-refs:
+    name: Repo reference guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for stale/broken repo slug references
+        run: ./scripts/check-repo-refs.sh
+
   lint-test:
     name: Lint & Test
     runs-on: ubuntu-latest
@@ -41,14 +52,43 @@ jobs:
       - name: Build web UI
         run: cd web && npm run build && mkdir -p ../cmd/slmcode/ui && cp -r dist/* ../cmd/slmcode/ui/
 
-      - name: Go Lint
-        run: make lint
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Go Test
-        run: make test
+      - name: make check (fmt, vet, lint, unit+race tests, web lint+build)
+        run: make check
 
       - name: Go Build
         run: make build
+
+      - name: golangci-lint ratchet (blocking locally, non-blocking here)
+        continue-on-error: true
+        run: make lint-strict
+
+      - name: Studio API offline smoke test
+        run: ./scripts/e2e_prime_smoke.sh
+
+  race-and-coverage:
+    name: Race detector & coverage floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Race tests (pkg/...)
+        run: make race
+
+      - name: Coverage floor
+        run: make cover
 
   web-check:
     name: Web Frontend Check
@@ -105,6 +145,11 @@ jobs:
 
       - name: Build web UI
         run: cd web && npm run build && mkdir -p ../cmd/slmcode/ui && cp -r dist/* ../cmd/slmcode/ui/
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1

@@ -24,6 +24,9 @@ const (
 	// cacheTTL bounds how long a cached latest-tag result is reused without a
 	// fresh network request.
 	cacheTTL = 6 * time.Hour
+	// failTTL negative-caches a failed check. Without it every `slmcode version`
+	// blocked for the full httpTimeout whenever GitHub was unreachable.
+	failTTL = 1 * time.Hour
 	// httpTimeout bounds the GitHub API request.
 	httpTimeout = 6 * time.Second
 )
@@ -46,6 +49,10 @@ type cacheEntry struct {
 	Latest     string `json:"latest"`
 	ReleaseURL string `json:"release_url"`
 	CheckedAt  string `json:"checked_at"`
+	// Error records a failed lookup so repeated invocations do not re-dial an
+	// unreachable host for the next failTTL.
+	Error    string `json:"error,omitempty"`
+	FailedAt string `json:"failed_at,omitempty"`
 }
 
 // Check reports whether a newer release exists for the given installed
@@ -71,27 +78,38 @@ func CheckWithURL(current, apiURL, cachePath string) Info {
 			CheckedAt:       checkedAt,
 		}
 	}
+	if msg, ok := readFailureCache(cachePath); ok {
+		// A recent failure short-circuits: never block the CLI again for the
+		// full HTTP timeout while the network is down.
+		return Info{Current: current, Error: msg}
+	}
 
 	client := &http.Client{Timeout: httpTimeout}
 	resp, err := client.Get(apiURL)
 	if err != nil {
+		writeFailureCache(cachePath, err.Error())
 		return Info{Current: current, Error: err.Error()}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Info{Current: current, Error: fmt.Sprintf("unexpected status %d from release API", resp.StatusCode)}
+		msg := fmt.Sprintf("unexpected status %d from release API", resp.StatusCode)
+		writeFailureCache(cachePath, msg)
+		return Info{Current: current, Error: msg}
 	}
 	var rel struct {
 		TagName string `json:"tag_name"`
 		HTMLURL string `json:"html_url"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		writeFailureCache(cachePath, err.Error())
 		return Info{Current: current, Error: err.Error()}
 	}
 
 	latest := strings.TrimSpace(rel.TagName)
 	if latest == "" {
-		return Info{Current: current, Error: "release API returned empty tag_name"}
+		msg := "release API returned empty tag_name"
+		writeFailureCache(cachePath, msg)
+		return Info{Current: current, Error: msg}
 	}
 	// Normalize the tag to a plain version so callers can safely render
 	// "v"+latest without doubling the prefix.
@@ -214,6 +232,49 @@ func readCache(path string) (latest, releaseURL, checkedAt string, ok bool) {
 	return latest, e.ReleaseURL, e.CheckedAt, true
 }
 
+// readFailureCache reports a recent failed lookup still inside failTTL.
+func readFailureCache(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var e cacheEntry
+	if json.Unmarshal(data, &e) != nil || e.FailedAt == "" {
+		return "", false
+	}
+	t, err := time.Parse(time.RFC3339, e.FailedAt)
+	if err != nil || time.Since(t) >= failTTL {
+		return "", false
+	}
+	msg := e.Error
+	if msg == "" {
+		msg = "update check unavailable"
+	}
+	return msg, true
+}
+
+// writeFailureCache records a failed lookup, preserving any known latest tag so
+// a stale-but-useful value is not thrown away.
+func writeFailureCache(path, msg string) {
+	if path == "" {
+		return
+	}
+	var e cacheEntry
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &e)
+	}
+	e.Error = msg
+	e.FailedAt = time.Now().UTC().Format(time.RFC3339)
+	data, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	_ = atomicfile.Write(path, data, 0o600)
+}
+
 // writeCache persists a successful latest-tag fetch.
 func writeCache(path, latest, releaseURL string) {
 	if path == "" || latest == "" {
@@ -228,5 +289,5 @@ func writeCache(path, latest, releaseURL string) {
 	if err != nil {
 		return
 	}
-	_ = atomicfile.Write(path, data, 0o644)
+	_ = atomicfile.Write(path, data, 0o600)
 }

@@ -24,7 +24,7 @@ slmcode/
 │   └── lint.sh
 ├── mkdocs.yml
 ├── requirements-docs.txt
-└── go.mod                       → github.com/piotrlaczkowski/GoLangGraph
+└── go.mod                       → github.com/UnicoLab/slmcode
 ```
 
 ## Docs site

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import BlockEditor from './BlockEditor';
+import { useConfirm } from '@/components/ui/Modal';
 
 const KIND_ICONS: Record<string, ReactNode> = {
   pack: <Package size={20} />,
@@ -62,6 +63,7 @@ interface EditorState {
 }
 
 export default function BlockManager() {
+  const confirm = useConfirm();
   const ctx = useContext(AppContext);
   const [view, setView] = useState<BlockView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -128,7 +130,12 @@ export default function BlockManager() {
     const message = block.custom
       ? `Delete ${title.toLowerCase()} "${block.name || block.id}"?`
       : `Delete ${title.toLowerCase()} "${block.name || block.id}"? This removes the override of the builtin block.`;
-    if (!confirm(message)) return;
+    const ok = await confirm({
+      title: `Delete ${title.toLowerCase()} "${block.name || block.id}"?`,
+      description: block.custom ? undefined : 'This removes the override of the builtin block.',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     setError(null);
     setNotice(null);
     try {

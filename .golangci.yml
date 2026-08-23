@@ -1,0 +1,62 @@
+# golangci-lint v2 config (schema requires golangci-lint >= v2; verified
+# against v2.5.0). See scripts/lint.sh / `make lint` / `make lint-strict`.
+#
+# Baseline captured 2026-08-23 on a clean build (own the config, not the
+# findings — see AGENTS.md ownership split): 95 issues total.
+#   errcheck:    29
+#   gosec:       23
+#   staticcheck: 22
+#   unused:       8
+#   misspell:     6
+#   bodyclose:    3
+#   ineffassign:  4
+#
+# `make lint` runs this non-blocking (CI step uses continue-on-error) so it
+# doesn't gate merges yet. `make lint-strict` runs it blocking, for ratchet
+# work: fix real issues, then progressively tighten (e.g. via `linters.enable`
+# additions, or by shrinking the exclusion below) until `make lint-strict`
+# is what CI runs.
+#
+# Linter notes:
+#   - errcheck, staticcheck, unused, ineffassign, govet are golangci-lint v2
+#     defaults (linters.default: standard) — not listed under enable below.
+#   - gosimple/stylecheck have no separate v2 entry: both are folded into
+#     the "staticcheck" linter's own rule set in v2.
+version: "2"
+run:
+  tests: true
+linters:
+  enable:
+    - bodyclose
+    - gosec
+    - misspell
+  settings:
+    gosec:
+      excludes:
+        - G104
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    # No default exclusion presets: those blanket-suppress large classes of
+    # errcheck/staticcheck findings (e.g. "common-false-positives",
+    # "std-error-handling") — with them on, errcheck alone drops from 29
+    # findings to 5. Ratchet against real findings, not a pre-filtered view.
+    rules:
+      # Test files get a pass from gosec: things it flags there (weak temp
+      # perms, "hardcoded" fixture values, etc.) are routine in test code
+      # and not a real security exposure.
+      - linters:
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

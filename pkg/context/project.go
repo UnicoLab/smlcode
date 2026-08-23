@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // SeedProjectMarkdown builds a useful PROJECT.md from repo metadata.
@@ -97,11 +99,7 @@ func detectOverview(root, name string) string {
 			paras = append(paras, strings.TrimSpace(cur.String()))
 		}
 		if len(paras) > 0 {
-			summary := strings.Join(paras, " — ")
-			if len(summary) > 600 {
-				summary = summary[:600] + "…"
-			}
-			return summary
+			return textutil.Truncate(strings.Join(paras, " — "), 600, "…")
 		}
 	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {

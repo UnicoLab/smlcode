@@ -37,7 +37,7 @@ func doReq(t *testing.T, s *Server, method, path string, body []byte) *httptest.
 	} else {
 		rdr = bytes.NewReader(nil)
 	}
-	req := httptest.NewRequest(method, path, rdr)
+	req := newAPIRequest(method, path, rdr)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	return rec

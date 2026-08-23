@@ -14,6 +14,8 @@ import {
   BrainCircuit,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useConfirm } from '@/components/ui/Modal';
+import { useToast } from '@/components/ui/Toast';
 
 const EMPTY_AGENT: AgentSpec = {
   id: '',
@@ -31,6 +33,8 @@ const EMPTY_AGENT: AgentSpec = {
 };
 
 export default function AgentManager() {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -126,17 +130,22 @@ export default function AgentManager() {
       await fetch();
       handleCancel();
     } catch (e) {
-      console.error('Save failed:', e);
+      toast.reportError(e, 'Could not save the agent');
     }
   };
 
   const handleDelete = async (agent: AgentSpec) => {
-    if (!confirm(`Delete agent "${agent.title}"?`)) return;
+    const ok = await confirm({
+      title: `Delete agent "${agent.title}"?`,
+      description: 'Custom agent files and builtin overrides are removed.',
+      confirmLabel: 'Delete agent',
+    });
+    if (!ok) return;
     try {
       await deleteAgent(agent.id);
       await fetch();
     } catch (e) {
-      console.error('Delete failed:', e);
+      toast.reportError(e, 'Could not delete the agent');
     }
   };
 

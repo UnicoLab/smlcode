@@ -18,8 +18,55 @@ Start the backend:
 # From slmcode root:
 make studio
 # or:
-slmcode studio --listen 127.0.0.1:7420
+slmcode studio --listen 127.0.0.1:7420 --dev-cors
 ```
+
+`--dev-cors` is required for `npm run dev`: the Vite server is a different
+origin (`:5173`) from the API (`:7420`), and Studio ships **no** CORS headers by
+default. See "Security model" below.
+
+## Scripts
+
+| Command | What it does |
+|---------|--------------|
+| `npm run dev` | Vite dev server on :5173, proxying `/api` to :7420 |
+| `npm run build` | `tsc -b` + production build into `dist/` |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | typecheck **and** ESLint (react-hooks + jsx-a11y) |
+| `npm test` | Vitest + Testing Library |
+| `npm run test:coverage` | Vitest with v8 coverage |
+
+`react-hooks/exhaustive-deps` is an **error**, not a warning: a stale-closure
+bug in the SSE handler once reduced the live event log to a single row, and that
+rule is what catches it.
+
+## Security model
+
+Studio is a local agent with file-read, config-write, API-key-write and
+run-start capability, so the API is locked down by default:
+
+* **Loopback only** — a request whose `Host` is not `127.0.0.1` / `::1` /
+  `localhost` is rejected with 403. This blocks DNS rebinding.
+* **Same-origin only** — no `Access-Control-Allow-Origin` is emitted at all
+  unless the server was started with `--dev-cors`, which allows exactly the Vite
+  dev origins. A cross-origin `Origin` or a `Sec-Fetch-Site: cross-site` request
+  is refused, so no page the user happens to visit can start a run or read the
+  repo.
+* **Session token** — when the CLI starts Studio with a token, every `/api/*`
+  request must carry it as `X-SLMCode-Token`, as `Authorization: Bearer …`, or
+  as `?t=…` (EventSource cannot set headers). The SPA picks it up from the `?t=`
+  parameter of the URL the CLI prints, or from the
+  `<meta name="slmcode-token">` tag the server injects into `index.html`, and
+  stores it in `sessionStorage` — see `src/api/session.ts`. The parameter is
+  stripped from the address bar on first read.
+* `--no-auth` disables the token for embedded use; loopback and origin
+  enforcement stay on.
+
+## Fonts
+
+Studio downloads **no** webfonts. Typography uses the platform UI stack; drop
+`inter-variable.woff2` / `jetbrains-mono-variable.woff2` into `public/fonts/` to
+opt into Inter and JetBrains Mono locally. See `public/fonts/README.md`.
 
 ## Architecture
 

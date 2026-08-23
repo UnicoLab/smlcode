@@ -18,6 +18,7 @@ import type { DynamicComposition, QuerySession, QueryView, RunEvent, RunEventSum
 import { AppContext } from '@/App';
 import EventLog from '@/components/Live/EventLog';
 import clsx from 'clsx';
+import TraceView from './TraceView';
 
 const COLUMN_LABELS: Record<string, string> = {
   to_scope: 'To Scope',
@@ -108,7 +109,7 @@ export default function RunHistory() {
     setError('');
     try {
       await resumeRun(id);
-      ctx?.setLiveEvents([]);
+      ctx?.resetLiveEvents();
       ctx?.setLiveResult(null);
       ctx?.setLiveRunning(true);
       await loadRuns();
@@ -205,6 +206,17 @@ export default function RunHistory() {
             {composition && <CompositionPanel composition={composition} />}
             <BoardSnapshot tasks={selected?.board?.tasks || []} stats={boardStats} />
             <SummaryPanel run={selected} />
+            {/* Trace: per-phase wall time and token/cost attribution — the
+                numbers that matter when tuning a small local model. */}
+            {selectedID && (
+              <section className="card">
+                <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-2.5 dark:border-gray-800">
+                  <Clock size={16} className="text-brand-500" aria-hidden="true" />
+                  <h2 className="text-sm font-bold">Trace</h2>
+                </div>
+                <TraceView queryId={selectedID} />
+              </section>
+            )}
             <section className="card p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Activity size={16} className="text-brand-500" />

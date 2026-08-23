@@ -16,4 +16,10 @@ web/tsconfig.tsbuildinfo
 little-coder/
 prime-agent/
 /slmcode
-cmd/slmcode/ui/
+# Built React/Vite Studio UI output (see `make ui-react` / `make bootstrap`).
+# cmd/slmcode/ui/index.html itself stays TRACKED — it ships as a checked-in
+# placeholder so `go:embed all:ui` always has something to embed on a fresh
+# clone, and `make ui-react` overwrites it with the real built UI.
+cmd/slmcode/ui/assets/
+cmd/slmcode/ui/vendor/
+docs/assets/slmcode-logo.png

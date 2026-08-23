@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -53,9 +54,10 @@ Clear pins:      slmcode stack apply <name> --clear-agent-llm`),
 			},
 		},
 		&cobra.Command{
-			Use:   "edit [id] [key=value…]",
-			Short: "Patch agent fields (model= provider= endpoint= …)",
-			Args:  cobra.MinimumNArgs(1),
+			Use:     "edit [id] [key=value…]",
+			Short:   "Patch agent fields (model= provider= endpoint= …); no fields = interactive form",
+			Args:    cobra.MinimumNArgs(1),
+			Example: "  slmcode agent edit worker model=qwen2.5-coder:32b\n  slmcode agent edit worker            # interactive form",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := openWorkspace()
 				if err != nil {
@@ -70,9 +72,6 @@ Clear pins:      slmcode stack apply <name> --clear-agent-llm`),
 					}
 					fields[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
 				}
-				if len(fields) == 0 {
-					return fmt.Errorf("usage: slmcode agent edit <id> model=… provider=… endpoint=…")
-				}
 				path := filepath.Join(ws.Config.AgentsDir(), id+".yaml")
 				var base agents.CustomSpec
 				if got, rerr := agents.ReadCustomFile(path); rerr == nil {
@@ -84,7 +83,20 @@ Clear pins:      slmcode stack apply <name> --clear-agent-llm`),
 						base.Builtin = true
 					}
 				}
-				applyAgentFields(&base, fields)
+				if len(fields) == 0 {
+					// This command runs in cooked mode, so the guided form is
+					// usable here (the TUI's /agent uses inline fields instead).
+					if !cli.IsInteractive() {
+						return failf(2, "usage: slmcode agent edit <id> model=… provider=… endpoint=…")
+					}
+					filled, ferr := cli.PromptAgentForm(os.Stdin, os.Stdout, base, false)
+					if ferr != nil {
+						return ferr
+					}
+					base = filled
+				} else {
+					applyAgentFields(&base, fields)
+				}
 				if _, err := agents.WriteCustom(ws.Config.AgentsDir(), base); err != nil {
 					return err
 				}

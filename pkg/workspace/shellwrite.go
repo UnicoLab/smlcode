@@ -101,25 +101,7 @@ func DetectWriteTargets(raw string) []ShellWrite {
 	})
 
 	for _, segment := range splitCommandChain(cmd) {
-		words := splitWords(segment)
-		if len(words) == 0 {
-			continue
-		}
-		switch words[0] {
-		case "tee":
-			for _, w := range words[1:] {
-				if strings.HasPrefix(w, "-") {
-					continue
-				}
-				writes = append(writes, ShellWrite{Path: unquote(w), Kind: "tee"})
-			}
-		case "dd":
-			for _, w := range words[1:] {
-				if strings.HasPrefix(w, "of=") {
-					writes = append(writes, ShellWrite{Path: unquote(w[3:]), Kind: "dd"})
-				}
-			}
-		}
+		writes = append(writes, mutatingCommandTargets(segment)...)
 	}
 
 	seen := map[string]bool{}
@@ -143,6 +125,11 @@ func HasWriteRedirection(cmd string) bool {
 // (the write-guard bypass: cat > file <<EOF). Appends (>>) to existing files
 // are allowed; reserved device names are always refused.
 func GuardShellWrites(root, command string) error {
+	// Command substitution defeats every static check below: we cannot know
+	// what `$(...)` writes, so it is refused before we look at redirects.
+	if reason, unsafe := UnsafeShellSyntax(command); unsafe {
+		return fmt.Errorf("%s", reason)
+	}
 	for _, w := range DetectWriteTargets(command) {
 		abs := w.Path
 		if !filepath.IsAbs(abs) {
@@ -164,10 +151,18 @@ func GuardShellWrites(root, command string) error {
 			}
 			if strings.Contains(reason, "already exists") {
 				return fmt.Errorf(
-					"shell write refused — %s already exists.\n"+
-						"Do not use cat/tee redirects to overwrite files. Use ws_edit or ws_patch instead.\n"+
-						"Recipe: ws_read %s, then ws_edit with exact old_str/new_str",
-					rel, rel,
+					"shell write refused — %s already exists and `%s` would overwrite it.\n"+
+						"File mutations must go through the tool layer so they can be checkpointed, "+
+						"reviewed and reverted.\n"+
+						"Recipe: ws_read %s, then ws_edit with exact old_str/new_str (or ws_patch for a diff).",
+					rel, w.Kind, rel,
+				)
+			}
+			if strings.Contains(reason, "is a directory") {
+				return fmt.Errorf(
+					"shell write refused — `%s` targets the directory %s. "+
+						"Use ws_write with an explicit file path, or ws_mv to relocate a file.",
+					w.Kind, rel,
 				)
 			}
 			return fmt.Errorf("shell write refused — %s", reason)
@@ -210,7 +205,10 @@ func scanRedirects(cmd string, visit func(at int, kind string)) {
 
 func splitCommandChain(raw string) []string {
 	cmd := StripHeredocBodies(raw)
-	ops := []string{"&&", "||", ";", "|", "\n"}
+	// "&&" must be tested before "&" so a logical AND is not split as a
+	// background operator. A BARE "&" starts a second command; before this it
+	// was invisible to every guard ("ls & rm -rf /tmp/x" read as one `ls`).
+	ops := []string{"&&", "||", ";;", ";", "||", "|", "\n", "&"}
 	type cut struct{ at, len int }
 	var cuts []cut
 	quoted := byte(0)
@@ -232,13 +230,20 @@ func splitCommandChain(raw string) []string {
 			continue
 		}
 		for _, op := range ops {
-			if strings.HasPrefix(cmd[i:], op) {
-				if n := len(cuts); n > 0 && i < cuts[n-1].at+cuts[n-1].len {
-					break
-				}
-				cuts = append(cuts, cut{at: i, len: len(op)})
+			if !strings.HasPrefix(cmd[i:], op) {
+				continue
+			}
+			if n := len(cuts); n > 0 && i < cuts[n-1].at+cuts[n-1].len {
 				break
 			}
+			if op == "&" && !isBareAmpersandAt(cmd, i) {
+				break
+			}
+			if op == "|" && i+1 < len(cmd) && cmd[i+1] == '|' {
+				break // handled by the "||" entry
+			}
+			cuts = append(cuts, cut{at: i, len: len(op)})
+			break
 		}
 	}
 	var segs []string
@@ -336,4 +341,153 @@ func FileExistsUnder(root, path string) bool {
 	}
 	st, err := os.Stat(filepath.Clean(abs))
 	return err == nil && !st.IsDir()
+}
+
+// mutatingCommandTargets finds files a command rewrites WITHOUT using shell
+// redirection. `sed -i`, `cp`, `mv`, `install`, `truncate`, `tee -a` and
+// `rsync` all clobber files behind the tool layer's back; before this the
+// write guard only understood `>` / `>>` / `tee` / `dd`, so the harness
+// blocked `echo x >> f.py` while waving `sed -i s/a/b/ f.py` straight through.
+func mutatingCommandTargets(segment string) []ShellWrite {
+	words := splitWords(segment)
+	// Skip leading VAR=value assignments so `FOO=1 cp a b` is still seen.
+	for len(words) > 0 && isAssignmentWord(words[0]) {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return nil
+	}
+	bin := words[0]
+	if i := strings.LastIndexByte(bin, '/'); i >= 0 {
+		bin = bin[i+1:]
+	}
+	args := words[1:]
+	switch bin {
+	case "tee":
+		kind := "tee"
+		if hasFlag(args, "-a", "--append") {
+			kind = "append"
+		}
+		return targetsFor(operands(args), kind)
+	case "dd":
+		var out []ShellWrite
+		for _, w := range args {
+			if strings.HasPrefix(w, "of=") {
+				out = append(out, ShellWrite{Path: unquote(w[3:]), Kind: "dd"})
+			}
+		}
+		return out
+	case "sed", "gsed", "perl":
+		if !hasInPlaceFlag(args) {
+			return nil
+		}
+		ops := operands(args, "-e", "--expression", "-f", "--file")
+		// Without -e/-f the first operand is the script, not a file.
+		if !hasFlag(args, "-e", "--expression", "-f", "--file") && len(ops) > 0 {
+			ops = ops[1:]
+		}
+		return targetsFor(ops, "in-place")
+	case "cp", "mv", "install", "rsync", "ln":
+		ops := operands(args, "-t", "--target-directory", "--suffix", "-S")
+		if len(ops) < 2 {
+			return nil
+		}
+		// Last operand is the destination (file or directory).
+		return targetsFor(ops[len(ops)-1:], bin)
+	case "truncate":
+		return targetsFor(operands(args, "-s", "--size", "-r", "--reference"), "truncate")
+	case "patch":
+		return targetsFor(operands(args, "-i", "--input", "-p", "--strip", "-d", "--directory"), "patch")
+	}
+	return nil
+}
+
+func isAssignmentWord(w string) bool {
+	i := strings.IndexByte(w, '=')
+	if i <= 0 || strings.HasPrefix(w, "-") {
+		return false
+	}
+	return !strings.ContainsAny(w[:i], "/. \t")
+}
+
+func hasFlag(args []string, names ...string) bool {
+	for _, a := range args {
+		for _, n := range names {
+			if a == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasInPlaceFlag matches -i, -i.bak, --in-place, and clustered forms like -ni.
+func hasInPlaceFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--in-place" || strings.HasPrefix(a, "--in-place=") {
+			return true
+		}
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			continue
+		}
+		if strings.ContainsRune(a[1:], 'i') {
+			return true
+		}
+	}
+	return false
+}
+
+// operands returns non-flag arguments, stopping flag parsing at "--".
+// valueFlags names flags whose SEPARATE next argument is a value, not a target
+// — the set is command-specific (`truncate -s 0 f` consumes the 0, while
+// `ln -s a b` does not).
+func operands(args []string, valueFlags ...string) []string {
+	takesValue := map[string]bool{}
+	for _, f := range valueFlags {
+		takesValue[f] = true
+	}
+	var out []string
+	endFlags := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !endFlags && a == "--" {
+			endFlags = true
+			continue
+		}
+		if !endFlags && strings.HasPrefix(a, "-") && len(a) > 1 {
+			if takesValue[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func targetsFor(paths []string, kind string) []ShellWrite {
+	var out []ShellWrite
+	for _, p := range paths {
+		p = unquote(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, ShellWrite{Path: p, Kind: kind})
+	}
+	return out
+}
+
+// isBareAmpersandAt reports whether cmd[i] == '&' is a background operator
+// rather than part of "&&" or an fd duplication such as 2>&1 / &>log.
+func isBareAmpersandAt(cmd string, i int) bool {
+	if i >= len(cmd) || cmd[i] != '&' {
+		return false
+	}
+	if i+1 < len(cmd) && (cmd[i+1] == '&' || cmd[i+1] == '>') {
+		return false
+	}
+	if i > 0 && (cmd[i-1] == '&' || cmd[i-1] == '>' || cmd[i-1] == '<') {
+		return false
+	}
+	return true
 }

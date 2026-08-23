@@ -81,3 +81,42 @@ func TestWorkspaceFocusBlocksWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIsHarnessStatePathAndScratch(t *testing.T) {
+	cases := []struct {
+		path             string
+		harness, scratch bool
+	}{
+		{".slmcode", true, false},
+		{".slmcode/hooks.json", true, false},
+		{".slmcode/blocks/agents/x.yaml", true, false},
+		{".slmcode/scratch", true, true},
+		{".slmcode/scratch/TODO.md", true, true},
+		{".slmcode/scratchpad/x", true, false},
+		{"pkg/a.go", false, false},
+		{"./.slmcode/hooks.json", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := IsHarnessStatePath(tc.path); got != tc.harness {
+				t.Fatalf("IsHarnessStatePath=%v want %v", got, tc.harness)
+			}
+			if got := AllowedScratchPath(tc.path); got != tc.scratch {
+				t.Fatalf("AllowedScratchPath=%v want %v", got, tc.scratch)
+			}
+		})
+	}
+}
+
+func TestFocusCheckEnforcesHarnessBoundaryEvenWhenDisabled(t *testing.T) {
+	var g *FocusGuard // nil guard = enforcement disabled
+	if err := g.Check(".slmcode/hooks.json"); err == nil {
+		t.Fatal("the harness-state boundary is not part of the focus heuristic")
+	}
+	if err := g.Check("pkg/a.go"); err != nil {
+		t.Fatalf("normal paths still pass: %v", err)
+	}
+	if err := g.Check(".slmcode/scratch/notes.md"); err != nil {
+		t.Fatalf("scratch still passes: %v", err)
+	}
+}

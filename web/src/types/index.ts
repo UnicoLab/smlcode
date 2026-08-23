@@ -148,6 +148,13 @@ export interface Health {
   root: string;
   running: boolean;
   events: number;
+  /** Highest SSE sequence number the server has emitted. */
+  last_seq?: number;
+  /** Whether a session token is required for /api/* calls. */
+  auth?: boolean;
+  /** Number of queued review-mode changes awaiting apply/reject. */
+  pending?: number;
+  permission?: string;
 }
 
 export interface ReadinessCheck {
@@ -374,6 +381,9 @@ export interface LatestRunResponse {
   running: boolean;
   result: OrchestratorResult | null;
   events: RunEvent[];
+  /** event_seqs[i] is the SSE id of events[i] — used to seed Last-Event-ID. */
+  event_seqs?: number[];
+  last_seq?: number;
 }
 
 export interface InterruptedRun {
@@ -868,3 +878,139 @@ export interface UpdateInfo {
   checked_at?: string;
   error?: string;
 }
+
+// ── Workspace tree ──
+
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number;
+  /** True for dot-entries such as `.slmcode` or `.github`. */
+  hidden?: boolean;
+}
+
+export interface WorkspaceTree {
+  path: string;
+  entries: WorkspaceEntry[];
+  hidden_shown?: boolean;
+  hidden_count?: number;
+}
+
+// ── Review queue (.slmcode/pending/*.patch.json) ──
+
+export interface DiffOp {
+  type: 'equal' | 'insert' | 'delete';
+  old_line?: number;
+  new_line?: number;
+  text: string;
+}
+
+export interface DiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  ops: DiffOp[];
+}
+
+export interface DiffStat {
+  added: number;
+  removed: number;
+  binary?: boolean;
+}
+
+export interface PendingChange {
+  id: string;
+  path: string;
+  kind: string;
+  created_at?: string;
+  exists: boolean;
+  is_new: boolean;
+  before: string;
+  after: string;
+  bytes: number;
+  stat: DiffStat;
+  hunks?: DiffHunk[];
+  truncated?: boolean;
+  error?: string;
+}
+
+export interface ReviewQueue {
+  count: number;
+  items: PendingChange[];
+  dir: string;
+  permission: string;
+  stat: DiffStat;
+}
+
+/** Target selector for apply/reject — one id, several ids, or everything. */
+export interface ReviewTarget {
+  id?: string;
+  ids?: string[];
+  all?: boolean;
+}
+
+export interface ReviewFailure {
+  id: string;
+  path?: string;
+  error: string;
+}
+
+export interface ReviewApplyResult {
+  ok: boolean;
+  applied: string[];
+  failed: ReviewFailure[];
+  remaining: number;
+}
+
+export interface ReviewRejectResult {
+  ok: boolean;
+  rejected: string[];
+  failed: ReviewFailure[];
+  remaining: number;
+}
+
+// ── Run trace ──
+
+export interface TracePhase {
+  phase: string;
+  started_at?: string;
+  ended_at?: string;
+  duration_ms: number;
+  events: number;
+  tokens?: number;
+  cost_usd?: number;
+  agents?: string[];
+  models?: string[];
+  tools?: number;
+  errors?: number;
+  warnings?: number;
+  message?: string;
+}
+
+export interface TraceTotals {
+  duration_ms: number;
+  events: number;
+  tokens: number;
+  cost_usd: number;
+  phases: number;
+  errors: number;
+  warnings: number;
+}
+
+export interface RunTrace {
+  id: string;
+  query?: string;
+  success?: boolean;
+  updated_at?: string;
+  interrupted?: boolean;
+  phases: TracePhase[];
+  totals: TraceTotals;
+  summary?: RunEventSummary;
+}
+
+// ── Live stream ──
+
+/** Connection state derived from EventSource.readyState plus the health poll. */
+export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'down';

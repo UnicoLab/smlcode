@@ -42,9 +42,65 @@ import type {
   FeedbackState,
   FeedbackResponse,
   UpdateInfo,
+  WorkspaceTree,
+  ReviewQueue,
+  ReviewTarget,
+  ReviewApplyResult,
+  ReviewRejectResult,
+  PendingChange,
+  RunTrace,
 } from '@/types';
 
+import { authHeaders, withToken } from './session';
+
 const BASE = '/api';
+
+/**
+ * ApiError preserves the HTTP status so callers can react to it — a 409 from
+ * `PUT /api/config` means "a run is active", which used to vanish into a bare
+ * `catch {}` and leave the user staring at an unchanged dropdown.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, body: string, statusText: string) {
+    super(`${status}: ${body || statusText}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+
+  /** True when the server refused because a run is in progress. */
+  get isConflict(): boolean {
+    return this.status === 409;
+  }
+
+  /** True when the studio session token is missing or stale. */
+  get isUnauthorized(): boolean {
+    return this.status === 401;
+  }
+
+  /** A short, human-readable line suitable for a toast. */
+  get displayMessage(): string {
+    const body = this.body.trim();
+    if (this.isUnauthorized) {
+      return 'Studio session expired — reopen the URL printed by the CLI.';
+    }
+    if (this.status === 403) {
+      return body || 'Rejected by the Studio security policy.';
+    }
+    return body || `Request failed (${this.status})`;
+  }
+}
+
+/** Normalise any thrown value into a readable message. */
+export function errorText(err: unknown, fallback = 'Request failed'): string {
+  if (err instanceof ApiError) return err.displayMessage;
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err) return err;
+  return fallback;
+}
 
 async function request<T>(
   path: string,
@@ -55,14 +111,15 @@ async function request<T>(
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders(),
       ...options.headers,
     },
     credentials: 'same-origin',
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text || res.statusText}`);
+    const text = await res.text().catch(() => '');
+    throw new ApiError(res.status, text, res.statusText);
   }
 
   const contentType = res.headers.get('content-type');
@@ -310,9 +367,15 @@ export async function getLatestRun(): Promise<LatestRunResponse> {
   return request<LatestRunResponse>('/runs/latest');
 }
 
-// SSE stream — use EventSource directly, not fetch
-export function createEventSource(): EventSource {
-  return new EventSource(`${BASE}/events`);
+// SSE stream — use EventSource directly, not fetch.
+// The session token travels as a query parameter because EventSource cannot
+// set headers; `lastEventId` asks the server to replay only what was missed.
+export function createEventSource(lastEventId?: number): EventSource {
+  let url = `${BASE}/events`;
+  if (lastEventId && lastEventId > 0) {
+    url += `?last_event_id=${encodeURIComponent(String(lastEventId))}`;
+  }
+  return new EventSource(withToken(url));
 }
 
 // ── Pipeline ──
@@ -560,9 +623,52 @@ export async function getWorkspaceFile(path: string): Promise<{ path: string; co
   return request(`/workspace/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function getWorkspaceTree(path?: string): Promise<{ path: string; entries: Array<{ name: string; path: string; is_dir: boolean; size?: number }> }> {
-  const params = path ? `?path=${encodeURIComponent(path)}` : '';
-  return request(`/workspace/tree${params}`);
+export async function getWorkspaceTree(
+  path?: string,
+  opts?: { hidden?: boolean },
+): Promise<WorkspaceTree> {
+  const params = new URLSearchParams();
+  if (path) params.set('path', path);
+  if (opts?.hidden === false) params.set('hidden', 'false');
+  const qs = params.toString();
+  return request(`/workspace/tree${qs ? `?${qs}` : ''}`);
+}
+
+// ── Review queue (permission mode "review") ──
+// GET  /api/review/pending          → {count, items:[PendingChange], stat}
+// GET  /api/review/pending/{id}     → PendingChange (always with hunks)
+// POST /api/review/apply            → body {ids?|id?|all?} → {ok, applied, failed, remaining}
+// POST /api/review/reject           → body {ids?|id?|all?} → {ok, rejected, failed, remaining}
+export async function getPendingReview(opts?: { hunks?: boolean; context?: number }): Promise<ReviewQueue> {
+  const params = new URLSearchParams();
+  if (opts?.hunks === false) params.set('hunks', 'false');
+  if (opts?.context !== undefined) params.set('context', String(opts.context));
+  const qs = params.toString();
+  return request<ReviewQueue>(`/review/pending${qs ? `?${qs}` : ''}`);
+}
+
+export async function getPendingChange(id: string, context = 3): Promise<PendingChange> {
+  return request<PendingChange>(`/review/pending/${encodeURIComponent(id)}?context=${context}`);
+}
+
+export async function applyPendingChanges(target: ReviewTarget): Promise<ReviewApplyResult> {
+  return request<ReviewApplyResult>('/review/apply', {
+    method: 'POST',
+    body: JSON.stringify(target),
+  });
+}
+
+export async function rejectPendingChanges(target: ReviewTarget): Promise<ReviewRejectResult> {
+  return request<ReviewRejectResult>('/review/reject', {
+    method: 'POST',
+    body: JSON.stringify(target),
+  });
+}
+
+// ── Run trace ──
+// GET /api/queries/{id}/trace → per-phase timings + token/cost attribution
+export async function getQueryTrace(id: string): Promise<RunTrace> {
+  return request<RunTrace>(`/queries/${encodeURIComponent(id)}/trace`);
 }
 
 // ── Version update ──

@@ -201,7 +201,11 @@ if curl -fsSL -o "${TMPDIR}/SHA256SUMS" "${SUMS_URL}" 2>/dev/null; then
       exit 1
     fi
     echo "✔ Checksum OK"
+  else
+    echo "⚠ could not verify checksum: ${ASSET} not listed in SHA256SUMS" >&2
   fi
+else
+  echo "⚠ could not verify checksum: failed to download SHA256SUMS from ${SUMS_URL}" >&2
 fi
 
 echo "→ Installing to ${TARGET}"

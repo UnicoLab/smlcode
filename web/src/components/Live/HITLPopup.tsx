@@ -53,6 +53,12 @@ interface AskMetadata {
   on_timeout?: string;
 }
 
+/**
+ * Safety-net poll interval. Gates normally arrive via the SSE `ask` event; this
+ * only covers a stream that dropped without us noticing.
+ */
+const HITL_POLL_MS = 10_000;
+
 // ── Timer durations in seconds ──
 const TIMEOUTS: Record<HITLType, number> = {
   clarify: 120,
@@ -146,9 +152,15 @@ const COLOR_BTN_GHOST: Record<string, string> = {
 // ── Props ──
 interface HITLPopupProps {
   running: boolean;
+  /**
+   * Increments whenever an `ask` event arrives over SSE. The gate detail is
+   * then fetched once, immediately — instead of discovering it by polling five
+   * endpoints every two seconds.
+   */
+  askSignal?: number;
 }
 
-export default function HITLPopup({ running }: HITLPopupProps) {
+export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
   const [pending, setPending] = useState<PendingState | null>(null);
   const [pendingQueue, setPendingQueue] = useState<PendingState[]>([]);
   const [countdown, setCountdown] = useState(0);
@@ -288,14 +300,16 @@ export default function HITLPopup({ running }: HITLPopupProps) {
       }
     };
 
-    // Poll immediately, then every 2s
+    // The SSE `ask` signal is the primary trigger (see askSignal in the deps).
+    // The interval is only a reconnect safety net for a dropped stream, so it
+    // can be slow: five endpoints every 2s was 150 requests a minute.
     poll();
-    const interval = setInterval(poll, 2000);
+    const interval = setInterval(poll, HITL_POLL_MS);
     return () => {
       active = false;
       clearInterval(interval);
     };
-  }, [running]);
+  }, [running, askSignal]);
 
   // ── Focus first action while the modal is open ──
   useEffect(() => {

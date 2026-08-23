@@ -18,9 +18,13 @@ repos:
 
   - repo: local
     hooks:
-      - id: make-lint
-        name: make lint
+      - id: make-check
+        name: make check
+        description: >-
+          Full local gate (gofmt, vet, golangci-lint, unit tests, race
+          tests, web lint+build) — the same target CI runs, so local and CI
+          cannot diverge.
         language: system
-        entry: make lint
+        entry: make check
         pass_filenames: false
         types_or: [go, javascript, jsx, tsx, ts, css, html, yaml]

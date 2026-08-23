@@ -3,6 +3,7 @@ import { MessageSquareText, Send, Trash2, Loader2 } from 'lucide-react';
 import { getFeedback, postFeedback, clearFeedback } from '@/api/client';
 import type { FeedbackState } from '@/types';
 import clsx from 'clsx';
+import { useConfirm } from '@/components/ui/Modal';
 
 interface LiveFeedbackProps {
   /** Called with the newly active feedback text (or '') after set/clear. */
@@ -19,6 +20,7 @@ interface Notice {
 // into the next agent prompt ("LIVE FEEDBACK FROM USER") by the backend, and
 // set/cleared events also surface in the SSE event log as kind "intervention".
 export default function LiveFeedback({ onChanged }: LiveFeedbackProps) {
+  const confirm = useConfirm();
   const [text, setText] = useState('');
   const [current, setCurrent] = useState('');
   const [setAt, setSetAt] = useState<string | undefined>(undefined);
@@ -69,7 +71,12 @@ export default function LiveFeedback({ onChanged }: LiveFeedbackProps) {
 
   const handleClear = async () => {
     if (!current || clearing) return;
-    if (!window.confirm('Clear the active live feedback? Agents will no longer see it.')) return;
+    const ok = await confirm({
+      title: 'Clear the active live feedback?',
+      description: 'Agents will no longer see it in their next prompt.',
+      confirmLabel: 'Clear feedback',
+    });
+    if (!ok) return;
     setClearing(true);
     setNotice(null);
     try {

@@ -21,9 +21,18 @@ const ResumeMessage = "Your context was automatically compacted mid-task to stay
 	"re-scanning the whole project."
 
 // ChatMsg is a role/content digest used for conversation compaction.
+//
+// ToolCalls / ToolCallID / Name were added so compaction can round-trip an
+// OpenAI-style tool exchange. Flattening tool calls into text (the old
+// behaviour) made it impossible to restore a valid transcript, and the kept
+// tail routinely began on a role:"tool" message — which every
+// OpenAI-compatible server rejects with HTTP 400.
 type ChatMsg struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	Name       string        `json:"name,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCallRef `json:"tool_calls,omitempty"`
 }
 
 // Watchdog decides when to compact a ReAct transcript mid-run.
@@ -54,11 +63,17 @@ func EstimateTokens(chars int) int {
 	return (chars + 3) / 4
 }
 
-// MessagesBytes returns total content bytes in msgs.
+// MessagesBytes returns total prompt bytes in msgs, including tool-call
+// payloads. Tool arguments and tool-call ids are real prompt bytes; counting
+// only Role+Content under-reports a tool-heavy transcript badly enough that the
+// watchdog fires far too late.
 func MessagesBytes(msgs []ChatMsg) int {
 	n := 0
 	for _, m := range msgs {
-		n += len(m.Role) + len(m.Content)
+		n += len(m.Role) + len(m.Content) + len(m.Name) + len(m.ToolCallID)
+		for _, tc := range m.ToolCalls {
+			n += len(tc.ID) + len(tc.Type) + len(tc.Name) + len(tc.Arguments)
+		}
 	}
 	return n
 }
@@ -120,15 +135,50 @@ func (w *Watchdog) MaybeRearm(usagePercent float64) {
 	}
 }
 
-// CompactChatMessages keeps the last N messages plus a digest of the prefix.
+// CompactChatMessages keeps a tool-pair-safe tail plus a STRUCTURED digest of
+// the dropped prefix.
+//
+// Two default-on behaviours differ from the historical implementation:
+//
+//  1. The kept window is widened backwards until it starts on a boundary that
+//     orphans no tool result (see SafeKeepStart), so the result is always a
+//     transcript an OpenAI-compatible server accepts.
+//  2. The prefix is summarised with the MustPreserve schema (files read/edited,
+//     commands + exit status, failed tool calls, decisions) rather than a
+//     160-rune first line of everything joined together.
 func CompactChatMessages(msgs []ChatMsg, keepLast int) ([]ChatMsg, bool) {
+	return CompactChatMessagesWithDigest(msgs, keepLast, DefaultDigestBytes)
+}
+
+// CompactChatMessagesWithDigest is CompactChatMessages with an explicit digest
+// byte budget.
+func CompactChatMessagesWithDigest(msgs []ChatMsg, keepLast, digestBytes int) ([]ChatMsg, bool) {
 	if keepLast <= 0 {
 		keepLast = 8
 	}
 	if len(msgs) <= keepLast {
 		return msgs, false
 	}
-	dropped := msgs[:len(msgs)-keepLast]
+	start := SafeKeepStart(msgs, keepLast)
+	if start <= 0 {
+		// Nothing can be dropped without corrupting the transcript.
+		return msgs, false
+	}
+	dropped := msgs[:start]
+	out := make([]ChatMsg, 0, len(msgs)-start+2)
+	out = append(out, ChatMsg{Role: RoleSystem, Content: DigestOrFallback(dropped, digestBytes)})
+	out = append(out, msgs[start:]...)
+	out = append(out, ChatMsg{Role: RoleUser, Content: ResumeMessage})
+	return out, true
+}
+
+// DigestOrFallback renders the structured digest for dropped messages, falling
+// back to the historical one-line summary only when extraction yields nothing.
+func DigestOrFallback(dropped []ChatMsg, digestBytes int) string {
+	d := BuildDigest(dropped)
+	if !d.Empty() {
+		return d.Render(digestBytes)
+	}
 	var parts []string
 	for _, m := range dropped {
 		line := strings.TrimSpace(m.Role + ": " + firstLine(m.Content))
@@ -136,19 +186,30 @@ func CompactChatMessages(msgs []ChatMsg, keepLast int) ([]ChatMsg, bool) {
 			parts = append(parts, line)
 		}
 	}
-	digest := fmt.Sprintf("[compacted %d earlier messages] %s",
+	return fmt.Sprintf("[compacted %d earlier messages] %s",
 		len(dropped), firstLine(strings.Join(parts, " | ")))
-	out := make([]ChatMsg, 0, keepLast+2)
-	out = append(out, ChatMsg{Role: "system", Content: digest})
-	out = append(out, msgs[len(msgs)-keepLast:]...)
-	out = append(out, ChatMsg{Role: "user", Content: ResumeMessage})
-	return out, true
 }
 
-// WindowTokensFromKB converts a context KB budget into an approximate token window.
+// WindowTokensFromKB converts a context KB budget into an approximate token
+// window.
+//
+// Deprecated: a KB figure is a PROMPT BYTE budget, not the model's context
+// window. Treating WindowTokensFromKB(16)=4096 as a Qwen-32B's whole window
+// makes the watchdog think a 32768-token model is at 80% capacity with ~3K
+// tokens in hand. Use WindowTokensFor with the model profile's ContextLimit.
 func WindowTokensFromKB(kb int) int {
 	if kb <= 0 {
 		kb = 16
 	}
 	return EstimateTokens(kb * 1024)
+}
+
+// WindowTokensFor returns the real per-model context window in tokens.
+// contextLimitTokens is config.ModelProfile.ContextLimit; maxContextKB is the
+// legacy prompt-byte budget used only when no model limit is known.
+func WindowTokensFor(contextLimitTokens, maxContextKB int) int {
+	if contextLimitTokens > 0 {
+		return contextLimitTokens
+	}
+	return WindowTokensFromKB(maxContextKB)
 }

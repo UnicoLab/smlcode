@@ -26,7 +26,7 @@ func TestStacksListAndApply(t *testing.T) {
 	}
 
 	s := New(h, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/stacks", nil)
+	req := newAPIRequest(http.MethodGet, "/api/stacks", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -42,7 +42,7 @@ func TestStacksListAndApply(t *testing.T) {
 	}
 
 	body := []byte(`{"apply_agent_defaults":true}`)
-	req = httptest.NewRequest(http.MethodPost, "/api/stacks/openai/apply", bytes.NewReader(body))
+	req = newAPIRequest(http.MethodPost, "/api/stacks/openai/apply", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -68,7 +68,7 @@ func TestStacksListAndApply(t *testing.T) {
 		t.Fatalf("skills wiped: %v", h.Config.SkillsDirs)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req = newAPIRequest(http.MethodGet, "/api/agents", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -113,7 +113,7 @@ func TestModelsAuthAndSearch(t *testing.T) {
 	t.Setenv("SLMCODE_API_KEY", "")
 
 	s := New(h, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/models?q=gpt&limit=5", nil)
+	req := newAPIRequest(http.MethodGet, "/api/models?q=gpt&limit=5", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -131,7 +131,7 @@ func TestModelsAuthAndSearch(t *testing.T) {
 		t.Fatalf("openai should require auth: %+v", auth)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/auth", nil)
+	req = newAPIRequest(http.MethodGet, "/api/auth", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -153,7 +153,7 @@ func TestGetAgentIncludesEffective(t *testing.T) {
 	h.Config.ActiveStack = "ollama-local"
 
 	s := New(h, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/agents/worker", nil)
+	req := newAPIRequest(http.MethodGet, "/api/agents/worker", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {

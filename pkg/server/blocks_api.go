@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Server) handleListBlocks(w http.ResponseWriter, r *http.Request) {
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -26,13 +26,13 @@ func (s *Server) handleListBlocks(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, reg.View(s.h.Config.ActivePack, s.h.Config.ActivePipeline))
+	writeJSON(w, reg.View(s.cfg().ActivePack, s.cfg().ActivePipeline))
 }
 
 func (s *Server) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 	kind := strings.ToLower(strings.TrimSpace(r.PathValue("kind")))
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -90,7 +90,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "block id is required", 400)
 		return
 	}
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -99,7 +99,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("block %q already exists (edit it instead)", id), 409)
 		return
 	}
-	path, err := blocks.Save(s.h.Config.Root, block)
+	path, err := blocks.Save(s.cfg().Root, block)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -131,7 +131,7 @@ func (s *Server) handleUpdateBlock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("body id %q does not match path id %q", id, pathID), 400)
 		return
 	}
-	path, err := blocks.Save(s.h.Config.Root, block)
+	path, err := blocks.Save(s.cfg().Root, block)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -139,7 +139,7 @@ func (s *Server) handleUpdateBlock(w http.ResponseWriter, r *http.Request) {
 	// Mirrors ApplyPack materialization: write the agent spec so the runtime
 	// picks the override up immediately.
 	if kind == blocks.KindAgent {
-		if _, err := agents.WriteCustom(s.h.Config.AgentsDir(), block.(*blocks.AgentBlock).Spec); err != nil {
+		if _, err := agents.WriteCustom(s.cfg().AgentsDir(), block.(*blocks.AgentBlock).Spec); err != nil {
 			http.Error(w, "block saved but agent materialization failed: "+err.Error(), 500)
 			return
 		}
@@ -157,14 +157,14 @@ func (s *Server) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
-	found, err := blocks.Delete(s.h.Config.Root, kind, id)
+	found, err := blocks.Delete(s.cfg().Root, kind, id)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
 	// Drop the materialized agent too (yaml and yml variants).
 	if kind == blocks.KindAgent {
-		_ = agents.DeleteCustom(s.h.Config.AgentsDir(), id)
+		_ = agents.DeleteCustom(s.cfg().AgentsDir(), id)
 	}
 	if err := s.rebuildOrchestrator(); err != nil {
 		http.Error(w, "deleted but rebuild failed: "+err.Error(), 500)
@@ -189,7 +189,7 @@ func (s *Server) writeBlockSaved(w http.ResponseWriter, block any, path string) 
 		"ok":      true,
 		"block":   block,
 		"path":    path,
-		"config":  s.h.Config.Public(),
+		"config":  s.cfg().Public(),
 		"catalog": catalog,
 	})
 }
@@ -197,11 +197,11 @@ func (s *Server) writeBlockSaved(w http.ResponseWriter, block any, path string) 
 // reloadBlocksCatalog rebuilds the registry and returns the public catalog
 // view used by the Studio sidebar.
 func (s *Server) reloadBlocksCatalog() (any, error) {
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		return nil, err
 	}
-	return reg.View(s.h.Config.ActivePack, s.h.Config.ActivePipeline), nil
+	return reg.View(s.cfg().ActivePack, s.cfg().ActivePipeline), nil
 }
 
 // decodeBlockJSON decodes a JSON request body into a typed block of the given
@@ -317,12 +317,12 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := blocks.ApplyPack(s.h.Config, reg, id, blocks.ApplyOptions{
+	res, err := blocks.ApplyPack(s.cfg(), reg, id, blocks.ApplyOptions{
 		MaterializeAgents: body.MaterializeAgents,
 		ForceAgents:       body.ForceAgents,
 	})
@@ -330,13 +330,13 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if err := s.h.Config.Save(); err != nil {
+	if err := s.cfg().Save(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if s.h.Orchestrator != nil && res.PipelinePath != "" {
-		if cfg, err := pipeline.Load(s.h.Config.SlmDir()); err == nil {
-			_ = s.h.Orchestrator.SetPipeline(cfg)
+	if s.orch() != nil && res.PipelinePath != "" {
+		if cfg, err := pipeline.Load(s.slmDir()); err == nil {
+			_ = s.orch().SetPipeline(cfg)
 		}
 	}
 	if err := s.rebuildOrchestrator(); err != nil {
@@ -346,8 +346,8 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"ok":      true,
 		"result":  res,
-		"config":  s.h.Config.Public(),
-		"catalog": reg.View(s.h.Config.ActivePack, s.h.Config.ActivePipeline),
+		"config":  s.cfg().Public(),
+		"catalog": reg.View(s.cfg().ActivePack, s.cfg().ActivePipeline),
 	})
 }
 
@@ -356,28 +356,28 @@ func (s *Server) handleApplyPipelineBlock(w http.ResponseWriter, r *http.Request
 		return
 	}
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
-	reg, err := blocks.Load(s.h.Config.Root)
+	reg, err := blocks.Load(s.cfg().Root)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := blocks.ApplyPipelinePreset(s.h.Config, reg, id)
+	res, err := blocks.ApplyPipelinePreset(s.cfg(), reg, id)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if err := s.h.Config.Save(); err != nil {
+	if err := s.cfg().Save(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if s.h.Orchestrator != nil {
-		if cfg, err := pipeline.Load(s.h.Config.SlmDir()); err == nil {
-			_ = s.h.Orchestrator.SetPipeline(cfg)
+	if s.orch() != nil {
+		if cfg, err := pipeline.Load(s.slmDir()); err == nil {
+			_ = s.orch().SetPipeline(cfg)
 		}
 	}
 	writeJSON(w, map[string]any{
 		"ok":     true,
 		"result": res,
-		"config": s.h.Config.Public(),
+		"config": s.cfg().Public(),
 	})
 }

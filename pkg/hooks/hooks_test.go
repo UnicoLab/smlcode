@@ -32,6 +32,10 @@ func TestLoadMissing(t *testing.T) {
 }
 
 func TestLoadOK(t *testing.T) {
+	// Load fails closed on an unapproved hooks file (see trust.go); this test
+	// is about parsing, so approve it explicitly first.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(TrustEnvVar, "1")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hooks.json")
 	_ = os.WriteFile(path, []byte(`{"hooks":{"PostToolUse":[{"matcher":"ws_write","command":"true"}]}}`), 0o644)

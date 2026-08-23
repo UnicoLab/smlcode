@@ -1,0 +1,89 @@
+# ── SLMCode Stack: Apple MLX · Qwen2.5-Coder ──
+# mlx_lm's OpenAI-compatible server on Apple Silicon:
+#
+#   mlx_lm.server --model mlx-community/Qwen2.5-Coder-32B-Instruct-4bit --port 8080
+#
+# `model` must match the --model string the server was started with.
+# The 4-bit 32B needs roughly 20GB of unified memory; drop to the 14B or 7B
+# variant on a 16GB machine rather than lowering the context.
+#
+# Apply: slmcode stack apply mlx-qwen-coder
+
+label: MLX · Qwen2.5-Coder 32B
+description: Apple Silicon, 4-bit MLX weights, 7B fast model for light roles
+icon: "🍎"
+
+provider: omlx
+endpoint: http://127.0.0.1:8080/v1
+model: mlx-community/Qwen2.5-Coder-32B-Instruct-4bit
+fast_model: mlx-community/Qwen2.5-Coder-7B-Instruct-4bit
+backend: slmcode
+temperature: 0.1
+max_tokens: 3072
+max_parallel: 1
+max_retries: 4
+max_context_kb: 32
+think_passes: 1
+task_timeout_sec: 900
+dynamic_pipeline: true
+pinned_skills:
+  - atomic-coding
+
+# Qwen2.5-Coder's trained context is 32K. mlx_lm serves one request at a time,
+# hence max_parallel: 1 — parallel specialists would only queue.
+model_profiles:
+  default:
+    context_limit: 32768
+    max_tokens: 3072
+    thinking_budget_tokens: 3072
+    skill_token_budget: 320
+    knowledge_token_budget: 240
+    temperature: 0.1
+    max_turns: 24
+  7b:
+    context_limit: 32768
+    max_tokens: 2048
+    thinking_budget_tokens: 2048
+    skill_token_budget: 220
+    knowledge_token_budget: 160
+    temperature: 0.1
+    max_turns: 18
+
+qa_gate: true
+qa_gate_max_rounds: 3
+post_worker_smoke: true
+scope_judge: true
+placeholder_pass: true
+quality_monitor: true
+static_quality: true
+thinking_budget: true
+thinking_budget_tokens: 3072
+worker_critique: true
+require_smoke: true
+claims_gate: true
+over_edit_guard: true
+finalize_warn: true
+auto_text_tools: true
+
+write_guard: true
+read_before_edit: true
+shell_write_guard: true
+tool_guidance: true
+knowledge_inject: true
+context_compact: true
+react_compact: true
+react_compact_at_percent: 80
+wave_snapshots: true
+file_checkpoints: true
+hooks_enabled: true
+read_head_lines: 80
+
+clarify_mode: auto
+plan_approve: auto
+escalate_ask: ask
+continue_ask: ask
+auto_approve: false
+shell_permission: allow
+shell_whitelist: true
+
+price_preset: local

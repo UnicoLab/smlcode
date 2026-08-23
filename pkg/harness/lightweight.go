@@ -52,11 +52,29 @@ func OpenWorkspace(root string) (*Workspace, error) {
 		_ = store.Write(contextstore.DocPlan, p)
 		_ = store.Write(contextstore.DocTasks, t)
 	})
+	// Only unpack the bundled skills into a workspace that EXISTS. This call
+	// mkdir -p's .slmcode/skills/_bundled, so running any read-only command
+	// (`slmcode status`, `slmcode doctor`, `slmcode board`) in a directory
+	// that was never initialized used to scatter a half-workspace through it —
+	// after which `slmcode doctor` reported "✔ .slmcode present".
 	bundled := filepath.Join(cfg.SlmDir(), "skills", "_bundled")
-	_ = skills.MaterializeBundled(bundled)
+	if Initialized(root) {
+		_ = skills.MaterializeBundled(bundled)
+	}
 	loader := skills.NewLoader(filepath.Join(cfg.SlmDir(), "skills"), bundled)
 	loader.Roots = append(loader.Roots, cfg.SkillsDirs...)
 	return &Workspace{Config: cfg, Store: store, Board: board, Skills: loader}, nil
+}
+
+// Initialized reports whether root holds a real slmcode workspace. The
+// directory alone does not count: several code paths mkdir .slmcode/ as a side
+// effect, so config.yaml is the marker.
+func Initialized(root string) bool {
+	if root == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(root, ".slmcode", "config.yaml"))
+	return err == nil
 }
 
 func (w *Workspace) EnsureInitialized() error {

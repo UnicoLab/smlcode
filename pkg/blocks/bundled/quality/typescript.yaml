@@ -1,0 +1,82 @@
+api_version: blocks/v1
+kind: quality
+id: typescript
+name: TypeScript / Node Quality Pack
+description: >-
+  Node and TypeScript verify pack for libraries, CLIs and servers (no React) —
+  tsc --noEmit, eslint, vitest/jest, and a package-manager-aware build.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [typescript, node, nodejs, tsc, eslint, vitest, jest, pnpm, esm]
+icon: "🟦"
+shareable: true
+spec:
+  detect:
+    files: [package.json, tsconfig.json, deno.json, bun.lockb, pnpm-workspace.yaml]
+    extensions: [.ts, .mts, .cts, .js, .mjs, .cjs]
+    priority: 16
+  format:
+    - cmd: npm run format --if-present
+      label: format
+      optional: true
+    - cmd: npx prettier --check .
+      label: prettier
+      optional: true
+  lint:
+    - cmd: npm run lint --if-present
+      label: eslint
+      optional: true
+  typecheck:
+    # The single highest-value check for a small model writing TypeScript.
+    - cmd: npx tsc --noEmit
+      label: tsc --noEmit
+      optional: true
+  test:
+    - cmd: npm test --silent
+      label: npm test
+  build:
+    - cmd: npm run build --if-present
+      label: build
+  smoke: npm test --silent
+  qa_gate: npm test --silent
+  safe_prefixes:
+    - npm test
+    - npm run
+    - npm ci
+    - npm install
+    - npx tsc
+    - npx vitest
+    - npx jest
+    - npx eslint
+    - npx prettier
+    - npx tsx
+    - pnpm test
+    - pnpm run
+    - pnpm install
+    - pnpm exec
+    - yarn test
+    - yarn run
+    - yarn install
+    - bun test
+    - bun run
+    - bun install
+    - node --check
+    - tsc
+  tester_hints: |
+    Pick the package manager from the LOCKFILE, never by habit:
+      pnpm-lock.yaml → pnpm · yarn.lock → yarn · bun.lockb → bun · else npm
+    Verify in this order:
+    1) npx tsc --noEmit     — REQUIRED whenever tsconfig.json exists. This is
+       the check that catches the mistakes a small model actually makes:
+       implicit any, unchecked null/undefined, wrong import path, missing await.
+    2) npm run lint --if-present
+    3) npm test --silent    — vitest or jest; read package.json "scripts".test
+    4) npm run build --if-present
+    Notes that change the commands:
+    - "type": "module" in package.json means ESM: relative imports need the
+      .js extension even in .ts sources, and __dirname does not exist.
+    - `node --check` only parses; it proves nothing about types. It is never a
+      substitute for tsc.
+    - A test file that imports nothing from the changed module is not coverage.

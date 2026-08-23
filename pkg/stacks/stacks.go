@@ -348,6 +348,13 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	if v := strKey(m, "model"); v != "" {
 		cfg.Model = v
 	}
+	// fast_model is the small model the light roles (reviewer, coordinator,
+	// splitter, planner, context, architect, clarifier) run on. Without it here
+	// a stack could declare the key and have it silently ignored, which is
+	// exactly the pairing a two-model local setup depends on.
+	if v := strKey(m, "fast_model"); v != "" {
+		cfg.FastModel = v
+	}
 	if v := strKey(m, "backend"); v != "" {
 		cfg.Backend = v
 	}
@@ -838,6 +845,7 @@ func (s *Stack) PresetView(active bool) map[string]any {
 		"provider":       s.Provider,
 		"endpoint":       s.Endpoint,
 		"model":          s.Model,
+		"fast_model":     strKey(s.raw, "fast_model"),
 		"backend":        s.Backend,
 		"temperature":    temp,
 		"max_tokens":     maxTok,

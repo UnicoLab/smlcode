@@ -32,4 +32,16 @@ spec:
 
     Prefer package-scoped tests when the change set is small (go test ./pkg/foo -race).
     Install nothing exotic; use the toolchain already on PATH.
+
+    Read the OUTPUT, not just the exit code:
+    - "no test files" for the package under change is a FAILURE for a task that
+      asked for tests, even though go test exits 0.
+    - gofmt -l prints the DIRTY files and exits 0 — a non-empty list is a
+      failure. Empty output is the pass condition.
+    - go vet catches printf arity, lost struct tags and unused results that
+      compile fine; never skip it because the build succeeded.
+    - -race only reports a race it actually observed. A single-goroutine test
+      proves nothing about concurrency.
+    - -count=1 defeats the test cache; without it a "fix" can pass on a cached
+      result from before the edit.
     Finish with JSON: {"passed": true|false, "commands": ["..."], "summary": "..."}.

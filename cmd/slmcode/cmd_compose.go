@@ -29,7 +29,8 @@ func composeCmd() *cobra.Command {
 		Short: "Preview the task-specific dynamic pipeline and selected agents",
 		Long: cli.Dim(`Preview the deterministic dynamic pipeline for a query without calling an LLM.
 With no query, prints the latest saved runtime composition from .slmcode/.`),
-		Args: cobra.ArbitraryArgs,
+		Example: "  slmcode compose \"add JWT auth\"\n  slmcode compose            # the composition the last run used\n  slmcode compose \"fix the flaky test\" --json",
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {

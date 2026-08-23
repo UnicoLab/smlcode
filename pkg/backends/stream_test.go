@@ -480,3 +480,34 @@ func TestRegisterTokenSinkIgnoresJunk(t *testing.T) {
 		t.Error("empty role resolved a sink")
 	}
 }
+
+// Two overlapping registrations for one (role, task) pair: the first
+// unregister must not take the second one's sink with it.
+func TestOverlappingTokenSinkRegistrationsUnregisterIndependently(t *testing.T) {
+	ResetTokenSinks()
+	defer ResetTokenSinks()
+
+	var firstHits, secondHits int
+	stop1 := RegisterTokenSink("reviewer", "T1", func(string, int) { firstHits++ })
+	stop2 := RegisterTokenSink("reviewer", "T1", func(string, int) { secondHits++ })
+
+	if fn := lookupTokenSink("reviewer", "T1"); fn != nil {
+		fn("x", 1)
+	}
+	stop1() // the OUTER call finishing must not deregister the inner one
+	fn := lookupTokenSink("reviewer", "T1")
+	if fn == nil {
+		t.Fatal("the surviving registration was deleted by the other one's cleanup")
+	}
+	fn("y", 1)
+	stop2()
+	if lookupTokenSink("reviewer", "T1") != nil {
+		t.Fatal("sink leaked after its own unregister")
+	}
+	if secondHits != 2 {
+		t.Fatalf("second sink received %d deltas, want 2", secondHits)
+	}
+	if firstHits != 0 {
+		t.Fatalf("first sink received %d deltas after being replaced", firstHits)
+	}
+}

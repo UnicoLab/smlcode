@@ -4,7 +4,7 @@ id: java
 name: Java Quality Pack
 description: >-
   Production Java verify pack — Maven (or Gradle) test, build, and format checks.
-version: "1.0.0"
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: java
@@ -13,25 +13,45 @@ icon: "☕"
 shareable: true
 spec:
   detect:
-    files: [pom.xml, build.gradle, build.gradle.kts]
+    files: [pom.xml, build.gradle, build.gradle.kts, settings.gradle, mvnw, gradlew]
     extensions: [.java]
     priority: 15
   test:
-    - cmd: mvn -q test
+    - cmd: mvn -q -B test
       label: mvn test
+    - cmd: ./gradlew test --console=plain
+      label: gradle test
+      optional: true
   build:
-    - cmd: mvn -q -DskipTests package
+    - cmd: mvn -q -B -DskipTests package
       label: mvn package
       optional: true
-  smoke: mvn -q -DskipTests compile
-  qa_gate: mvn -q test
+  smoke: mvn -q -B -DskipTests compile
+  qa_gate: mvn -q -B test
   safe_prefixes:
     - mvn
     - ./mvnw
     - ./gradlew
     - gradle
     - javac
+    - java -version
   tester_hints: |
-    Prefer: mvn -q test (or ./mvnw -q test). For Gradle projects use ./gradlew test.
-    Compile check: mvn -q -DskipTests compile (or ./gradlew compileJava).
+    Pick the build tool from the files present, then use its WRAPPER:
+      pom.xml       → ./mvnw -q -B test   (fall back to mvn when no wrapper)
+      build.gradle* → ./gradlew test --console=plain
+    Compile-only: mvn -q -B -DskipTests compile  ·  ./gradlew compileJava
+    Always pass -B (batch mode) to Maven and --console=plain to Gradle: the
+    interactive progress output otherwise fills the captured log and buries the
+    actual failure.
+
+    Java-specific failures a small model produces:
+    - Surefire only runs classes matching *Test / Test* / *Tests / *TestCase.
+      A well-written `FooSpec` class is silently never executed.
+    - A new dependency must be added to pom.xml/build.gradle. Adding only the
+      import produces "package does not exist", not a missing-jar message.
+    - Checked exceptions must be declared or caught: a `throws IOException`
+      added to a method breaks every caller. Fix the callers, do not swallow the
+      exception in an empty catch block.
+    - `mvn test` exits 0 when no tests were found. Read the Surefire summary
+      ("Tests run: N"); N=0 is a FAIL for a task that asked for tests.
     Do NOT run pytest / go test / npm test.

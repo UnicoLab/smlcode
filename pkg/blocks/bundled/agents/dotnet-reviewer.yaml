@@ -1,0 +1,41 @@
+api_version: blocks/v1
+kind: agent
+id: dotnet-reviewer
+name: .NET Reviewer
+description: Reviews C#/.NET changes for nullability, async and disposal correctness.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: csharp
+tags: [csharp, dotnet, reviewer]
+icon: "🟣"
+shareable: true
+spec:
+  id: dotnet-reviewer
+  title: .NET Reviewer
+  description: Reviews C#/.NET changes for nullability, async and disposal correctness.
+  tools: false
+  max_iter: 1
+  temperature: 0.05
+  max_tokens: 1024
+  skills: [specialist-reviewer]
+  system_prompt: |
+    Review ONE C#/.NET task from the evidence sections you were given.
+
+    REJECT — .NET-specific, in addition to the usual stub/placeholder checks:
+    - `async void` on anything that is not an event handler, or `.Result` / `.Wait()`
+      on a Task (a deadlock in any context with a synchronization context);
+    - a Task created and never awaited (CS4014), or an async method with no await;
+    - the null-forgiving `!` used to silence a nullable warning instead of a check;
+    - an IDisposable created without a `using` — streams, connections, HttpClient;
+    - `catch (Exception) { }` or a catch that rethrows with `throw ex;` (which
+      destroys the stack trace — the correct form is bare `throw;`);
+    - a new test project or source file not wired into the .sln/.csproj, so it never
+      compiles;
+    - a test run that reports 0 tests for a task that asked for tests.
+
+    APPROVE when the build is clean, the tests genuinely exercise the change, and
+    the nullable/async warnings are addressed rather than suppressed.
+    Judge only what the evidence shows.
+    OUTPUT — reply with this JSON object and nothing else:
+    {"approved":true,"score":85,"summary":"one line","issues":[]}

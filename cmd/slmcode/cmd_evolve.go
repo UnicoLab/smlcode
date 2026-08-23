@@ -84,6 +84,10 @@ func evolveRulesCmd() *cobra.Command {
 				})
 			}
 			cli.Header(fmt.Sprintf("Repair rules (%d of %d)", len(shown), len(rules)))
+			fmt.Println(cli.Dim("  When a tool call fails, the harness fingerprints the failure and looks here"))
+			fmt.Println(cli.Dim("  first. A rule that matches fixes the call with NO model round-trip; each hit or"))
+			fmt.Println(cli.Dim("  miss moves its confidence, and a rule applies once confidence clears the bar."))
+			fmt.Println()
 			if len(shown) == 0 {
 				fmt.Println(cli.Dim("  (nothing learned yet — pass --all to see the seeded rules)"))
 				return nil
@@ -176,16 +180,37 @@ func evolveWhyCmd() *cobra.Command {
 			cli.Header("Why: " + string(decision))
 			fmt.Println("  " + strings.ReplaceAll(explanation, "\n", "\n  "))
 			fmt.Println()
+			shownAny := false
 			for _, ks := range eng.Bandit().Snapshot() {
 				if ks.Key.Decision != decision {
 					continue
 				}
+				shownAny = true
 				fmt.Println("  " + cli.Bold(ks.Key.String()) + cli.Dim(fmt.Sprintf("  %d pulls", ks.Pulls)))
+				best, bestMean := "", -1.0
 				for _, arm := range ks.Arms {
-					fmt.Printf("    %s  %s\n",
+					if arm.Mean() > bestMean {
+						best, bestMean = arm.Name, arm.Mean()
+					}
+				}
+				for _, arm := range ks.Arms {
+					marker := "  "
+					if arm.Name == best {
+						marker = cli.Green("→ ")
+					}
+					fmt.Printf("    %s%s  %s\n", marker,
 						cli.Accent(cli.PadWidth(arm.Name, 20)),
 						cli.Dim(fmt.Sprintf("mean %.3f ± %.3f", arm.Mean(), arm.StdDev())))
 				}
+			}
+			if shownAny {
+				// The posterior table is meaningless without this sentence.
+				fmt.Println()
+				fmt.Println(cli.Dim("  Each row is one option the harness can pick for this decision, scored by how"))
+				fmt.Println(cli.Dim("  well past runs went with it (mean, ± spread). → marks the current leader; a"))
+				fmt.Println(cli.Dim("  wide ± means the harness is still exploring. Key = decision|model|language."))
+				fmt.Println(cli.Dim("  Pin the outcome instead with `slmcode config set <key> <value>`, or make runs"))
+				fmt.Println(cli.Dim("  reproducible with --no-explore."))
 			}
 			return nil
 		},

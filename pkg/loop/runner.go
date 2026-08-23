@@ -295,8 +295,18 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		idleRounds = 0
 
 		wave := ready
-		if len(wave) > r.MaxParallel {
-			wave = wave[:r.MaxParallel]
+		// MaxParallel <= 0 must mean "one at a time", never "no tasks". A
+		// zero-valued Runner (struct literal, embedding caller, a config path
+		// that skipped normalization) sliced the wave to wave[:0], executed
+		// nothing, moved nothing off ready_to_dev, and span for 200 guard
+		// rounds before failing with ErrSafetyGuard — a board that can never
+		// finish for a reason nothing in the log names.
+		maxP := r.MaxParallel
+		if maxP < 1 {
+			maxP = 1
+		}
+		if len(wave) > maxP {
+			wave = wave[:maxP]
 		}
 		r.logf("wave: %d ready task(s)", len(wave))
 		ids := make([]string, len(wave))
@@ -789,7 +799,7 @@ func (r *Runner) collectWaveResults(ctx context.Context, board *plan.Board, ws *
 		deferred := false
 		if r.wantCritique(role) {
 			incomplete := !multipass.LooksCompleteJSON(stripPostSections(t.Output))
-			if r.outputWeak(*t, incomplete) {
+			if r.outputWeak(*t, ws.snapshots[i], incomplete) {
 				if r.MaxParallel >= 2 {
 					ws.weak = append(ws.weak, weakTaskEntry{
 						idx: j, role: role, snapshot: ws.snapshots[i], incomplete: incomplete,
@@ -1148,12 +1158,23 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 
 	smokeFiles := append([]string{}, current.Files...)
 	smokeFiles = append(smokeFiles, parseFilesChanged(current.Output)...)
-	// Review-time smoke insurance: if PostWorkerSmoke somehow didn't attach a
-	// section (corrector overwrite, truncated finalize), run it now so
-	// RequireSmoke cannot false-reject a green compile/test.
-	if r.RequireSmoke && r.PostWorkerSmoke && quality.ShouldSmokeTask(*current) &&
-		!quality.SmokePassedInOutput(current.Output) && !g.smokeFail && !g.renameDisk &&
-		quality.HasSmokeCommand(r.Root, smokeFiles) {
+	// smokeApplicable is the ONLY condition under which a missing smoke section
+	// may block approval: the harness must actually be willing and able to run
+	// a smoke for this task. HasSmokeCommand alone is not that test —
+	// quality.ShouldSmokeTask excludes whole roles (docs, tester, explorer,
+	// planner…) and non-code focus files, and RunPostWorkerSmoke additionally
+	// declines any command whose language does not match the project's (a .py
+	// file in a Go module, a .js file in a Go repo's web/ tree). In every one of
+	// those cases FormatSmokeSection returns "", so SmokePassedInOutput is
+	// false forever and the old gate rejected the task on EVERY retry until it
+	// escalated to a human. A gate the task cannot possibly satisfy is not a
+	// gate, it is a deadlock.
+	smokeApplicable := r.RequireSmoke && r.PostWorkerSmoke && !g.renameDisk &&
+		quality.ShouldSmokeTask(*current) && quality.HasSmokeCommand(r.Root, smokeFiles)
+	// Review-time smoke insurance: if the worker path didn't attach a section
+	// (corrector overwrite, truncated finalize), run it now so RequireSmoke
+	// cannot false-reject a green compile/test.
+	if smokeApplicable && !quality.SmokePassedInOutput(current.Output) && !g.smokeFail {
 		sr := quality.RunPostWorkerSmoke(ctx, r.Root, *current, r.Timeout)
 		if sec := quality.FormatSmokeSection(sr); sec != "" {
 			current.Output = strings.TrimSpace(current.Output) + sec
@@ -1164,9 +1185,16 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 				r.logf("%s review-time smoke PASSED: %s", current.ID, sr.Command)
 			}
 		}
+		if !sr.Ran {
+			// The harness itself declined to run the smoke. Not evidence of a
+			// missing smoke — evidence that there is no smoke to miss.
+			smokeApplicable = false
+			r.logf("%s smoke not applicable (%s) — not treating as a missing smoke",
+				current.ID, sr.Summary)
+		}
 	}
-	g.smokeMissing = r.RequireSmoke && quality.HasSmokeCommand(r.Root, smokeFiles) &&
-		!quality.SmokePassedInOutput(current.Output) && !g.smokeFail && !g.renameDisk
+	g.smokeMissing = smokeApplicable &&
+		!quality.SmokePassedInOutput(current.Output) && !g.smokeFail
 	return g
 }
 
@@ -1521,7 +1549,7 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 				case plan.ColDone, plan.ColBlocked, plan.ColToScope, plan.ColScoped:
 					return latest, nil, nil
 				}
-				current = latest
+				current = mergeHumanEdits(current, latest)
 			}
 		}
 
@@ -1602,6 +1630,39 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		current.MoveTo(plan.ColInReview)
 	}
 	return current, nil, nil
+}
+
+// mergeHumanEdits folds a human's board edits into the task the review ladder is
+// holding, WITHOUT discarding the ladder's own in-flight state.
+//
+// The reload used to be a wholesale `current = latest`, and the LiveStore copy
+// is only written once — at the END of the wave, before the first review. Every
+// retry therefore reset Output back to the worker's original answer, so:
+//
+//   - the corrector's output was thrown away between rounds and the reviewer
+//     re-judged the identical text up to MaxRetries+1 times (measured: 4
+//     corrector passes, 5 reviews, none of the corrections ever seen);
+//   - the review-time gate sections appended to Output were discarded with it;
+//   - Retries was reset to 0 on every pass, so the value that reached the board
+//     (and alreadySatisfiedRetry, which gates skipping the worker) was always 0.
+//
+// Human-owned fields (scope, text, priority, dependencies, notes, column) come
+// from the store; loop-owned fields (Output, Review, Retries, Error) are kept.
+func mergeHumanEdits(cur, latest plan.Task) plan.Task {
+	out := latest
+	if strings.TrimSpace(cur.Output) != "" {
+		out.Output = cur.Output
+	}
+	if strings.TrimSpace(cur.Review) != "" {
+		out.Review = cur.Review
+	}
+	if cur.Retries > out.Retries {
+		out.Retries = cur.Retries
+	}
+	if strings.TrimSpace(cur.Error) != "" {
+		out.Error = cur.Error
+	}
+	return out
 }
 
 // escalateTask moves a task to the human backlog with a full explanation.
@@ -2006,7 +2067,15 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 				missing++
 			}
 		}
-		if missing == len(t.Files) {
+		// Every declared target absent reads as "the worker invented these
+		// paths" — unless the pre-wave baseline recorded CONTENT for them, in
+		// which case they existed when the wave started and this task removed
+		// them. A task whose whole job is a deletion ("remove the dead legacy
+		// helper", the delete half of a manual rename) ends in exactly that
+		// state, and rejecting it here meant it could never be approved: the
+		// corrector cannot un-delete a file into existence, so it burned every
+		// retry and escalated to a human on every run.
+		if missing == len(t.Files) && !deletedSinceBaseline(t.Files, baseline) {
 			return false, "all task target files are missing on disk (hallucinated paths)"
 		}
 	}
@@ -2025,6 +2094,21 @@ func (r *Runner) evidenceOK(t plan.Task, baseline map[string]string) (bool, stri
 		return false, "edit task has no real write evidence (tool result or disk/git change)"
 	}
 	return true, ""
+}
+
+// deletedSinceBaseline reports whether EVERY path had content at wave start and
+// is gone now — a deterministic disk delta, the opposite of a hallucinated path.
+// A nil/empty baseline proves nothing and returns false.
+func deletedSinceBaseline(files []string, baseline map[string]string) bool {
+	if len(files) == 0 || len(baseline) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if strings.TrimSpace(baseline[f]) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // scopeOK rejects wander: claimed or newly created files outside task focus.

@@ -80,9 +80,22 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 				cli.KeyVal("user config", p+" (inherited)")
 			}
 			cli.KeyVal("config", fmt.Sprintf("%s — %d key(s), the rest inherited",
-				ws.Config.ConfigPath(), len(ws.Config.Diff())))
+				ws.Config.ConfigPath(), len(ws.Config.SavedKeys())))
 			fmt.Println()
 			fmt.Println(cli.Dim("  slmcode config show --all      every key and its effective value"))
+			// The next step depends on whether there is a model to talk to.
+			// Sending a new user straight to `slmcode run` when nothing is
+			// listening earns them an exit-4 refusal on their first command.
+			probe := cli.ProbeEndpoint(cmd.Context(), ws.Config.Provider, ws.Config.Endpoint,
+				ws.Config.Model, ws.Config.APIKey, 1500*time.Millisecond)
+			if probe.State == cli.ProbeDown {
+				fmt.Println(cli.Warn("no model server answered at " + ws.Config.Endpoint))
+				if probe.Remedy != "" {
+					fmt.Println(cli.Dim("  " + probe.Remedy))
+				}
+				fmt.Println(cli.Info("next: slmcode doctor  — check the connection, then `slmcode run -v \"…\"`"))
+				return nil
+			}
 			fmt.Println(cli.Info("next: slmcode run -v \"…\"  — agents fill context, plan, and tasks"))
 			return nil
 		},
@@ -202,9 +215,11 @@ func runCmd() *cobra.Command {
 			ctx, cancel := signalContext()
 			defer cancel()
 
-			// HITL gates answer from this terminal; with no TTY they follow
-			// --on-gate-timeout (default: stop) instead of auto-approving.
-			registerGates(h, nil)
+			// HITL gates answer from this terminal (registerGates installs a
+			// plain terminal prompt when there is no dashboard); with no TTY
+			// they follow --on-gate-timeout (default: stop) instead of
+			// auto-approving.
+			gates := registerGates(h, nil)
 
 			fmt.Print(cli.Banner())
 			cli.KeyVal("provider", h.Config.Provider)
@@ -224,6 +239,9 @@ func runCmd() *cobra.Command {
 			fmt.Println()
 
 			status := cli.NewStatusTracker()
+			// Feed the footer real board progress. Without this its counters
+			// (finished agent CALLS) were labeled done/fail and read as tasks.
+			status.SetTaskSource(boardProgress(h.Config.SlmDir()))
 			h.Orchestrator.OnEvent(func(e orchestrator.Event) {
 				if cli.ShouldRender(e) {
 					cli.PrintEventWithStatus(e, status)
@@ -234,7 +252,7 @@ func runCmd() *cobra.Command {
 
 			res, err := h.Run(ctx, query)
 			if err != nil {
-				return err
+				return runFailure(ctx, err, gates)
 			}
 			fmt.Println()
 			fmt.Println(status.Footer())
@@ -252,7 +270,15 @@ func runCmd() *cobra.Command {
 				fmt.Println(cli.Warn(fmt.Sprintf("%d change(s) awaiting review — slmcode apply", n)))
 			}
 			if !res.Success {
-				return failf(5, "run finished with failures — inspect board / promote escalated tasks")
+				if gates.interrupted {
+					fmt.Println(cli.Dim("  interrupted at a gate — `slmcode session resume` picks the board back up"))
+					return failf(130, "interrupted")
+				}
+				if gates.blocked() {
+					fmt.Println(cli.Dim("  " + strings.ReplaceAll(gates.hint(), "\n", "\n  ")))
+					return failf(6, "stopped at a human-in-the-loop gate")
+				}
+				return failf(5, "run finished with failures — see `slmcode board` and `slmcode apply`")
 			}
 			return nil
 		},
@@ -470,7 +496,14 @@ and mints a random session token per launch — the printed URL carries it as
 
 			fmt.Print(cli.Banner())
 			fmt.Println(cli.Success("Studio listening"))
-			fmt.Printf("  url             \033]8;;%s\033\\%s\033]8;;\033\\\n", url, url)
+			// OSC-8 hyperlink only when ANSI is on. Piped to a file or a log,
+			// the escape wrapper turned the one thing the user has to copy —
+			// the tokenised URL — into unusable bytes.
+			if cli.ColorEnabled() {
+				fmt.Printf("  url             \033]8;;%s\033\\%s\033]8;;\033\\\n", url, url)
+			} else {
+				cli.KeyVal("url", url)
+			}
 			cli.KeyVal("root", h.Config.Root)
 			cli.KeyVal("provider", h.Config.Provider+" / "+h.Config.Model)
 			if srv.AuthEnabled() {
@@ -480,6 +513,11 @@ and mints a random session token per launch — the printed URL carries it as
 			}
 			if devCORS {
 				fmt.Println(cli.Warn("dev CORS enabled for " + strings.Join(server.DevOrigins, ", ")))
+			}
+			if studioUIIsPlaceholder(uiFS) {
+				fmt.Println(cli.Warn("the Studio UI is not built into this binary — the page will say so"))
+				fmt.Println(cli.Dim("  fix: make bootstrap   (or `make ui-react` if Node is already installed)"))
+				fmt.Println(cli.Dim("  the API and the CLI work regardless; only the React SPA is missing"))
 			}
 			go openBrowser(url)
 			fmt.Println(cli.Dim("\n  Opening browser… Ctrl+C to stop.\n"))
@@ -563,6 +601,7 @@ func statusCmd() *cobra.Command {
 			}
 
 			cli.Header("Status")
+			noteUninitialized(ws.Config.Root)
 			cli.KeyVal("root", ws.Config.Root)
 			cli.KeyVal("provider", ws.Config.Provider)
 			cli.KeyVal("model", ws.Config.Model)
@@ -671,4 +710,83 @@ func versionCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "query GitHub for a newer release")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	return cmd
+}
+
+// runFailure turns the engine's error into the message a user can act on.
+//
+// Two failures used to surface as raw Go error text with no next step: an
+// interrupt ("context canceled") and a gate nobody could answer ("plan not
+// approved"). Both now carry the documented exit code and say what to do.
+func runFailure(ctx context.Context, err error, gates *gateAudit) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	// Both spellings: this matches provider error TEXT, and some backends use
+	// the British double-l form. The literal is DATA, not prose, hence the
+	// concatenation that keeps the spelling linter out of the way.
+	canceled := strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context cancel"+"led")
+	switch {
+	case gates != nil && gates.interrupted:
+		fmt.Println()
+		fmt.Println(cli.Dim("  the board was checkpointed — pick the run back up with"))
+		fmt.Println(cli.Dim("    slmcode session resume"))
+		return failf(130, "interrupted at the gate — nothing was lost")
+	case canceled && ctx.Err() == nil:
+		// Nobody interrupted this run: our own signal context is still live, so
+		// the cancellation came from inside the engine — a speculative racer's
+		// loser, a slot timeout — and surfaced as if the user had pressed
+		// Ctrl-C. Say what actually happened instead of claiming an interrupt.
+		fmt.Println()
+		fmt.Println(cli.Dim("  the run was canceled internally — no interrupt was sent from this terminal."))
+		fmt.Println(cli.Dim("  the board was checkpointed; `slmcode session resume` picks it up."))
+		fmt.Println(cli.Dim("  re-run with --vv to see which agent call was canceled."))
+		return failf(1, "run canceled inside the engine (not by you) — %s", cli.Clip(err.Error(), 160))
+	case canceled:
+		fmt.Println()
+		fmt.Println(cli.Dim("  the board and the ReAct history were checkpointed — pick the run back up with"))
+		fmt.Println(cli.Dim("    slmcode session resume"))
+		return failf(130, "interrupted — nothing was lost")
+	case gates.blocked():
+		fmt.Println()
+		fmt.Println(cli.Dim("  " + strings.ReplaceAll(gates.hint(), "\n", "\n  ")))
+		return failf(6, "stopped at a human-in-the-loop gate")
+	}
+	return err
+}
+
+// boardProgress returns a probe of board.json for the run footer: tasks in the
+// done column, and the total the board holds.
+func boardProgress(slmDir string) func() (int, int) {
+	store := plan.NewLiveStore(slmDir)
+	return func() (int, int) {
+		if err := store.Load(); err != nil {
+			return 0, 0
+		}
+		b := store.Snapshot()
+		done := 0
+		for _, t := range b.Tasks {
+			if t.Column == plan.ColDone {
+				done++
+			}
+		}
+		return done, len(b.Tasks)
+	}
+}
+
+// studioUIIsPlaceholder reports that the embedded UI is the checked-in stub
+// rather than a built React bundle.
+//
+// `go build` alone embeds cmd/slmcode/ui/index.html, which renders "SLMCode
+// Studio UI not built". That is a good page — but the CLI used to announce
+// "Studio listening" and open a browser without a word about it, so the first
+// thing a from-source user saw was a placeholder with no explanation in the
+// terminal they were looking at.
+func studioUIIsPlaceholder(uiFS fs.FS) bool {
+	data, err := fs.ReadFile(uiFS, "index.html")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "Studio UI not built")
 }

@@ -1,0 +1,57 @@
+api_version: blocks/v1
+kind: quality
+id: php
+name: PHP Quality Pack
+description: >-
+  PHP verify pack — PHPUnit through vendor/bin, with optional PHPStan and
+  PHP_CodeSniffer. Composer-aware and PSR-4 autoload aware.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: php
+tags: [php, composer, phpunit, phpstan, laravel, symfony, psr4]
+icon: "🐘"
+shareable: true
+spec:
+  detect:
+    files: [composer.json, phpunit.xml, phpunit.xml.dist, artisan]
+    extensions: [.php, .phtml]
+    priority: 14
+  lint:
+    - cmd: vendor/bin/phpstan analyse --no-progress
+      label: phpstan
+      optional: true
+    - cmd: vendor/bin/phpcs -q
+      label: phpcs
+      optional: true
+  test:
+    - cmd: vendor/bin/phpunit --colors=never
+      label: phpunit
+  build:
+    - cmd: composer validate --no-interaction --strict
+      label: composer validate
+      optional: true
+  smoke: vendor/bin/phpunit --colors=never
+  qa_gate: vendor/bin/phpunit --colors=never
+  safe_prefixes:
+    - vendor/bin/
+    - composer install
+    - composer validate
+    - composer dump-autoload
+    - php -l
+    - php artisan test
+    - phpunit
+  tester_hints: |
+    Run tools from vendor/bin, not globally: `vendor/bin/phpunit --colors=never`.
+    Laravel: `php artisan test` is the idiomatic wrapper around PHPUnit/Pest.
+    Syntax-only check for one file: `php -l path/to/File.php`.
+    Ecosystem facts that decide pass/fail:
+    - A new class in a new file is NOT loadable until composer's PSR-4 map knows
+      it. If the namespace does not mirror the directory under the autoload
+      prefix in composer.json, run `composer dump-autoload` — do not "fix" it by
+      adding a require.
+    - `declare(strict_types=1);` changes coercion behaviour; match the file you
+      are editing rather than introducing it silently.
+    - PHPUnit reports "OK (0 tests)" as a success. Zero tests is a FAIL for a
+      task that asked for tests.
+    Do NOT run pytest / go test / npm test.

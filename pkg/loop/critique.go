@@ -127,13 +127,21 @@ func acceptanceSmokeRole(role string) bool {
 }
 
 // outputWeak reports whether a worker output still needs correction.
-func (r *Runner) outputWeak(t plan.Task, incomplete bool) bool {
+//
+// baseline is the PRE-WAVE fingerprint snapshot for this task. It used to be
+// passed as nil, and nil is not "no opinion" to the write detectors: with an
+// empty baseline every focus file reads as `prev=="" && cur!=""`, i.e. "this
+// wave created it", so hasRealWriteEvidence returned true for any file that
+// merely EXISTS and alreadySatisfied counted every present file as fresh. The
+// whole no-write-evidence clause was therefore dead for edits to pre-existing
+// files — exactly the case self-critique is for.
+func (r *Runner) outputWeak(t plan.Task, baseline map[string]string, incomplete bool) bool {
 	return quality.SmokeFailedInOutput(t.Output) ||
 		quality.StaticFailedInOutput(t.Output) ||
 		quality.ClaimsFailedInOutput(t.Output) ||
 		quality.AcceptanceFailedInOutput(t.Output) ||
 		(!hasToolWriteEvidence(t.Output) && looksLikeEditTask(t) &&
-			!r.hasRealWriteEvidence(t, nil) && !alreadySatisfied(r.Root, t, nil)) ||
+			!r.hasRealWriteEvidence(t, baseline) && !alreadySatisfied(r.Root, t, baseline)) ||
 		(r.ThinkPasses >= 2 && incomplete)
 }
 

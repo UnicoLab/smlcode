@@ -71,10 +71,23 @@ func (b *AgentBlock) Validate() error {
 }
 
 // DetectSpec describes how to auto-select a quality pack for a workspace.
+//
+// Files are matched at the workspace ROOT only. An entry may be a plain name
+// ("go.mod"), a glob ("*.csproj" — .NET has no fixed project filename) or a
+// relative path ("src/main.rs").
+//
+// Contains maps a root file to substrings that prove the language: a
+// package.json mentioning "react" is a React app, one that does not is a plain
+// Node/TypeScript project. Marker files alone cannot separate those two, and
+// getting it wrong hands the model the wrong tester and the wrong gate.
+//
+// Priority is a tiebreak added to a non-zero evidence score, not a score of its
+// own. A negative Priority opts a pack out of auto-detection entirely.
 type DetectSpec struct {
-	Files      []string `yaml:"files,omitempty" json:"files,omitempty"`
-	Extensions []string `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	Priority   int      `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Files      []string            `yaml:"files,omitempty" json:"files,omitempty"`
+	Extensions []string            `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	Contains   map[string][]string `yaml:"contains,omitempty" json:"contains,omitempty"`
+	Priority   int                 `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 // CheckCmd is one shell check in a quality pack.

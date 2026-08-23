@@ -4,7 +4,7 @@ id: cpp
 name: C/C++ Quality Pack
 description: >-
   C/C++ verify pack — CMake/Make build + test (CTest), no pytest/go/npm leakage.
-version: "1.0.0"
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: cpp
@@ -13,25 +13,54 @@ icon: "⚙️"
 shareable: true
 spec:
   detect:
-    files: [CMakeLists.txt, Makefile]
-    extensions: [.c, .cpp, .cc, .cxx, .h, .hpp]
+    # A bare Makefile is NOT evidence of C/C++ — Go, Python and Node repos all
+    # ship one. Only real C/C++ build descriptions count as markers; a
+    # Makefile-only project is still detected through its .c/.cpp sources.
+    files: [CMakeLists.txt, meson.build, configure.ac, CMakePresets.json, conanfile.txt]
+    extensions: [.c, .cpp, .cc, .cxx, .h, .hpp, .hh]
     priority: 14
   build:
-    - cmd: cmake --build build
-      label: cmake build
+    # `cmake --build <dir>` is refused by the shell layer (--build hands off to
+    # the generator, i.e. another program of the build tree's choosing), and no
+    # allow-list entry can override that. Drive the generator directly instead —
+    # a pack must not name a command the harness will refuse to run.
+    - cmd: ninja -C build
+      label: ninja build
+      optional: true
   test:
     - cmd: ctest --test-dir build --output-on-failure
       label: ctest
-  smoke: cmake --build build
-  qa_gate: cmake --build build
+  smoke: ninja -C build
+  qa_gate: ctest --test-dir build --output-on-failure
   safe_prefixes:
-    - cmake
+    # `make` is deliberately absent: it runs whatever a Makefile recipe says,
+    # which is indistinguishable from an arbitrary shell. Applying a language
+    # pack must not silently hand that back.
+    - cmake -S
+    - cmake --version
     - ctest
-    - make
+    - ninja
     - gcc
     - g++
     - clang
+    - clang++
   tester_hints: |
-    Prefer: cmake --build build, then ctest --test-dir build (when present).
-    Plain Makefile projects: make (and make test when a test target exists).
+    Configure once:  cmake -S . -B build -G Ninja
+    Build:           ninja -C build
+    Test:            ctest --test-dir build --output-on-failure
+    Syntax-only:     g++ -fsyntax-only -std=c++20 <file>
+
+    This harness refuses `cmake --build` and `make`: both hand execution to a
+    build description in the repository, which the command whitelist cannot
+    inspect. Drive the generator directly (ninja), or say that the build step
+    needs operator approval — never report a skipped build as a pass.
+
+    C/C++ facts that decide pass/fail:
+    - Adding a .cpp file to the tree does not add it to the build. It must be
+      listed in add_executable/add_library (or picked up by an existing GLOB
+      followed by a re-run of cmake) or it is never compiled.
+    - A new test needs both add_executable and add_test, plus
+      enable_testing()/include(CTest), before ctest can ever see it.
+    - A build that only re-links stale objects hides a compile error: after
+      changing CMakeLists.txt, re-run the configure step, not just the build.
     Do NOT run pytest / go test / npm test.

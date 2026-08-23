@@ -118,6 +118,13 @@ func Banner() string {
 		Dim("  —  ") +
 		Bold(Magenta("AI")) + " " + Dim("&") + " " + Bold(Blue("Innovation")) +
 		"\n"
+	// The block logo is 62 cells wide. On a narrower terminal it wrapped into
+	// broken half-glyphs — the very first thing a user saw on a 50-column
+	// window was corrupted output. Fall back to a one-line wordmark.
+	if w, _ := TermSize(); w < 64 {
+		return "  " + Bold(Accent("⚡ SLMCODE")) + "\n" +
+			Dim("  SLM-first coding harness · atomic tasks · live kanban") + "\n" + brand
+	}
 	return Accent(logo) + "\n" + tagline + brand
 }
 

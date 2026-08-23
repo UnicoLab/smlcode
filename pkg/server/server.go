@@ -69,6 +69,10 @@ type Server struct {
 	ui   fs.FS
 	opts Options
 
+	// runWG tracks in-flight run/resume goroutines so Shutdown can wait for
+	// them instead of merely canceling their context.
+	runWG sync.WaitGroup
+
 	mu      sync.Mutex
 	events  []seqEvent
 	seq     uint64
@@ -216,6 +220,10 @@ func (s *Server) ListenAndServe(addr string) error {
 	return err
 }
 
+// shutdownRunGrace bounds how long Shutdown waits for an in-flight run to
+// unwind when the caller passed a context with no deadline.
+const shutdownRunGrace = 10 * time.Second
+
 // Shutdown stops accepting connections, cancels the in-flight run context and
 // closes every SSE stream so clients see a clean end instead of a truncated
 // response. Callers should wire it to SIGINT/SIGTERM.
@@ -226,6 +234,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// killed between file writes.
 	if orch := s.orch(); orch != nil {
 		orch.Stop()
+	}
+
+	// …and then actually WAIT for it. Canceling a context only asks; before
+	// this, Shutdown returned (and the CLI exited) while the run goroutine was
+	// still mid-write, which is how a half-written source file gets left on
+	// disk. Bounded by the caller's context so a wedged run cannot hang exit.
+	runDone := make(chan struct{})
+	go func() { s.runWG.Wait(); close(runDone) }()
+	select {
+	case <-runDone:
+	case <-ctx.Done():
+	case <-time.After(shutdownRunGrace):
 	}
 
 	s.mu.Lock()
@@ -829,7 +849,9 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		Phase: "init", Kind: "run_start", Message: "run started", Time: time.Now(),
 	})
 
+	s.runWG.Add(1)
 	go func() {
+		defer s.runWG.Done()
 		defer s.restoreRunOptions(saved)
 		ctx := s.runContext()
 		res, err := s.h.Run(ctx, query)
@@ -990,8 +1012,13 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	s.emit(orchestrator.Event{
 		Phase: "init", Kind: "run_start", Message: "resume started", Time: time.Now(),
 	})
+	s.runWG.Add(1)
 	go func() {
-		ctx := context.Background()
+		defer s.runWG.Done()
+		// runContext(), NOT context.Background(): a resumed run used to be
+		// invisible to Shutdown, so Ctrl-C returned to the shell while the
+		// agent kept writing files.
+		ctx := s.runContext()
 		res, err := s.h.Resume(ctx, id)
 		s.mu.Lock()
 		s.running = false
@@ -2477,8 +2504,12 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", 400)
 		return
 	}
-	fullPath, err := s.workspacePath(path)
+	fullPath, err := s.workspaceReadPath(path)
 	if err != nil {
+		if errors.Is(err, ErrSecretPath) {
+			http.Error(w, "forbidden: file holds harness credentials", http.StatusForbidden)
+			return
+		}
 		http.Error(w, "path traversal", http.StatusForbidden)
 		return
 	}
@@ -2536,6 +2567,13 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		name := e.Name()
 		if alwaysHiddenDirs[name] {
+			continue
+		}
+		// Never advertise the credential store, even to an authenticated
+		// browser: a listing that names auth.json is a map for anything that
+		// later gets to read a path of its choosing.
+		if rel, rerr := filepath.Rel(s.rootDir(), filepath.Join(fullPath, name)); rerr == nil &&
+			workspace.IsHarnessSecretPath(rel) {
 			continue
 		}
 		dot := strings.HasPrefix(name, ".")

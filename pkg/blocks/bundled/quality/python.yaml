@@ -5,7 +5,7 @@ name: Python Quality Pack
 description: >-
   Production Python verify pack — ruff format/check, optional mypy/pyright,
   pytest, packaging-aware (pyproject/uv/requirements). Prefer uv run when uv.lock exists.
-version: "1.0.0"
+version: "1.1.0"
 author: UnicoLab
 license: MIT
 language: python
@@ -14,8 +14,8 @@ icon: "🐍"
 shareable: true
 spec:
   detect:
-    files: [pyproject.toml, requirements.txt, setup.py, uv.lock]
-    extensions: [.py]
+    files: [pyproject.toml, requirements.txt, setup.py, setup.cfg, uv.lock, Pipfile, poetry.lock, pytest.ini, tox.ini, conda.yaml]
+    extensions: [.py, .pyi]
     priority: 15
   format:
     - cmd: ruff format --check .
@@ -53,8 +53,24 @@ spec:
     - ruff
     - mypy
     - pyright
+    - uv run mypy
+    - uv run python -m pytest
+    - poetry run pytest
+    - python3 -m pytest
   tester_hints: |
-    Prefer: python -m pytest -q (or uv run pytest -q when uv.lock exists).
-    Lint: ruff check . ; format: ruff format .
+    Prefer: python -m pytest -q (or uv run pytest -q when uv.lock exists,
+    poetry run pytest when poetry.lock exists).
+    Lint: ruff check . ; format: ruff format --check .
     Typecheck when configured: mypy . or pyright.
     Do NOT treat compileall alone as success for greenfield projects.
+
+    Python-specific failures a small model produces:
+    - pytest exiting 5 ("no tests ran") is a FAIL for a task that asked for
+      tests, not a pass. Read the collected-count line, not just the exit code.
+    - pytest only collects files named test_*.py or *_test.py, with functions
+      named test_*. A correctly written test in wrongly named file runs never.
+    - An ImportError during collection reports as an ERROR, not a failure, and
+      is easy to skim past — it usually means a missing __init__.py or a package
+      that was never installed (`pip install -e .`).
+    - `python -m pytest` and `pytest` are NOT the same: only the first puts the
+      current directory on sys.path, which is what makes `import mypkg` resolve.

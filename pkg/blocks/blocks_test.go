@@ -336,9 +336,29 @@ func TestDetectQuality(t *testing.T) {
 		t.Errorf("detected quality = %q, want python", qPy.ID)
 	}
 
+	// A package.json with no React dependency is a Node/TypeScript project, not
+	// a React app: it must get tsc + vitest, not the React tester and its
+	// hook-rules review. Only a declared react/next dependency selects react.
+	tmpNode := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpNode, "package.json"),
+		[]byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	qNode := reg.DetectQuality(tmpNode)
+	if qNode == nil {
+		t.Fatal("expected a quality pack for a package.json workspace, got nil")
+	}
+	if qNode.ID != "typescript" {
+		t.Errorf("detected quality = %q, want typescript for a bare package.json", qNode.ID)
+	}
+
 	tmpReact := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpReact, "package.json"),
-		[]byte("{}"), 0o644); err != nil {
+		[]byte(`{"dependencies":{"react":"^18.3.1","react-dom":"^18.3.1"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpReact, "App.tsx"),
+		[]byte("export default function App() { return null }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	qReact := reg.DetectQuality(tmpReact)
@@ -655,5 +675,92 @@ func TestQualityBlockPrimaryQAGate(t *testing.T) {
 	var nilQ *QualityBlock
 	if nilQ.PrimaryQAGate() != "" {
 		t.Error("nil PrimaryQAGate should be empty")
+	}
+}
+
+func TestDetectPackPolyglotAndPerPath(t *testing.T) {
+	reg, err := Load(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The exact shape of this repository: a Go module at the root with a Vite
+	// app in web/. The nested project's .ts/.tsx files must not out-vote go.mod.
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example\n\ngo 1.23\n")
+	write("main.go", "package main\n")
+	write("web/package.json", `{"dependencies":{"react":"^18.3.1"}}`)
+	write("web/tsconfig.json", "{}")
+	for _, f := range []string{"App.tsx", "main.tsx", "api/client.ts", "hooks/useRun.ts"} {
+		write("web/src/"+f, "export const x = 1\n")
+	}
+
+	if got := reg.DetectPack(root); got != "go" {
+		t.Errorf("DetectPack(polyglot root) = %q, want go", got)
+	}
+	// Per-path: a file inside the nested project gets that project's pack.
+	q := reg.DetectQualityForPath(root, "web/src/App.tsx")
+	if q == nil || q.ID != "react" {
+		t.Errorf("DetectQualityForPath(web/src/App.tsx) = %v, want react", q)
+	}
+	if q := reg.DetectQualityForPath(root, "main.go"); q == nil || q.ID != "go" {
+		t.Errorf("DetectQualityForPath(main.go) = %v, want go", q)
+	}
+	// And the repo-wide answer still lists both languages.
+	all := reg.DetectAll(root)
+	if len(all) == 0 || all[0].ID != "go" {
+		t.Fatalf("DetectAll head = %v, want go first", all)
+	}
+}
+
+func TestDetectPackPerLanguageFixtures(t *testing.T) {
+	reg, err := Load(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		pack  string
+		files map[string]string
+	}{
+		{"go", map[string]string{"go.mod": "module x\n", "main.go": "package main\n"}},
+		{"python", map[string]string{"pyproject.toml": "[project]\nname='x'\n", "app.py": "x = 1\n"}},
+		{"rust", map[string]string{"Cargo.toml": "[package]\nname='x'\n", "src/main.rs": "fn main() {}\n"}},
+		{"java", map[string]string{"pom.xml": "<project/>", "src/App.java": "class App {}\n"}},
+		{"kotlin", map[string]string{"build.gradle.kts": "plugins {}\n", "src/App.kt": "fun main() {}\n"}},
+		{"dotnet", map[string]string{"App.csproj": "<Project/>", "Program.cs": "class P {}\n"}},
+		{"ruby", map[string]string{"Gemfile": "source 'x'\n", "lib/app.rb": "class App; end\n"}},
+		{"php", map[string]string{"composer.json": "{}", "src/App.php": "<?php\n"}},
+		{"swift", map[string]string{"Package.swift": "// swift-tools-version:5.9\n", "Sources/App/main.swift": "print(1)\n"}},
+		{"cpp", map[string]string{"CMakeLists.txt": "project(x)\n", "src/main.cpp": "int main(){}\n"}},
+		{"typescript", map[string]string{"package.json": `{"name":"x"}`, "tsconfig.json": "{}", "src/index.ts": "export const x=1\n"}},
+		{"react", map[string]string{"package.json": `{"dependencies":{"react":"^18"}}`, "src/App.tsx": "export default () => null\n"}},
+		{"web", map[string]string{"index.html": "<!doctype html><h1>hi</h1>", "style.css": "body{}"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.pack, func(t *testing.T) {
+			root := t.TempDir()
+			for rel, body := range tc.files {
+				full := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := reg.DetectPack(root); got != tc.pack {
+				scores := reg.DetectAll(root)
+				t.Errorf("DetectPack = %q, want %q (ranking: %v)", got, tc.pack, scores)
+			}
+		})
 	}
 }

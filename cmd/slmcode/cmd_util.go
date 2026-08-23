@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/evolve"
+	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/readiness"
@@ -382,21 +385,35 @@ func runDoctor() error {
 	for _, w := range ws.Config.Provenance().Warnings {
 		fmt.Println(cli.Warn(w))
 	}
-	if _, err := os.Stat(ws.Config.SlmDir()); err != nil {
-		fmt.Println(cli.Warn(".slmcode missing — run slmcode init"))
+	// harness.Initialized, not a stat of .slmcode/: several commands mkdir the
+	// directory as a side effect, so its existence proved nothing and doctor
+	// happily reported "✔ .slmcode present" in a project that had never been
+	// initialized. config.yaml is the marker.
+	initialized := harness.Initialized(ws.Config.Root)
+	if initialized {
+		fmt.Println(cli.Success(".slmcode workspace initialized"))
 	} else {
-		fmt.Println(cli.Success(".slmcode present"))
+		fmt.Println(cli.Warn("no workspace here — everything below is a built-in default"))
+		fmt.Println(cli.Dim("  fix: slmcode init"))
 	}
 	_ = ws.Board.Load()
 	b := ws.Board.Snapshot()
-	fmt.Println(cli.Success(fmt.Sprintf("board: %d tasks", len(b.Tasks))))
+	if initialized {
+		fmt.Println(cli.Success(fmt.Sprintf("board: %d tasks", len(b.Tasks))))
+	}
 
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	providerCheck := readiness.ProbeProvider(probeCtx, ws.Config)
 	probeCancel()
 	printDoctorProviderProbe(providerCheck)
 	auth := models.ResolveAuth(ws.Config)
-	if auth.Configured {
+	// A 401 from the probe means the key we have is the WRONG key. Printing
+	// "✔ auth OK" one line under "✖ LLM check failed — HTTP 401" told the user
+	// the exact opposite of what had just happened.
+	if rejected := providerRejectedAuth(providerCheck); rejected {
+		fmt.Println(cli.Error(fmt.Sprintf("auth rejected by the provider (key from %s)", auth.Source)))
+		fmt.Println(cli.Dim("  fix: slmcode auth set " + ws.Config.Provider + "   or   export SLMCODE_API_KEY=…"))
+	} else if auth.Configured {
 		fmt.Println(cli.Success(fmt.Sprintf("auth OK (%s)", auth.Source)))
 	} else if auth.Required {
 		fmt.Println(cli.Error(auth.Message))
@@ -518,14 +535,30 @@ func formatDoctorProviderProbe(check readiness.Check) string {
 		b.WriteString(cli.Dim("  endpoint: " + check.Endpoint))
 		b.WriteString("\n")
 	}
-	if check.FixHint != "" {
+	// Prefer the specific remedy over the generic one. readiness returns the
+	// same "confirm the endpoint is reachable" hint for every failure, which
+	// is the wrong advice for a 401 (reachable, key rejected) and for a 404
+	// (reachable, wrong path) — the two failures a new user actually hits.
+	cause, remedy := doctorRemedy(check)
+	switch {
+	case remedy != "":
+		if cause != "" {
+			b.WriteString(cli.Dim("  cause: " + cause))
+			b.WriteString("\n")
+		}
+		b.WriteString(cli.Dim("  tip: " + remedy))
+		b.WriteString("\n")
+	case check.FixHint != "":
 		b.WriteString(cli.Dim("  tip: " + check.FixHint))
 		b.WriteString("\n")
-	} else {
+	default:
 		b.WriteString(cli.Dim("  tip: start your provider, or override with --provider / --endpoint / --model"))
 		b.WriteString("\n")
 	}
-	if check.FixLabel != "" {
+	// The generic "fix" label only helps when there was no specific tip; after
+	// a 401 remedy, "Check endpoint and start the model server" is noise that
+	// contradicts the line above it.
+	if check.FixLabel != "" && remedy == "" {
 		b.WriteString(cli.Dim("  fix: " + check.FixLabel))
 		b.WriteString("\n")
 	}
@@ -679,4 +712,64 @@ func throughputLines() []string {
 		out = append(out, fmt.Sprintf("%-44s %6.1f tok/s  (n=%d)", o.Model, o.TokensPerSec, o.Samples))
 	}
 	return out
+}
+
+// doctorHTTPStatusRe pulls the HTTP status out of a provider probe message.
+var doctorHTTPStatusRe = regexp.MustCompile(`HTTP (\d{3})`)
+
+// doctorRemedy classifies a failed provider check through cli.Remediation,
+// which knows what each transport error and HTTP status actually means.
+func doctorRemedy(check readiness.Check) (cause, remedy string) {
+	if check.OK {
+		return "", ""
+	}
+	status := 0
+	if m := doctorHTTPStatusRe.FindStringSubmatch(check.Message); m != nil {
+		status, _ = strconv.Atoi(m[1])
+	}
+	provider, _ := check.Details["provider"].(string)
+	// model is deliberately empty: this probe calls /v1/models, so a 404 means
+	// the base URL is wrong, never that one model id is missing.
+	const model = ""
+	if strings.Contains(strings.ToLower(check.Message), "no models") {
+		return "the endpoint answered but listed no models",
+			"it may not be an OpenAI-compatible server, or no model is loaded — try `curl " +
+				check.Endpoint + "/models` and load a model"
+	}
+	// Only override readiness's own hint when we can classify the failure.
+	// cli.Remediation has a catch-all ("check the endpoint with slmcode
+	// doctor") that is strictly worse than the check's own advice for the
+	// cases readiness diagnoses itself, e.g. "model not listed".
+	if status == 0 && !transportFailure(check.Message) {
+		return "", ""
+	}
+	return cli.Remediation(provider, check.Endpoint, model, status, check.Message)
+}
+
+// transportFailure reports a dial/DNS/TLS/timeout failure — the errors
+// cli.Remediation turns into a specific instruction.
+func transportFailure(msg string) bool {
+	l := strings.ToLower(msg)
+	for _, s := range []string{
+		"connection refused", "no such host", "dns", "timeout",
+		"deadline exceeded", "certificate", "tls",
+	} {
+		if strings.Contains(l, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerRejectedAuth reports a 401/403 from the provider probe.
+func providerRejectedAuth(check readiness.Check) bool {
+	if check.OK {
+		return false
+	}
+	m := doctorHTTPStatusRe.FindStringSubmatch(check.Message)
+	if m == nil {
+		return false
+	}
+	code, _ := strconv.Atoi(m[1])
+	return code == 401 || code == 403
 }

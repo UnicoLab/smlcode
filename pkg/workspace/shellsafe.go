@@ -19,6 +19,12 @@ import (
 // allowlist is functionally identical to "no allowlist at all".
 
 // ReadOnlyPrefixes never mutate the workspace.
+//
+// NOTE on `env`: it is matched WITHOUT a trailing space on purpose (bare `env`
+// prints the environment) but `env <cmd>` execs an arbitrary program, so
+// DangerousInvocation refuses any `env` that carries a command operand. Adding
+// a prefix here that can name another program to run re-opens that hole; check
+// DangerousInvocation before extending this list.
 var ReadOnlyPrefixes = []string{
 	"ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "date",
 	"which", "type", "env", "printenv", "uname", "whoami", "id",
@@ -213,6 +219,12 @@ func IsSafeBash(command string, prefixes []string) bool {
 		if !segmentHasSafePrefix(seg, prefixes) {
 			return false
 		}
+		// A whitelisted BINARY can still name another program to run
+		// (`env python -c`, `find -exec`, `go test -exec`, `cmake -P`) or
+		// create a path outside the jail (`touch /etc/x`).
+		if _, blocked := DangerousInvocation(seg); blocked {
+			return false
+		}
 	}
 	return true
 }
@@ -278,6 +290,14 @@ func GuardShellWhitelist(command string, extra []string) (refuse string, blocked
 	prefixes := SafePrefixes(extra)
 	if IsSafeBash(command, prefixes) {
 		return "", false
+	}
+	// Report an exec-flag / out-of-jail escape with its own explanation before
+	// falling through to the generic "not an allowed command" text, which would
+	// name the wrong culprit (`env`, `find`, `go`).
+	for _, seg := range splitCommandChain(command) {
+		if reason, blocked := DangerousInvocation(strings.TrimSpace(seg)); blocked {
+			return reason, true
+		}
 	}
 	writes := DetectWriteTargets(command)
 	if len(writes) > 0 {

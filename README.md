@@ -74,21 +74,30 @@ Full matrix (CMD, pinned versions, uninstall): **[docs/install.md](docs/install.
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap          # builds the Studio UI — go build alone embeds a placeholder page
+make bootstrap          # needs Node + npm: builds the React Studio UI into the binary
 make install-user       # → ~/.local/bin/slmcode
 ```
+
+No Node? `go build ./cmd/slmcode` works on its own — everything except the Studio SPA. The
+binary then embeds a placeholder page, `slmcode studio` says so on startup, and the page itself
+tells you to run `make bootstrap`. The CLI, the TUI and the Studio API are unaffected.
 
 ### Run it
 
 ```bash
 cd your-project
-slmcode doctor                        # provider, model, endpoint, workspace
 slmcode init                          # scaffolds .slmcode/ (memory, board, config)
-slmcode blocks apply go               # optional: language pack (pipeline + agents + quality)
+                                      # detects your language and applies the matching pack
+slmcode doctor                        # provider, model, endpoint, workspace — run it if init
+                                      # reported that nothing answered at your endpoint
 slmcode run -v "add JWT validation"   # full pipeline, live stream
 slmcode                               # or: interactive TUI
 slmcode studio                        # or: web UI on http://127.0.0.1:7420
 ```
+
+`init` is first on purpose: every other command answers from built-in defaults until a workspace
+exists, and says so. `slmcode run` on a terminal pauses at the plan gate for a single keystroke;
+headless it stops with exit **6** and prints the flag that lets it run unattended.
 
 ---
 

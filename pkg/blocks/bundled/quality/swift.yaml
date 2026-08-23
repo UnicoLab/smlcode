@@ -1,0 +1,52 @@
+api_version: blocks/v1
+kind: quality
+id: swift
+name: Swift (SwiftPM) Quality Pack
+description: >-
+  Swift Package Manager verify pack — swift build and swift test, with optional
+  swift-format and SwiftLint. Scoped to SwiftPM; Xcode project builds are not
+  driven from here.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: swift
+tags: [swift, swiftpm, xctest, swiftlint, spm]
+icon: "🧡"
+shareable: true
+spec:
+  detect:
+    files: [Package.swift]
+    extensions: [.swift]
+    priority: 15
+  format:
+    - cmd: swift-format lint --recursive Sources
+      label: swift-format
+      optional: true
+  lint:
+    - cmd: swiftlint --quiet
+      label: swiftlint
+      optional: true
+  test:
+    - cmd: swift test
+      label: swift test
+  build:
+    - cmd: swift build
+      label: swift build
+  smoke: swift build
+  qa_gate: swift test
+  safe_prefixes:
+    - swift build
+    - swift test
+    - swift package
+    - swiftlint
+    - swift-format
+  tester_hints: |
+    SwiftPM layout is enforced by the tool, not by convention:
+      Sources/<TargetName>/… and Tests/<TargetName>Tests/…
+    A file placed outside its declared target directory is simply not compiled,
+    and `swift build` still succeeds — check that a new file lives under the
+    right target before believing a green build.
+    Verify: swift build, then swift test.
+    A new test target must be declared in Package.swift `targets:` with a
+    `.testTarget` entry and a dependency on the target it exercises.
+    Do NOT run pytest / go test / npm test. This pack does not drive xcodebuild.

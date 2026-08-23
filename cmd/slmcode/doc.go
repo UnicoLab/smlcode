@@ -18,14 +18,17 @@
 //   - Prompts. Nothing prompts without a TTY. `slmcode apply` refuses
 //     interactive review (exit 2) and points at --all/--list/--json; `slmcode`
 //     with no workspace refuses to scaffold (exit 3); `slmcode update` needs
-//     --yes.
+//     --yes. On a TTY, prompts that offer single-letter choices (`slmcode
+//     apply`, every HITL gate) answer on the keystroke — no Enter.
 //
 //   - HITL gates. With a TTY attached, plan-approve / continue / escalate /
 //     clarify gates render inline and block until answered — they never expire
-//     into an automatic decision. Without a TTY they resolve immediately using
-//     --on-gate-timeout, which defaults to "stop": a plan is never auto-approved
-//     in a headless run. Pass --on-gate-timeout=approve to opt into the old
-//     permissive behavior, or =reject to fail closed.
+//     into an automatic decision. This includes `slmcode run`, which draws the
+//     gate card itself when there is no dashboard. Without a TTY they resolve
+//     immediately using --on-gate-timeout, which defaults to "stop": the run
+//     stops ONCE at the gate, exits 6, and prints the flag or config key that
+//     would let it proceed unattended. Pass --on-gate-timeout=approve to opt
+//     into the old permissive behavior, or =reject to fail closed.
 //
 //   - Rendering verbosity. --log-level=error|warn|info|debug (with -v for info
 //     and --vv for debug) decides what the CLI prints. Errors always surface.
@@ -36,7 +39,7 @@
 //
 //	0    success
 //	1    generic failure
-//	2    usage error / invalid argument / a TTY was required
+//	2    usage error / unknown command / invalid argument / a TTY was required
 //	3    workspace not initialized
 //	4    provider endpoint unreachable (pre-flight refused to start the run)
 //	5    the run completed but tasks failed
@@ -59,7 +62,10 @@
 //	SLMCODE_TUI=0, CI=true
 //	    force the non-interactive path.
 //	SLMCODE_NO_QUIET=1
-//	    do not filter dependency stderr during engine construction.
+//	    do not filter dependency stderr. The CLI drops the model-graph
+//	    library's per-agent info/debug log records for the whole command —
+//	    without it a run's transcript is interleaved with ~40 "Executing node"
+//	    lines. --log-level=debug also passes them through.
 //	SLMCODE_SKIP_UPDATE_CHECK=1
 //	    never contact GitHub.
 //	NO_COLOR, FORCE_COLOR, TERM

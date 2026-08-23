@@ -17,11 +17,20 @@ type CompletenessIssue struct {
 
 // CheckProjectCompleteness compares the workspace to a high-quality reference
 // for the given query. Deterministic — no LLM. Used by finalize + eval.
+//
+// Every branch below used to end in a PYTHON scaffold check, so a Go, Rust or
+// TypeScript workspace was walked with listPythonSources, matched against
+// Python placeholder patterns, and told it was missing requirements.txt. The
+// result was always empty for those languages, which meant the completeness bar
+// — the check that stops "I created the files" from counting as done — simply
+// did not exist outside Python. Routing on the workspace's actual language
+// fixes that.
 func CheckProjectCompleteness(root, query string) []CompletenessIssue {
 	if root == "" {
 		return nil
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
+	// Framework-specific reference bars win: they know the exact shape expected.
 	switch {
 	case strings.Contains(q, "langgraph") || strings.Contains(q, "langchain"):
 		return checkLangGraphTemplate(root)
@@ -29,9 +38,198 @@ func CheckProjectCompleteness(root, query string) []CompletenessIssue {
 		return checkFastAPIMinimal(root)
 	case isPythonCLIQuery(q):
 		return checkPythonCLI(root)
-	default:
-		return checkGenericPythonScaffold(root, q)
 	}
+	switch projectKind(root) {
+	case "go":
+		return checkGoScaffold(root, q)
+	case "node":
+		return checkNodeScaffold(root, q)
+	case "rust":
+		return checkRustScaffold(root, q)
+	case "python":
+		return checkGenericPythonScaffold(root, q)
+	default:
+		// An unrecognized workspace gets no bar rather than the Python one.
+		return nil
+	}
+}
+
+// projectKind names the workspace's primary language from its root markers.
+// Deliberately narrow: it answers "which completeness bar applies", not "which
+// quality pack to use" — pkg/blocks owns that, and importing it here would
+// close an import cycle through pkg/skills.
+func projectKind(root string) string {
+	switch {
+	case fileExists(filepath.Join(root, "go.mod")):
+		return "go"
+	case fileExists(filepath.Join(root, "Cargo.toml")):
+		return "rust"
+	case fileExists(filepath.Join(root, "package.json")):
+		return "node"
+	case fileExists(filepath.Join(root, "pyproject.toml")),
+		fileExists(filepath.Join(root, "requirements.txt")),
+		fileExists(filepath.Join(root, "setup.py")),
+		fileExists(filepath.Join(root, "setup.cfg")):
+		return "python"
+	}
+	// No manifest: fall back to what sources are actually present.
+	switch {
+	case hasGoSources(root):
+		return "go"
+	case hasPythonSources(root):
+		return "python"
+	}
+	return ""
+}
+
+// wantsScaffold reports whether the query asked for something whose reference
+// answer includes a manifest and tests, rather than a one-line edit.
+func wantsScaffold(query string) bool {
+	for _, w := range []string{"scaffold", "template", "project", "setup", "boilerplate", "starter"} {
+		if strings.Contains(query, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// wantsTests reports whether the query explicitly asked for tests.
+func wantsTests(query string) bool {
+	for _, w := range []string{"test", "spec", "coverage", "tdd"} {
+		if strings.Contains(query, w) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkGoScaffold(root, query string) []CompletenessIssue {
+	var issues []CompletenessIssue
+	sources := listSourcesByExt(root, ".go")
+	if len(sources) == 0 {
+		return nil
+	}
+	if !fileExists(filepath.Join(root, "go.mod")) && wantsScaffold(query) {
+		issues = append(issues, CompletenessIssue{
+			Code: "missing_file", Path: "go.mod",
+			Reason: "Go sources with no go.mod — the module does not build",
+		})
+	}
+	hasTest := false
+	for _, rel := range sources {
+		if strings.HasSuffix(rel, "_test.go") {
+			hasTest = true
+			continue
+		}
+		if why := staticReason(readFile(filepath.Join(root, rel)), ".go"); why != "" {
+			issues = append(issues, CompletenessIssue{Code: "placeholder", Path: rel, Reason: why})
+		}
+	}
+	if !hasTest && (wantsTests(query) || wantsScaffold(query)) {
+		issues = append(issues, CompletenessIssue{
+			Code: "missing_tests", Path: "*_test.go",
+			Reason: "no _test.go anywhere — `go test ./...` verifies nothing",
+		})
+	}
+	return dedupeIssues(issues)
+}
+
+func checkNodeScaffold(root, query string) []CompletenessIssue {
+	var issues []CompletenessIssue
+	pkgPath := filepath.Join(root, "package.json")
+	if !fileExists(pkgPath) {
+		return nil
+	}
+	body := readFile(pkgPath)
+	if wantsTests(query) && !strings.Contains(body, `"test"`) {
+		issues = append(issues, CompletenessIssue{
+			Code: "missing_file", Path: "package.json",
+			Reason: `no "test" script — npm test cannot run, so the gate proves nothing`,
+		})
+	}
+	hasTest := false
+	for _, ext := range []string{".ts", ".tsx", ".js", ".jsx", ".mjs"} {
+		for _, rel := range listSourcesByExt(root, ext) {
+			low := strings.ToLower(rel)
+			if strings.Contains(low, ".test.") || strings.Contains(low, ".spec.") ||
+				strings.Contains(low, "__tests__/") || strings.HasPrefix(low, "test/") {
+				hasTest = true
+				continue
+			}
+			if why := staticReason(readFile(filepath.Join(root, rel)), ext); why != "" {
+				issues = append(issues, CompletenessIssue{Code: "placeholder", Path: rel, Reason: why})
+			}
+		}
+	}
+	if !hasTest && wantsTests(query) {
+		issues = append(issues, CompletenessIssue{
+			Code: "missing_tests", Path: "*.test.ts",
+			Reason: "no *.test.* / *.spec.* file — the test runner collects nothing",
+		})
+	}
+	return dedupeIssues(issues)
+}
+
+func checkRustScaffold(root, query string) []CompletenessIssue {
+	var issues []CompletenessIssue
+	if !fileExists(filepath.Join(root, "Cargo.toml")) {
+		return nil
+	}
+	sources := listSourcesByExt(root, ".rs")
+	if len(sources) == 0 {
+		return []CompletenessIssue{{
+			Code: "missing_file", Path: "src/main.rs",
+			Reason: "Cargo.toml with no .rs sources — the crate has no code",
+		}}
+	}
+	hasTest := false
+	for _, rel := range sources {
+		text := readFile(filepath.Join(root, rel))
+		if strings.Contains(text, "#[test]") || strings.Contains(text, "#[cfg(test)]") ||
+			strings.HasPrefix(rel, "tests"+string(filepath.Separator)) {
+			hasTest = true
+		}
+		if strings.Contains(text, "todo!()") || strings.Contains(text, "unimplemented!()") {
+			issues = append(issues, CompletenessIssue{
+				Code: "placeholder", Path: rel,
+				Reason: "contains todo!() / unimplemented!() on a path that was to be implemented",
+			})
+		}
+	}
+	if !hasTest && (wantsTests(query) || wantsScaffold(query)) {
+		issues = append(issues, CompletenessIssue{
+			Code: "missing_tests", Path: "tests/",
+			Reason: "no #[test] and no tests/ directory — cargo test runs nothing",
+		})
+	}
+	return dedupeIssues(issues)
+}
+
+// listSourcesByExt walks the workspace for one extension, skipping dependency
+// and build directories.
+func listSourcesByExt(root, ext string) []string {
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".slmcode", "node_modules", "vendor", "target", "dist",
+				"build", "__pycache__", ".venv", "venv", ".next", "coverage":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(d.Name()), ext) {
+			return nil
+		}
+		if rel, err := filepath.Rel(root, path); err == nil {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
 }
 
 // FormatCompletenessReport renders issues for agents / Studio / SCRATCH.

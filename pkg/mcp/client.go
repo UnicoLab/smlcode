@@ -30,6 +30,14 @@ const DefaultHTTPTimeout = 60 * time.Second
 // MaxResultBytes caps an MCP tool result before it reaches the model.
 const MaxResultBytes = 16 * 1024
 
+// MaxLineBytes caps ONE JSON-RPC line from a stdio MCP server.
+//
+// bufio.Reader.ReadBytes grows a fresh slice until it finds the delimiter, so a
+// server that writes without ever emitting a newline (a hostile one, or a
+// buggy one dumping a binary) grew the harness heap without bound. The HTTP
+// transport was already bounded with io.LimitReader; stdio was not.
+const MaxLineBytes = 8 * 1024 * 1024
+
 // MaxAdvertisedTools caps the tool contract rendered into mcp_call's
 // description; truncation is announced rather than silent.
 const MaxAdvertisedTools = 12
@@ -99,7 +107,7 @@ func (c *client) startReader() {
 	c.done = make(chan struct{})
 	go func() {
 		for {
-			line, err := c.stdout.ReadBytes('\n')
+			line, err := c.readLine()
 			if len(line) > 0 {
 				select {
 				case c.lines <- line:
@@ -116,6 +124,30 @@ func (c *client) startReader() {
 			}
 		}
 	}()
+}
+
+// readLine reads one newline-terminated frame, refusing to buffer more than
+// MaxLineBytes. An oversized frame kills the connection rather than being
+// resynchronised: a server that cannot frame its own JSON-RPC is not one whose
+// subsequent bytes should be trusted to line up with a request id.
+func (c *client) readLine() ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := c.stdout.ReadSlice('\n')
+		if len(buf)+len(chunk) > MaxLineBytes {
+			return nil, fmt.Errorf(
+				"mcp %s: response frame exceeds %d bytes; the connection is unusable "+
+					"(server is streaming without a newline terminator)", c.cfg.Name, MaxLineBytes)
+		}
+		buf = append(buf, chunk...)
+		if err == nil {
+			return buf, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return buf, err
+	}
 }
 
 // Connect starts configured servers and lists tools (best-effort).

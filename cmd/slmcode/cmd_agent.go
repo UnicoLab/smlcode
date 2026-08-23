@@ -22,6 +22,7 @@ Empty fields inherit the active stack / global config.
 
 Bulk role pins:  slmcode stack apply <name> --agents
 Clear pins:      slmcode stack apply <name> --clear-agent-llm`),
+		Example: "  slmcode agent list\n  slmcode agent show worker\n  slmcode agent edit reviewer",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return agentList(cmd, args)
 		},

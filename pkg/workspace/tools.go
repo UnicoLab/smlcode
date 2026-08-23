@@ -441,6 +441,10 @@ type Workspace struct {
 
 	rootOnce sync.Once
 	realRoot string
+
+	// secrets holds credential values scrubbed from every tool result; see
+	// redact.go.
+	secrets secretSet
 }
 
 func (w *Workspace) readWindow() int {
@@ -507,7 +511,9 @@ func (w *Workspace) capped(fn tools.ToolExecutor) tools.ToolExecutor {
 		if !ok {
 			return out, nil
 		}
-		return w.capResult(s), nil
+		// Redact BEFORE capping so a secret cannot be split across the
+		// truncation boundary and survive in halves.
+		return w.capResult(w.RedactSecrets(s)), nil
 	}
 }
 
@@ -555,6 +561,15 @@ func (w *Workspace) guardWrite(path, kind, content string) (string, bool, error)
 func (w *Workspace) resolve(rel string) (string, error) {
 	if rel == "" {
 		rel = "."
+	}
+	// A control character in a path is never a real file the model meant. NUL
+	// truncates the name at the syscall boundary (so a guard that inspected
+	// "a.go\x00/../../etc/passwd" and a kernel that opened "a.go" disagree) and
+	// a newline splits any command line the path is later interpolated into.
+	if i := strings.IndexFunc(rel, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+		return "", fmt.Errorf(
+			"path contains a control character at byte %d: %q — pass a plain project-relative "+
+				"path such as pkg/foo/bar.go", i, rel)
 	}
 	rel = filepath.Clean(rel)
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
@@ -617,6 +632,9 @@ func (w *Workspace) readFile(_ context.Context, args map[string]interface{}) (in
 	path := w.normalizeRelPath(strArg(args, "path"))
 	if strings.TrimSpace(path) == "" {
 		return "ws_read: path is required. Pass a project-relative file path, e.g. {\"path\":\"pkg/foo/bar.go\"}.", nil
+	}
+	if err := CheckHarnessStateRead(path); err != nil {
+		return err.Error(), nil
 	}
 	abs, err := w.resolve(path)
 	if err != nil {
@@ -1166,6 +1184,9 @@ func (w *Workspace) listDir(_ context.Context, args map[string]interface{}) (int
 		path = "."
 	}
 	path = w.normalizeRelPath(path)
+	if err := CheckHarnessStateRead(path); err != nil {
+		return err.Error(), nil
+	}
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
@@ -1181,6 +1202,9 @@ func (w *Workspace) listDir(_ context.Context, args map[string]interface{}) (int
 	}
 	var dirs, files []string
 	for _, e := range entries {
+		if HideFromListing(filepath.Join(path, e.Name())) {
+			continue
+		}
 		if e.IsDir() {
 			dirs = append(dirs, e.Name()+"/")
 			continue
@@ -1241,6 +1265,17 @@ func globSegments(pat, name []string) bool {
 	return len(name) == 0
 }
 
+// isScratchAncestor reports whether rel is .slmcode itself (or any parent of
+// the agent scratch subtree), so a walk may descend into it to reach
+// .slmcode/scratch/ while still filtering every sibling out of the results.
+func isScratchAncestor(rel string) bool {
+	rel = normalizeRel(rel)
+	if rel == "" {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(ScratchDir)+"/", strings.ToLower(rel)+"/")
+}
+
 func skipDirName(name string) bool {
 	switch name {
 	case ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__",
@@ -1265,6 +1300,9 @@ func (w *Workspace) glob(_ context.Context, args map[string]interface{}) (interf
 			if path != w.Root && skipDirName(d.Name()) {
 				return filepath.SkipDir
 			}
+			if rel, rerr := filepath.Rel(w.Root, path); rerr == nil && HideFromListing(rel) && !isScratchAncestor(rel) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, rerr := filepath.Rel(w.Root, path)
@@ -1272,6 +1310,9 @@ func (w *Workspace) glob(_ context.Context, args map[string]interface{}) (interf
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if HideFromListing(rel) {
+			return nil
+		}
 		ok := MatchGlob(pattern, rel)
 		if !ok && !strings.Contains(pattern, "/") {
 			// A bare "*.go" should also match nested files — that is what a
@@ -1315,6 +1356,9 @@ func (w *Workspace) grep(_ context.Context, args map[string]interface{}) (interf
 	base := w.Root
 	if strings.TrimSpace(sub) != "" {
 		sub = w.normalizeRelPath(sub)
+		if err := CheckHarnessStateRead(sub); err != nil {
+			return err.Error(), nil
+		}
 		var err error
 		base, err = w.resolve(sub)
 		if err != nil {
@@ -1348,6 +1392,9 @@ func (w *Workspace) grep(_ context.Context, args map[string]interface{}) (interf
 			if path != base && skipDirName(d.Name()) {
 				return filepath.SkipDir
 			}
+			if rel, rerr := filepath.Rel(w.Root, path); rerr == nil && HideFromListing(rel) && !isScratchAncestor(rel) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if globFilter != "" {
@@ -1356,6 +1403,9 @@ func (w *Workspace) grep(_ context.Context, args map[string]interface{}) (interf
 				!MatchGlob("**/"+globFilter, filepath.ToSlash(rel)) {
 				return nil
 			}
+		}
+		if grel, gerr := filepath.Rel(w.Root, path); gerr == nil && HideFromListing(grel) {
+			return nil
 		}
 		data, rerr := os.ReadFile(path)
 		if rerr != nil || len(data) > 500_000 || isProbablyBinary(data) {

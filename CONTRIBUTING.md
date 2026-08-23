@@ -88,6 +88,20 @@ The rules, now that it is green:
   metrics row with real edit accounting. It is hermetic (it redirects `HOME`) and runs in
   well under a second under plain `make test`. If a change to any layer breaks the
   contract between layers, this is the test that says so.
+- **Driving the real binary with no model**: `test/fakemodel` is the same canned
+  OpenAI-compatible server, lifted out as a standalone command so a built `slmcode` can be
+  exercised end to end — the CLI surface (gates, footers, exit codes, `apply`, Studio) is not
+  reachable from an in-process test.
+
+  ```bash
+  go run ./test/fakemodel -addr 127.0.0.1:8099 &            # -mode 401|404|500|garbage
+  cd /tmp/demo && printf 'module d\ngo 1.22\n' > go.mod
+  SLMCODE_PROVIDER=openai SLMCODE_MODEL=fake-model SLMCODE_API_KEY=x \
+    SLMCODE_ENDPOINT=http://127.0.0.1:8099/v1 slmcode run "add a Divide function"
+  ```
+
+  The `-mode` flag reproduces the endpoint failures `slmcode doctor` has to explain, which is
+  how the doctor remedies for 401 / 404 / non-OpenAI responses are checked.
 - **Frontend**: Vitest + Testing Library in `web/src/**/*.test.tsx`.
 - Determinism matters more than coverage here: an offline test that depends on a model's
   wording is worse than no test. Prefer fixtures and fakes over live calls.

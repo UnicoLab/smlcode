@@ -15,8 +15,8 @@ shareable: true
 spec:
   pipeline: go
   quality: go
-  agents: [go-worker, go-tester]
-  skills: [atomic-coding, specialist-tester, specialist-worker]
+  agents: [go-worker, go-tester, go-reviewer]
+  skills: [atomic-coding, specialist-tester, specialist-worker, go-table-tests, go-concurrency]
   pin_skills: true
   override_tester: go-tester
   override_worker: go-worker

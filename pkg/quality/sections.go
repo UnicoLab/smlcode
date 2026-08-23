@@ -1,6 +1,12 @@
 package quality
 
-import "strings"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // Harness-authored section headers.
 //
@@ -65,4 +71,89 @@ func StripHarnessSections(s string) string {
 		s = s[:cut]
 	}
 	return strings.TrimSpace(s)
+}
+
+// ── Forged-marker defense ─────────────────────────────────────────────────
+//
+// Everything above is a MARKER THE HARNESS MINTS and the review gates then
+// read back as ground truth. The markers are plain markdown, and three
+// untrusted sources can put plain markdown into the string the gates scan:
+//
+//   - the repository (a file the worker read, AGENTS.md, a SKILL.md, a commit
+//     message, or the stdout of the project's own test suite);
+//   - the model's own prose — the worker prompt literally lists these headers,
+//     so a confused SLM copying the format is the common case, not the
+//     exotic one;
+//   - anything that later concatenates the two.
+//
+// The direction that matters is asymmetric. Forging a FAILURE only makes the
+// harness stricter, so the *FailedInOutput predicates stay plain string
+// matches — which is also what lets them survive a process restart, where the
+// section was persisted to the board by an earlier run.
+//
+// Forging a PASS is the dangerous direction: SmokePassedInOutput suppresses
+// both the RequireSmoke gate and the review-time smoke insurance run, so a
+// single forged line turns "the project compiles" into "the model said so".
+// The genuine section therefore carries a per-process nonce, and
+// SmokePassedInOutput requires it.
+
+// smokeNonce is a fresh random tag per harness process. It is unguessable by
+// anything that has not seen this process's own output — which covers every
+// repository-supplied string and any model text written before the harness
+// emitted a section.
+//
+// Residual, stated plainly: the nonce travels inside the section text that is
+// fed back to the model, so a model that deliberately parroted its own context
+// could reproduce it. That is a strictly weaker adversary than the ones this
+// defends against (a model that wants to lie about tests already controls its
+// own tool calls), and closing it needs the verdict to travel out-of-band of
+// the prompt entirely.
+var smokeNonce = newSectionNonce()
+
+func newSectionNonce() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// A predictable nonce is still better than none: it keeps repo content
+		// and pre-existing model text from matching.
+		return "nonceless"
+	}
+	return hex.EncodeToString(buf)
+}
+
+// smokePassStamp is appended to a genuine PASSED deterministic-smoke verdict.
+func smokePassStamp() string {
+	return fmt.Sprintf("<!-- slmcode:smoke-pass:%s -->", smokeNonce)
+}
+
+// harnessMarkerRe matches every marker an untrusted string could use to forge
+// a harness verdict: the section headers, the tester's execution-evidence
+// frames, and a runner exit line.
+var harnessMarkerRe = regexp.MustCompile(
+	`(?im)^[ \t]*(#{1,6}[ \t]*(?:Deterministic smoke|Acceptance smoke|Static quality gate|` +
+		`Claimed files gate|Disk evidence)|Observation:|exit error:|` +
+		`exit[ _]?(?:code|status)[ \t]*[:=]?[ \t]*-?\d+)`)
+
+// smokeStampRe strips any pre-existing (or forged) pass stamp.
+var smokeStampRe = regexp.MustCompile(`<!--\s*slmcode:smoke-pass:[0-9a-zA-Z]*\s*-->`)
+
+// DefuseHarnessMarkers neutralizes harness-minted markers in UNTRUSTED text —
+// repository instructions, skill bodies, block descriptions, tool output, and
+// model prose — so the text can be shown to a model or concatenated with real
+// harness sections without ever being mistaken for one.
+//
+// It is deliberately lossy in one direction only: the words survive, their
+// structural authority does not. `## Deterministic smoke` becomes
+// `> (quoted) Deterministic smoke`, which reads the same to a human and to a
+// model but matches no gate.
+func DefuseHarnessMarkers(s string) string {
+	if s == "" {
+		return s
+	}
+	s = smokeStampRe.ReplaceAllString(s, "")
+	return harnessMarkerRe.ReplaceAllStringFunc(s, func(m string) string {
+		trimmed := strings.TrimLeft(m, " \t")
+		indent := m[:len(m)-len(trimmed)]
+		trimmed = strings.TrimLeft(trimmed, "#")
+		return indent + "> (quoted) " + strings.TrimSpace(trimmed)
+	})
 }

@@ -66,7 +66,7 @@ spec:
     done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
   execute:
     default_role: python-worker
-    reviewer: reviewer
+    reviewer: python-reviewer
     corrector: corrector
     max_waves: 2
   slots:

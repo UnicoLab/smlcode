@@ -158,7 +158,10 @@ func TestStatusTrackerLevelBasedCounters(t *testing.T) {
 	})
 	SetColorMode(ColorNever)
 	foot := st.Footer()
-	if !strings.Contains(foot, "done=1") || !strings.Contains(foot, "fail=0") {
+	// steps/errors, not done/fail: these count finished agent CALLS, and
+	// labeling them done/fail made a run that finished 0 of 1 tasks report
+	// "done=14".
+	if !strings.Contains(foot, "steps=1") || !strings.Contains(foot, "errors=0") {
 		t.Fatalf("footer=%q", foot)
 	}
 }

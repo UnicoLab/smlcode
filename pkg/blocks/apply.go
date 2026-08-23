@@ -29,6 +29,9 @@ type ApplyResult struct {
 	AgentsWritten []string `json:"agents_written,omitempty"`
 	SkillsPinned  []string `json:"skills_pinned,omitempty"`
 	PipelinePath  string   `json:"pipeline_path,omitempty"`
+	// ShellAllowed lists the quality pack's safe_prefixes merged into
+	// cfg.ShellAllow, so the CLI can show which toolchain the pack unlocked.
+	ShellAllowed []string `json:"shell_allowed,omitempty"`
 }
 
 // ApplyPack materializes a language/domain pack into cfg + project files.
@@ -95,6 +98,16 @@ func ApplyPack(cfg *config.Config, reg *Registry, packID string, opts ApplyOptio
 		}
 		if q.Spec.Smoke != "" {
 			cfg.PostWorkerSmoke = true
+		}
+		// A pack's safe_prefixes were previously inert: nothing merged them into
+		// the shell allow list, so `npx tsc --noEmit` or `dotnet test` — the very
+		// commands the pack tells the tester to run — were refused by the shell
+		// guard as unapproved executors. Applying a pack is the operator's
+		// explicit opt-in to that language's toolchain, so the prefixes land in
+		// ShellAllow here.
+		if len(q.Spec.SafePrefixes) > 0 {
+			cfg.ShellAllow = mergeUnique(cfg.ShellAllow, q.Spec.SafePrefixes)
+			res.ShellAllowed = append([]string{}, q.Spec.SafePrefixes...)
 		}
 		res.QualityID = pack.Spec.Quality
 	}

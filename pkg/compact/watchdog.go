@@ -166,9 +166,25 @@ func CompactChatMessagesWithDigest(msgs []ChatMsg, keepLast, digestBytes int) ([
 	}
 	dropped := msgs[:start]
 	out := make([]ChatMsg, 0, len(msgs)-start+2)
-	out = append(out, ChatMsg{Role: RoleSystem, Content: DigestOrFallback(dropped, digestBytes)})
-	out = append(out, msgs[start:]...)
-	out = append(out, ChatMsg{Role: RoleUser, Content: ResumeMessage})
+	digest := DigestOrFallback(dropped, digestBytes)
+	tail := msgs[start:]
+	// The resume notice is a USER message, and a user message may not follow an
+	// assistant message whose tool_calls are still unanswered — which is
+	// exactly the state an interrupted ReAct checkpoint is saved in (that is
+	// what ReactCheckpoint.PendingToolCalls means). Appending it there produced
+	// assistant(tool_calls) → user → tool(...), which every OpenAI-compatible
+	// server rejects with HTTP 400, so the resume path could never recover the
+	// run it had carefully checkpointed. Fold the notice into the digest
+	// instead: same information, legal position.
+	appendResume := !TrailingUnansweredToolCalls(tail)
+	if !appendResume {
+		digest = strings.TrimSpace(digest + "\n\n" + ResumeMessage)
+	}
+	out = append(out, ChatMsg{Role: RoleSystem, Content: digest})
+	out = append(out, tail...)
+	if appendResume {
+		out = append(out, ChatMsg{Role: RoleUser, Content: ResumeMessage})
+	}
 	return out, true
 }
 

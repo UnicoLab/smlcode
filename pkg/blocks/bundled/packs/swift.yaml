@@ -1,0 +1,22 @@
+api_version: blocks/v1
+kind: pack
+id: swift
+name: Swift Language Pack
+description: >-
+  Swift Package Manager pack — pipeline, quality (swift build / swift test)
+  and SwiftPM-aware worker and tester agents.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: swift
+tags: [swift, swiftpm, xctest, pack, marketplace]
+icon: "🧡"
+shareable: true
+spec:
+  pipeline: swift
+  quality: swift
+  agents: [swift-worker, swift-tester]
+  skills: [atomic-coding, specialist-worker, specialist-tester]
+  pin_skills: true
+  override_tester: swift-tester
+  override_worker: swift-worker

@@ -73,7 +73,10 @@ func pipelinePlanGateStatus(c *config.Config) string {
 		if ok && strings.TrimSpace(ask.ID) != "" {
 			return fmt.Sprintf("waiting for approval id=%s tasks=%d timeout=%s", ask.ID, ask.TaskCount, timeout)
 		}
-		return "ask (will pause before execute; timeout auto-approves after " + timeout + ")"
+		// NOT "timeout auto-approves": with a terminal attached the gate blocks
+		// until it is answered, and headless it follows --on-gate-timeout,
+		// which defaults to stop. Nothing auto-approves a plan any more.
+		return "ask (pauses before execute · on a terminal it waits for you · headless it follows --on-gate-timeout, default stop; engine timeout " + timeout + ")"
 	default:
 		return mode
 	}

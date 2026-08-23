@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
 // ── Pending review queue (permission mode "review") ──
@@ -314,6 +315,16 @@ func (s *Server) applyPending(id string) (string, error) {
 	target, err := s.workspacePath(pf.Path)
 	if err != nil {
 		return pf.Path, ErrPathEscape
+	}
+	// The queue entry is a file on disk; approving a diff in the UI must not be
+	// a way to land .slmcode/hooks.json or .slmcode/config.yaml (arbitrary bash
+	// on the next run, or a switch that turns the guards off). The tool layer
+	// already refuses those writes — this is the second, independent check on
+	// the path that actually reaches os.WriteFile.
+	if rel, rerr := filepath.Rel(s.rootDir(), target); rerr != nil {
+		return pf.Path, ErrPathEscape
+	} else if herr := workspace.CheckHarnessStateWrite(rel); herr != nil {
+		return pf.Path, herr
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return pf.Path, err

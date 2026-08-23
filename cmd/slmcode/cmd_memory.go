@@ -90,6 +90,10 @@ func memoryShowCmd() *cobra.Command {
 			}
 
 			cli.Header("Memory")
+			fmt.Println(cli.Dim("  What the harness carries into the next run's prompt: episodes (what happened),"))
+			fmt.Println(cli.Dim("  facts (what is true about this repo), procedures (what worked). Trimmed to the"))
+			fmt.Println(cli.Dim("  token budget below and injected per role. `slmcode memory clear` resets it."))
+			fmt.Println()
 			cli.KeyVal("project", store.Dir())
 			cli.KeyVal("user", store.UserDir())
 			cli.KeyVal("role", orDash(role))

@@ -510,7 +510,7 @@ func FormatAcceptanceSection(sr SmokeResult) string {
 	b.WriteString(sr.Command)
 	b.WriteString("\n")
 	if strings.TrimSpace(sr.Output) != "" {
-		b.WriteString(sectionOutput(sr))
+		b.WriteString(DefuseHarnessMarkers(sectionOutput(sr)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -554,7 +554,9 @@ func FormatSmokeSection(sr SmokeResult) string {
 	b.WriteString(SmokeSectionHeader)
 	b.WriteString("\n")
 	if sr.OK {
-		b.WriteString(SmokePassedMarker)
+		// The PASS verdict is the only one a forger gains anything from, so it
+		// carries this process's nonce (see sections.go).
+		b.WriteString(SmokePassedMarker + " " + smokePassStamp())
 	} else {
 		b.WriteString(SmokeFailedMarker)
 	}
@@ -562,7 +564,9 @@ func FormatSmokeSection(sr SmokeResult) string {
 	b.WriteString(sr.Command)
 	b.WriteString("\n")
 	if strings.TrimSpace(sr.Output) != "" {
-		b.WriteString(sectionOutput(sr))
+		// A hostile project's own test suite can print anything it likes;
+		// strip harness markers out of captured output before embedding it.
+		b.WriteString(DefuseHarnessMarkers(sectionOutput(sr)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -578,14 +582,22 @@ func SmokeFailedInOutput(output string) bool {
 	return strings.Contains(rest, SmokeFailedMarker)
 }
 
-// SmokePassedInOutput reports a successful deterministic smoke section.
+// SmokePassedInOutput reports a HARNESS-MINTED successful deterministic smoke
+// section.
+//
+// The pass stamp is required: `## Deterministic smoke` + `PASSED` is text any
+// repository file, test-suite stdout or model sentence can contain, and this
+// predicate is what suppresses both the RequireSmoke gate and the review-time
+// smoke insurance run. A section persisted by an earlier process carries a
+// stale nonce and is treated as "not proven", which re-runs the smoke — the
+// fail-safe direction. See sections.go for the full argument.
 func SmokePassedInOutput(output string) bool {
 	idx := strings.Index(output, SmokeSectionHeader)
 	if idx < 0 {
 		return false
 	}
 	rest := output[idx:]
-	return strings.Contains(rest, SmokePassedMarker) && !strings.Contains(rest, SmokeFailedMarker)
+	return strings.Contains(rest, smokePassStamp()) && !strings.Contains(rest, SmokeFailedMarker)
 }
 
 // HasSmokeCommand reports whether a post-worker smoke command exists for files.

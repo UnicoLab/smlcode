@@ -15,7 +15,7 @@ shareable: true
 spec:
   pipeline: java
   quality: java
-  agents: [java-worker, java-tester]
+  agents: [java-worker, java-tester, java-reviewer]
   skills: [atomic-coding, specialist-tester, specialist-worker]
   pin_skills: true
   override_tester: java-tester

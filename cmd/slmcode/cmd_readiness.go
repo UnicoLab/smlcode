@@ -25,6 +25,7 @@ func readinessCmd() *cobra.Command {
 		Use:     "readiness",
 		Aliases: []string{"ready"},
 		Short:   "Score and optionally harden SLM production settings",
+		Example: "  slmcode readiness\n  slmcode readiness --fix\n  slmcode readiness --json",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {

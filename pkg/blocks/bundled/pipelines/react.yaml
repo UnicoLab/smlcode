@@ -1,7 +1,7 @@
 api_version: blocks/v1
 kind: pipeline
 id: react
-name: React/TypeScript Engineering Pipeline
+name: React Engineering Pipeline
 description: >-
   Full SLMCode graph tuned for React/Vite/Next — lint, tsc, test, and build
   gates with a TS-aware tester and frontend-oriented explore tips.
@@ -66,7 +66,7 @@ spec:
     done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
   execute:
     default_role: react-worker
-    reviewer: reviewer
+    reviewer: react-reviewer
     corrector: corrector
     max_waves: 2
   slots:

@@ -19,10 +19,19 @@ type StatusTracker struct {
 	taskID  string
 	message string
 	active  map[string]time.Time // agent key -> start
-	done    int
-	failed  int
+	steps   int
+	errors  int
 	tokens  int
 	started time.Time
+
+	// tasks reports board progress. The footer's counters count AGENT CALLS,
+	// not tasks — a run that finished 0 of 1 tasks showed "done=14 fail=3",
+	// which reads as fourteen finished tasks. Board progress is the number a
+	// user actually wants, so it is sourced separately and labeled.
+	tasks     func() (done, total int)
+	taskDone  int
+	taskTotal int
+	taskAt    time.Time
 }
 
 func NewStatusTracker() *StatusTracker {
@@ -65,9 +74,9 @@ func (s *StatusTracker) Observe(e stream.Event) {
 		// counted "no errors found" as a failure.
 		switch e.Level {
 		case stream.LevelError, stream.LevelProblem:
-			s.failed++
+			s.errors++
 		default:
-			s.done++
+			s.steps++
 		}
 	case stream.KindToken:
 		s.tokens++
@@ -104,8 +113,39 @@ func (s *StatusTracker) Footer() string {
 	if s.tokens > 0 {
 		tok = fmt.Sprintf("  tokens=%s", humanCount(s.tokens))
 	}
-	return fmt.Sprintf("%s  phase=%s  active=%s  done=%d  fail=%d%s  elapsed=%s",
-		Dim("──"), Accent(phase), Cyan(active), s.done, s.failed, Dim(tok), Dim(elapsed.String()))
+	// "steps"/"errors", not "done"/"fail": these count finished agent calls.
+	return fmt.Sprintf("%s  phase=%s  active=%s%s  steps=%d  errors=%d%s  elapsed=%s",
+		Dim("──"), Accent(phase), Cyan(active), s.taskField(), s.steps, s.errors,
+		Dim(tok), Dim(elapsed.String()))
+}
+
+// SetTaskSource installs the board-progress probe used by the footer's
+// tasks=d/t field. Passing nil hides the field.
+func (s *StatusTracker) SetTaskSource(fn func() (done, total int)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.tasks = fn
+	s.taskAt = time.Time{}
+	s.mu.Unlock()
+}
+
+// taskField renders "  tasks=d/t", refreshing at most twice a second so a
+// footer repainted on every event does not re-read the board every time.
+// Caller holds s.mu.
+func (s *StatusTracker) taskField() string {
+	if s.tasks == nil {
+		return ""
+	}
+	if time.Since(s.taskAt) > 500*time.Millisecond {
+		s.taskDone, s.taskTotal = s.tasks()
+		s.taskAt = time.Now()
+	}
+	if s.taskTotal <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("  tasks=%d/%d", s.taskDone, s.taskTotal)
 }
 
 // eventIcon maps kind+level onto the leading marker. Errors are red whatever
@@ -184,6 +224,7 @@ func FormatEvent(e stream.Event) string {
 	}
 	// Collapse noisy log spam into a single readable line.
 	msg = collapseWhitespace(msg)
+	msg = stripAPIAdvice(msg)
 	msg = ClipWidth(msg, 120)
 	switch e.Level {
 	case stream.LevelError, stream.LevelProblem:
@@ -271,4 +312,21 @@ func summarizeOutput(out string) string {
 		return ClipWidth(line, 140)
 	}
 	return ""
+}
+
+// stripAPIAdvice removes the engine's "— POST /api/…" tail from a rendered
+// message.
+//
+// The orchestrator's gate events tell a Studio client where to send the answer.
+// In a terminal that advice was the ONLY thing the user was offered — "approve
+// plan? 1 tasks — POST /api/plan/approve" — and now that the CLI draws the gate
+// card itself and takes a keystroke, it is both wrong and duplicated. The event
+// still carries it for Studio; the terminal renderer drops it.
+func stripAPIAdvice(msg string) string {
+	for _, sep := range []string{" — POST /api/", " - POST /api/", " (POST /api/"} {
+		if i := strings.Index(msg, sep); i >= 0 {
+			return strings.TrimSpace(msg[:i])
+		}
+	}
+	return msg
 }

@@ -40,6 +40,7 @@ func boardCmd() *cobra.Command {
 				})
 			}
 			cli.Header("Kanban board")
+			noteUninitialized(ws.Config.Root)
 			if b.Plan.Summary != "" {
 				fmt.Println(cli.Dim("Plan: ") + b.Plan.Summary)
 				fmt.Println()
@@ -80,6 +81,7 @@ func taskCmd() *cobra.Command {
 		Use:     "task",
 		Aliases: []string{"t"},
 		Short:   "Add / edit / move / delegate / checklist tasks (live while agents run)",
+		Example: "  slmcode task list\n  slmcode task add \"write the migration\"\n  slmcode task move T3 done",
 	}
 
 	var (
@@ -375,6 +377,13 @@ func contextCmd() *cobra.Command {
 		}
 		body, _ := ws.Store.Read("CONTEXT.md")
 		cli.Header("CONTEXT.md")
+		if noteUninitialized(ws.Config.Root) {
+			return nil
+		}
+		if strings.TrimSpace(body) == "" {
+			fmt.Println(cli.Dim("  (empty — the context agent fills CONTEXT.md on the first `slmcode run`)"))
+			return nil
+		}
 		fmt.Println(body)
 		return nil
 	}
@@ -382,6 +391,7 @@ func contextCmd() *cobra.Command {
 		Use:     "context",
 		Aliases: []string{"ctx"},
 		Short:   "Show / edit working CONTEXT.md (safe while agents run)",
+		Example: "  slmcode context\n  slmcode context append \"the API is versioned under /v2\"\n  slmcode context edit",
 		RunE:    showCtx,
 	}
 	cmd.AddCommand(&cobra.Command{
@@ -424,9 +434,10 @@ func docsCmd() *cobra.Command {
 		return nil
 	}
 	cmd := &cobra.Command{
-		Use:   "docs",
-		Short: "List / show / edit .slmcode markdown memory",
-		RunE:  listDocs,
+		Use:     "docs",
+		Short:   "List / show / edit .slmcode markdown memory",
+		Example: "  slmcode docs\n  slmcode docs show MEMORY.md",
+		RunE:    listDocs,
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
@@ -464,8 +475,9 @@ func docsCmd() *cobra.Command {
 
 func planCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "plan",
-		Short: "Show current PLAN.md",
+		Use:     "plan",
+		Short:   "Show current PLAN.md",
+		Example: "  slmcode plan",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
@@ -473,6 +485,13 @@ func planCmd() *cobra.Command {
 			}
 			body, _ := ws.Store.Read("PLAN.md")
 			cli.Header("PLAN.md")
+			if noteUninitialized(ws.Config.Root) {
+				return nil
+			}
+			if strings.TrimSpace(body) == "" {
+				fmt.Println(cli.Dim("  (empty — the planner writes PLAN.md on the first `slmcode run`)"))
+				return nil
+			}
 			fmt.Println(body)
 			return nil
 		},

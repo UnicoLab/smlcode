@@ -36,6 +36,7 @@ Inspect and apply:
   slmcode blocks apply go --materialize-agents
   slmcode blocks apply go --force
   slmcode blocks validate`),
+		Example: "  slmcode blocks list\n  slmcode blocks show pack go\n  slmcode blocks apply python",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return blockList(cmd, args)
 		},

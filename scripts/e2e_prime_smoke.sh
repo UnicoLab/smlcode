@@ -35,6 +35,13 @@ echo "== CLI stack list/show/apply =="
 "$BIN" agent list | head -20
 
 echo "== studio API smoke =="
+# Studio's session-token auth (pkg/server: Options.Token / NoAuth,
+# SLMCODE_STUDIO_NO_AUTH env var) is in-flight elsewhere in this tree. This
+# script drives raw curl requests with no way to read a token out of a
+# background process's stdout race-free, so it opts out of auth explicitly
+# rather than guessing — this is the documented escape hatch, not a hack
+# around it, and is a no-op today if the CLI doesn't wire auth on yet.
+export SLMCODE_STUDIO_NO_AUTH=1
 "$BIN" studio --listen 127.0.0.1:17420 >/tmp/slmcode-e2e-studio.log 2>&1 &
 PID=$!
 sleep 1

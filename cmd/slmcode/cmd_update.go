@@ -5,14 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/installmeta"
-	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 )
 
 func updateCmd() *cobra.Command {
@@ -20,6 +18,7 @@ func updateCmd() *cobra.Command {
 		checkOnly bool
 		userMode  bool
 		system    bool
+		assumeYes bool
 		srcFlag   string
 	)
 	cmd := &cobra.Command{
@@ -70,80 +69,21 @@ Examples:
 				cli.KeyVal("last_install", meta.InstalledAt)
 			}
 
-			info := updatecheck.Check(Version)
-			if info.Latest != "" {
-				cli.KeyVal("latest", info.Latest)
-			}
-			if info.UpdateAvailable {
-				fmt.Println(cli.Warn("new version v" + info.Latest + " available — run: slmcode update"))
-			} else if info.Latest != "" && info.Error == "" {
-				fmt.Println(cli.Success("up to date"))
-			}
-
 			if method == "binary" {
-				return updateFromBinary(meta, checkOnly, userMode, system)
+				return updateFromBinary(meta, checkOnly, userMode, system, assumeYes)
 			}
-			return updateFromSource(meta, checkOnly, userMode, system, srcFlag)
+			return updateFromSource(meta, checkOnly, userMode, system, srcFlag, assumeYes)
 		},
 	}
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "compare installed vs available without installing")
 	cmd.Flags().BoolVar(&userMode, "user", false, "install to ~/.local/bin")
 	cmd.Flags().BoolVar(&system, "system", false, "install system-wide (Homebrew /usr/local)")
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "do not prompt before replacing the binary")
 	cmd.Flags().StringVar(&srcFlag, "src", "", "path to slmcode source checkout")
 	return cmd
 }
 
-func updateFromBinary(meta *installmeta.Meta, checkOnly, userMode, system bool) error {
-	repo := "UnicoLab/smlcode"
-	if meta != nil && meta.Repo != "" {
-		repo = meta.Repo
-	}
-	cli.KeyVal("repo", repo)
-	if checkOnly {
-		fmt.Println(cli.Info("re-run without --check to download the latest release binary"))
-		fmt.Println(cli.Dim("or: curl -fsSL https://raw.githubusercontent.com/" + repo + "/main/scripts/install-remote.sh | bash"))
-		return nil
-	}
-
-	mode := "user"
-	if meta != nil && meta.Mode != "" {
-		mode = meta.Mode
-	}
-	if userMode {
-		mode = "user"
-	}
-	if system {
-		mode = "system"
-	}
-
-	if runtime.GOOS == "windows" {
-		fmt.Println(cli.Info("downloading latest Windows release via PowerShell…"))
-		ps := `irm https://raw.githubusercontent.com/` + repo + `/main/scripts/install.ps1 | iex`
-		c := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps)
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		c.Stdin = os.Stdin
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("binary update failed: %w", err)
-		}
-	} else {
-		fmt.Println(cli.Info("downloading latest release binary (" + mode + ")…"))
-		url := "https://raw.githubusercontent.com/" + repo + "/main/scripts/install-remote.sh"
-		script := fmt.Sprintf("curl -fsSL %q | bash -s -- --%s", url, mode)
-		c := exec.Command("bash", "-c", script)
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		c.Stdin = os.Stdin
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("binary update failed: %w", err)
-		}
-	}
-	fmt.Println(cli.Success("update complete"))
-	fmt.Println(cli.Dim("verify: slmcode version && slmcode doctor"))
-	return nil
-}
-
-func updateFromSource(meta *installmeta.Meta, checkOnly, userMode, system bool, srcFlag string) error {
+func updateFromSource(meta *installmeta.Meta, checkOnly, userMode, system bool, srcFlag string, assumeYes bool) error {
 	src, how, err := resolveUpdateSource(srcFlag)
 	if err != nil {
 		return err
@@ -179,6 +119,10 @@ func updateFromSource(meta *installmeta.Meta, checkOnly, userMode, system bool, 
 	script := filepath.Join(src, "scripts", "install.sh")
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("install script missing: %s (is --src a slmcode checkout?)", script)
+	}
+	if !assumeYes && !confirm("Rebuild from "+src+" and reinstall onto PATH?", false) {
+		fmt.Println(cli.Dim("cancelled"))
+		return nil
 	}
 
 	fmt.Println(cli.Info("rebuilding + installing (" + mode + ")…"))

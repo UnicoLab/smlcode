@@ -8,14 +8,17 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { AppContext } from '@/App';
-import { getModels, getAgents, updateConfig } from '@/api/client';
+import { ApiError, getModels, getAgents, updateConfig } from '@/api/client';
 import UpdateBanner from './UpdateBanner';
+import ConnectionBadge from './ui/ConnectionBadge';
+import { useToast } from './ui/Toast';
 import type { AgentSpec, AuthStatus, ModelCost } from '@/types';
 import clsx from 'clsx';
 
 export default function TopBar() {
   const ctx = useContext(AppContext);
   const navigate = useNavigate();
+  const toast = useToast();
 
   const [models, setModels] = useState<string[]>([]);
   const [modelCosts, setModelCosts] = useState<Record<string, ModelCost>>({});
@@ -63,8 +66,8 @@ export default function TopBar() {
         if (c?.model) costMap[c.model] = c;
       });
       setModelCosts(costMap);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.reportError(err, 'Could not load the model catalog');
     }
   };
 
@@ -78,12 +81,28 @@ export default function TopBar() {
 
   const handleModelSelect = async (model: string) => {
     setShowModelMenu(false);
+    const previous = currentModel;
     try {
       // Manual model switch clears active_stack (backend ApplyPatch).
       const nc = await updateConfig({ model });
       setCurrentModel(nc.model);
       ctx?.refresh();
-    } catch { /* ignore */ }
+      toast.success(`Model switched to ${nc.model}`);
+    } catch (err) {
+      // The server answers 409 while a run is active. This used to be a bare
+      // `catch {}`, so the dropdown silently kept the old model with no
+      // explanation at all.
+      setCurrentModel(previous);
+      if (err instanceof ApiError && err.isConflict) {
+        toast.push({
+          tone: 'warning',
+          title: 'Model unchanged',
+          detail: 'A run is active — stop it before changing the model.',
+        });
+      } else {
+        toast.reportError(err, 'Could not switch model');
+      }
+    }
   };
 
   const handleAgentSelect = (id: string) => {
@@ -92,7 +111,12 @@ export default function TopBar() {
   };
 
   useEffect(() => {
-    getAgents().then(setAgents).catch(() => {});
+    getAgents()
+      .then(setAgents)
+      .catch(() => {
+        // Non-fatal: the specialist picker just stays empty. The connection
+        // badge is the single place that reports backend trouble.
+      });
   }, [ctx?.config]);
 
   const authOk = auth ? auth.configured : true;
@@ -102,7 +126,7 @@ export default function TopBar() {
     <>
       <UpdateBanner />
       <header className="h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10">
-      <button onClick={() => navigate('/')} className="flex items-center gap-2 shrink-0">
+      <button onClick={() => navigate('/')} className="focus-ring flex items-center gap-2 shrink-0" aria-label="Go to the Live view">
         <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
           <Zap size={14} className="text-white" />
         </div>
@@ -113,6 +137,8 @@ export default function TopBar() {
       </button>
 
       <div className="flex-1" />
+
+      <ConnectionBadge state={ctx?.connection ?? 'connecting'} onRetry={ctx?.reconnect} />
 
       {/* Specialist selector */}
       {agents.length > 0 && (
@@ -259,11 +285,21 @@ export default function TopBar() {
         )}
       </div>
 
-      <button onClick={ctx?.toggleDark} className="btn-ghost p-2 rounded-lg" title="Toggle theme">
+      <button
+        onClick={ctx?.toggleDark}
+        className="btn-ghost focus-ring p-2 rounded-lg"
+        title="Toggle theme"
+        aria-label={ctx?.dark ? 'Switch to light theme' : 'Switch to dark theme'}
+      >
         {ctx?.dark ? <Sun size={18} /> : <Moon size={18} />}
       </button>
 
-      <button onClick={() => navigate('/settings')} className="btn-ghost p-2 rounded-lg" title="Settings">
+      <button
+        onClick={() => navigate('/settings')}
+        className="btn-ghost focus-ring p-2 rounded-lg"
+        title="Settings"
+        aria-label="Open settings"
+      >
         <Settings size={18} />
       </button>
 

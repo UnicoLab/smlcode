@@ -22,6 +22,10 @@ import (
 // TestStudioUIInteraction exercises Studio Live flows at HTTP + asset level
 // (settings, docs markdown editor markers, board/deps, stop/status, SSE).
 func TestStudioUIInteraction(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(findRepoRoot(t), "cmd", "slmcode", "ui", "assets")); os.IsNotExist(err) {
+		t.Skip("Studio UI assets not built — run `make bootstrap` or `make ui-react` before running this test")
+	}
+
 	root := t.TempDir()
 	_ = os.WriteFile(filepath.Join(root, "hello.go"), []byte("package main\nfunc Hello() string { return \"hi\" }\n"), 0o644)
 	cfg := config.Default(root)

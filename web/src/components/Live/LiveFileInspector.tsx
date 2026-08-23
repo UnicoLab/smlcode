@@ -108,7 +108,10 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
           }
         }
       }
-    } catch {}
+    } catch {
+      // The output is only sometimes JSON — a parse failure means "no file
+      // list here", which is normal, not an error worth surfacing.
+    }
     // Also try simple JSON parse of the whole output
     try {
       const obj = JSON.parse(output);
@@ -121,7 +124,9 @@ function extractFiles(events: RunEvent[]): FileInfo[] {
           }
         }
       }
-    } catch {}
+    } catch {
+      // Same: non-JSON output simply contributes no file paths.
+    }
   }
 
   // 2. Also extract from event messages/scopes using regex + standalone filenames

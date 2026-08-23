@@ -18,6 +18,8 @@ import {
 import { patchTask, deleteTask } from '@/api/client';
 import type { Task } from '@/types';
 import clsx from 'clsx';
+import { useConfirm } from '@/components/ui/Modal';
+import { useToast } from '@/components/ui/Toast';
 
 interface TaskCardProps {
   task: Task;
@@ -48,6 +50,8 @@ const STATUS_ICON: Record<string, ReactNode> = {
 const STATUS_OPTIONS = ['todo', 'scoped', 'ready', 'running', 'review', 'correcting', 'blocked', 'failed', 'done'];
 
 export default function TaskCard({ task, columns, columnLabels, onUpdate, isDragOverlay }: TaskCardProps) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -114,11 +118,18 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
 
   const handleDelete = async (e: MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`Delete task "${task.title}"?`)) return;
+    const ok = await confirm({
+      title: `Delete task "${task.title}"?`,
+      description: 'The task is removed from the board.',
+      confirmLabel: 'Delete task',
+    });
+    if (!ok) return;
     try {
       await deleteTask(task.id);
       onUpdate();
-    } catch { /* ignore */ }
+    } catch (err) {
+      toast.reportError(err, 'Could not delete the task');
+    }
   };
 
   return (

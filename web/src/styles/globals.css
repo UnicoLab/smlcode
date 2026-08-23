@@ -1,3 +1,5 @@
+@import './fonts.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -19,6 +21,24 @@
 @layer base {
   * {
     @apply border-gray-200 dark:border-gray-800;
+  }
+
+  /* Keyboard focus must be obvious. :focus-visible only paints for keyboard
+     and programmatic focus, so pointer users see nothing change. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-[color:var(--color-surface)] rounded-sm;
+  }
+
+  /* Respect the OS "reduce motion" setting. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   body {
@@ -44,6 +64,20 @@
 }
 
 @layer components {
+  /* Explicit, high-contrast keyboard focus. Applied to interactive elements
+     that need a ring drawn on top of their own background. */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
+           focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--color-surface)];
+  }
+
+  /* Skip link — the first tab stop on the page. */
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[70]
+           focus:rounded-lg focus:bg-brand-600 focus:px-3 focus:py-2 focus:text-xs
+           focus:font-semibold focus:text-white;
+  }
+
   .glass {
     @apply bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border border-gray-200/50 dark:border-gray-800/50;
   }

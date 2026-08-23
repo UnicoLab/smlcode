@@ -29,7 +29,7 @@ func TestIsSafeBash(t *testing.T) {
 
 func TestGuardShellWhitelist(t *testing.T) {
 	msg, blocked := GuardShellWhitelist("curl http://evil", nil)
-	if !blocked || !strings.Contains(msg, "SAFE_PREFIXES") {
+	if !blocked || !strings.Contains(msg, "not an allowed command") {
 		t.Fatalf("blocked=%v msg=%q", blocked, msg)
 	}
 	msg, blocked = GuardShellWhitelist("echo hi > foo.py", nil)

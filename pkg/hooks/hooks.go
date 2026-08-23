@@ -1,7 +1,6 @@
 package hooks
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -80,21 +79,35 @@ func (r *Runner) RunEvent(ctx context.Context, event, toolName string, args map[
 			timeout = 60 * time.Second
 		}
 		cctx, cancel := context.WithTimeout(ctx, timeout)
-		cmd := exec.CommandContext(cctx, "bash", "-lc", h.Command)
+		// bash -c, not -lc: a login shell sources the user's profile, which is
+		// slow and makes hook behaviour depend on the operator's dotfiles.
+		cmd := exec.CommandContext(cctx, "bash", "-c", h.Command)
 		cmd.Dir = r.Root
 		cmd.Env = append(os.Environ(),
 			"SLMCODE_HOOK_EVENT="+event,
 			"SLMCODE_HOOK_TOOL="+toolName,
 			"SLMCODE_HOOK_PAYLOAD="+string(payload),
 		)
-		var buf bytes.Buffer
+		var buf boundedBuffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
+		// Kill the whole process group on timeout so a hook's children cannot
+		// outlive it holding the output pipes open.
+		setProcessGroup(cmd)
+		cmd.Cancel = func() error { return killProcessGroup(cmd) }
+		cmd.WaitDelay = 3 * time.Second
 		err := cmd.Run()
 		out := buf.String()
+		timedOut := cctx.Err() == context.DeadlineExceeded
 		cancel()
 		if r.Log != nil {
-			r.Log("hook %s %s: ok=%v %s", event, toolName, err == nil, truncate(out, 200))
+			r.Log("hook %s %s: ok=%v timeout=%v %s", event, toolName, err == nil, timedOut, truncate(out, 200))
+		}
+		if timedOut && event == "PreToolUse" {
+			return fmt.Errorf(
+				"PreToolUse hook for %s timed out after %s and was killed; the tool call was not run. "+
+					"Shorten the hook command or raise its timeout_sec",
+				toolName, timeout)
 		}
 		if err != nil && event == "PreToolUse" {
 			return fmt.Errorf("PreToolUse hook blocked %s: %v\n%s", toolName, err, truncate(out, 800))
@@ -140,4 +153,34 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// maxHookOutput caps what one hook can hand back. bytes.Buffer grew without
+// limit, so a chatty hook could balloon the harness's memory.
+const maxHookOutput = 64 * 1024
+
+// boundedBuffer keeps at most maxHookOutput bytes and notes the overflow.
+type boundedBuffer struct {
+	buf   []byte
+	total int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	b.total += n
+	if room := maxHookOutput - len(b.buf); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		b.buf = append(b.buf, p...)
+	}
+	// Must report the FULL length: a short count is io.ErrShortWrite to exec.
+	return n, nil
+}
+
+func (b *boundedBuffer) String() string {
+	if b.total > len(b.buf) {
+		return string(b.buf) + fmt.Sprintf("\n...[%d bytes of hook output dropped]", b.total-len(b.buf))
+	}
+	return string(b.buf)
 }

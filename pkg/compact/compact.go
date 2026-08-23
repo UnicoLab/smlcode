@@ -3,7 +3,8 @@ package compact
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // Result of a context compaction pass.
@@ -12,18 +13,73 @@ type Result struct {
 	AfterBytes  int
 	Compacted   bool
 	Summary     string
+
+	// Original is the pre-compaction body. Callers that overwrite a document
+	// on disk MUST snapshot this (or keep it in memory) so a bad compaction —
+	// an LLM that ate CONTEXT.md — is recoverable.
+	Original string
+	// Rejected names the acceptance gate an LLM candidate failed, when the
+	// result fell back to the heuristic engine. Empty on success.
+	Rejected GateFailure
+	// Engine is "llm"/"auto" when the LLM output was accepted, else empty.
+	Engine string
 }
 
-// NeedsCompact reports whether body exceeds soft/hard budgets.
+// CompactHysteresisPercent is how far below the soft trigger a compaction must
+// land. Compacting exactly TO the trigger means the very next append
+// re-triggers a full (possibly LLM) compaction — a pathological loop.
+const CompactHysteresisPercent = 70
+
+// NeedsCompact reports whether body exceeds the soft budget (or the hard
+// ceiling when one is set).
 func NeedsCompact(body string, softKB, hardKB int) bool {
+	soft, hard := normalizeBudgets(softKB, hardKB)
+	n := len(body)
+	return n > soft || (hard > 0 && n > hard)
+}
+
+// CompactTargetBytes is the size a compaction should aim FOR — ~70% of the
+// soft trigger, so the post-compaction state has real headroom.
+func CompactTargetBytes(softKB, hardKB int) int {
+	soft, _ := normalizeBudgets(softKB, hardKB)
+	target := soft * CompactHysteresisPercent / 100
+	if target < 1024 {
+		target = 1024
+	}
+	return target
+}
+
+// ForceHeuristic reports whether the body is past the hard ceiling, in which
+// case an LLM round-trip must NOT be attempted: the document is too big to
+// send safely and a local small model's failure mode there is data loss.
+func ForceHeuristic(body string, softKB, hardKB int) bool {
+	_, hard := normalizeBudgets(softKB, hardKB)
+	return hard > 0 && len(body) > hard
+}
+
+// EngineFor picks the engine to actually run given the configured preference
+// and the body size: past the hard ceiling it always downgrades to heuristic.
+func EngineFor(preferred, body string, softKB, hardKB int) string {
+	if ForceHeuristic(body, softKB, hardKB) {
+		return "heuristic"
+	}
+	if strings.TrimSpace(preferred) == "" {
+		return "heuristic"
+	}
+	return preferred
+}
+
+func normalizeBudgets(softKB, hardKB int) (softBytes, hardBytes int) {
 	if hardKB <= 0 {
 		hardKB = 32
 	}
 	if softKB <= 0 {
 		softKB = hardKB * 3 / 4
 	}
-	n := len(body)
-	return n > softKB*1024
+	if softKB > hardKB {
+		hardKB = softKB
+	}
+	return softKB * 1024, hardKB * 1024
 }
 
 // HeuristicSummarize compresses markdown context without an LLM.
@@ -150,21 +206,8 @@ func splitSections(body string) []section {
 	return secs
 }
 
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	if utf8.RuneCountInString(s) > 160 {
-		r := []rune(s)
-		return string(r[:160]) + "…"
-	}
-	return s
-}
+func firstLine(s string) string { return textutil.FirstLine(s, 160) }
 
 func truncateBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "\n…[truncated by compact]"
+	return textutil.Truncate(s, n, "\n…[truncated by compact]")
 }

@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileCode,
+  FileDiff,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { getHealth } from '@/api/client';
@@ -26,11 +27,14 @@ interface NavItem {
   to: string;
   label: string;
   icon: React.ReactNode;
+  /** Health field whose count is shown as a badge. */
+  badge?: 'pending';
 }
 
 const navItems: NavItem[] = [
   { to: '/', label: 'Live', icon: <LayoutDashboard size={18} /> },
   { to: '/board', label: 'Board', icon: <Kanban size={18} /> },
+  { to: '/review', label: 'Review', icon: <FileDiff size={18} />, badge: 'pending' },
   { to: '/pipeline', label: 'Pipeline', icon: <Workflow size={18} /> },
   { to: '/agents', label: 'Agents', icon: <Bot size={18} /> },
   { to: '/blocks', label: 'Blocks', icon: <Package size={18} /> },
@@ -51,29 +55,52 @@ export default function Sidebar() {
   const [liveHealth, setLiveHealth] = useState<Health | null>(null);
 
   const [isCollapsed, setIsCollapsed] = useState(() => {
-    const stored = localStorage.getItem('slmcode-sidebar-collapsed');
-    return stored === 'true';
+    try {
+      return localStorage.getItem('slmcode-sidebar-collapsed') === 'true';
+    } catch {
+      return false;
+    }
   });
 
   const toggleCollapsed = () => {
     setIsCollapsed((prev) => {
       const next = !prev;
-      localStorage.setItem('slmcode-sidebar-collapsed', String(next));
+      try {
+        localStorage.setItem('slmcode-sidebar-collapsed', String(next));
+      } catch {
+        /* private mode — collapse state simply does not persist */
+      }
       return next;
     });
   };
 
+  // The connection truth lives in App (EventSource state + a 10s health poll);
+  // this only needs the run flag and the pending-review count, and only while
+  // the API is actually reachable.
   useEffect(() => {
-    const interval = setInterval(async () => {
+    if (ctx?.connection === 'down') {
+      setLiveHealth(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const tick = async () => {
       try {
         const h = await getHealth();
-        setLiveHealth(h);
+        if (!cancelled) setLiveHealth(h);
       } catch {
-        setLiveHealth(null);
+        if (!cancelled) setLiveHealth(null);
       }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    };
+    tick();
+    const interval = setInterval(tick, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [ctx?.connection]);
+
+  const pendingCount = liveHealth?.pending ?? 0;
+  const online = ctx ? ctx.connection === 'live' : Boolean(liveHealth?.ok);
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     clsx(
@@ -104,27 +131,40 @@ export default function Sidebar() {
       <div className={clsx('mb-2', isCollapsed ? 'flex justify-center' : 'flex justify-end')}>
         <button
           onClick={toggleCollapsed}
-          className="btn-ghost p-1.5 rounded-lg"
+          className="btn-ghost focus-ring p-1.5 rounded-lg"
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!isCollapsed}
         >
           {isCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
         </button>
       </div>
 
       {/* Navigation */}
-      <nav className="space-y-1">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
-            className={linkClass}
-            title={isCollapsed ? item.label : undefined}
-          >
-            {item.icon}
-            {!isCollapsed && <span>{item.label}</span>}
-          </NavLink>
-        ))}
+      <nav className="space-y-1" aria-label="Primary">
+        {navItems.map((item) => {
+          const count = item.badge === 'pending' ? pendingCount : 0;
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) => clsx(linkClass({ isActive }), 'focus-ring')}
+              title={isCollapsed ? item.label : undefined}
+            >
+              {item.icon}
+              {!isCollapsed && <span className="flex-1">{item.label}</span>}
+              {count > 0 && (
+                <span
+                  className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white"
+                  aria-label={`${count} changes awaiting review`}
+                >
+                  {count}
+                </span>
+              )}
+            </NavLink>
+          );
+        })}
       </nav>
 
       <div className="divider my-3" />
@@ -159,15 +199,17 @@ export default function Sidebar() {
         <div className="px-3 py-2 space-y-2">
           {/* Connection status */}
           <div className="flex items-center gap-2 text-xs">
-            {liveHealth?.ok ? (
+            {online ? (
               <>
-                <Wifi size={12} className="text-emerald-500" />
+                <Wifi size={12} className="text-emerald-500" aria-hidden="true" />
                 <span className="text-emerald-600 dark:text-emerald-400">Connected</span>
               </>
             ) : (
               <>
-                <WifiOff size={12} className="text-red-500" />
-                <span className="text-red-500">Offline</span>
+                <WifiOff size={12} className="text-red-500" aria-hidden="true" />
+                <span className="text-red-500">
+                  {ctx?.connection === 'reconnecting' ? 'Reconnecting…' : 'Offline'}
+                </span>
               </>
             )}
           </div>
@@ -201,13 +243,13 @@ export default function Sidebar() {
       ) : (
         <div className="flex flex-col items-center gap-2 py-2">
           {/* Connection status icon only */}
-          {liveHealth?.ok ? (
-            <span title="Connected">
-              <Wifi size={14} className="text-emerald-500" />
+          {online ? (
+            <span title="Connected" role="status" aria-label="API connected">
+              <Wifi size={14} className="text-emerald-500" aria-hidden="true" />
             </span>
           ) : (
-            <span title="Offline">
-              <WifiOff size={14} className="text-red-500" />
+            <span title="Offline" role="status" aria-label="API disconnected">
+              <WifiOff size={14} className="text-red-500" aria-hidden="true" />
             </span>
           )}
           {/* Running indicator icon only */}

@@ -25,7 +25,7 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 	s := New(h, nil)
 
 	// GET /api/mcp
-	req := httptest.NewRequest(http.MethodGet, "/api/mcp", nil)
+	req := newAPIRequest(http.MethodGet, "/api/mcp", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -40,7 +40,7 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 	}
 
 	// GET /api/config/schema
-	req = httptest.NewRequest(http.MethodGet, "/api/config/schema", nil)
+	req = newAPIRequest(http.MethodGet, "/api/config/schema", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -57,7 +57,7 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 
 	// PUT /api/auth
 	body := []byte(`{"provider":"openai","api_key":"sk-test-prime"}`)
-	req = httptest.NewRequest(http.MethodPut, "/api/auth", bytes.NewReader(body))
+	req = newAPIRequest(http.MethodPut, "/api/auth", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -79,7 +79,7 @@ func TestMCPSchemaAuthEventsAPIs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodGet, "/api/queries/run-test/events", nil)
+	req = newAPIRequest(http.MethodGet, "/api/queries/run-test/events", nil)
 	rec = httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {

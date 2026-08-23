@@ -101,6 +101,9 @@ func addHash(vec []float64, key string, weight float64) {
 	vec[idx2] += sign2 * weight * 0.5
 }
 
+// ProbeTimeout bounds the embedder reachability probe.
+const ProbeTimeout = 2 * time.Second
+
 // ProbeOpenAIEmbedder returns nil when a tiny probe embedding succeeds.
 func ProbeOpenAIEmbedder(ctx context.Context, endpoint, model, apiKey string) error {
 	if strings.TrimSpace(endpoint) == "" || strings.TrimSpace(model) == "" {
@@ -121,12 +124,11 @@ const errEmbeddingsUnavailable = embedUnavailable("embeddings unavailable")
 // mode is one of: "openai", "local", "lexical".
 func ResolveEmbedder(ctx context.Context, cfg Config) (Embedder, string) {
 	if cfg.Enabled && strings.TrimSpace(cfg.Endpoint) != "" && strings.TrimSpace(cfg.Model) != "" {
-		probeCtx := ctx
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			var cancel context.CancelFunc
-			probeCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
-			defer cancel()
-		}
+		// The probe timeout must ALWAYS apply. Honouring only a parent context
+		// without a deadline meant a run-length parent deadline let an
+		// unreachable endpoint stall embedder resolution for minutes.
+		probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+		defer cancel()
 		if err := ProbeOpenAIEmbedder(probeCtx, cfg.Endpoint, cfg.Model, cfg.APIKey); err == nil {
 			return NewOpenAIEmbedder(cfg.Endpoint, cfg.Model, cfg.APIKey), "openai"
 		}

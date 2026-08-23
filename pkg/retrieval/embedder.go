@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // LexicalEmbedder builds sparse bag-of-words vectors with TF weighting.
@@ -211,9 +213,4 @@ func l2normalize(v []float64) []float64 {
 	return v
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+func truncate(s string, n int) string { return textutil.Truncate(s, n, "…") }

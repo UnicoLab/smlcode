@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -45,6 +46,7 @@ func TestRenderDashboardSmoke(t *testing.T) {
 
 func TestLiveSessionObserve(t *testing.T) {
 	s := NewLiveSession()
+	s.SetIO(strings.NewReader(""), io.Discard, false)
 	s.SetState(DashboardState{Provider: "ollama", Model: "m"})
 	s.Observe(stream.Event{Kind: stream.KindAgentStart, Agent: "worker", TaskID: "T3", Phase: "execute"})
 	s.mu.Lock()

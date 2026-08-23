@@ -5,8 +5,28 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        // Inter / JetBrains Mono are used only when vendored locally or already
+        // installed (see src/styles/fonts.css) — never fetched from a CDN.
+        sans: [
+          'Inter',
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Segoe UI',
+          'Roboto',
+          'Helvetica Neue',
+          'Arial',
+          'sans-serif',
+        ],
+        mono: [
+          'JetBrains Mono',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Consolas',
+          'Liberation Mono',
+          'monospace',
+        ],
       },
       colors: {
         brand: {

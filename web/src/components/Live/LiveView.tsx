@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react';
+import { useState, useEffect, useRef, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import {
   Play,
@@ -16,13 +16,15 @@ import {
   Cpu,
 } from 'lucide-react';
 import { AppContext } from '@/App';
-import { startRun, stopRun, getLatestRun, getAgents, getPipeline, getComposition, previewComposition, getInterruptedRuns, resumeRun } from '@/api/client';
-import type { RunEvent, LatestRunResponse, AgentSpec, PipelineView, DynamicComposition, InterruptedRun } from '@/types';
+import { startRun, stopRun, getAgents, getPipeline, getComposition, previewComposition, getInterruptedRuns, resumeRun } from '@/api/client';
+import type { RunEvent, AgentSpec, PipelineView, DynamicComposition, InterruptedRun } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
 import LiveFileInspector from './LiveFileInspector';
-import HITLPopup from './HITLPopup';
 import LiveFeedback from './LiveFeedback';
+import TokenStream from './TokenStream';
+import { useToast } from '@/components/ui/Toast';
+import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
 import clsx from 'clsx';
 
 // ── Pipeline group definitions ──
@@ -71,22 +73,16 @@ type PhaseState = 'pending' | 'active' | 'completed';
 
 export default function LiveView() {
   const ctx = useContext(AppContext);
-  // Use sessionStorage-backed state so it survives page navigation
-  const [localEvents, setLocalEvents] = useState<RunEvent[]>(() => {
-    try { return JSON.parse(sessionStorage.getItem('slmcode:events') || '[]'); } catch { return []; }
-  });
-  const [localRunning, setLocalRunning] = useState(() => sessionStorage.getItem('slmcode:running') === 'true');
-  const events = ctx?.liveEvents?.length ? ctx.liveEvents : localEvents;
-  const setEvents = (v: RunEvent[] | ((p: RunEvent[]) => RunEvent[])) => {
-    const next = typeof v === 'function' ? v(localEvents) : v;
-    setLocalEvents(next);
-    ctx?.setLiveEvents?.(next);
-  };
-  const running = ctx ? ctx.liveRunning : localRunning;
-  const setRunning = (v: boolean) => {
-    setLocalRunning(v);
-    ctx?.setLiveRunning?.(v);
-  };
+  const toast = useToast();
+
+  // The event stream is owned by App (see hooks/useLiveStream) so it survives
+  // navigation and stays connected while the user is on another page. This view
+  // is a pure consumer — it holds no EventSource and no event state of its own,
+  // which is what made the log collapse to a single entry before.
+  const events = ctx?.liveEvents ?? [];
+  const running = ctx?.liveRunning ?? false;
+  const setRunning = ctx?.setLiveRunning ?? (() => {});
+  const resetEvents = ctx?.resetLiveEvents ?? (() => {});
   const result = ctx?.liveResult || null;
   const setResult = ctx?.setLiveResult || (() => {});
   const [query, setQuery] = useState('');
@@ -101,58 +97,40 @@ export default function LiveView() {
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [logExpanded, setLogExpanded] = useState(true);
-  const eventSource = useRef<EventSource | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLInputElement>(null);
 
   // Scroll to bottom on new events
   useEffect(() => {
     logEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [events]);
 
-  // Connect SSE
-  const connectSSE = useCallback(() => {
-    if (eventSource.current) {
-      eventSource.current.close();
-    }
-    const es = new EventSource('/api/events');
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.phase === 'done' || data.phase === 'error') {
-          setRunning(false);
-          getLatestRun().then(setResult).catch(() => {});
-          getInterruptedRuns().then(setInterrupted).catch(() => {});
-        }
-        if (data.kind === 'run_start') {
-          setEvents([]);
-          setPersistedComposition(null);
-          setPersistedCompositionError('');
-        }
-        setEvents((prev) => [...prev.slice(-500), data]);
-      } catch { /* ignore */ }
-    };
-    es.onerror = () => {
-      es.close();
-      // Reconnect after 2s
-      setTimeout(() => {
-        if (eventSource.current === es) connectSSE();
-      }, 2000);
-    };
-    eventSource.current = es;
+  // `/` focuses the prompt from anywhere in the app.
+  useEffect(() => {
+    const focus = () => promptRef.current?.focus();
+    window.addEventListener(FOCUS_PROMPT_EVENT, focus);
+    return () => window.removeEventListener(FOCUS_PROMPT_EVENT, focus);
   }, []);
 
+  // Refresh the resumable-run list whenever a run finishes.
   useEffect(() => {
-    connectSSE();
-    // Sync running state from latest run on remount
-    getLatestRun().then((r) => {
-      setResult(r);
-      if (!r.running) setRunning(false);
-    }).catch(() => {});
-    getInterruptedRuns().then(setInterrupted).catch(() => {});
-    return () => {
-      eventSource.current?.close();
-    };
-  }, [connectSSE]);
+    if (running) return;
+    getInterruptedRuns()
+      .then(setInterrupted)
+      .catch(() => {
+        /* the connection badge already reports API trouble */
+      });
+  }, [running]);
+
+  // A fresh run clears the composition panels; the log itself is reset by the
+  // stream hook when the server emits `run_start`.
+  const lastRunStart = events.length > 0 ? events[events.length - 1] : null;
+  useEffect(() => {
+    if (lastRunStart?.kind === 'run_start') {
+      setPersistedComposition(null);
+      setPersistedCompositionError('');
+    }
+  }, [lastRunStart]);
 
   // Load agents for specialist picker
   useEffect(() => {
@@ -210,7 +188,7 @@ export default function LiveView() {
   const handleRun = async () => {
     const q = query.trim();
     if (!q || running) return;
-    setEvents([]);
+    resetEvents();
     setResult(null);
     setPersistedComposition(null);
     setPersistedCompositionError('');
@@ -225,14 +203,14 @@ export default function LiveView() {
         skills: ctx?.config?.pinned_skills,
       });
     } catch (e) {
-      console.error('Run failed:', e);
+      toast.reportError(e, 'Could not start the run');
       setRunning(false);
     }
   };
 
   const handleResume = async (id?: string) => {
     if (running) return;
-    setEvents([]);
+    resetEvents();
     setResult(null);
     setPersistedComposition(null);
     setPersistedCompositionError('');
@@ -243,7 +221,7 @@ export default function LiveView() {
       await resumeRun(id);
       setInterrupted([]);
     } catch (e) {
-      console.error('Resume failed:', e);
+      toast.reportError(e, 'Could not resume the run');
       setRunning(false);
       getInterruptedRuns().then(setInterrupted).catch(() => {});
     }
@@ -252,7 +230,9 @@ export default function LiveView() {
   const handleStop = async () => {
     try {
       await stopRun();
-    } catch { /* ignore */ }
+    } catch (e) {
+      toast.reportError(e, 'Could not stop the run');
+    }
     setRunning(false);
   };
 
@@ -439,12 +419,14 @@ export default function LiveView() {
 
               <div className="flex flex-col gap-2 lg:flex-row">
                 <input
+                  ref={promptRef}
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleRun()}
-                  placeholder="Ask the harness to plan, code, test, or inspect a change"
-                  className="input h-12 flex-1 text-sm shadow-sm"
+                  placeholder="Ask the harness to plan, code, test, or inspect a change  ( / to focus )"
+                  aria-label="Run prompt"
+                  className="input focus-ring h-12 flex-1 text-sm shadow-sm"
                   disabled={running}
                 />
                 <div className="flex gap-2">
@@ -855,7 +837,11 @@ export default function LiveView() {
                   </div>
                 </div>
               ) : (
-                <EventLog events={events} />
+                <div className="space-y-3">
+                  {/* Live token deltas render above the structural log. */}
+                  <TokenStream text={ctx?.tokenStream ?? ''} running={running} />
+                  <EventLog events={events} />
+                </div>
               )}
               <div ref={logEnd} />
             </div>
@@ -938,7 +924,6 @@ export default function LiveView() {
           </div>
         </div>
       </div>
-      <HITLPopup running={running} />
     </div>
   );
 }

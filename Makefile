@@ -19,7 +19,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy lint build ui-check install install-user install-system update uninstall uninstall-system test e2e studio doctor clean docs docs-serve docs-build docs-venv
+.PHONY: help tidy lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -32,12 +32,18 @@ help: ## Show this help
 	@echo ""
 	@echo "  Core commands:"
 	@echo "    make build           Build the binary"
+	@echo "    make bootstrap       Build the Studio UI from source if missing (npm ci && vite build)"
 	@echo "    make install         Install user-wide (~/.local/bin)"
 	@echo "    make install-system  Install system-wide"
 	@echo "    make test            Run unit tests"
+	@echo "    make race            Run unit tests with the race detector (pkg/...)"
+	@echo "    make cover           Run tests with coverage, enforce the floor"
 	@echo "    make e2e             Run e2e tests"
 	@echo "    make studio          Build & launch Studio UI"
-	@echo "    make lint            Format-check + vet + UI smoke"
+	@echo "    make lint            Format-check + vet + golangci-lint (non-blocking) + UI smoke"
+	@echo "    make lint-strict     Same as lint, but golangci-lint failures are blocking"
+	@echo "    make check           Full local gate — same as CI (fmt, vet, lint, test, race, web)"
+	@echo "    make govulncheck     Scan dependencies for known vulnerabilities"
 	@echo "    make doctor          Run system health check"
 	@echo ""
 	@echo "  Stack commands (model/provider presets):"
@@ -182,13 +188,36 @@ tidy: ## Tidy Go modules
 	go mod tidy
 
 # Studio UI is source under cmd/slmcode/ui/ and embedded via go:embed.
+# index.html is always tracked (a placeholder ships so go:embed always finds
+# something on a fresh clone); assets/ is the gitignored built-UI output and
+# is optional — see `make bootstrap`.
 ui-check: ## Smoke-test the embedded UI files
-	@test -f cmd/slmcode/ui/index.html && test -d cmd/slmcode/ui/assets
+	@test -f cmd/slmcode/ui/index.html
 	@grep -q 'SLMCode Studio' cmd/slmcode/ui/index.html
-	@echo "ui-check: OK (React Studio embedded by go:embed all:ui)"
+	@if [ -d cmd/slmcode/ui/assets ]; then \
+		echo "ui-check: OK (React Studio embedded by go:embed all:ui)"; \
+	else \
+		echo "ui-check: OK (placeholder UI embedded — run 'make bootstrap' for the real Studio UI)"; \
+	fi
 
-lint: ## Go format + vet + UI smoke check
+bootstrap: ## Build the Studio UI from source if it hasn't been built yet (npm ci && vite build)
+	@if [ -d cmd/slmcode/ui/assets ]; then \
+		echo "Studio UI assets already present at cmd/slmcode/ui/assets — nothing to do (run 'make ui-react' to rebuild)."; \
+	else \
+		echo "Studio UI assets missing — bootstrapping (cd web && npm ci && npm run build)…"; \
+		if ! command -v npm >/dev/null 2>&1; then \
+			echo "ERROR: npm not found on PATH. Install Node.js (see web/package.json for the expected version), then re-run: make bootstrap" >&2; \
+			exit 1; \
+		fi; \
+		(cd web && npm ci && npm run build) || { echo "ERROR: web UI build failed — see output above." >&2; exit 1; }; \
+		$(MAKE) ui-react; \
+	fi
+
+lint: ## Go format + vet + golangci-lint (non-blocking) + UI smoke check
 	@./scripts/lint.sh
+
+lint-strict: ## Same as lint, but golangci-lint issues fail the build (used to ratchet .golangci.yml's baseline down)
+	@LINT_STRICT=1 ./scripts/lint.sh
 
 build: tidy ui-check ## Build the slmcode binary
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BIN) ./cmd/slmcode
@@ -213,12 +242,43 @@ uninstall-system: ## Uninstall system-wide
 test: ## Run unit tests
 	go test ./...
 
+race: ## Run unit tests under the Go race detector (pkg/... — the engine core)
+	go test -race -count=1 ./pkg/...
+
+# Coverage floor: today's measured total (see scripts/coverage-check.sh for
+# how the number is derived, and the floor value itself).
+cover: ## Run tests with coverage and fail if total coverage drops below the floor
+	@./scripts/coverage-check.sh
+
+govulncheck: ## Scan all packages for known vulnerabilities
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "govulncheck not found — installing (go install golang.org/x/vuln/cmd/govulncheck@latest)…"; \
+		go install golang.org/x/vuln/cmd/govulncheck@latest; \
+	fi
+	govulncheck ./...
+
 e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 	go test ./test/e2e/ -count=1 -timeout 30m
 	@./scripts/e2e_prime_smoke.sh
 	@if [ "$$RUN_E2E" = "1" ]; then \
 		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \
 	fi
+
+# The one gate: gofmt check + vet + golangci-lint (non-blocking) + unit tests
+# + race tests + web lint/build. This is exactly what CI's lint-test job and
+# .pre-commit-config.yaml both run, so local and CI cannot diverge — if you
+# want to know whether a PR will pass CI, run `make check`.
+check: tidy lint test race ## Run the full local gate (fmt, vet, lint, unit+race tests, web lint+build) — same as CI
+	@echo "==> web lint + build"
+	@if [ -d web ]; then \
+		( cd web && \
+		  if [ ! -d node_modules ]; then npm ci; fi && \
+		  npm run lint && \
+		  npm run build ); \
+	else \
+		echo "(no web/ directory — skipping)"; \
+	fi
+	@echo "check: OK"
 
 studio: build ## Build & launch Studio UI
 	./bin/$(BIN) studio

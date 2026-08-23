@@ -1,0 +1,36 @@
+/* ── Local typography ──
+ *
+ * Studio used to <link> Inter and JetBrains Mono from fonts.googleapis.com on
+ * every page load. For a product whose pitch is "offline, private, and cheap"
+ * that is wrong twice over: it phones home, and with no network the UI either
+ * hangs on the stylesheet or renders in Times New Roman.
+ *
+ * Default: the platform UI stack, which needs no download at all and matches
+ * the host OS. Optional: drop the woff2 files listed below into
+ * `web/public/fonts/` and these @font-face rules pick them up automatically —
+ * `font-display: swap` plus `local()` means a missing file costs nothing,
+ * because the src list simply fails and the fallback stack applies.
+ *
+ * See web/public/fonts/README.md for the exact files.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src:
+    local('Inter'),
+    local('Inter Variable'),
+    url('/fonts/inter-variable.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src:
+    local('JetBrains Mono'),
+    url('/fonts/jetbrains-mono-variable.woff2') format('woff2-variations');
+}

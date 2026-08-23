@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +56,12 @@ func skillsCmd() *cobra.Command {
 		return nil
 	}
 
-	cmd := &cobra.Command{Use: "skills", Short: "List / show / create / edit skills (Claude Code–style)", RunE: listFn}
+	cmd := &cobra.Command{
+		Use:     "skills",
+		Short:   "List / show / create / edit skills (Claude Code–style)",
+		Example: "  slmcode skills list\n  slmcode skills new my-skill\n  slmcode skills show atomic-coding",
+		RunE:    listFn,
+	}
 	cmd.AddCommand(&cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List skills", RunE: listFn})
 
 	cmd.AddCommand(&cobra.Command{
@@ -179,144 +185,9 @@ func sanitizeSkillName(name string) string {
 	return b.String()
 }
 
-func configCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "config", Short: "Show or set harness config"}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "show",
-		Short: "Print effective config",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := openWorkspace()
-			if err != nil {
-				return err
-			}
-			c := ws.Config.Public()
-			cli.Header("Config")
-			cli.KeyVal("provider", c.Provider)
-			cli.KeyVal("endpoint", c.Endpoint)
-			cli.KeyVal("model", c.Model)
-			cli.KeyVal("backend", c.Backend)
-			cli.KeyVal("mode", c.Mode)
-			cli.KeyVal("specialist", c.Specialist)
-			cli.KeyVal("dynamic_pipeline", fmt.Sprintf("%v", c.DynamicPipeline))
-			cli.KeyVal("pinned_skills", strings.Join(c.PinnedSkills, ", "))
-			cli.KeyVal("think_passes", fmt.Sprintf("%d", c.ThinkPasses))
-			cli.KeyVal("max_parallel", fmt.Sprintf("%d", c.MaxParallel))
-			cli.KeyVal("max_retries", fmt.Sprintf("%d", c.MaxRetries))
-			cli.KeyVal("max_context_kb", fmt.Sprintf("%d", c.MaxContextKB))
-			cli.KeyVal("qa_gate", fmt.Sprintf("%v", c.QAGate))
-			cli.KeyVal("qa_gate_command", c.QAGateCommand)
-			cli.KeyVal("qa_gate_max_rounds", fmt.Sprintf("%d", c.QAGateMaxRounds))
-			cli.KeyVal("permission", c.Permission)
-			cli.KeyVal("shell_permission", c.ShellPermission)
-			cli.KeyVal("shell_whitelist", fmt.Sprintf("%v", c.ShellWhitelist))
-			cli.KeyVal("write_guard", fmt.Sprintf("%v", c.WriteGuard))
-			cli.KeyVal("read_before_edit", fmt.Sprintf("%v", c.ReadBeforeEdit))
-			cli.KeyVal("shell_write_guard", fmt.Sprintf("%v", c.ShellWriteGuard))
-			cli.KeyVal("file_checkpoints", fmt.Sprintf("%v", c.FileCheckpoints))
-			cli.KeyVal("require_smoke", fmt.Sprintf("%v", c.RequireSmoke))
-			cli.KeyVal("claims_gate", fmt.Sprintf("%v", c.ClaimsGate))
-			cli.KeyVal("over_edit_guard", fmt.Sprintf("%v", c.OverEditGuard))
-			cli.KeyVal("context_compact", fmt.Sprintf("%v", c.ContextCompact))
-			cli.KeyVal("react_compact", fmt.Sprintf("%v", c.ReactCompact))
-			cli.KeyVal("session_event_log", fmt.Sprintf("%v", c.SessionEventLog))
-			cli.KeyVal("auto_text_tools", fmt.Sprintf("%v", c.AutoTextTools))
-			cli.KeyVal("read_head_lines", fmt.Sprintf("%d", c.ReadHeadLines))
-			cli.KeyVal("dry_run", fmt.Sprintf("%v", c.DryRun))
-			cli.KeyVal("listen", c.Listen)
-			cli.KeyVal("api_key", c.APIKey)
-			return nil
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "set [key] [value]",
-		Short: "Set model|provider|endpoint|backend|qa_gate|mode|specialist|permission|…",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := openWorkspace()
-			if err != nil {
-				return err
-			}
-			k, v := strings.ToLower(args[0]), args[1]
-			c := ws.Config
-			switch k {
-			case "model":
-				c.Model = v
-			case "fast_model":
-				c.FastModel = v
-			case "provider":
-				next := config.NormalizeProvider(v)
-				if next != config.NormalizeProvider(c.Provider) && flagEndpoint == "" {
-					c.Endpoint = config.DefaultEndpointFor(next)
-				}
-				c.Provider = next
-			case "endpoint":
-				c.Endpoint = v
-			case "backend":
-				c.Backend = v
-			case "mode":
-				c.Mode = v
-			case "specialist", "agent":
-				c.Specialist = v
-				if v != "" {
-					c.Mode = config.ModeSpecialist
-				}
-			case "dynamic_pipeline", "dynamic", "composer":
-				c.DynamicPipeline = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || strings.EqualFold(v, "on")
-			case "pinned_skills", "skills":
-				if v == "" || v == "-" {
-					c.PinnedSkills = nil
-				} else {
-					c.PinnedSkills = splitCSV(v)
-				}
-			case "think_passes", "think":
-				fmt.Sscanf(v, "%d", &c.ThinkPasses)
-			case "parallel", "max_parallel":
-				fmt.Sscanf(v, "%d", &c.MaxParallel)
-			case "retries", "max_retries":
-				fmt.Sscanf(v, "%d", &c.MaxRetries)
-			case "max_context_kb", "context_kb":
-				fmt.Sscanf(v, "%d", &c.MaxContextKB)
-			case "qa_gate":
-				c.QAGate = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || strings.EqualFold(v, "on")
-			case "qa_gate_command", "qa_cmd":
-				c.QAGateCommand = v
-			case "qa_gate_max_rounds", "qa_rounds":
-				fmt.Sscanf(v, "%d", &c.QAGateMaxRounds)
-			case "dry_run", "dry-run":
-				c.DryRun = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
-				if c.DryRun {
-					c.Permission = "dry-run"
-				}
-			case "permission", "perm":
-				c.Permission = strings.ToLower(v)
-				c.DryRun = c.Permission == "dry-run"
-			case "listen":
-				c.Listen = v
-			case "verbose":
-				c.Verbose = v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
-			default:
-				patch, ok, err := configPatchFromSchemaValue(k, v)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return fmt.Errorf("unknown key %q", k)
-				}
-				c.ApplyPatch(patch)
-			}
-			if err := c.Save(); err != nil {
-				return err
-			}
-			fmt.Println(cli.Success(fmt.Sprintf("set %s = %s", k, v)))
-			return nil
-		},
-	})
-	return cmd
-}
-
 func configPatchFromSchemaValue(key, value string) (config.Patch, bool, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
-	for _, field := range config.Schema() {
+	for _, field := range mergedSchema() {
 		if field.Key != key || !field.Patchable {
 			continue
 		}
@@ -392,13 +263,96 @@ func parseConfigBool(value string) (bool, error) {
 }
 
 func doctorCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Check active provider/model, LLM reachability, workspace, board, skills",
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:     "doctor",
+		Short:   "Check active provider/model, LLM reachability, workspace, board, skills",
+		Example: "  slmcode doctor\n  slmcode doctor --json",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
+			if asJSON {
+				return runDoctorJSON()
+			}
 			return runDoctor()
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	return cmd
+}
+
+// runDoctorJSON emits the same health picture as runDoctor, machine-readable.
+func runDoctorJSON() error {
+	ws, err := openWorkspace()
+	if err != nil {
+		return err
+	}
+	skillList, _ := ws.Skills.List()
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	providerCheck := readiness.ProbeProvider(probeCtx, ws.Config)
+	probeCancel()
+	report := readiness.Build(ws.Config, len(skillList))
+	report.Checks = append(report.Checks, providerCheck)
+	report.Score = readiness.Score(report.Checks)
+	report.Status = readiness.Status(report.Score)
+	report.OK = report.Score >= 80
+	_ = ws.Board.Load()
+	board := ws.Board.Snapshot()
+	auth := models.ResolveAuth(ws.Config)
+
+	payload := map[string]any{
+		"root":       ws.Config.Root,
+		"provider":   ws.Config.Provider,
+		"model":      ws.Config.Model,
+		"endpoint":   ws.Config.Endpoint,
+		"backend":    ws.Config.Backend,
+		"permission": ws.Config.Permission,
+		"skills":     len(skillList),
+		"tasks":      len(board.Tasks),
+		"pending":    pendingCount(ws.Config.SlmDir()),
+		"auth": map[string]any{
+			"configured": auth.Configured,
+			"required":   auth.Required,
+			"source":     auth.Source,
+		},
+		"gitignore": gitignoreStatus(ws.Config.Root, ws.Config.SlmDir()),
+		"readiness": report,
+	}
+	if err := emitJSON(payload); err != nil {
+		return err
+	}
+	if !providerCheck.OK && providerCheck.Severity == "critical" {
+		return failf(4, "provider check failed: %s", providerCheck.Message)
+	}
+	return nil
+}
+
+// gitignoreStatus reports whether the secret-bearing .slmcode paths are ignored.
+//
+// Directory rules end in "/" so they only match directories; probing them with
+// a representative child path makes the answer correct whether or not the
+// directory exists yet.
+var gitignoreProbes = map[string]string{
+	"auth.json": ".slmcode/auth.json",
+	"pending":   ".slmcode/pending/x.patch.json",
+	"sessions":  ".slmcode/sessions/x.json",
+	"queries":   ".slmcode/queries/x/events.jsonl",
+	"archives":  ".slmcode/archives/x.json",
+	"errors":    ".slmcode/errors/errors.md",
+}
+
+func gitignoreStatus(root, slmDir string) map[string]any {
+	out := map[string]any{}
+	ok := true
+	for name, probe := range gitignoreProbes {
+		ignored := gitIgnores(root, probe)
+		out[name] = ignored
+		if !ignored {
+			ok = false
+		}
+	}
+	out["ok"] = ok
+	out["file"] = filepath.Join(slmDir, ".gitignore")
+	return out
 }
 
 func runDoctor() error {
@@ -474,6 +428,21 @@ func runDoctor() error {
 	} else {
 		fmt.Println(cli.Success("agents inherit stack/global LLM"))
 	}
+	// .slmcode/auth.json holds provider API keys; `slmcode commit` runs
+	// `git add -A`, so an un-ignored .slmcode is a real leak path.
+	if gs := gitignoreStatus(ws.Config.Root, ws.Config.SlmDir()); gs["ok"] != true {
+		var leaky []string
+		for _, name := range []string{"auth.json", "pending", "sessions", "queries", "archives", "errors"} {
+			if ignored, _ := gs[name].(bool); !ignored {
+				leaky = append(leaky, ".slmcode/"+name)
+			}
+		}
+		sort.Strings(leaky)
+		fmt.Println(cli.Warn("git would stage: " + strings.Join(leaky, ", ")))
+		fmt.Println(cli.Dim("  fix: slmcode init   (writes .slmcode/.gitignore)"))
+	} else {
+		fmt.Println(cli.Success(".slmcode secrets are git-ignored"))
+	}
 	sk, _ := ws.Skills.List()
 	fmt.Println(cli.Success(fmt.Sprintf("%d skills loaded", len(sk))))
 	report := readiness.Build(ws.Config, len(sk))
@@ -541,19 +510,35 @@ func readinessFailedIDs(r readiness.Report) []string {
 }
 
 func watchCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "watch",
-		Short: "Refresh kanban in the terminal (live while agents run)",
+	var interval time.Duration
+	cmd := &cobra.Command{
+		Use:     "watch",
+		Short:   "Refresh kanban in the terminal (live while agents run)",
+		Example: "  slmcode watch\n  slmcode watch --interval 5s",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
 			}
+			if interval <= 0 {
+				interval = 2 * time.Second
+			}
+			// Use the alternate screen buffer so the repeated repaint never eats
+			// the user's scrollback: on exit the original screen comes back.
+			alt := cli.IsInteractive()
+			if alt {
+				fmt.Print("\033[?1049h")
+				defer fmt.Print("\033[?1049l")
+			}
+			ctx, cancel := signalContext()
+			defer cancel()
 			fmt.Println(cli.Info("watching board — Ctrl+C to stop"))
 			for {
 				_ = ws.Board.Load()
 				b := ws.Board.Snapshot()
-				fmt.Print("\033[H\033[2J")
+				if alt {
+					fmt.Print("\033[H\033[2J")
+				}
 				fmt.Print(cli.Banner())
 				cli.KeyVal("updated", time.Now().Format(time.Kitchen))
 				fmt.Println()
@@ -566,13 +551,17 @@ func watchCmd() *cobra.Command {
 					}
 				}
 				select {
-				case <-time.After(2 * time.Second):
+				case <-time.After(interval):
+				case <-ctx.Done():
+					return nil
 				case <-cmd.Context().Done():
 					return nil
 				}
 			}
 		},
 	}
+	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "refresh interval")
+	return cmd
 }
 
 // openBrowser tries to open url in the default browser.

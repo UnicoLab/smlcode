@@ -20,6 +20,9 @@ type Store struct {
 	Keys map[string]string `json:"keys"`
 }
 
+// mu guards the whole read-modify-write cycle, not just the individual file
+// operations: Set used to release the lock between Load and Save, so a
+// concurrent TUI + Studio write silently lost one of the keys.
 var mu sync.Mutex
 
 func normalizeProvider(p string) string {
@@ -39,6 +42,10 @@ func Path(slmDir string) string {
 func Load(slmDir string) (*Store, error) {
 	mu.Lock()
 	defer mu.Unlock()
+	return loadLocked(slmDir)
+}
+
+func loadLocked(slmDir string) (*Store, error) {
 	p := Path(slmDir)
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -61,6 +68,10 @@ func Load(slmDir string) (*Store, error) {
 func Save(slmDir string, s *Store) error {
 	mu.Lock()
 	defer mu.Unlock()
+	return saveLocked(slmDir, s)
+}
+
+func saveLocked(slmDir string, s *Store) error {
 	if s == nil {
 		s = &Store{Keys: map[string]string{}}
 	}
@@ -95,9 +106,12 @@ func Get(slmDir, provider string) (string, bool) {
 	return "", false
 }
 
-// Set stores a key for provider.
+// Set stores a key for provider. Load→modify→Save happens under a single lock
+// hold so concurrent writers cannot clobber each other's keys.
 func Set(slmDir, provider, key string) error {
-	s, err := Load(slmDir)
+	mu.Lock()
+	defer mu.Unlock()
+	s, err := loadLocked(slmDir)
 	if err != nil {
 		return err
 	}
@@ -111,7 +125,7 @@ func Set(slmDir, provider, key string) error {
 	} else {
 		s.Keys[p] = key
 	}
-	return Save(slmDir, s)
+	return saveLocked(slmDir, s)
 }
 
 // PublicKeys returns provider names that have keys (values redacted).

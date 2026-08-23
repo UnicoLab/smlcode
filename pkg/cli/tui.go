@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -42,6 +42,8 @@ type DashboardState struct {
 	ProgressHead    string   // per-task progress strip
 	Settings        string
 	Message         string
+	Probe           ProbeResult // connection health driving the dot
+	PendingGate     string      // one-line description of a waiting HITL gate
 }
 
 // IsInteractive reports whether stdin is a TTY suitable for the premium TUI.
@@ -52,43 +54,77 @@ func IsInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-// RenderDashboard paints a premium multi-panel status view (no bubbletea dep).
+// RenderDashboard paints the multi-panel status view.
+//
+// It is *append-only*: nothing clears the screen, so scrollback keeps what the
+// agents said. Width is clamped to [40,120]; below 70 columns it degrades to a
+// single-column layout instead of wrapping into confetti.
 func RenderDashboard(w io.Writer, st DashboardState) {
 	if w == nil {
 		w = os.Stdout
 	}
-	width := 88
-	if term.IsTerminal(int(os.Stdout.Fd())) {
-		if tw, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw >= 60 {
-			width = tw
-		}
-	}
-	bar := strings.Repeat("─", min(width-2, 96))
+	width, _ := TermSize()
+	inner := width - 2
+	bar := strings.Repeat("─", inner)
+	narrow := NarrowLayout(width)
 
-	fmt.Fprint(w, "\033[H\033[2J") // home + clear
+	row := func(s string) {
+		fmt.Fprintln(w, Accent("│")+PadWidth(s, inner)+Accent("│"))
+	}
+	sep := func() { fmt.Fprintln(w, Accent("├"+bar+"┤")) }
+
 	fmt.Fprintln(w, Accent("┌"+bar+"┐"))
 	title := Bold(" SLMCODE ") + Dim("premium TUI") + "  " + Cyan(shortPath(st.Root))
-	fmt.Fprintln(w, Accent("│")+padRight(title, min(width-2, 96))+Accent("│"))
-	fmt.Fprintln(w, Accent("├"+bar+"┤"))
+	row(title)
+	sep()
 
-	conn := fmt.Sprintf(" %s  %s/%s  %s",
-		Green("●")+" "+White(st.Provider),
-		Accent(st.Model),
-		Dim(st.Backend),
-		Dim(clipMid(st.Endpoint, 36)))
-	if st.Running {
-		conn += "  " + Yellow("▶ RUN")
+	dot := st.Probe.Dot()
+	if st.Probe.State == ProbeUnknown && st.Probe.CheckedAt.IsZero() {
+		dot = Dim("○")
+	}
+	if narrow {
+		row(fmt.Sprintf(" %s %s", dot, White(st.Provider)))
+		row(" " + Accent(ClipWidth(st.Model, inner-2)))
+		row(" " + Dim(ClipWidth(st.Endpoint, inner-2)))
 	} else {
-		conn += "  " + Dim("idle")
+		// Build the row from fixed-cost trailing badges first, then spend the
+		// remaining budget on the model id and endpoint so nothing important
+		// gets sliced off at the border.
+		var badges string
+		switch st.Probe.State {
+		case ProbeDown:
+			badges += "  " + Red("offline")
+		case ProbeDegrade:
+			badges += "  " + Yellow("degraded")
+		}
+		if st.Running {
+			badges += "  " + Yellow("▶ RUN")
+		} else {
+			badges += "  " + Dim("idle")
+		}
+		if st.Phase != "" {
+			badges += "  phase=" + Cyan(st.Phase)
+		}
+		if st.TurnHead != "" {
+			badges += "  " + Yellow("⟳ "+st.TurnHead)
+		}
+		head := fmt.Sprintf(" %s  ", dot+" "+White(st.Provider))
+		// head + model + "/" + backend + "  " + endpoint + badges must fit.
+		budget := inner - VisibleWidth(head) - VisibleWidth(badges) -
+			StringWidth(st.Backend) - 3
+		modelW, endpointW := 0, 0
+		if budget > 8 {
+			modelW = budget * 3 / 5
+			endpointW = budget - modelW
+		}
+		conn := head + Accent(ClipWidth(st.Model, modelW)) + "/" + Dim(st.Backend)
+		if endpointW > 6 {
+			conn += "  " + Dim(ClipWidth(st.Endpoint, endpointW))
+		}
+		conn += badges
+		row(conn)
 	}
-	if st.Phase != "" {
-		conn += "  phase=" + Cyan(st.Phase)
-	}
-	if st.TurnHead != "" {
-		conn += "  " + Yellow("⟳ "+st.TurnHead)
-	}
-	fmt.Fprintln(w, Accent("│")+padRight(conn, min(width-2, 96))+Accent("│"))
-	fmt.Fprintln(w, Accent("├"+bar+"┤"))
+	sep()
 
 	// Board columns strip
 	counts := map[string]int{}
@@ -117,26 +153,28 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 	} else {
 		prog += Dim("· empty — run a query to populate")
 	}
-	fmt.Fprintln(w, Accent("│")+padRight(prog, min(width-2, 96))+Accent("│"))
+	row(prog)
 
-	// Active agents + progress strip
 	active := " agents "
 	if len(st.Agents) == 0 {
 		active += Dim("none active")
 	} else {
-		active += Cyan(strings.Join(st.Agents, "  "))
+		active += Cyan(ClipWidth(strings.Join(st.Agents, "  "), inner-9))
 	}
-	fmt.Fprintln(w, Accent("│")+padRight(active, min(width-2, 96))+Accent("│"))
+	row(active)
 	if st.ProgressHead != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(" progress "+Dim(clipMid(st.ProgressHead, width-14)), min(width-2, 96))+Accent("│"))
+		row(" progress " + Dim(ClipWidth(st.ProgressHead, inner-11)))
+	}
+	if st.PendingGate != "" {
+		row(Yellow(" ⏸ waiting ") + White(ClipWidth(st.PendingGate, inner-12)))
 	}
 	if st.Intervention != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(Yellow(" ⚠ ")+White(clipMid(st.Intervention, width-6)), min(width-2, 96))+Accent("│"))
+		row(Yellow(" ⚠ ") + White(ClipWidth(st.Intervention, inner-4)))
 	}
-	fmt.Fprintln(w, Accent("├"+bar+"┤"))
+	sep()
 
-	// Tasks panel (top cards)
-	fmt.Fprintln(w, Accent("│")+padRight(Bold(" Tasks"), min(width-2, 96))+Accent("│"))
+	// Tasks panel
+	row(Bold(" Tasks"))
 	shown := 0
 	if st.Board != nil {
 		for _, t := range st.Board.Tasks {
@@ -144,78 +182,88 @@ func RenderDashboard(w io.Writer, st DashboardState) {
 				break
 			}
 			t.Normalize()
-			line := fmt.Sprintf("  %s %-12s @%-10s %s",
-				Accent(t.ID), ColumnColor(t.Column), Dim(t.Role), clipMid(t.Title, width-42))
-			fmt.Fprintln(w, Accent("│")+padRight(line, min(width-2, 96))+Accent("│"))
+			var line string
+			if narrow {
+				line = fmt.Sprintf("  %s %s", Accent(t.ID), ClipWidth(t.Title, inner-10))
+			} else {
+				line = fmt.Sprintf("  %s %s @%s %s",
+					Accent(t.ID), PadWidth(ColumnColor(t.Column), 12),
+					PadWidth(Dim(t.Role), 10), ClipWidth(t.Title, maxInt(8, inner-40)))
+			}
+			row(line)
 			shown++
 		}
 	}
 	if shown == 0 {
-		fmt.Fprintln(w, Accent("│")+padRight(Dim("  (no tasks yet)"), min(width-2, 96))+Accent("│"))
+		row(Dim("  (no tasks yet)"))
 	}
 
-	fmt.Fprintln(w, Accent("├"+bar+"┤"))
-	fmt.Fprintln(w, Accent("│")+padRight(Bold(" Live"), min(width-2, 96))+Accent("│"))
-	evStart := 0
+	sep()
+	row(Bold(" Live"))
 	maxLive := 10
 	if st.Compact {
 		maxLive = 8
 	}
+	if narrow {
+		maxLive = 5
+	}
+	evStart := 0
 	if len(st.Events) > maxLive {
 		evStart = len(st.Events) - maxLive
 	}
 	if len(st.Events) == 0 {
-		fmt.Fprintln(w, Accent("│")+padRight(Dim("  waiting for events…"), min(width-2, 96))+Accent("│"))
+		row(Dim("  waiting for events…"))
 	}
 	for _, e := range st.Events[evStart:] {
-		line := "  " + collapseWhitespace(FormatEvent(e))
-		// single line for panel
+		line := "  " + FormatEvent(e)
 		if i := strings.Index(line, "\n"); i >= 0 {
 			line = line[:i]
 		}
-		fmt.Fprintln(w, Accent("│")+padRight(clipMid(line, width-4), min(width-2, 96))+Accent("│"))
+		row(ClipWidth(line, inner))
 	}
 
-	// Errors / file changes glance
 	if strings.TrimSpace(st.ErrorsHead) != "" {
-		fmt.Fprintln(w, Accent("├"+bar+"┤"))
-		fmt.Fprintln(w, Accent("│")+padRight(Red(" Errors ")+Dim(clipMid(st.ErrorsHead, width-12)), min(width-2, 96))+Accent("│"))
+		sep()
+		row(Red(" Errors ") + Dim(ClipWidth(st.ErrorsHead, inner-9)))
 	}
 	if strings.TrimSpace(st.DiffHead) != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(Green(" Diff ")+Dim(clipMid(st.DiffHead, width-10)), min(width-2, 96))+Accent("│"))
+		row(Green(" Diff ") + Dim(ClipWidth(st.DiffHead, inner-7)))
 	}
 	if len(st.Queries) > 0 {
-		fmt.Fprintln(w, Accent("│")+padRight(Blue(" Queries ")+Dim(strings.Join(st.Queries, " · ")), min(width-2, 96))+Accent("│"))
+		row(Blue(" Queries ") + Dim(ClipWidth(strings.Join(st.Queries, " · "), inner-10)))
 	}
 	if strings.TrimSpace(st.LatencyHead) != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(Yellow(" Latency ")+Dim(clipMid(st.LatencyHead, width-12)), min(width-2, 96))+Accent("│"))
+		row(Yellow(" Latency ") + Dim(ClipWidth(st.LatencyHead, inner-10)))
 	}
 	if strings.TrimSpace(st.UsageHead) != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(Cyan(" Tokens ")+Dim(clipMid(st.UsageHead, width-12)), min(width-2, 96))+Accent("│"))
+		row(Cyan(" Tokens ") + Dim(ClipWidth(st.UsageHead, inner-9)))
 	}
 
-	fmt.Fprintln(w, Accent("├"+bar+"┤"))
+	sep()
 	help := Dim(" keys ") + White("[enter]") + Dim(" run  ") +
+		White("[esc]") + Dim(" interrupt  ") +
 		White("?") + Dim(" help  ") +
-		White("/clear") + Dim("  ") +
-		White("/plan") + Dim("  ") +
-		White("/compact") + Dim("  ") +
-		White("/history") + Dim("  ") +
-		White("/stop") + Dim("  ") +
-		White("/q")
-	fmt.Fprintln(w, Accent("│")+padRight(help, min(width-2, 96))+Accent("│"))
+		White("/") + Dim(" commands  ") +
+		White("/q") + Dim(" quit")
+	row(help)
 	if st.Message != "" {
-		fmt.Fprintln(w, Accent("│")+padRight(" "+Yellow(clipMid(st.Message, width-4)), min(width-2, 96))+Accent("│"))
+		row(" " + Yellow(ClipWidth(st.Message, inner-2)))
 	}
 	fmt.Fprintln(w, Accent("└"+bar+"┘"))
 	if st.Query != "" {
-		fmt.Fprintln(w, Dim(" last query: ")+clipMid(st.Query, width-14))
+		fmt.Fprintln(w, Dim(" last query: ")+ClipWidth(st.Query, width-14))
 	}
 }
 
-// PrintStaticDashboard is the non-interactive / CI fallback (no clear-screen loop).
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// PrintStaticDashboard is the non-interactive / CI fallback.
 func PrintStaticDashboard(st DashboardState) {
-	width := 72
 	fmt.Println(Banner())
 	fmt.Println(Bold("Connection"))
 	KeyVal("root", st.Root)
@@ -239,7 +287,6 @@ func PrintStaticDashboard(st DashboardState) {
 	fmt.Println(Cyan("  slmcode studio") + Dim("    # browser GUI"))
 	fmt.Println(Cyan("  slmcode run \"…\"") + Dim("  # one-shot pipeline"))
 	fmt.Println(Dim("Also spelled ") + Accent("smlcode") + Dim(" in some docs — binary is ") + Bold("slmcode") + Dim("."))
-	_ = width
 }
 
 // RenderBoardGlance prints a compact board summary without clearing the screen.
@@ -255,43 +302,106 @@ func RenderBoardGlance(board *plan.Board) {
 		if len(tasks) == 0 {
 			continue
 		}
-		fmt.Printf("  %s  %s\n", ColumnColor(fmt.Sprintf("%-14s", col)), Bold(fmt.Sprintf("%d", len(tasks))))
+		fmt.Printf("  %s  %s\n", ColumnColor(PadWidth(col, 14)), Bold(fmt.Sprintf("%d", len(tasks))))
 		for i, t := range tasks {
 			if i >= 3 {
 				fmt.Println(Dim(fmt.Sprintf("    … +%d more", len(tasks)-3)))
 				break
 			}
-			fmt.Printf("    %s @%s  %s\n", Accent(t.ID), t.Role, clipMid(t.Title, 56))
+			fmt.Printf("    %s @%s  %s\n", Accent(t.ID), t.Role, Clip(t.Title, 56))
 		}
 	}
 }
 
+// ── Interactive session ──────────────────────────────────────────────────────
+
 // LiveSession drives the interactive premium TUI REPL.
+//
+// Input, the run, and rendering each live on their own goroutine and meet in a
+// select loop, so every steering command works *while an agent is running*.
 type LiveSession struct {
-	mu             sync.Mutex
-	state          DashboardState
-	status         *StatusTracker
-	history        *PromptHistory
+	mu      sync.Mutex
+	state   DashboardState
+	act     *Activity
+	history *PromptHistory
+	ed      *LineEditor
+	console *Console
+	slash   *SlashRegistry
+
 	onRun          func(query string) error
 	onStop         func()
 	onSlash        func(cmd string) (quit bool, err error)
+	onLiveSlash    func(cmd string) (quit bool, err error)
+	onSteer        func(text string)
 	onBoardRefresh func() *plan.Board
-	lastRedraw     time.Time
-	redrawPending  bool
-	in             io.Reader
-	out            io.Writer
+
+	gate      *Gate
+	gateReply chan GateAnswer
+
+	in       io.Reader
+	out      io.Writer
+	tty      bool
+	showDash bool
+	tokens   strings.Builder
+
+	wakeCh chan struct{}
 }
 
 // NewLiveSession constructs a TUI session. Call SetState / Observe as events arrive.
 func NewLiveSession() *LiveSession {
+	hist := LoadPromptHistory(DefaultPromptHistoryPath())
+	width, _ := TermSize()
+	tty := term.IsTerminal(int(os.Stdout.Fd()))
 	return &LiveSession{
-		status:  NewStatusTracker(),
-		history: LoadPromptHistory(DefaultPromptHistoryPath()),
-		in:      os.Stdin,
-		out:     os.Stdout,
-		state:   DashboardState{Compact: true},
+		act:      NewActivity(),
+		history:  hist,
+		ed:       NewLineEditor(hist),
+		console:  NewConsole(os.Stdout, width, tty),
+		in:       os.Stdin,
+		out:      os.Stdout,
+		tty:      tty,
+		showDash: true,
+		state:    DashboardState{Compact: true},
+		wakeCh:   make(chan struct{}, 1),
 	}
 }
+
+// SetIO overrides the input/output streams (tests, embedded hosts).
+func (s *LiveSession) SetIO(in io.Reader, out io.Writer, sticky bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.in = in
+	s.out = out
+	s.tty = sticky
+	width, _ := TermSize()
+	s.console = NewConsole(out, width, sticky)
+}
+
+// SetShowDashboard controls whether the boxed dashboard is painted on start
+// and on Ctrl-L. The classic `chat` REPL turns it off for a plain transcript.
+func (s *LiveSession) SetShowDashboard(on bool) {
+	s.mu.Lock()
+	s.showDash = on
+	s.mu.Unlock()
+}
+
+// ShowDashboard reports whether the boxed dashboard is enabled.
+func (s *LiveSession) ShowDashboard() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.showDash
+}
+
+// SetSlashRegistry installs the command catalog used for help, the `/` picker
+// and Tab completion.
+func (s *LiveSession) SetSlashRegistry(r *SlashRegistry) {
+	s.mu.Lock()
+	s.slash = r
+	s.mu.Unlock()
+}
+
+// Console exposes the transcript writer so callers can print above the footer.
+func (s *LiveSession) Console() *Console { return s.console }
 
 // History returns the session prompt history (may be nil).
 func (s *LiveSession) History() *PromptHistory {
@@ -301,10 +411,20 @@ func (s *LiveSession) History() *PromptHistory {
 	return s.history
 }
 
+// Activity returns the live activity indicator.
+func (s *LiveSession) Activity() *Activity { return s.act }
+
+// SetProbe records the latest endpoint probe (drives the connection dot).
+func (s *LiveSession) SetProbe(p ProbeResult) {
+	s.mu.Lock()
+	s.state.Probe = p
+	s.mu.Unlock()
+	s.wake()
+}
+
 // ClearLive resets live stream state (events, agents, banners) without quitting.
 func (s *LiveSession) ClearLive() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state.Events = nil
 	s.state.Agents = nil
 	s.state.Intervention = ""
@@ -312,7 +432,8 @@ func (s *LiveSession) ClearLive() {
 	s.state.ProgressHead = ""
 	s.state.Message = "cleared"
 	s.state.Running = false
-	s.status = NewStatusTracker()
+	s.mu.Unlock()
+	s.act = NewActivity()
 }
 
 // OnBoardRefresh registers a callback used to refresh the board mid-run.
@@ -344,25 +465,40 @@ func (s *LiveSession) SetState(st DashboardState) {
 	if st.ProgressHead == "" {
 		st.ProgressHead = s.state.ProgressHead
 	}
+	if st.Probe.CheckedAt.IsZero() {
+		st.Probe = s.state.Probe
+	}
 	if !st.Compact && s.state.Compact {
 		st.Compact = true
 	}
+	st.PendingGate = s.state.PendingGate
 	s.state = st
 }
 
-func (s *LiveSession) Observe(e stream.Event) {
+// State returns a copy of the dashboard state.
+func (s *LiveSession) State() DashboardState {
 	s.mu.Lock()
-	if s.status != nil {
-		s.status.Observe(e)
-	}
-	// Always hide runner internals; compact also drops bulky output dumps.
+	defer s.mu.Unlock()
+	return s.state
+}
+
+// Observe folds a live event into the session: it appends a transcript line
+// (never destroying scrollback) and refreshes the sticky footer.
+func (s *LiveSession) Observe(e stream.Event) {
+	s.act.Observe(e)
+
 	if e.Kind == stream.KindDebug {
-		s.mu.Unlock()
 		return
 	}
+	if e.Kind == stream.KindToken {
+		s.wake()
+		return // rendered live in the footer, not the transcript
+	}
+
+	s.mu.Lock()
 	if s.state.Compact && e.Kind == stream.KindOutput {
 		s.mu.Unlock()
-		s.scheduleRedraw(false)
+		s.wake()
 		return
 	}
 	s.state.Events = append(s.state.Events, e)
@@ -379,36 +515,15 @@ func (s *LiveSession) Observe(e stream.Event) {
 	refreshBoard := false
 	switch e.Kind {
 	case stream.KindAgentStart:
-		if e.TaskID != "" || e.Agent != "" {
-			label := e.TaskID
-			if label == "" {
-				label = e.Phase
-			}
-			if e.Agent != "" {
-				if e.TaskID != "" {
-					label = "@" + e.Agent + ":" + e.TaskID
-				} else {
-					label = "@" + e.Agent
-				}
-			}
-			s.state.Agents = appendUnique(s.state.Agents, label)
+		if k := agentKey(e); k != "" {
+			s.state.Agents = appendUnique(s.state.Agents, k)
 			s.state.Running = true
 		}
 	case stream.KindAgentEnd:
-		if e.TaskID != "" {
-			filter := e.TaskID
+		if k := agentKey(e); k != "" {
 			var next []string
 			for _, a := range s.state.Agents {
-				if !strings.Contains(a, filter) {
-					next = append(next, a)
-				}
-			}
-			s.state.Agents = next
-		} else if e.Agent != "" {
-			filter := "@" + e.Agent
-			var next []string
-			for _, a := range s.state.Agents {
-				if a != filter && !strings.HasPrefix(a, filter+":") {
+				if a != k {
 					next = append(next, a)
 				}
 			}
@@ -432,9 +547,9 @@ func (s *LiveSession) Observe(e stream.Event) {
 	case stream.KindAsk:
 		banner := e.Message
 		if strings.Contains(strings.ToLower(e.Output), `"kind":"escalate"`) || e.Agent == "escalate" {
-			banner = "ESCALATE — /escalate re_scope|retry|mark_done|abort · " + e.Message
+			banner = "ESCALATE — answer inline or /escalate re_scope|retry|mark_done|abort · " + e.Message
 		} else if strings.Contains(strings.ToLower(e.Output), `"kind":"continue"`) || e.Agent == "continue" {
-			banner = "CONTINUE? answer in Studio · " + e.Message
+			banner = "CONTINUE? answer inline · " + e.Message
 		}
 		s.state.Intervention = banner
 		s.state.Message = banner
@@ -459,14 +574,10 @@ func (s *LiveSession) Observe(e stream.Event) {
 		if e.Message != "" {
 			s.state.TurnHead = e.Message
 		}
-		if e.Scope != "" {
+		if e.Scope != "" && e.Message == "" {
 			s.state.TurnHead = e.Scope
-			if e.Message != "" {
-				s.state.TurnHead = e.Message
-			}
 		}
 	}
-	// Progress strip: phase · agents · turn
 	parts := []string{}
 	if s.state.Phase != "" {
 		parts = append(parts, s.state.Phase)
@@ -487,6 +598,8 @@ func (s *LiveSession) Observe(e stream.Event) {
 	fn := s.onBoardRefresh
 	s.mu.Unlock()
 
+	s.console.Write(FormatEvent(e))
+
 	if refreshBoard && fn != nil {
 		if b := fn(); b != nil {
 			s.mu.Lock()
@@ -494,47 +607,7 @@ func (s *LiveSession) Observe(e stream.Event) {
 			s.mu.Unlock()
 		}
 	}
-	s.scheduleRedraw(e.Kind == stream.KindAgentStart || e.Kind == stream.KindAgentEnd ||
-		e.Kind == stream.KindFileChange || e.Kind == stream.KindIntervention ||
-		e.Kind == stream.KindLoop || e.Kind == stream.KindTurn || e.Phase == "done")
-}
-
-// scheduleRedraw paints the dashboard live during runs (throttled).
-func (s *LiveSession) scheduleRedraw(force bool) {
-	s.mu.Lock()
-	if !s.state.Running && !force {
-		s.mu.Unlock()
-		return
-	}
-	now := time.Now()
-	minGap := 200 * time.Millisecond
-	if force {
-		minGap = 80 * time.Millisecond
-	}
-	if !force && now.Sub(s.lastRedraw) < minGap {
-		if s.redrawPending {
-			s.mu.Unlock()
-			return
-		}
-		s.redrawPending = true
-		wait := minGap - now.Sub(s.lastRedraw)
-		s.mu.Unlock()
-		go func() {
-			time.Sleep(wait)
-			s.mu.Lock()
-			s.redrawPending = false
-			s.lastRedraw = time.Now()
-			st := s.state
-			s.mu.Unlock()
-			RenderDashboard(s.out, st)
-		}()
-		return
-	}
-	s.lastRedraw = now
-	s.redrawPending = false
-	st := s.state
-	s.mu.Unlock()
-	RenderDashboard(s.out, st)
+	s.wake()
 }
 
 // SetCompact toggles compact live-event mode.
@@ -571,55 +644,259 @@ func (s *LiveSession) OnSlash(fn func(string) (bool, error)) {
 	s.onSlash = fn
 }
 
-// RunInteractive enters the premium dashboard loop. Non-TTY callers should use PrintStaticDashboard.
+// OnLiveSlash registers the handler used for slash commands typed *during* a
+// run. Falls back to OnSlash when unset.
+func (s *LiveSession) OnLiveSlash(fn func(string) (bool, error)) { s.onLiveSlash = fn }
+
+// OnSteer registers the sink for mid-run redirection text (Esc → "what should
+// I change?", or any plain line typed while a run is in flight).
+func (s *LiveSession) OnSteer(fn func(string)) { s.onSteer = fn }
+
+// Print writes a line into the transcript above the sticky footer.
+func (s *LiveSession) Print(a ...any) {
+	s.console.Write(strings.TrimRight(fmt.Sprintln(a...), "\n"))
+}
+
+// Printf writes formatted text into the transcript.
+func (s *LiveSession) Printf(format string, a ...any) {
+	s.console.Write(fmt.Sprintf(format, a...))
+}
+
+func (s *LiveSession) wake() {
+	select {
+	case s.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// AskGate publishes a human-in-the-loop gate and blocks until the user answers
+// or ctx is cancelled. Called from the orchestrator's goroutine.
+func (s *LiveSession) AskGate(ctx context.Context, g Gate) (GateAnswer, bool) {
+	reply := make(chan GateAnswer, 1)
+	s.mu.Lock()
+	s.gate = &g
+	s.gateReply = reply
+	s.state.PendingGate = g.Title
+	width := s.console.Width()
+	s.mu.Unlock()
+
+	s.console.Write(g.Render(width))
+	s.wake()
+
+	defer func() {
+		s.mu.Lock()
+		s.gate = nil
+		s.gateReply = nil
+		s.state.PendingGate = ""
+		s.mu.Unlock()
+		s.wake()
+	}()
+
+	select {
+	case a := <-reply:
+		return a, true
+	case <-ctx.Done():
+		return GateAnswer{}, false
+	}
+}
+
+// PendingGate returns the waiting gate, if any.
+func (s *LiveSession) PendingGate() *Gate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gate
+}
+
+func (s *LiveSession) answerGate(a GateAnswer) bool {
+	s.mu.Lock()
+	ch := s.gateReply
+	s.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- a:
+		return true
+	default:
+		return false
+	}
+}
+
+// stickyLines builds the parked block: optional live-token preview, the
+// activity line, and the prompt (or gate prompt).
+func (s *LiveSession) stickyLines() ([]string, int) {
+	width := s.console.Width()
+	var lines []string
+
+	// Live command discovery: typing "/" (and nothing else yet) parks the
+	// matching commands right above the prompt, so the catalog is never more
+	// than one keystroke away.
+	if sug := s.suggestions(width); len(sug) > 0 {
+		lines = append(lines, sug...)
+	}
+
+	if tok := s.act.LastTokenLine(); tok != "" && s.act.Running() {
+		lines = append(lines, "  "+Dim("› ")+Dim(ClipWidth(collapseWhitespace(tok), width-4)))
+	}
+	lines = append(lines, s.act.Line(width))
+
+	s.mu.Lock()
+	g := s.gate
+	s.mu.Unlock()
+
+	prompt := Accent("slm › ")
+	if g != nil {
+		prompt = g.PromptLine() + " "
+	} else if s.act.Running() {
+		prompt = Accent("slm ▶ ")
+	}
+	line, col := s.ed.Render(prompt)
+	lines = append(lines, TruncateWidth(line, width))
+	return lines, col
+}
+
+// suggestions renders the inline slash picker for the current buffer.
+func (s *LiveSession) suggestions(width int) []string {
+	s.mu.Lock()
+	reg := s.slash
+	gate := s.gate
+	s.mu.Unlock()
+	if reg == nil || gate != nil {
+		return nil
+	}
+	buf := s.ed.Value()
+	if !strings.HasPrefix(buf, "/") || strings.ContainsAny(buf, " \t") {
+		return nil
+	}
+	cands := reg.Find(buf)
+	if len(cands) == 0 {
+		return []string{Dim("  no command matches ") + Yellow(buf)}
+	}
+	if len(cands) == 1 && cands[0].Name == buf {
+		return nil // already exact — no need to nag
+	}
+	const maxSuggest = 5
+	if len(cands) > maxSuggest {
+		cands = cands[:maxSuggest]
+	}
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		sig := c.Name
+		if c.Args != "" {
+			sig += " " + c.Args
+		}
+		out = append(out, ClipWidth("  "+Cyan(PadWidth(sig, 30))+"  "+Dim(c.Help), width))
+	}
+	return out
+}
+
+func (s *LiveSession) repaint() {
+	lines, col := s.stickyLines()
+	s.console.SetSticky(lines, col)
+}
+
+// RunInteractive enters the premium dashboard loop.
+//
+// Three concurrent sources feed one select loop: keystrokes (own goroutine, raw
+// mode so single keys are readable), the in-flight run (own goroutine), and a
+// repaint ticker. Nothing blocks the others — /stop, /feedback, /permission and
+// Esc all work while an agent is mid-thought.
 func (s *LiveSession) RunInteractive() error {
-	s.redraw()
-	sc := bufio.NewScanner(s.in)
+	raw, err := EnterRaw(os.Stdin)
+	if err == nil && raw != nil {
+		s.console.SetRaw(true)
+	}
+	restore := func() {
+		s.console.ClearSticky()
+		s.console.SetRaw(false)
+		raw.Restore()
+	}
+	defer restore()
+	defer func() {
+		if r := recover(); r != nil {
+			RestoreAllRaw()
+			panic(r)
+		}
+	}()
+
+	if s.showDash {
+		RenderDashboard(s.out, s.State())
+	}
+
+	pump := StartInputPump(s.in, s.ed)
+	defer pump.Stop()
+	pump.SetHotkeys(func(k Key) bool {
+		if k.Type != KeyRune || s.ed.Value() != "" {
+			return false
+		}
+		g := s.PendingGate()
+		if g == nil {
+			return false
+		}
+		_, ok := g.ResolveKey(k)
+		return ok
+	})
+
+	resize, stopResize := NotifyResize()
+	defer stopResize()
+
+	runCh := make(chan error, 1)
+	running := false
+	var lastQuery string
+	var pendingRedirect string
+	awaitRedirect := false
+
+	startRun := func(q string) {
+		if s.onRun == nil || running {
+			return
+		}
+		running = true
+		lastQuery = q
+		if s.history != nil {
+			s.history.Add(q)
+		}
+		s.mu.Lock()
+		s.state.Running = true
+		s.state.Query = q
+		s.state.Message = ""
+		s.state.Intervention = ""
+		s.state.TurnHead = ""
+		s.state.ProgressHead = ""
+		s.mu.Unlock()
+		s.act.Start()
+		s.console.Write(Accent("› ") + Bold(q))
+		go func(query string) {
+			defer func() {
+				if r := recover(); r != nil {
+					runCh <- fmt.Errorf("run panicked: %v", r)
+				}
+			}()
+			runCh <- s.onRun(query)
+		}(q)
+	}
+
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+	s.repaint()
+
 	for {
-		fmt.Fprint(s.out, Accent("\nslm › "))
-		if !sc.Scan() {
-			break
-		}
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			s.redraw()
-			continue
-		}
-		if line == "?" || line == "help" || line == "/help" {
-			s.printHelp()
-			continue
-		}
-		if strings.HasPrefix(line, "/") {
-			if s.onSlash != nil {
-				quit, err := s.onSlash(line)
-				if err != nil {
-					s.setMsg(err.Error())
-				}
-				if quit {
-					fmt.Fprintln(s.out, Dim("bye"))
-					return nil
-				}
+		select {
+		case <-ticker.C:
+			if s.act.Running() {
+				s.act.Tick()
 			}
-			s.redraw()
-			continue
-		}
-		if s.onRun != nil {
-			if s.history != nil {
-				s.history.Add(line)
-			}
-			s.setMsg("running…")
-			s.mu.Lock()
-			s.state.Running = true
-			s.state.Query = line
-			s.state.Events = nil
-			s.state.Intervention = ""
-			s.state.TurnHead = ""
-			s.state.ProgressHead = ""
-			s.status = NewStatusTracker()
-			s.mu.Unlock()
-			s.redraw()
-			// Blocking run; Observe() throttles live redraws. Ctrl+C / signal cancels.
-			err := s.onRun(line)
+			s.repaint()
+
+		case <-s.wakeCh:
+			s.repaint()
+
+		case <-resize:
+			w, _ := TermSize()
+			s.console.SetWidth(w)
+			s.repaint()
+
+		case err := <-runCh:
+			running = false
 			s.mu.Lock()
 			s.state.Running = false
 			if err != nil {
@@ -628,17 +905,201 @@ func (s *LiveSession) RunInteractive() error {
 				s.state.Message = "run finished"
 			}
 			s.mu.Unlock()
+			if err != nil {
+				s.act.Stop("failed")
+				s.console.Write(Warn(err.Error()))
+			} else {
+				s.act.Stop("done")
+				s.console.Write(Success("run finished"))
+			}
+			if pendingRedirect != "" {
+				next := pendingRedirect
+				pendingRedirect = ""
+				startRun(next)
+			}
+			s.repaint()
+
+		case ev, ok := <-pump.Events():
+			if !ok {
+				return nil
+			}
+			switch ev.Kind {
+			case InputRedraw:
+				s.repaint()
+
+			case InputClear:
+				if s.ShowDashboard() {
+					RenderDashboard(s.out, s.State())
+				}
+				s.repaint()
+
+			case InputHotkey:
+				if g := s.PendingGate(); g != nil {
+					if a, ok := g.ResolveKey(ev.Key); ok {
+						s.console.Write(Dim("  → ") + Green(a.Value))
+						s.answerGate(a)
+					}
+				}
+				s.repaint()
+
+			case InputComplete:
+				s.completeLine()
+				s.repaint()
+
+			case InputCancel: // Esc
+				if running {
+					if s.onStop != nil {
+						s.onStop()
+					}
+					awaitRedirect = true
+					s.console.Write(Warn("interrupted — what should I change? (type a redirection, or Enter to just stop)"))
+					s.act.SetNote("interrupting…")
+				} else if g := s.PendingGate(); g != nil {
+					s.console.Write(Dim("  (answer required — pick one of the options)"))
+				} else {
+					s.ed.Reset()
+				}
+				s.repaint()
+
+			case InputInterrupt: // Ctrl-C on empty line
+				if running {
+					if s.onStop != nil {
+						s.onStop()
+					}
+					s.console.Write(Warn("interrupted — board preserved; press Ctrl-C again to quit"))
+					s.act.SetNote("interrupting…")
+					s.repaint()
+					continue
+				}
+				s.console.Write(Dim("bye"))
+				return nil
+
+			case InputEOF:
+				s.console.Write(Dim("bye"))
+				return nil
+
+			case InputLine:
+				line := strings.TrimSpace(ev.Line)
+				// 1) A waiting gate consumes the line first.
+				if g := s.PendingGate(); g != nil {
+					if line == "" {
+						s.repaint()
+						continue
+					}
+					if a, ok := g.Resolve(line); ok {
+						s.console.Write(Dim("  → ") + Green(a.Value) + " " + Dim(a.Notes))
+						s.answerGate(a)
+					} else {
+						s.console.Write(Warn("unrecognized answer — " + StripANSI(g.PromptLine())))
+					}
+					s.repaint()
+					continue
+				}
+				// 2) Esc redirection: queued, then applied as soon as the
+				// cancelled run unwinds (never blocks this loop).
+				if awaitRedirect {
+					awaitRedirect = false
+					if line == "" {
+						s.console.Write(Dim("stopped."))
+						s.repaint()
+						continue
+					}
+					if s.onSteer != nil {
+						s.onSteer(line)
+					}
+					next := lastQuery
+					if next == "" {
+						next = line
+					} else {
+						next += "\n\nUser redirection: " + line
+					}
+					if running {
+						pendingRedirect = next
+						s.console.Write(Cyan("redirection queued — restarting when the run unwinds"))
+					} else {
+						startRun(next)
+					}
+					s.repaint()
+					continue
+				}
+				if line == "" {
+					s.repaint()
+					continue
+				}
+				// 3) Help / picker.
+				if line == "?" || line == "help" {
+					s.printHelp()
+					s.repaint()
+					continue
+				}
+				if line == "/" {
+					s.mu.Lock()
+					reg := s.slash
+					s.mu.Unlock()
+					if reg != nil {
+						s.console.Write(reg.RenderPicker("", s.console.Width(), 40))
+					}
+					s.repaint()
+					continue
+				}
+				// 4) Slash commands — routed to the live handler while running.
+				if strings.HasPrefix(line, "/") {
+					handler := s.onSlash
+					if running && s.onLiveSlash != nil {
+						handler = s.onLiveSlash
+					}
+					if handler != nil {
+						quit, err := handler(line)
+						if err != nil {
+							s.console.Write(Error(err.Error()))
+							s.setMsg(err.Error())
+						}
+						if quit {
+							s.console.Write(Dim("bye"))
+							return nil
+						}
+					}
+					s.repaint()
+					continue
+				}
+				// 5) Plain text: a new run, or live steering while one runs.
+				if running {
+					if s.onSteer != nil {
+						s.onSteer(line)
+						s.console.Write(Cyan("steering: ") + line)
+					} else {
+						s.console.Write(Dim("a run is in flight — /stop first, or Esc to redirect"))
+					}
+					s.repaint()
+					continue
+				}
+				startRun(line)
+				s.repaint()
+			}
 		}
-		s.redraw()
 	}
-	return sc.Err()
 }
 
-func (s *LiveSession) redraw() {
+// completeLine applies Tab completion to the current buffer.
+func (s *LiveSession) completeLine() {
 	s.mu.Lock()
-	st := s.state
+	reg := s.slash
 	s.mu.Unlock()
-	RenderDashboard(s.out, st)
+	if reg == nil {
+		return
+	}
+	line := s.ed.Value()
+	if !strings.HasPrefix(line, "/") {
+		return
+	}
+	completed, cands := reg.Complete(line)
+	if completed != line {
+		s.ed.SetValue(completed)
+		return
+	}
+	if len(cands) > 0 {
+		s.console.Write(reg.RenderPicker(strings.TrimPrefix(line, "/"), s.console.Width(), 12))
+	}
 }
 
 func (s *LiveSession) setMsg(m string) {
@@ -648,94 +1109,16 @@ func (s *LiveSession) setMsg(m string) {
 }
 
 func (s *LiveSession) printHelp() {
-	fmt.Fprintln(s.out)
-	fmt.Fprintln(s.out, Bold("Premium TUI — shortcuts"))
-	fmt.Fprintln(s.out, "  "+Cyan("<query>")+"          run full SLM pipeline")
-	fmt.Fprintln(s.out, "  "+Cyan("/clear")+"            reset live stream / banners (fresh view)")
-	fmt.Fprintln(s.out, "  "+Cyan("/plan [auto|ask]")+"  plan-approve gate (ask = review before execute)")
-	fmt.Fprintln(s.out, "  "+Cyan("/escalate …")+"       answer escalate HITL: re_scope|retry|mark_done|abort")
-	fmt.Fprintln(s.out, "  "+Cyan("/history")+"          show recent prompts")
-	fmt.Fprintln(s.out, "  "+Cyan("/board")+"            refresh + show board")
-	fmt.Fprintln(s.out, "  "+Cyan("/status")+"           connection / settings glance")
-	fmt.Fprintln(s.out, "  "+Cyan("/errors")+"           tail .slmcode/errors/errors.md")
-	fmt.Fprintln(s.out, "  "+Cyan("/diff")+"             git dirty files")
-	fmt.Fprintln(s.out, "  "+Cyan("/queries")+"          recent query turns")
-	fmt.Fprintln(s.out, "  "+Cyan("/agents")+"           list specialists")
-	fmt.Fprintln(s.out, "  "+Cyan("/agent …")+"          show|new|edit|delete agents (Studio parity)")
-	fmt.Fprintln(s.out, "  "+Cyan("/skills")+"           list skills")
-	fmt.Fprintln(s.out, "  "+Cyan("/studio")+"           print Studio URL hint")
-	fmt.Fprintln(s.out, "  "+Cyan("/model <id>")+"       switch model (persists)")
-	fmt.Fprintln(s.out, "  "+Cyan("/models [q]")+"       search models (auth-aware + costs)")
-	fmt.Fprintln(s.out, "  "+Cyan("/provider <name>")+"  switch provider")
-	fmt.Fprintln(s.out, "  "+Cyan("/auth [set <key>]")+" auth status · save key to .slmcode/auth.json")
-	fmt.Fprintln(s.out, "  "+Cyan("/mcp")+"              MCP connection status (mcp_call meta-tool)")
-	fmt.Fprintln(s.out, "  "+Cyan("/schema")+"           patchable config fields")
-	fmt.Fprintln(s.out, "  "+Cyan("/permission …")+"     auto|dry-run|review  or  shell=allow|ask|deny")
-	fmt.Fprintln(s.out, "  "+Cyan("/compact")+"          toggle stream · /compact context|llm|auto|heuristic")
-	fmt.Fprintln(s.out, "  "+Cyan("/rewind")+"           list/restore wave snapshots")
-	fmt.Fprintln(s.out, "  "+Cyan("/stats")+"            last-run latency + tokens (+$ if price_preset/price_* set)")
-	fmt.Fprintln(s.out, "  "+Cyan("/sessions")+"         pick a prior query turn")
-	fmt.Fprintln(s.out, "  "+Cyan("/stop")+"             cancel in-flight run (checkpoint board)")
-	fmt.Fprintln(s.out, "  "+Cyan("/resume [id]")+"      continue interrupted run from last board/tasks")
-	fmt.Fprintln(s.out, "  "+Cyan("/refresh")+"          redraw dashboard")
-	fmt.Fprintln(s.out, "  "+Cyan("/q")+"                quit")
-	fmt.Fprintln(s.out)
-	fmt.Fprintln(s.out, Bold("Harness UX"))
-	fmt.Fprintln(s.out, "  "+Yellow("⚠ banner")+"       quality / loop / whitelist / thinking / escalate")
-	fmt.Fprintln(s.out, "  "+Yellow("⟳ turn N/M")+"     MaxIter budget (finalize soon when low)")
-	fmt.Fprintln(s.out, "  "+Dim("progress")+"         phase · active agents · turn")
-	fmt.Fprintln(s.out, Dim("  Escalate pauses the task — answer in Studio modal or /escalate <action>."))
-	fmt.Fprintln(s.out, Dim("  Studio Live shows the same intervention + turn chips via SSE."))
-}
-
-func padRight(s string, n int) string {
-	// strip ANSI for width — approximate by visible length heuristic
-	vis := visibleLen(s)
-	if vis >= n {
-		return trimVisible(s, n)
+	s.mu.Lock()
+	reg := s.slash
+	s.mu.Unlock()
+	if reg != nil {
+		s.console.Write(reg.RenderHelp(s.console.Width()))
+		return
 	}
-	return s + strings.Repeat(" ", n-vis)
-}
-
-func visibleLen(s string) int {
-	n := 0
-	inEsc := false
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\033' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-func trimVisible(s string, n int) string {
-	if visibleLen(s) <= n {
-		return s
-	}
-	// fallback: raw truncate
-	if len(s) > n {
-		return s[:max(0, n-1)] + "…"
-	}
-	return s
-}
-
-func clipMid(s string, n int) string {
-	s = collapseWhitespace(s)
-	if n <= 0 || len(s) <= n {
-		return s
-	}
-	if n < 4 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
+	s.console.Write(Bold("Premium TUI") + "\n" +
+		"  " + Cyan("<query>") + "   run the pipeline\n" +
+		"  " + Cyan("/q") + "        quit")
 }
 
 func shortPath(p string) string {

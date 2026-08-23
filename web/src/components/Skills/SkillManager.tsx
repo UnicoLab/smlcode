@@ -15,8 +15,10 @@ import {
   Edit3,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useConfirm } from '@/components/ui/Modal';
 
 export default function SkillManager() {
+  const confirm = useConfirm();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -227,7 +229,12 @@ export default function SkillManager() {
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete skill "${name}"?`)) return;
+    const ok = await confirm({
+      title: `Delete skill "${name}"?`,
+      description: 'The SKILL.md file is removed from the skills directory.',
+      confirmLabel: 'Delete skill',
+    });
+    if (!ok) return;
     try {
       await deleteSkill(name);
       setNotice(`Skill "${name}" deleted`);

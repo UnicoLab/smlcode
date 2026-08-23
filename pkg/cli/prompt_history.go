@@ -20,7 +20,8 @@ type PromptHistory struct {
 	idx   int // -1 = not browsing; 0 = newest when browsing
 }
 
-// LoadPromptHistory reads ~/.config/slmcode/prompt-history.json (or path).
+// LoadPromptHistory reads the prompt history file at path (see
+// DefaultPromptHistoryPath for the per-OS location).
 func LoadPromptHistory(path string) *PromptHistory {
 	h := &PromptHistory{path: path, idx: -1}
 	if path == "" {
@@ -37,7 +38,15 @@ func LoadPromptHistory(path string) *PromptHistory {
 	return h
 }
 
-// DefaultPromptHistoryPath returns the standard history file location.
+// DefaultPromptHistoryPath returns the per-OS history file location:
+//
+//	Linux/BSD  $XDG_CONFIG_HOME/slmcode/prompt-history.json
+//	           (~/.config/slmcode/prompt-history.json when unset)
+//	macOS      ~/Library/Application Support/slmcode/prompt-history.json
+//	Windows    %AppData%\slmcode\prompt-history.json
+//
+// It follows os.UserConfigDir, so the old "always ~/.config/slmcode" claim was
+// wrong on macOS and Windows.
 func DefaultPromptHistoryPath() string {
 	home, err := os.UserConfigDir()
 	if err != nil || home == "" {

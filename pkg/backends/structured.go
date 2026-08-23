@@ -151,7 +151,7 @@ type structuredProvider struct {
 // ---------------------------------------------------------------------------
 
 // shape injects the fields GoLangGraph's agent never sets. StopSequences and
-// ToolChoice are honoured by the underlying OpenAI provider, so these reach the
+// ToolChoice are honored by the underlying OpenAI provider, so these reach the
 // wire even on the delegated path.
 func (p *structuredProvider) shape(req llm.CompletionRequest) llm.CompletionRequest {
 	if len(p.directives.StopSequences) > 0 && len(req.StopSequences) == 0 {
@@ -234,11 +234,11 @@ func (p *structuredProvider) complete(
 			return resp, nil
 		}
 		// Only retry through the ordinary path when the failure was about the
-		// REQUEST — a rejected field or an unrecognised response. A transient
+		// REQUEST — a rejected field or an unrecognized response. A transient
 		// failure has already exhausted its retries, a cancellation is the
 		// caller's, and a context overflow will not fit on the second try
 		// either; replaying any of those would double the attempts against a
-		// local server that serialises inference.
+		// local server that serializes inference.
 		switch Classify(err).Class {
 		case ClassTransient, ClassRateLimited, ClassCanceled, ClassContextOverflow:
 			return nil, err
@@ -337,7 +337,7 @@ func (p *structuredProvider) structuredCall(ctx context.Context, req llm.Complet
 			start := time.Now()
 			r, err := p.post(cctx, url, body)
 			if r != nil {
-				GlobalThroughput.Observe(model, r.Usage.CompletionTokens, time.Since(start))
+				observeAndPersist(model, r.Usage.CompletionTokens, time.Since(start))
 			}
 			return r, err
 		})

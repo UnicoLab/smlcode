@@ -57,7 +57,7 @@ func (c Capabilities) Any() bool {
 }
 
 // SelectMechanism picks the strongest mechanism these capabilities support for
-// a given spec, honouring an exclusion set of mechanisms already rejected by
+// a given spec, honoring an exclusion set of mechanisms already rejected by
 // the server during this call.
 func (c Capabilities) SelectMechanism(spec schema.Spec, exclude map[string]bool) string {
 	try := func(name string, ok bool) string {
@@ -332,7 +332,7 @@ func runProbe(ctx context.Context, provider, endpoint, model, apiKey string) Cap
 	if url == "" {
 		return Capabilities{Source: "unreachable"}
 	}
-	// Detach from the caller's cancellation so one cancelled request does not
+	// Detach from the caller's cancellation so one canceled request does not
 	// leave the cache empty for everyone else, but never outlive the caller's
 	// deadline: the first structured call of a run waits on this.
 	budget := ProbeTimeout

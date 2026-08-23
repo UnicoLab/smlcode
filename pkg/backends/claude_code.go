@@ -44,6 +44,7 @@ func (r *ClaudeCodeRunner) Run(ctx context.Context, prompt string) (string, erro
 	}
 	// Prefer print/non-interactive modes used by recent Claude Code CLIs.
 	args := []string{"-p", prompt, "--output-format", "text"}
+	//nolint:gosec // r.Bin is the operator-configured claude_code_bin; running it IS the feature
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
 	cmd.Dir = r.WorkDir
 	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")

@@ -172,7 +172,7 @@ func SyntaxRevertMessage(rel string, res SyntaxResult) string {
 //
 // prev is the file content before the edit ("" for a brand-new file).
 func (w *Workspace) applyWithSyntaxGuard(ctx context.Context, rel, abs, prev, next string, existed bool) (note string, reverted bool, err error) {
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return "", false, err
 	}
 	if w == nil || !w.SyntaxCheck || syntaxChecker(abs) == nil {

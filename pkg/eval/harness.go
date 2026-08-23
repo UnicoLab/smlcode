@@ -120,12 +120,12 @@ func RunCase(ctx context.Context, c Case, baseCfg *config.Config) Result {
 		res.Error = err.Error()
 		return res
 	}
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }() // scratch tree; a failed cleanup is not a case failure
 
 	for path, body := range c.SeedFiles {
 		abs := filepath.Join(root, filepath.FromSlash(path))
-		_ = os.MkdirAll(filepath.Dir(abs), 0o755)
-		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		_ = os.MkdirAll(filepath.Dir(abs), 0o750) // scratch fixture tree, owner-only
+		if err := os.WriteFile(abs, []byte(body), 0o600); err != nil {
 			res.Error = err.Error()
 			return res
 		}
@@ -281,8 +281,8 @@ func WriteReport(path string, rep Report) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { // eval results dir, owner-only
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }

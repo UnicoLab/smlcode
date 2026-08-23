@@ -19,8 +19,9 @@ package agents
 // the two are checked against each other by TestPromptContractsMatchSchema.
 
 // AntiWanderCore is the shared scope discipline every tool-using specialist
-// inherits. AGENTS.md §11 ("HARD SCOPE") refers to this constant; keep it to
-// three lines so it can be prepended to any prompt without crowding the task.
+// inherits. AGENTS.md's "ANTI-WANDER / HARD SCOPE" bullet names this constant;
+// keep it to three lines so it can be prepended to any prompt without
+// crowding the task.
 const AntiWanderCore = `ANTI-WANDER — HARD SCOPE, three rules:
 SCOPE: touch only the task's focus files and same-package siblings; create a root entrypoint (main.go, index.js, main.py) only when the task lists it.
 NOTHING EXTRA: no new helpers, files, refactors, or "nice to have" additions.
@@ -260,7 +261,7 @@ const PromptCorrector = `Fix the reviewer's issues for ONE task, inside its focu
 RULES
 1. Work the issues in order: compile/smoke failures, then stubs, then missing logic.
 2. ws_read each affected file before editing it. ` + OneToolPerTurn + `
-3. Replace stubs with real behaviour; do not add features the issues did not ask for.
+3. Replace stubs with real behavior; do not add features the issues did not ask for.
 4. ` + SmokeLine + ` Re-run it after your last fix.
 5. Finish with the output JSON — never end on a tool call.
 

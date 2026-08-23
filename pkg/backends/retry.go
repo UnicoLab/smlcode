@@ -30,7 +30,7 @@ const (
 	ClassUnknown ErrorClass = iota
 	// ClassTransient is a connection-level failure or 5xx: worth retrying.
 	ClassTransient
-	// ClassRateLimited is 429 (or an explicit Retry-After): retry, honouring the hint.
+	// ClassRateLimited is 429 (or an explicit Retry-After): retry, honoring the hint.
 	ClassRateLimited
 	// ClassPermanent is 400/401/403/404/413/422: retrying burns a full prefill
 	// for nothing. Surface immediately.
@@ -213,7 +213,7 @@ type RetryPolicy struct {
 	MaxDelay    time.Duration // backoff ceiling (default 20s)
 	// Jitter spreads concurrent workers. With max_parallel=4 against one local
 	// server, lockstep retries are the difference between a recovery and a
-	// thundering herd on a backend that serialises inference anyway.
+	// thundering herd on a backend that serializes inference anyway.
 	Jitter bool
 	// Rand is injectable for deterministic tests. Nil uses a shared source.
 	Rand func() float64
@@ -359,6 +359,14 @@ func (t *Throughput) Observe(model string, completionTokens int, elapsed time.Du
 	e.samples++
 }
 
+// observeAndPersist is Observe plus a throttled write-through to the on-disk
+// store, so `slmcode doctor` in a later process can report a MEASURED rate
+// rather than the DefaultTokensPerSec prior.
+func observeAndPersist(model string, completionTokens int, elapsed time.Duration) {
+	GlobalThroughput.Observe(model, completionTokens, elapsed)
+	saveThroughput()
+}
+
 // TokensPerSec returns the observed decode rate and how many samples back it.
 func (t *Throughput) TokensPerSec(model string) (float64, int) {
 	if t == nil {
@@ -408,12 +416,17 @@ func (t *Throughput) Snapshot() []Observed {
 // it is measured at all. When ok is false the caller should say so rather than
 // render DefaultTokensPerSec as if it had been observed.
 func ObservedThroughput(model string) (tps float64, samples int, ok bool) {
+	loadThroughput()
 	tps, samples = GlobalThroughput.TokensPerSec(model)
 	return tps, samples, samples > 0 && tps > 0
 }
 
-// ThroughputSnapshot is the process-wide equivalent of Throughput.Snapshot.
-func ThroughputSnapshot() []Observed { return GlobalThroughput.Snapshot() }
+// ThroughputSnapshot is the process-wide equivalent of Throughput.Snapshot,
+// merged with whatever earlier runs persisted under .slmcode.
+func ThroughputSnapshot() []Observed {
+	loadThroughput()
+	return GlobalThroughput.Snapshot()
+}
 
 // Reset clears observations (tests).
 func (t *Throughput) Reset() {
@@ -474,7 +487,7 @@ type retryProvider struct {
 
 // NewRetryProvider wraps p with slmcode's retry policy and token-derived
 // deadlines. Exported so a caller assembling its own ProviderManager gets the
-// same behaviour as RegisterLLM.
+// same behavior as RegisterLLM.
 func NewRetryProvider(p llm.Provider, name, model string, policy RetryPolicy) llm.Provider {
 	if p == nil {
 		return nil
@@ -509,7 +522,7 @@ func (p *retryProvider) observe(req llm.CompletionRequest, resp *llm.CompletionR
 	if strings.TrimSpace(model) == "" {
 		model = p.model
 	}
-	GlobalThroughput.Observe(model, resp.Usage.CompletionTokens, time.Since(start))
+	observeAndPersist(model, resp.Usage.CompletionTokens, time.Since(start))
 }
 
 func (p *retryProvider) Complete(ctx context.Context, req llm.CompletionRequest) (*llm.CompletionResponse, error) {

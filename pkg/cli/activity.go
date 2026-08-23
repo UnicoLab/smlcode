@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
@@ -32,6 +33,7 @@ type Activity struct {
 	lastLine string // most recent token-stream fragment
 	frame    int
 	note     string
+	model    string // active model id, for the measured decode rate
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -56,6 +58,40 @@ func (a *Activity) Start() {
 	a.costUSD = 0
 	a.lastLine = ""
 	a.note = ""
+}
+
+// SetModel names the model whose decode rate the status line reports. An empty
+// or unknown model simply drops the tok/s segment.
+func (a *Activity) SetModel(model string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.model = strings.TrimSpace(model)
+	a.mu.Unlock()
+}
+
+// throughputSegment renders the MEASURED decode rate for the active model.
+//
+// backends.ObservedThroughput reports ok=false until a completion has actually
+// been timed. In that case this shows an em dash: DefaultTokensPerSec is a
+// deliberately pessimistic prior for sizing request deadlines, and printing it
+// on the status line would pass a guess off as a measurement.
+func throughputSegment(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return ""
+	}
+	tps, samples, ok := backends.ObservedThroughput(model)
+	if !ok {
+		return Dim("— tok/s")
+	}
+	seg := fmt.Sprintf("≈%.0f tok/s", tps)
+	if samples < 3 {
+		// One or two samples is a reading, not a rate; say so rather than
+		// letting a cold first call look like steady-state throughput.
+		seg += fmt.Sprintf(" (n=%d)", samples)
+	}
+	return Dim(seg)
 }
 
 // Stop marks the run finished; the line keeps the final counters.
@@ -284,6 +320,9 @@ func (a *Activity) Line(width int) string {
 	}
 	if a.tokens > 0 {
 		parts = append(parts, Dim(fmt.Sprintf("%s tok", humanCount(a.tokens))))
+	}
+	if seg := throughputSegment(a.model); seg != "" {
+		parts = append(parts, seg)
 	}
 	if a.costUSD > 0 {
 		parts = append(parts, Dim(fmt.Sprintf("$%.4f", a.costUSD)))

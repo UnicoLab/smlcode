@@ -68,41 +68,22 @@ func packerOptionsFor(cfg *config.Config, rm *repomap.Map, contextLimitTokens in
 	if n := cfg.ExcerptWindowLines; n > 0 {
 		opts = append(opts, contextstore.WithExcerptOptions(contextstore.ExcerptOptions{Window: n}))
 	}
+	// context_role_budget. WithRoleBudgets must come after WithBudget, which
+	// replaces the whole Budget value (RoleBudgets included).
+	if len(cfg.ContextRoleBudget) > 0 {
+		opts = append(opts, contextstore.WithRoleBudgets(cfg.ContextRoleBudget))
+	}
 	return opts
 }
 
-// roleScaledBudget re-expresses "role r may use want% of the window" in terms
-// contextstore.Budget can carry.
+// buildPackers constructs the packer every role packs through.
 //
-// Budget.Available multiplies by the package-level RoleBudgetPercent table,
-// which has no per-instance override. The reserves are subtracted BEFORE that
-// multiplication, so scaling the window above the reserves by want/default
-// yields exactly the requested share:
-//
-//	Available = (W - R) * (100-slack)/100 * pct/100
-//
-// Substituting W' = R + (W-R)*want/def makes the pct/100 factor land on
-// want instead of def, and leaves every other term untouched.
-func roleScaledBudget(base contextstore.Budget, role string, want int) (contextstore.Budget, bool) {
-	def := contextstore.RoleBudgetPercent(role)
-	if want <= 0 || def <= 0 || want == def {
-		return base, false
-	}
-	window := base.ContextLimitTokens
-	if window <= 0 {
-		window = contextstore.TokensFromKB(contextstore.DefaultMaxContextKB)
-	}
-	reserved := base.ReserveSystemTokens + base.ReserveToolTokens + base.ReserveResponseTokens
-	if window-reserved <= 0 {
-		return base, false
-	}
-	out := base
-	out.ContextLimitTokens = reserved + (window-reserved)*want/def
-	return out, true
-}
-
-// buildPackers constructs the shared packer plus one packer per role that
-// carries an explicit context_role_budget override.
+// There used to be one packer per role carrying an explicit
+// context_role_budget, because pkg/context's role share came from a
+// package-level table. contextstore.WithRoleBudgets carries the per-role
+// percentages on the single Budget instead, so one packer now serves every
+// role — and its ContextLimitTokens stays the model's real window rather than
+// a per-role scaled stand-in.
 func (o *Orchestrator) buildPackers(rm *repomap.Map, contextLimitTokens int) {
 	if o == nil || o.store == nil {
 		return
@@ -112,31 +93,8 @@ func (o *Orchestrator) buildPackers(rm *repomap.Map, contextLimitTokens int) {
 	if cfg != nil {
 		root = cfg.Root
 	}
-	base := packerOptionsFor(cfg, rm, contextLimitTokens)
-	o.packer = contextstore.NewPackerWithBudget(o.store, root, contextLimitTokens, base...)
-
-	o.rolePackers = nil
-	if cfg == nil || len(cfg.ContextRoleBudget) == 0 {
-		return
-	}
-	budget := packBudgetFor(cfg, contextLimitTokens)
-	scoped := map[string]*contextstore.Packer{}
-	for role, pct := range cfg.ContextRoleBudget {
-		key := strings.ToLower(strings.TrimSpace(role))
-		if key == "" {
-			continue
-		}
-		scaled, ok := roleScaledBudget(budget, key, pct)
-		if !ok {
-			continue
-		}
-		opts := append([]contextstore.Option{}, base...)
-		opts = append(opts, contextstore.WithBudget(scaled))
-		scoped[key] = contextstore.NewPackerWithBudget(o.store, root, scaled.ContextLimitTokens, opts...)
-	}
-	if len(scoped) > 0 {
-		o.rolePackers = scoped
-	}
+	o.packer = contextstore.NewPackerWithBudget(o.store, root, contextLimitTokens,
+		packerOptionsFor(cfg, rm, contextLimitTokens)...)
 }
 
 // rebuildPacker re-derives the packer for a new context window.
@@ -151,56 +109,37 @@ func (o *Orchestrator) rebuildPacker(contextLimitTokens int) {
 	o.buildPackers(o.repoMapNow(), contextLimitTokens)
 }
 
-// packerFor returns the packer that owns role's budget.
-func (o *Orchestrator) packerFor(role string) *contextstore.Packer {
+// clearPackCaches drops reused packs.
+func (o *Orchestrator) clearPackCaches() {
+	if o != nil {
+		o.packer.ClearCache()
+	}
+}
+
+// setPackerRepoMap attaches a refreshed repo map to the packer.
+func (o *Orchestrator) setPackerRepoMap(rm *repomap.Map) {
+	if o != nil {
+		o.packer.SetRepoMap(rm)
+	}
+}
+
+// packBuild is the historical Build signature.
+func (o *Orchestrator) packBuild(role, query string, docNames, filePaths []string,
+	skillsMarkdown string) (*contextstore.TaskPack, error) {
+	return o.packerNow().Build(role, query, docNames, filePaths, skillsMarkdown)
+}
+
+// packBuildReq is the full-fidelity BuildPack entry point.
+func (o *Orchestrator) packBuildReq(req contextstore.BuildRequest) (*contextstore.TaskPack, error) {
+	return o.packerNow().BuildPack(req)
+}
+
+// packerNow is the run's packer (nil-safe; Packer's methods tolerate nil).
+func (o *Orchestrator) packerNow() *contextstore.Packer {
 	if o == nil {
 		return nil
 	}
-	if len(o.rolePackers) > 0 {
-		if p := o.rolePackers[strings.ToLower(strings.TrimSpace(role))]; p != nil {
-			return p
-		}
-	}
 	return o.packer
-}
-
-// allPackers is every live packer, shared one first.
-func (o *Orchestrator) allPackers() []*contextstore.Packer {
-	if o == nil || o.packer == nil {
-		return nil
-	}
-	out := []*contextstore.Packer{o.packer}
-	for _, p := range o.rolePackers {
-		if p != nil {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// clearPackCaches drops reused packs on every packer.
-func (o *Orchestrator) clearPackCaches() {
-	for _, p := range o.allPackers() {
-		p.ClearCache()
-	}
-}
-
-// setPackerRepoMap attaches a refreshed repo map to every packer.
-func (o *Orchestrator) setPackerRepoMap(rm *repomap.Map) {
-	for _, p := range o.allPackers() {
-		p.SetRepoMap(rm)
-	}
-}
-
-// packBuild is the historical Build signature, routed to the role's packer.
-func (o *Orchestrator) packBuild(role, query string, docNames, filePaths []string,
-	skillsMarkdown string) (*contextstore.TaskPack, error) {
-	return o.packerFor(role).Build(role, query, docNames, filePaths, skillsMarkdown)
-}
-
-// packBuildReq is BuildPack routed to the role's packer.
-func (o *Orchestrator) packBuildReq(req contextstore.BuildRequest) (*contextstore.TaskPack, error) {
-	return o.packerFor(req.Role).BuildPack(req)
 }
 
 // skillPackOptions maps skill_disclosure / skill_max_expanded onto the

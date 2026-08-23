@@ -70,7 +70,7 @@ func (efh *EnhancedFailureHandler) ReportTaskFailure(board *plan.Board, t plan.T
 		Stack:         efh.getStack(),
 	}
 
-	if err := os.MkdirAll(efh.logDir, 0o755); err != nil {
+	if err := os.MkdirAll(efh.logDir, 0o750); err != nil { // .slmcode/errors, owner-only
 		return fmt.Errorf("failed to create errors dir: %w", err)
 	}
 
@@ -87,13 +87,18 @@ func (efh *EnhancedFailureHandler) ReportTaskFailure(board *plan.Board, t plan.T
 
 	markdownFile := filepath.Join(efh.logDir, "errors.md")
 	markdownEntry := efh.formatMarkdownEntry(record, jsonFile)
-	f, oErr := os.OpenFile(markdownFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, oErr := os.OpenFile(markdownFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if oErr != nil {
 		return fmt.Errorf("failed to open errors.md: %w", oErr)
 	}
-	defer f.Close()
 	if _, wErr := f.WriteString(markdownEntry); wErr != nil {
+		_ = f.Close()
 		return fmt.Errorf("failed to write error to errors.md: %w", wErr)
+	}
+	// Close, not defer-Close: this is a write handle, and the flush error it
+	// can report is the one that says the failure record never landed.
+	if cErr := f.Close(); cErr != nil {
+		return fmt.Errorf("failed to flush errors.md: %w", cErr)
 	}
 	return nil
 }
@@ -153,7 +158,7 @@ func (efh *EnhancedFailureHandler) analyzeErrorPattern(record TaskFailureRecord)
 		return "Repetitive review rejections — worker likely returned JSON without tool edits, or acceptance is unreachable."
 	case strings.Contains(msg, "deadline") || strings.Contains(msg, "timeout"):
 		return "Timeout — split the task smaller, raise task_timeout, or lower max_parallel to reduce SLM contention."
-	case strings.Contains(msg, "canceled") || strings.Contains(msg, "cancelled"):
+	case strings.Contains(msg, "canceled") || strings.Contains(msg, "cancelled"): //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
 		return "Context canceled — run was stopped or parent context ended mid-task."
 	case strings.Contains(msg, "file") || strings.Contains(msg, "missing"):
 		return "File path issue — verify workspace inventory and reconcile hallucinated paths."
@@ -174,7 +179,7 @@ func (efh *EnhancedFailureHandler) determineErrorType(err error) string {
 		return "max_retries_exceeded"
 	case strings.Contains(errStr, "deadline") || strings.Contains(errStr, "timeout"):
 		return "timeout"
-	case strings.Contains(errStr, "canceled") || strings.Contains(errStr, "cancelled"):
+	case strings.Contains(errStr, "canceled") || strings.Contains(errStr, "cancelled"): //nolint:misspell // matches the provider error text verbatim; some servers spell it "cancelled"
 		return "canceled"
 	case strings.Contains(errStr, "file"):
 		return "file_access_error"
@@ -214,7 +219,7 @@ func (efh *EnhancedFailureHandler) ReportAndLogWaveLesson(board *plan.Board, tas
 		return nil
 	}
 	lessonPath := filepath.Join(efh.projectRoot, ".slmcode", "errors", "wave_lessons.md")
-	if mkErr := os.MkdirAll(filepath.Dir(lessonPath), 0o755); mkErr != nil {
+	if mkErr := os.MkdirAll(filepath.Dir(lessonPath), 0o750); mkErr != nil { // .slmcode/errors, owner-only
 		return mkErr
 	}
 	msg := ""
@@ -251,13 +256,16 @@ func (efh *EnhancedFailureHandler) ReportAndLogWaveLesson(board *plan.Board, tas
 		task.Retries,
 	)
 
-	f, oErr := os.OpenFile(lessonPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, oErr := os.OpenFile(lessonPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if oErr != nil {
 		return fmt.Errorf("failed to write wave lesson: %w", oErr)
 	}
-	defer f.Close()
 	if _, wErr := f.WriteString(lessonContent); wErr != nil {
+		_ = f.Close()
 		return fmt.Errorf("failed to write lesson to wave_lessons.md: %w", wErr)
+	}
+	if cErr := f.Close(); cErr != nil {
+		return fmt.Errorf("failed to flush wave_lessons.md: %w", cErr)
 	}
 	return nil
 }

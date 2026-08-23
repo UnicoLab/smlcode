@@ -18,20 +18,18 @@ echo "==> go vet"
 go vet ./...
 
 echo "==> golangci-lint"
-# Config: .golangci.yml (golangci-lint v2 schema). Non-blocking by default —
-# we're mid-ratchet on a known baseline (see the count comment at the top of
-# .golangci.yml). Set LINT_STRICT=1 (or run `make lint-strict`) to make this
-# fail the script on any finding.
+# Config: .golangci.yml (golangci-lint v2 schema). BLOCKING: the ratchet reached
+# zero, so any new finding fails the build. LINT_STRICT is still honored for
+# `make lint-strict`, but it no longer changes anything — both are blocking.
 if command -v golangci-lint >/dev/null 2>&1; then
   if golangci-lint run --timeout=5m ./...; then
     echo "golangci-lint: no issues"
   else
     gl_status=$?
     echo "golangci-lint: issues found (see above)."
-    if [[ "${LINT_STRICT:-0}" == "1" ]]; then
-      exit "$gl_status"
-    fi
-    echo "(non-blocking for now — run 'make lint-strict' to enforce; see .golangci.yml)"
+    echo "The baseline is ZERO — fix the finding, or add a //nolint:<linter> with a"
+    echo "specific reason if it is genuinely a false positive. See .golangci.yml."
+    exit "$gl_status"
   fi
 else
   echo "golangci-lint not found — skipping. Install: https://golangci-lint.run/welcome/install/"

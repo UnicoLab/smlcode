@@ -130,7 +130,11 @@ func TestCoerce(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := Coerce(c.role, []byte(c.raw))
+			spec, ok := For(c.role)
+			if !ok {
+				t.Fatalf("no schema registered for role %q", c.role)
+			}
+			out, err := CoerceSpec(spec, []byte(c.raw))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -315,7 +315,7 @@ func (s *Server) applyPending(id string) (string, error) {
 	if err != nil {
 		return pf.Path, ErrPathEscape
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return pf.Path, err
 	}
 	// target is a project source file (re-validated above to stay inside the

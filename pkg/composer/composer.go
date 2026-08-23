@@ -221,7 +221,7 @@ func SaveDynamic(slmDir string, c *Composition) error {
 	if strings.TrimSpace(slmDir) == "" || c == nil {
 		return nil
 	}
-	if err := os.MkdirAll(slmDir, 0o755); err != nil {
+	if err := os.MkdirAll(slmDir, 0o750); err != nil { // project state dir, owner-only
 		return err
 	}
 	cp := *c

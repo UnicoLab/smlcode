@@ -447,6 +447,9 @@ func (s *LiveSession) OnBoardRefresh(fn func() *plan.Board) {
 func (s *LiveSession) SetState(st DashboardState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The sticky line reports the model's measured decode rate; this is the
+	// only place the session learns which model is active.
+	s.act.SetModel(st.Model)
 	// preserve events / latency / compact if caller omitted
 	if st.Events == nil {
 		st.Events = s.state.Events

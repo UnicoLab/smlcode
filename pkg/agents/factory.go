@@ -684,7 +684,9 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	cfg.EarlyExit = llm.DefaultEarlyExit
 
 	def := agent.NewBaseAgentDefinition(cfg)
-	def.Initialize(f.LLM, f.Tools)
+	// Initialize only stores the manager and registry; it cannot fail today,
+	// and CreateAgent re-checks both for nil before building an agent.
+	_ = def.Initialize(f.LLM, f.Tools)
 	return def
 }
 

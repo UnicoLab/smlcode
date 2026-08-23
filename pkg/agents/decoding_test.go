@@ -313,7 +313,7 @@ func TestArchitectEditorPair(t *testing.T) {
 	small := *e
 	small.Model = "qwen2.5-coder:7b"
 	if got := f.EffectiveModel(small); got != "qwen2.5-coder:7b" {
-		t.Errorf("editor override not honoured: %q", got)
+		t.Errorf("editor override not honored: %q", got)
 	}
 	in := EditorInput("add Sum", "put Sum in calc.go returning a+b")
 	if !strings.Contains(in, "add Sum") || !strings.Contains(in, "a+b") {

@@ -53,7 +53,7 @@ func saveCache(path string, files []File) {
 	dir := filepath.Dir(path)
 	if _, err := os.Stat(dir); err != nil {
 		// Only create the cache dir when it is a .slmcode-style workspace dir.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil { // .slmcode repo-map cache, owner-only
 			return
 		}
 	}

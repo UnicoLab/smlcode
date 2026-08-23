@@ -83,7 +83,7 @@ func TestSpeculateReviewCancelsOnAcceptanceWin(t *testing.T) {
 		t.Fatalf("acceptance: %+v", acc)
 	}
 	if !rev.Skipped && rev.Err == nil && rev.Output != "" {
-		t.Fatalf("expected reviewer cancelled/skipped, got %+v", rev)
+		t.Fatalf("expected reviewer canceled/skipped, got %+v", rev)
 	}
 	if fe.cancels.Load() < 1 && !rev.Skipped {
 		t.Fatalf("expected cancel; cancels=%d rev=%+v", fe.cancels.Load(), rev)
@@ -124,6 +124,6 @@ func TestSpeculateTesterDuplicateCancelsLoser(t *testing.T) {
 		t.Fatalf("lean: %+v", lean)
 	}
 	if !strict.Skipped && strict.Err == nil && strict.Output != "" {
-		t.Fatalf("expected strict cancelled, got %+v", strict)
+		t.Fatalf("expected strict canceled, got %+v", strict)
 	}
 }

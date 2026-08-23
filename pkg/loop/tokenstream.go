@@ -18,7 +18,7 @@ import (
 //   - execOne        — every sequential round-trip (review, correct, critique…)
 //   - speculate      — the speculative review race
 //
-// Registration is always scoped by a deferred unregister, so a cancelled or
+// Registration is always scoped by a deferred unregister, so a canceled or
 // failed call leaks nothing. That matters more than it looks: the sink closes
 // over the task id, so a leaked registration would keep attributing a later
 // agent's output to a task that already finished.

@@ -213,7 +213,7 @@ func TestEstimateTimeoutScalesWithTokensAndThroughput(t *testing.T) {
 	if fast >= big {
 		t.Errorf("observed throughput did not shorten the deadline: fast=%v slow=%v", fast, big)
 	}
-	// The old behaviour floored every call at 3 minutes; a small request must
+	// The old behavior floored every call at 3 minutes; a small request must
 	// now be far below that.
 	if EstimateTimeout("fast", 256) >= 3*time.Minute {
 		t.Error("small request still holds a slot for 3 minutes")

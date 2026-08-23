@@ -38,8 +38,11 @@ const (
 	RoleUser      = "user"
 )
 
-// KindOf describes one ChatMsg.
-func KindOf(m ChatMsg) MsgKind {
+// kindOf describes one ChatMsg. Unexported: the exported generic
+// SafeKeepStartFunc / ElideOldToolResultsFunc take a caller-supplied kind
+// func for foreign message types, and []ChatMsg callers use SafeKeepStart /
+// ElideOldToolResults, which supply this one themselves.
+func kindOf(m ChatMsg) MsgKind {
 	k := MsgKind{Role: strings.ToLower(strings.TrimSpace(m.Role)), ToolCallID: m.ToolCallID}
 	for _, tc := range m.ToolCalls {
 		k.ToolCallIDs = append(k.ToolCallIDs, tc.ID)
@@ -124,7 +127,7 @@ func orphanFree(kinds []MsgKind, start int) bool {
 
 // SafeKeepStart is SafeKeepStartFunc for []ChatMsg.
 func SafeKeepStart(msgs []ChatMsg, keepLast int) int {
-	return SafeKeepStartFunc(msgs, keepLast, KindOf)
+	return SafeKeepStartFunc(msgs, keepLast, kindOf)
 }
 
 // ElideOldToolResultsFunc keeps the last keepLast tool RESULTS verbatim and

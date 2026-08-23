@@ -63,6 +63,24 @@ type Budget struct {
 	ReserveToolTokens     int
 	ReserveResponseTokens int
 	SlackPercent          int
+	// RoleBudgets overrides the package-level RoleBudgetPercent table for
+	// individual roles, as a percentage of the available window. Keys are
+	// lowercased role ids; a role that is absent (or mapped to a
+	// non-positive value) keeps the built-in share. Set it with
+	// WithRoleBudgets so `context_role_budget` in config.yaml reaches the
+	// packer as itself rather than as an equivalent-window fudge.
+	RoleBudgets map[string]int
+}
+
+// rolePercent is the share of the available window role may use, honoring a
+// per-instance override before the package-level default table.
+func (b Budget) rolePercent(role string) int {
+	if len(b.RoleBudgets) > 0 {
+		if pct, ok := b.RoleBudgets[strings.ToLower(strings.TrimSpace(role))]; ok && pct > 0 {
+			return pct
+		}
+	}
+	return RoleBudgetPercent(role)
 }
 
 // DefaultBudget returns the standard reserves for a model window.
@@ -92,7 +110,7 @@ func (b Budget) Available(role string) int {
 		slack = DefaultSlackPercent
 	}
 	avail = avail * (100 - slack) / 100
-	avail = avail * RoleBudgetPercent(role) / 100
+	avail = avail * b.rolePercent(role) / 100
 	if avail < MinPackTokens {
 		avail = MinPackTokens
 	}

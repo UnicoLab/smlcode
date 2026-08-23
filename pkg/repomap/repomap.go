@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
@@ -58,7 +57,6 @@ type Map struct {
 	byPath  map[string]int
 	defs    map[string][]int // symbol name -> file indexes defining it
 	countFn func(string) int
-	mu      sync.RWMutex
 }
 
 var defaultExcludes = []string{

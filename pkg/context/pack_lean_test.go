@@ -668,3 +668,42 @@ func TestPackerAttachesRepoMap(t *testing.T) {
 		t.Fatal("WithRepoMapTokens(0) should disable the map")
 	}
 }
+
+// WithRoleBudgets is what config's context_role_budget maps onto. Before it
+// existed the orchestrator faked a role share by scaling the whole context
+// window by want/default — arithmetically the same pack, but every other
+// reader of Budget.ContextLimitTokens was then told the model had a window it
+// does not have.
+func TestWithRoleBudgetsOverridesOnlyTheNamedRoles(t *testing.T) {
+	const window = 32768
+	base := NewPackerWithBudget(nil, "", window, WithBudget(DefaultBudget(window)))
+	tuned := NewPackerWithBudget(nil, "", window,
+		WithBudget(DefaultBudget(window)),
+		WithRoleBudgets(map[string]int{"  WORKER ": 25}))
+
+	if got, want := tuned.BudgetTokensFor("worker"), base.BudgetTokensFor("worker"); got >= want {
+		t.Fatalf("worker budget %d not reduced from %d", got, want)
+	}
+	if got, want := tuned.BudgetTokensFor("reviewer"), base.BudgetTokensFor("reviewer"); got != want {
+		t.Fatalf("an unconfigured role changed: %d != %d", got, want)
+	}
+	// A 25%% share of a 100%% role is a quarter of the budget.
+	quarter := base.BudgetTokensFor("worker") / 4
+	if got := tuned.BudgetTokensFor("worker"); got < quarter-2 || got > quarter+2 {
+		t.Fatalf("worker budget %d, want ≈%d (25%% of %d)", got, quarter, base.BudgetTokensFor("worker"))
+	}
+}
+
+// Junk in the map must not silently zero a role's budget.
+func TestWithRoleBudgetsIgnoresEmptyAndNonPositiveEntries(t *testing.T) {
+	const window = 32768
+	base := DefaultBudget(window)
+	tuned := NewPackerWithBudget(nil, "", window,
+		WithBudget(base),
+		WithRoleBudgets(map[string]int{"": 40, "worker": 0, "reviewer": -5}))
+	for _, role := range []string{"worker", "reviewer"} {
+		if got, want := tuned.BudgetTokensFor(role), base.Available(role); got != want {
+			t.Errorf("%s budget = %d, want the default %d", role, got, want)
+		}
+	}
+}

@@ -137,7 +137,7 @@ func (h *PromptHistory) saveLocked() {
 	if h.path == "" {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(h.path), 0o755)
+	_ = os.MkdirAll(filepath.Dir(h.path), 0o750) // prompt history is user state, owner-only
 	data, err := json.MarshalIndent(h.items, "", "  ")
 	if err != nil {
 		return

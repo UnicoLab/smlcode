@@ -131,6 +131,10 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	o.mu.Unlock()
 
 	applyLoopContract(runner, contract)
+	// The tool layer can only report to the engine once there IS a runner to
+	// report to; buildRunner is the first moment that is true. See
+	// tool_observer.go.
+	o.installToolObserver()
 	return runner
 }
 

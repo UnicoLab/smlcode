@@ -242,7 +242,7 @@ func TestOnCallSurfacesPassErrors(t *testing.T) {
 }
 
 func TestBackwardCompatibleExecuteStillWorks(t *testing.T) {
-	// No hooks, no timeouts: identical behaviour to the original Runner.
+	// No hooks, no timeouts: identical behavior to the original Runner.
 	a := &scriptedAgent{outputs: []string{"prose", "LOOKS_GOOD"}}
 	out, err := New(2).Execute(context.Background(), a, "task")
 	if err != nil {

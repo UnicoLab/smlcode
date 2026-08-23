@@ -182,12 +182,9 @@ type Bandit struct {
 	warnings []string
 }
 
-// OpenBandit loads the policy store from userDir (cross-project: what works
-// for a model transfers between projects). Pass a project directory instead to
-// keep a project-local policy, e.g. for CI.
-func OpenBandit(dir string) (*Bandit, error) { return OpenBanditWith(dir, BanditOptions{}) }
-
-// OpenBanditWith is OpenBandit with options.
+// OpenBanditWith loads the policy store from dir (normally the USER dir:
+// what works for a model transfers between projects — pass a project directory
+// instead to keep a project-local policy, e.g. for CI).
 func OpenBanditWith(dir string, opt BanditOptions) (*Bandit, error) {
 	now := opt.Now
 	if now == nil {

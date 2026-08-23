@@ -121,16 +121,17 @@ func (o *Orchestrator) runPipelineSlots(ctx context.Context, phase, position, qu
 			out, err = o.runRoleTracked(ctx, s.Agent, s.ID, input)
 		}
 		if err != nil {
-			o.emitFull(phase, stream.KindAgentEnd, s.Agent, s.ID,
-				"slot error: "+err.Error(), "slot:"+s.ID, "")
+			// P13: a failed slot must not render green in the CLI tally.
+			o.emitFullL(phase, stream.KindAgentEnd, s.Agent, s.ID,
+				"slot error: "+err.Error(), "slot:"+s.ID, "", stream.LevelError)
 			if strings.EqualFold(s.FailMode, pipeline.FailAbort) {
 				return fmt.Errorf("pipeline slot %s: %w", s.ID, err)
 			}
 			continue
 		}
 		o.persistSlotOutput(s, out)
-		o.emitFull(phase, stream.KindAgentEnd, s.Agent, s.ID,
-			"slot finished", "slot:"+s.ID, truncate(out, 1200))
+		o.emitFullL(phase, stream.KindAgentEnd, s.Agent, s.ID,
+			"slot finished", "slot:"+s.ID, truncate(out, 1200), stream.LevelSuccess)
 		o.emitLoop(phase, LoopEvent{
 			Action: "slot",
 			Reason: fmt.Sprintf("%s · %s %s", title, position, phase),

@@ -60,7 +60,7 @@ func (s *LiveStore) Save() error {
 }
 
 func (s *LiveStore) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s.board, "", "  ")

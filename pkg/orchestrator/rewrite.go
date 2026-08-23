@@ -20,7 +20,8 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 	}
 	tr := plan.ParseTesterJSON(testOut)
 	if tr.Passed {
-		o.emitFull("test", stream.KindAgentEnd, plan.RoleTester, "", "tester passed", "", truncate(tr.Summary, 400))
+		o.emitFullL("test", stream.KindAgentEnd, plan.RoleTester, "", "tester passed", "",
+			truncate(tr.Summary, 400), stream.LevelSuccess)
 		return false
 	}
 
@@ -175,20 +176,18 @@ func rewriteBoardFromTester(board *plan.Board, query string, failures []string, 
 
 	// Ensure at least one corrective worker task exists (narrow focus files).
 	if !hasOpenCorrective(out) {
-		id := out.NextID()
 		desc := "Fix issues reported by tester for this query.\nFailures:\n- " + strings.Join(failures, "\n- ")
 		if len(targets.taskIDs) > 0 {
 			desc += "\nFocus task IDs: " + strings.Join(targets.taskIDs, ", ")
 		}
 		nt := plan.Task{
-			ID: id, Title: "Fix tester failures", Description: desc,
+			Title: "Fix tester failures", Description: desc,
 			Role: plan.RoleWorker, Column: plan.ColReadyToDev,
 			Acceptance: "Tester failures resolved; evidence of real file edits; re-test passes",
 			Notes:      "Auto-created from tester rewrite for query scope " + out.QueryID + " (narrow reopen)",
 			Files:      narrowFiles,
 		}
-		nt.Normalize()
-		out.Tasks = append(out.Tasks, nt)
+		out.AddTask(nt)
 	}
 	return out
 }
@@ -357,14 +356,13 @@ func mergePlanStepsAsTasks(board *plan.Board, pl plan.Plan) {
 		}
 		// Only add clearly corrective / remaining steps.
 		lower := strings.ToLower(step)
-		if !(strings.Contains(lower, "fix") || strings.Contains(lower, "test") ||
-			strings.Contains(lower, "implement") || strings.Contains(lower, "add") ||
-			strings.Contains(lower, "address") || strings.Contains(lower, "verify")) {
+		if !strings.Contains(lower, "fix") && !strings.Contains(lower, "test") &&
+			!strings.Contains(lower, "implement") && !strings.Contains(lower, "add") &&
+			!strings.Contains(lower, "address") && !strings.Contains(lower, "verify") {
 			continue
 		}
-		id := board.NextID()
 		nt := plan.Task{
-			ID: id, Title: firstSentence(step), Description: step,
+			Title: firstSentence(step), Description: step,
 			Role: plan.RoleWorker, Column: plan.ColReadyToDev,
 			Acceptance: "Step completed with tool evidence",
 			Files:      primaryDoneFocusFiles(*board, 1),
@@ -375,8 +373,10 @@ func mergePlanStepsAsTasks(board *plan.Board, pl plan.Plan) {
 		if strings.Contains(lower, "test") || strings.Contains(lower, "verify") {
 			nt.Role = plan.RoleTester
 		}
-		nt.Normalize()
-		board.Tasks = append(board.Tasks, nt)
+		// AddTask mints the id under the board lock; NextID followed by a bare
+		// append is two unsynchronized steps and hands out duplicates when
+		// parallel review is appending at the same time.
+		board.AddTask(nt)
 		added++
 	}
 }

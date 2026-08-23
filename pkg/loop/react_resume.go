@@ -71,7 +71,7 @@ func (r *Runner) saveReactFromResult(taskID, agentID string, res ggagent.SubAgen
 	}
 	_ = session.SaveReactCheckpoint(dir, cp)
 	if r.Log != nil {
-		r.Log("%s react checkpoint saved (%d messages, iter=%d)", taskID, len(cp.Messages), cp.Iteration)
+		r.logf("%s react checkpoint saved (%d messages, iter=%d)", taskID, len(cp.Messages), cp.Iteration)
 	}
 }
 
@@ -115,20 +115,44 @@ func (r *Runner) applyResumeRequest(req *ggagent.SubAgentRequest, taskID string)
 		req.Input = strings.TrimSpace(req.Input) + "\n\n" + steer
 		req.Messages = append(req.Messages, llm.Message{Role: "user", Content: steer})
 		if r.Log != nil {
-			r.Log("%s finalize-steer: ~%d turns left", taskID, remaining)
+			r.logf("%s finalize-steer: ~%d turns left", taskID, remaining)
 		}
 	}
 	if r.Log != nil {
-		r.Log("%s resuming ReAct with %d messages (iter=%d) — no cold replan", taskID, len(req.Messages), req.Iteration)
+		r.logf("%s resuming ReAct with %d messages (iter=%d) — no cold replan", taskID, len(req.Messages), req.Iteration)
 	}
 	return true
 }
 
-// maybeCompactReact shrinks oversized ReAct transcripts (little-coder context-watchdog).
+// reactCompactMinMessages is the floor below which compaction never triggers.
+const reactCompactMinMessages = 10
+
+// maybeCompactReact shrinks an oversized ReAct transcript.
+//
+// Three things were wrong with it:
+//
+//  1. The window was WindowTokensFromKB(MaxContextKB), which reports a 32K
+//     model as having a 4096-token window — so the watchdog believed a run was
+//     at 80% capacity when it was at 10%. It now uses the model's real
+//     ContextLimit via compact.WindowTokensFor.
+//  2. Compaction dropped straight to summarization. Deterministic elision of
+//     old tool RESULTS (keeping every tool CALL, so no pair is orphaned) costs
+//     no inference and is measured to beat summarization, so it is tried first
+//     and summarization only runs if usage is still over threshold.
+//  3. The kept tail was msgs[len-8:], which routinely began on a role:"tool"
+//     message; every OpenAI-compatible server rejects that with HTTP 400.
+//     compact.CompactChatMessagesWithDigest now picks the slice point with
+//     SafeKeepStart, and the digest is the structured MustPreserve schema
+//     rather than a 160-character one-liner.
 func (r *Runner) maybeCompactReact(msgs []session.ReactMessage, agentID string, iteration int) []session.ReactMessage {
-	if !r.ReactCompact || len(msgs) < 10 {
+	if !r.ReactCompact || len(msgs) < reactCompactMinMessages {
 		return msgs
 	}
+	window := compact.WindowTokensFor(r.ContextLimitTokens, r.MaxContextKB)
+	usage := reactUsagePercent(msgs, window)
+
+	r.reactWatchMu.Lock()
+	defer r.reactWatchMu.Unlock()
 	pct := r.ReactCompactAtPercent
 	if pct <= 0 {
 		pct = compact.DefaultCompactAtPercent
@@ -136,52 +160,132 @@ func (r *Runner) maybeCompactReact(msgs []session.ReactMessage, agentID string, 
 	if r.reactWatch == nil {
 		r.reactWatch = compact.NewWatchdog(pct)
 	}
-	chat := sessionToChat(msgs)
-	tokens := compact.EstimateTokens(compact.MessagesBytes(chat))
-	window := compact.WindowTokensFromKB(r.MaxContextKB)
-	usage := compact.UsagePercent(tokens, window)
 	r.reactWatch.MaybeRearm(usage)
 	if !r.reactWatch.ShouldCompact(usage) {
 		return msgs
 	}
-	keep := 8
-	if iteration > 0 && iteration < 4 {
-		keep = 10
+
+	// Step 1 — deterministic elision of old observations. No inference.
+	out, elided := elideReactToolResults(msgs, compact.DefaultElideKeepLast)
+	if elided > 0 {
+		postUsage := reactUsagePercent(out, window)
+		r.logf("%s react-elide: %d old tool result(s) collapsed (usage %.0f%%→%.0f%%)",
+			agentID, elided, usage, postUsage)
+		if postUsage < float64(pct) {
+			r.reactWatch.RecordPostCompact(postUsage)
+			return out
+		}
+		msgs, usage = out, postUsage
 	}
-	compacted, ok := compact.CompactChatMessages(chat, keep)
+
+	// Step 2 — structured summarization of the prefix.
+	keep := reactKeepLast(iteration)
+	chat := sessionToChat(msgs)
+	compacted, ok := compact.CompactChatMessagesWithDigest(chat, keep, compact.DefaultDigestBytes)
 	if !ok {
 		return msgs
 	}
 	postTokens := compact.EstimateTokens(compact.MessagesBytes(compacted))
 	postUsage := compact.UsagePercent(postTokens, window)
 	r.reactWatch.RecordPostCompact(postUsage)
-	if r.Log != nil {
-		r.Log("%s react-compact: %d→%d msgs (usage %.0f%%→%.0f%%)",
-			agentID, len(msgs), len(compacted), usage, postUsage)
-	}
+	r.logf("%s react-compact: %d→%d msgs (usage %.0f%%→%.0f%%, window=%d tok)",
+		agentID, len(msgs), len(compacted), usage, postUsage, window)
 	return chatToSession(compacted)
 }
 
+// CompactLiveMessages is the LIVE per-iteration compaction entry point.
+//
+// pkg/loop cannot install itself inside the ReAct loop: ggagent's
+// SubAgentRequest carries no per-iteration callback and its Middleware
+// interface is BeforeRun/AfterRun only, so nothing in this package ever sees
+// iteration N of a 16-iteration worker. maybeCompactReact therefore had exactly
+// one call site — restoreReact, the resume path — and a live worker appending a
+// whole file per tool result compacted never, even though react_compact:true is
+// the default and pkg/readiness tells the operator they are protected.
+//
+// This method is the policy; the executor is the call site. Hand it to whatever
+// runs the ReAct loop and call it once per iteration with the live transcript.
+func (r *Runner) CompactLiveMessages(agentID string, iteration int, msgs []llm.Message) []llm.Message {
+	if r == nil || !r.ReactCompact || len(msgs) < reactCompactMinMessages {
+		return msgs
+	}
+	return fromSessionMessages(r.maybeCompactReact(toSessionMessages(msgs), agentID, iteration))
+}
+
+// reactKeepLast is how many trailing messages compaction aims to keep.
+func reactKeepLast(iteration int) int {
+	if iteration > 0 && iteration < 4 {
+		return 10
+	}
+	return 8
+}
+
+// reactUsagePercent estimates context usage for a transcript.
+func reactUsagePercent(msgs []session.ReactMessage, window int) float64 {
+	return compact.UsagePercent(compact.EstimateTokens(compact.MessagesBytes(sessionToChat(msgs))), window)
+}
+
+// elideReactToolResults replaces the content of all but the last keepLast tool
+// RESULTS with a placeholder, leaving every tool CALL intact.
+func elideReactToolResults(msgs []session.ReactMessage, keepLast int) ([]session.ReactMessage, int) {
+	return compact.ElideOldToolResultsFunc(msgs, keepLast, compact.DefaultElidedPlaceholder,
+		func(m session.ReactMessage) bool { return strings.EqualFold(m.Role, compact.RoleTool) },
+		func(m session.ReactMessage, p string) session.ReactMessage { m.Content = p; return m })
+}
+
+// sessionToChat converts a checkpoint transcript to compaction messages,
+// carrying the tool-call linkage. Flattening ToolCalls into a "[tools:ws_edit]"
+// text suffix (the old behavior) destroyed ToolCallID/Name/ToolCalls, so a
+// compacted transcript could never be restored into a valid request.
 func sessionToChat(msgs []session.ReactMessage) []compact.ChatMsg {
 	out := make([]compact.ChatMsg, 0, len(msgs))
 	for _, m := range msgs {
-		content := m.Content
-		if len(m.ToolCalls) > 0 {
-			var names []string
-			for _, tc := range m.ToolCalls {
-				names = append(names, tc.Name)
-			}
-			content = strings.TrimSpace(content + " [tools:" + strings.Join(names, ",") + "]")
-		}
-		out = append(out, compact.ChatMsg{Role: m.Role, Content: content})
+		out = append(out, compact.ChatMsg{
+			Role: m.Role, Content: m.Content, Name: m.Name, ToolCallID: m.ToolCallID,
+			ToolCalls: toCompactToolCalls(m.ToolCalls),
+		})
 	}
 	return out
 }
 
+// chatToSession is the inverse of sessionToChat.
 func chatToSession(msgs []compact.ChatMsg) []session.ReactMessage {
 	out := make([]session.ReactMessage, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, session.ReactMessage{Role: m.Role, Content: m.Content})
+		out = append(out, session.ReactMessage{
+			Role: m.Role, Content: m.Content, Name: m.Name, ToolCallID: m.ToolCallID,
+			ToolCalls: fromCompactToolCalls(m.ToolCalls),
+		})
+	}
+	return out
+}
+
+func toCompactToolCalls(calls []session.ReactToolCall) []compact.ToolCallRef {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]compact.ToolCallRef, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, compact.ToolCallRef{
+			ID: c.ID, Type: c.Type, Name: c.Name, Arguments: c.Arguments,
+		})
+	}
+	return out
+}
+
+func fromCompactToolCalls(calls []compact.ToolCallRef) []session.ReactToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]session.ReactToolCall, 0, len(calls))
+	for _, c := range calls {
+		typ := c.Type
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, session.ReactToolCall{
+			ID: c.ID, Type: typ, Name: c.Name, Arguments: c.Arguments,
+		})
 	}
 	return out
 }

@@ -186,60 +186,160 @@ func TestFormatReviewPromptAppendsFeedback(t *testing.T) {
 }
 
 func TestHasToolWriteEvidence(t *testing.T) {
-	if !hasToolWriteEvidence("Observation: ws_edit updated pkg/loop/runner.go") {
-		t.Fatal("expected tool evidence")
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"ws_edit tool name", "Observation: ws_edit updated pkg/loop/runner.go", true},
+		{"ws_edit result line", "Observation: edited hello.go (1 replacement(s))", true},
+		{"ws_mv result line", "Observation: moved pkg/old.go → pkg/new.go", true},
+		{"dry-run staging", "dry-run: would write main.py (238 bytes)", true},
+		{"json only", `{"status":"done","files_changed":["x.go"]}`, false},
+		// The whole point of defect #2: a worker that touched nothing but
+		// narrated an edit used to be credited with a write, which auto-approved
+		// the task and skipped the reviewer entirely.
+		{"prose: updated", `{"status":"done","summary":"Updated the parser to handle comments","files_changed":["pkg/x/parser.go"]}`, false},
+		{"prose: wrote", "I wrote a new helper function for you.", false},
+		{"prose: patched", "I patched the config loader.", false},
+		{"prose: edited without tool shape", "I edited the file to add validation.", false},
+		// The Disk evidence section is authored by the harness, so counting it
+		// as TOOL evidence was a self-reference.
+		{"harness disk section", "## Disk evidence\n- modified: hello.go", false},
 	}
-	// ws_edit tool returns "edited <path> (N replacement(s))"
-	if !hasToolWriteEvidence("Observation: edited hello.go (1 replacement(s))") {
-		t.Fatal("expected edited-path tool evidence")
-	}
-	if !hasToolWriteEvidence("## Disk evidence\n- modified: hello.go") {
-		t.Fatal("expected disk evidence section")
-	}
-	if hasToolWriteEvidence(`{"status":"done","files_changed":["x.go"]}`) {
-		t.Fatal("JSON-only claim must not count as tool evidence")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasToolWriteEvidence(tc.output); got != tc.want {
+				t.Fatalf("hasToolWriteEvidence(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+		})
 	}
 }
 
-func TestAlreadySatisfiedDocComment(t *testing.T) {
+// The "comment" branch of alreadySatisfied returned true for any focus file
+// containing a "//" line and a "func "/"def " — i.e. nearly every Go file — so
+// "Add doc comments and validate the input" skipped the worker entirely.
+func TestAlreadySatisfiedNoLongerFiresOnCommentKeyword(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "hello.go")
-	_ = os.WriteFile(target, []byte("package main\n\n// Hello returns a greeting.\nfunc Hello() string { return \"hi\" }\n"), 0o644)
-	task := plan.Task{
-		ID: "T1", Title: "Add doc comment to Hello()", Files: []string{"hello.go"},
-		Acceptance: "doc comment above Hello()",
+	body := "package main\n\n// Hello returns a greeting.\nfunc Hello() string { return \"hi\" }\n"
+	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !alreadySatisfied(dir, task) {
-		t.Fatal("expected alreadySatisfied for existing doc comment")
+	base := map[string]string{"hello.go": fileFingerprint(target)}
+
+	cases := []struct {
+		name string
+		task plan.Task
+	}{
+		{"doc comment only", plan.Task{
+			ID: "T1", Title: "Add doc comment to Hello()", Files: []string{"hello.go"},
+			Acceptance: "doc comment above Hello()",
+		}},
+		{"comment plus real work", plan.Task{
+			ID: "T2", Title: "Add doc comments and validate the input",
+			Files: []string{"hello.go"}, Acceptance: "input validated",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if alreadySatisfied(dir, tc.task, base) {
+				t.Fatal("a comment keyword must never satisfy a task on its own")
+			}
+		})
 	}
 }
 
-func TestAlreadySatisfiedCreateNotImplement(t *testing.T) {
+// alreadySatisfiedRetry is the only predicate allowed to skip the worker LLM,
+// and it must never fire on a first execution.
+func TestAlreadySatisfiedRetryGate(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	target := filepath.Join(dir, "src", "cfg.py")
+	if err := os.WriteFile(target, []byte("def load():\n    return {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{Root: dir}
+	base := map[string]string{"src/cfg.py": ""} // absent at wave start
+
+	task := plan.Task{
+		ID: "T1", Title: "Create src/cfg.py", Description: "scaffold config loader",
+		Files: []string{"src/cfg.py"}, Acceptance: "src/cfg.py exists",
+	}
+	if r.alreadySatisfiedRetry(task, base) {
+		t.Fatal("first execution must never be skipped")
+	}
+	task.Retries = 1
+	if !r.alreadySatisfiedRetry(task, base) {
+		t.Fatal("a retry whose target this wave created should short-circuit")
+	}
+}
+
+func TestAlreadySatisfiedCreateBranch(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "hello.go"), []byte("package main\n"), 0o644)
-	// Existing file + "implement" must NOT count as satisfied (needs write evidence).
-	edit := plan.Task{
-		ID: "T1", Title: "Edit hello", Description: "implement comment",
-		Files: []string{"hello.go"}, Acceptance: "file updated",
-	}
-	if alreadySatisfied(dir, edit) {
-		t.Fatal("implement/edit must not be alreadySatisfied merely because file exists")
-	}
-	create := plan.Task{
+	_ = os.MkdirAll(filepath.Join(dir, "src", "lg_agent"), 0o755)
+	graph := filepath.Join(dir, "src", "lg_agent", "graph.py")
+	real := "def create_graph():\n    return {\"nodes\": []}\n"
+	stub := "def create_graph():\n    # Placeholder implementation\n    return {\"output\": \"run_result\"}\n"
+
+	createTask := plan.Task{
 		ID: "T2", Title: "Create agent module", Description: "scaffold src/lg_agent/graph.py",
 		Files: []string{"src/lg_agent/graph.py"}, Acceptance: "file created",
 	}
-	_ = os.MkdirAll(filepath.Join(dir, "src", "lg_agent"), 0o755)
-	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"),
-		[]byte("def create_graph():\n    return {\"nodes\": []}\n"), 0o644)
-	if !alreadySatisfied(dir, create) {
-		t.Fatal("expected alreadySatisfied for scaffold create when file exists")
+	// "Create a helper to parse config in pkg/util/cfg.go" is the exact shape a
+	// planner SLM emits for a task that still needs real work.
+	helperTask := plan.Task{
+		ID: "T3", Title: "Create a helper to parse config in hello.go",
+		Files: []string{"hello.go"}, Acceptance: "helper present",
 	}
-	// Placeholder stubs must never count as already satisfied.
-	_ = os.WriteFile(filepath.Join(dir, "src", "lg_agent", "graph.py"),
-		[]byte("def create_graph():\n    # Placeholder implementation\n    return {\"output\": \"run_result\"}\n"), 0o644)
-	if alreadySatisfied(dir, create) {
-		t.Fatal("placeholder scaffold must not be alreadySatisfied")
+
+	cases := []struct {
+		name     string
+		body     string
+		task     plan.Task
+		baseline map[string]string
+		want     bool
+	}{
+		{
+			name: "implement never satisfied by mere existence", body: real,
+			task: plan.Task{
+				ID: "T1", Title: "Edit hello", Description: "implement comment",
+				Files: []string{"hello.go"}, Acceptance: "file updated",
+			},
+			baseline: map[string]string{"hello.go": "len:hash"}, want: false,
+		},
+		{
+			name: "scaffold created during this wave", body: real, task: createTask,
+			baseline: map[string]string{"src/lg_agent/graph.py": ""}, want: true,
+		},
+		{
+			name: "file that already existed at wave start is NOT evidence",
+			body: real, task: createTask,
+			baseline: map[string]string{"src/lg_agent/graph.py": "len:hash"}, want: false,
+		},
+		{
+			name: "unknown baseline falls back to existence", body: real, task: createTask,
+			baseline: nil, want: true,
+		},
+		{
+			name: "placeholder stub never satisfies", body: stub, task: createTask,
+			baseline: map[string]string{"src/lg_agent/graph.py": ""}, want: false,
+		},
+		{
+			name: "create-a-helper against a pre-existing file", body: real, task: helperTask,
+			baseline: map[string]string{"hello.go": "len:hash"}, want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(graph, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := alreadySatisfied(dir, tc.task, tc.baseline); got != tc.want {
+				t.Fatalf("alreadySatisfied = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -323,9 +423,15 @@ func TestEvidenceOKCreateSatisfiedWithoutDelta(t *testing.T) {
 		Acceptance: "pyproject.toml exists", Files: []string{"pyproject.toml"},
 		Output: "I can see there's already a pyproject.toml file",
 	}
-	baseline := map[string]string{"pyproject.toml": fileFingerprint(filepath.Join(dir, "pyproject.toml"))}
-	if ok, why := r.evidenceOK(task, baseline); !ok {
-		t.Fatalf("create file already on disk should pass: %s", why)
+	// Absent at wave start, present now → this wave created it.
+	if ok, why := r.evidenceOK(task, map[string]string{"pyproject.toml": ""}); !ok {
+		t.Fatalf("file created during this wave should pass: %s", why)
+	}
+	// Present and byte-identical at wave start → nobody wrote anything, so the
+	// evidence gate must not be satisfied by the file merely existing.
+	stale := map[string]string{"pyproject.toml": fileFingerprint(filepath.Join(dir, "pyproject.toml"))}
+	if ok, _ := r.evidenceOK(task, stale); ok {
+		t.Fatal("a file that already existed unchanged is not write evidence")
 	}
 }
 

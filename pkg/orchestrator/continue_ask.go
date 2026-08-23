@@ -98,7 +98,7 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 	_ = o.store.Append(contextstore.DocScratch, "Continue ask",
 		ask.Summary+"\nReason: "+reason+"\n"+strings.Join(ask.Gaps, "\n"))
 
-	action := "stop"
+	var action string
 	if mode == plan.ContinueAskAuto {
 		o.emitFull("test", stream.KindOutput, "continue", "",
 			"auto-continue: one more corrective wave", "", truncate(payload, 800))

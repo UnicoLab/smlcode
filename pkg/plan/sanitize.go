@@ -325,7 +325,6 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 			Acceptance: "requirements.txt exists, non-empty, and lists real installable packages",
 		})
 		deps = []string{id}
-		lastID = id
 	}
 	// LangGraph: ensure a real agent module task exists (not only empty __init__.py).
 	hasAgentModule := false
@@ -350,7 +349,6 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 				"python -c import succeeds; no placeholders",
 		})
 		deps = []string{id}
-		lastID = id
 	}
 
 	if !hasMain {
@@ -372,7 +370,6 @@ func EnsureGreenfieldHarness(tasks []Task, query string) []Task {
 			Acceptance: mainAC,
 		})
 		deps = []string{id}
-		lastID = id
 		hasMain = true
 	}
 	if !hasTest && hasMain {

@@ -15,7 +15,7 @@ import (
 type SpecSlot struct {
 	Role     string
 	Prompt   string
-	Required bool // required slots always waited for; optional losers are cancelled
+	Required bool // required slots always waited for; optional losers are canceled
 	// Local, when set, runs in-process instead of an LLM role call (e.g. disk acceptance).
 	Local func(ctx context.Context) (string, error)
 	Phase string // observability phase label (explore/review/test); defaults to "speculate"
@@ -26,7 +26,7 @@ type SpecResult struct {
 	Role    string
 	Output  string
 	Err     error
-	Skipped bool // cancelled before meaningful work / unused loser
+	Skipped bool // canceled before meaningful work / unused loser
 }
 
 // speculate launches slots in parallel (capped by max_parallel), cancels optional
@@ -127,7 +127,7 @@ func (o *Orchestrator) speculate(ctx context.Context, slots []SpecSlot) []SpecRe
 }
 
 // speculateDigs runs explorer (required) plus optional docs/architect when
-// think_passes and max_parallel allow, cancelling optional losers when explorer wins.
+// think_passes and max_parallel allow, canceling optional losers when explorer wins.
 func (o *Orchestrator) speculateDigs(ctx context.Context, query, explorePrompt string, inventory []string, wantDocs, wantArch bool) (exploreOut, archOut, docsOut string, err error) {
 	slots := []SpecSlot{{
 		Role: plan.RoleExplorer, Prompt: explorePrompt, Required: true, Phase: "explore",

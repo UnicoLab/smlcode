@@ -44,7 +44,7 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 	cfg := config.Default(t.TempDir())
 	cfg.MaxParallel = 2
 	cfg.ThinkPasses = 2
-	// Architect waits a long time unless cancelled. Explorer finishes quickly so
+	// Architect waits a long time unless canceled. Explorer finishes quickly so
 	// cancel must fire — avoids wall-clock flakiness under the race detector.
 	o := &Orchestrator{
 		cfg: cfg,
@@ -83,8 +83,8 @@ func TestSpeculateCancelsOptionalLosers(t *testing.T) {
 		t.Fatalf("explorer: %+v", explorer)
 	}
 	if !architect.Skipped && architect.Err == nil && architect.Output != "" {
-		// Either cancelled (error/skipped) or unfinished — must not be a full slow win.
-		t.Fatalf("expected architect cancelled/skipped, got %+v", architect)
+		// Either canceled (error/skipped) or unfinished — must not be a full slow win.
+		t.Fatalf("expected architect canceled/skipped, got %+v", architect)
 	}
 	fe := o.executor.(*fakeSpecExec)
 	if fe.cancels.Load() < 1 && !architect.Skipped {
@@ -157,7 +157,7 @@ func TestSpeculateDiskAcceptCancelsTester(t *testing.T) {
 		t.Fatalf("disk: %+v", disk)
 	}
 	if !tester.Skipped && tester.Err == nil && tester.Output != "" {
-		t.Fatalf("expected tester cancelled, got %+v", tester)
+		t.Fatalf("expected tester canceled, got %+v", tester)
 	}
 }
 
@@ -196,6 +196,6 @@ func TestSpeculateDuplicateTesterCancelsLoser(t *testing.T) {
 		t.Fatalf("lean: %+v", lean)
 	}
 	if !strict.Skipped && strict.Err == nil && strict.Output != "" {
-		t.Fatalf("expected strict cancelled, got %+v", strict)
+		t.Fatalf("expected strict canceled, got %+v", strict)
 	}
 }

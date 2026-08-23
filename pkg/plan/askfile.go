@@ -26,7 +26,7 @@ func WriteScopeAsk(slmDir string, ask ScopeAsk) error {
 		return nil
 	}
 	dir := filepath.Join(slmDir, "clarify")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	// Clear stale answers so we don't pick up a previous run.
@@ -50,6 +50,7 @@ func ClearScopeAsk(slmDir string) {
 // ReadScopeAnswers loads answers if present.
 func ReadScopeAnswers(slmDir string) (ScopeAnswers, bool, error) {
 	path := ClarifyAnswersPath(slmDir)
+	//nolint:gosec // G304: path is derived from the harness's own .slmcode dir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -79,7 +80,7 @@ func writeScopeAnswers(slmDir string, ans ScopeAnswers, once bool) error {
 		return nil
 	}
 	dir := filepath.Join(slmDir, "clarify")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	if ans.AnsweredAt == "" {

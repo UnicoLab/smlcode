@@ -16,14 +16,15 @@ The dev server runs on `http://localhost:5173` and proxies API calls to `http://
 Start the backend:
 ```bash
 # From slmcode root:
-make studio
-# or:
+make bootstrap                      # once: build the embedded UI
 slmcode studio --listen 127.0.0.1:7420 --dev-cors
 ```
 
 `--dev-cors` is required for `npm run dev`: the Vite server is a different
 origin (`:5173`) from the API (`:7420`), and Studio ships **no** CORS headers by
-default. See "Security model" below.
+default. Studio also mints a session token and prints it in the URL — set
+`SLMCODE_STUDIO_TOKEN` to a fixed value while developing, or pass `--no-auth`.
+See "Security model" below.
 
 ## Scripts
 
@@ -48,19 +49,25 @@ run-start capability, so the API is locked down by default:
 * **Loopback only** — a request whose `Host` is not `127.0.0.1` / `::1` /
   `localhost` is rejected with 403. This blocks DNS rebinding.
 * **Same-origin only** — no `Access-Control-Allow-Origin` is emitted at all
-  unless the server was started with `--dev-cors`, which allows exactly the Vite
-  dev origins. A cross-origin `Origin` or a `Sec-Fetch-Site: cross-site` request
-  is refused, so no page the user happens to visit can start a run or read the
-  repo.
-* **Session token** — when the CLI starts Studio with a token, every `/api/*`
-  request must carry it as `X-SLMCode-Token`, as `Authorization: Bearer …`, or
+  unless the server was started with `--dev-cors`
+  (or `SLMCODE_STUDIO_DEV_CORS=1`), which permits exactly the
+  Vite dev origins (`127.0.0.1:5173`, `localhost:5173`, `[::1]:5173`) and
+  nothing else. A cross-origin `Origin` or a `Sec-Fetch-Site: cross-site`
+  request is refused, so no page the user happens to visit can start a run or
+  read the repo. When an origin *is* allowed, only that exact origin is echoed
+  back — never `*`.
+* **Session token** — `slmcode studio` mints a random 256-bit token per run and
+  prints it in the URL. Every `/api/*` request must carry it as `X-SLMCode-Token`, as `Authorization: Bearer …`, or
   as `?t=…` (EventSource cannot set headers). The SPA picks it up from the `?t=`
   parameter of the URL the CLI prints, or from the
   `<meta name="slmcode-token">` tag the server injects into `index.html`, and
   stores it in `sessionStorage` — see `src/api/session.ts`. The parameter is
   stripped from the address bar on first read.
-* `--no-auth` disables the token for embedded use; loopback and origin
-  enforcement stay on.
+* `--no-auth` (or `SLMCODE_STUDIO_NO_AUTH=1`) disables the token for embedded
+  use; loopback and origin enforcement stay on regardless. Studio prints a
+  warning when auth is off.
+* `server.New(h, ui)` is the embedder entry point with no token;
+  `server.NewWithOptions(h, ui, server.DefaultOptions())` is what the CLI uses.
 
 ## Fonts
 
@@ -73,7 +80,8 @@ opt into Inter and JetBrains Mono locally. See `public/fonts/README.md`.
 ```
 web/
 ├── src/
-│   ├── api/client.ts          # Typed API client for all 30+ endpoints
+│   ├── api/client.ts          # Typed API client for all ~60 endpoints
+│   ├── api/session.ts         # Session-token capture (?t= / <meta>) + sessionStorage
 │   ├── types/index.ts         # TypeScript interfaces
 │   ├── components/
 │   │   ├── Layout.tsx         # App shell (sidebar + topbar + content)
@@ -84,7 +92,16 @@ web/
 │   │   │   └── TaskCard.tsx   # Individual task card
 │   │   ├── Live/
 │   │   │   ├── LiveView.tsx   # SSE agent stream viewer
+│   │   │   ├── TokenStream.tsx# Streaming token view
+│   │   │   ├── HITLPopup.tsx  # Global human-in-the-loop modal
 │   │   │   └── EventLog.tsx   # Phase-colored event log
+│   │   ├── Review/
+│   │   │   ├── ReviewView.tsx # Pending-change review, per-file apply/reject
+│   │   │   └── DiffView.tsx   # Unified diff renderer
+│   │   ├── Runs/
+│   │   │   ├── RunHistory.tsx # Past runs
+│   │   │   └── TraceView.tsx  # Per-phase timeline with token/cost attribution
+│   │   ├── ui/                # Modal, Toast, ErrorBoundary, ConnectionBadge, ShortcutSheet
 │   │   ├── Settings/
 │   │   │   ├── SettingsPanel.tsx # Full config editor
 │   │   │   └── StackSelector.tsx # One-click model stack switching
@@ -96,6 +113,8 @@ web/
 │   │   │   └── SkillManager.tsx # Skill packs manager
 │   │   └── Docs/
 │   │       └── MarkdownEditor.tsx # Split-pane markdown editor
+│   ├── hooks/useLiveStream.ts # SSE with Last-Event-ID resume + gap signalling
+│   ├── hooks/useKeyboard.ts   # Global shortcuts
 │   ├── styles/globals.css     # Tailwind + custom components
 │   ├── App.tsx                # Routes + app context
 │   └── main.tsx               # Entry point

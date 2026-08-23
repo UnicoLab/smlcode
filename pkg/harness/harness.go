@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
@@ -12,9 +13,58 @@ import (
 )
 
 // Harness is the embeddable entrypoint for SLMCode.
+//
+// Orchestrator OWNS PROCESSES: every stdio MCP server it starts is a child
+// process that lives until mcp.Manager.Close runs, and the evolve engine holds
+// an open store. Replacing the pointer without closing the old value therefore
+// leaks both — and `slmcode studio` replaces it on every PUT /api/config, so
+// the subprocesses accumulated for the lifetime of the daemon. Use
+// SetOrchestrator (or RebuildOrchestrator) to swap, and Close on teardown.
 type Harness struct {
-	Config       *config.Config
+	Config *config.Config
+	// Orchestrator is the live engine. Prefer SetOrchestrator over assigning
+	// this field directly: a direct assignment silently drops the previous
+	// orchestrator's MCP subprocesses and evolve engine on the floor.
 	Orchestrator *orchestrator.Orchestrator
+
+	// mu serializes swap/close so a rebuild racing a teardown cannot close the
+	// same orchestrator twice or leak the one it just installed.
+	mu sync.Mutex
+}
+
+// SetOrchestrator installs orch and CLOSES the one it replaces.
+//
+// It returns the close error of the previous orchestrator (nil when there was
+// none); the new orchestrator is installed either way, because a failure to
+// reap the old one must not leave the harness without an engine.
+func (h *Harness) SetOrchestrator(orch *orchestrator.Orchestrator) error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	prev := h.Orchestrator
+	h.Orchestrator = orch
+	h.mu.Unlock()
+	if prev == nil || prev == orch {
+		return nil
+	}
+	return prev.Close()
+}
+
+// Close releases the harness's engine: MCP stdio subprocesses and the evolve
+// engine. It is idempotent and nil-safe, so callers can always defer it.
+func (h *Harness) Close() error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	prev := h.Orchestrator
+	h.Orchestrator = nil
+	h.mu.Unlock()
+	if prev == nil {
+		return nil
+	}
+	return prev.Close()
 }
 
 func New(root string) (*Harness, error) {
@@ -79,7 +129,10 @@ func (h *Harness) Status() (string, error) {
 }
 
 // RebuildOrchestrator recreates the orchestrator after agent/config changes
-// (same path Studio uses after Agents API CRUD).
+// (same path Studio uses after Agents API CRUD) and closes the previous one.
+//
+// A failed rebuild keeps the CURRENT orchestrator: the old engine is only
+// closed once its replacement exists.
 func (h *Harness) RebuildOrchestrator() error {
 	if h == nil || h.Config == nil {
 		return fmt.Errorf("harness not initialized")
@@ -88,7 +141,11 @@ func (h *Harness) RebuildOrchestrator() error {
 	if err != nil {
 		return err
 	}
-	h.Orchestrator = orch
+	if cerr := h.SetOrchestrator(orch); cerr != nil {
+		// The new engine is live; reaping the old one failed. Surface it —
+		// a leaked MCP subprocess is exactly the bug this call site had.
+		return fmt.Errorf("orchestrator rebuilt, but closing the previous one failed: %w", cerr)
+	}
 	return nil
 }
 

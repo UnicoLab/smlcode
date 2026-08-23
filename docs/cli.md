@@ -1,14 +1,6 @@
 # ⌨️ CLI reference
 
-Binary name: **`slmcode`** (docs sometimes say *smlcode* — same project, same vibes). 💚
-
-<div class="slm-banner" markdown>
-<span class="slm-banner__emoji">🛠️</span>
-<p class="slm-banner__text" markdown>
-<strong>Power-user tip:</strong> every command has <code>--help</code>.
-When in doubt, be loud with <code>-v</code> and green with <code>doctor</code>.
-</p>
-</div>
+Binary: **`slmcode`**. Every command has `--help`; `slmcode --help` groups them.
 
 ```bash
 slmcode --help
@@ -17,206 +9,355 @@ slmcode <command> --help
 
 ---
 
-## Global flags 🌐
+## Non-interactive contract
 
-| Flag | Env / notes |
-|------|-------------|
+Every command is safe to call from a script, a CI job or another agent.
+
+- **Colour.** ANSI escapes are emitted only when stdout is a terminal, `TERM` is not `dumb`, and
+  `NO_COLOR` is unset. `slmcode status | cat` is plain text. Override with
+  `--color=auto|always|never` or `FORCE_COLOR=1`.
+- **JSON.** `--json` is available on `status`, `doctor`, `readiness`, `board`, `version`, `apply`,
+  `compose`, `blocks list`, every `config` subcommand, and every `memory` / `evolve` / `metrics`
+  subcommand. It writes a single JSON document to stdout with colour forced off; diagnostics go
+  to stderr.
+- **Prompts.** Nothing prompts without a TTY. `slmcode apply` refuses interactive review (exit 2)
+  and points at `--all`/`--list`/`--json`; `slmcode` with no workspace refuses to scaffold
+  (exit 3); `slmcode update` needs `--yes`.
+- **HITL gates.** With a TTY they render inline and **block** until answered — they never expire
+  into an automatic decision. Without a TTY they resolve immediately via `--on-gate-timeout`.
+- **Errors.** A failure is reported exactly once, on stderr, prefixed with `✖`.
+
+### Exit codes
+
+| Code | Meaning |
+|---:|---|
+| 0 | success |
+| 1 | generic failure |
+| 2 | usage error / invalid argument / a TTY was required |
+| 3 | workspace not initialized |
+| 4 | provider endpoint unreachable (pre-flight refused to start the run) |
+| 5 | the run completed but tasks failed |
+| 6 | a human-in-the-loop gate could not be answered |
+| 130 | interrupted (SIGINT/SIGTERM); a second interrupt force-quits |
+
+---
+
+## Global flags
+
+| Flag | Notes |
+|---|---|
 | `--root` | Project root (default: cwd) |
-| `--provider` | `SLMCODE_PROVIDER` |
+| `--provider` | `SLMCODE_PROVIDER`. Never clobbers an endpoint set by flag, env, or an explicit non-default config value |
 | `--model` | `SLMCODE_MODEL` |
-| `--endpoint` | `SLMCODE_ENDPOINT` / `OPENAI_BASE_URL` |
+| `--endpoint` | `SLMCODE_ENDPOINT` |
 | `--api-key` | `SLMCODE_API_KEY` / provider-specific |
-| `--backend` | `slmcode` (default) |
-| `--parallel` | Max parallel workers |
-| `--retries` | Review/correct retries |
-| `--think-passes` | Multipass think loops |
-| `--dry-run` | Don't write code files 🎭 |
-| `-v` / `--verbose` | Loud agent logs 📢 |
-| `--no-banner` | Hide ASCII banner on help |
+| `--backend` | `slmcode` (default) or `claude-code` |
+| `-v` / `--verbose` | same as `--log-level=info` |
+| `--vv` | same as `--log-level=debug` |
+| `--log-level` | `error\|warn\|info\|debug` — what the CLI renders |
+| `--color` | `auto` (default) `\| always \| never` |
+| `--dry-run` | do not write code files |
+| `--parallel` | max parallel workers |
+| `--retries` | review/correct retries |
+| `--think-passes` | multi-pass think loops |
+| `--on-gate-timeout` | `approve\|reject\|stop` (default `stop`) — what a HITL gate does with no TTY |
+| `--no-explore` | greedy bandit, no exploration — reproducible runs (config: `deterministic`) |
+| `--evolve` / `--no-evolve` | force the self-improvement engine on/off for this run |
+| `--max-task-calls` | per-task LLM call budget (config: `max_task_calls`) |
+| `--architect-editor` | enable the describer→editor role pair (config: `architect_editor`) |
+| `--structured-decoding` | `auto\|off` — constrained decoding policy |
+| `--no-banner` | hide the ASCII banner on help |
+
+### Configuration layering
+
+Lowest precedence first: built-in defaults → user file → project file (`.slmcode/config.yaml`) →
+`SLMCODE_*` environment → command-line flags. `slmcode config show --origin` attributes each
+effective value to `default` | `user` | `project` | `env SLMCODE_X` | `flag --x`.
+
+The user file is discovered by `pkg/config`, so the layer applies to Studio, the TUI and any
+embedder as well as the CLI. Candidates, most specific first: `$SLMCODE_USER_CONFIG`,
+`$XDG_CONFIG_HOME/slmcode/config.yaml`, `~/.slmcode/config.yaml`,
+`~/.config/slmcode/config.yaml`. Write to it with `slmcode config set --user <key> <value>`.
+
+A saved `config.yaml` records **intent**: only the keys that differ from what the project would
+otherwise inherit, plus a `config_version` stamp. So `config show --origin` can tell a choice from
+an inherited default, a new release's improved default reaches existing projects, and no absolute
+path is embedded in a file that may be committed. Older files are migrated forward on load, and
+`config show` says when that happened.
 
 ---
 
-## Commands 📚
+## Commands
 
-### Core loop 🔁
-
-| Command | Purpose |
-|---------|---------|
-| `slmcode` / `tui` | Premium interactive TUI (**default**) 🖥️ |
-| `run` | Full pipeline or single specialist 🚀 |
-| `chat` | Classic REPL 💬 |
-| `studio` | GUI + HTTP/SSE (`--listen host:port`) 🎨 |
-| `doctor` | Provider/model/workspace health 🩺 |
-| `readiness` / `ready` | Score local SLM readiness; `--fix` applies safe defaults |
-| `compose` | Preview the dynamic pipeline phases/agents without an LLM call |
-| `init` | Create `.slmcode/` scaffolding 🌱 |
-| `stack` | list / show / apply provider+model presets 📦 |
-| `agent` | list / show / set per-agent LLM pins 🧩 |
-| `blocks` | list / show / apply / validate building blocks 🧱 |
-| `update` | Refresh binary (release) or rebuild from source ⬆️ |
-| `version` | Print version metadata |
-
-### Board & tasks 📋
+### Run & steer
 
 | Command | Purpose |
-|---------|---------|
-| `board` | Show kanban |
-| `watch` | Live-refreshing kanban 👀 |
-| `task` | add / show / edit / move / delegate / checklist / promote |
-| `status` | Query, dynamic pipeline state, plan approval gate, board counts |
-| `plan` | Show `PLAN.md` |
+|---|---|
+| `slmcode` / `tui` | Interactive TUI (default with no subcommand) |
+| `init` | Create `.slmcode/` memory, board, config, and a `.slmcode/.gitignore` |
+| `run [query…]` | Full pipeline, or a single specialist |
+| `chat` | Classic REPL |
+| `studio` | Studio web UI + SSE API |
+| `watch` | Live-refreshing kanban |
 
-### Memory & skills 💾
+### Review changes
 
 | Command | Purpose |
-|---------|---------|
-| `context` | Show / edit `CONTEXT.md` |
+|---|---|
+| `apply [path…]` | Review and apply pending agent writes (`permission: review`) |
+| `reject [path…]` | Discard pending proposals |
+| `diff [path…]` | Working-tree diff |
+| `commit` | `git add -A` + commit helper |
+
+### Configure
+
+| Command | Purpose |
+|---|---|
+| `config` | `show` · `get` · `set` · `unset` · `schema` · `path` |
+| `stack` | `list` · `show` · `apply` · `edit` · `new` — provider/model presets |
+| `agent` | `list` · `show` · `edit` · `clear-llm` — per-agent LLM pins |
+| `blocks` | `list` · `show` · `new` · `edit` · `delete` · `apply` · `validate` |
+| `skills` | `list` · `show` · `new` · `edit` · `path` |
+| `update` | Refresh the binary release or rebuild from source |
+
+### Inspect
+
+| Command | Purpose |
+|---|---|
+| `status` | Query, provider, board counts, plan gate, connection probe, pending count |
+| `board` | Kanban snapshot |
+| `compose [query…]` | Preview the dynamic pipeline — no LLM call, no writes |
+| `readiness` / `ready` | Score local-SLM readiness; `--fix` applies safe defaults |
+| `task` | `add` · `show` · `edit` · `move` · `delegate` · `check` · `uncheck` · `promote` · `rm` |
+| `context` | Show / append to `CONTEXT.md` |
 | `docs` | List / show / edit markdown memory |
-| `skills` | List / show / new / edit 🦋 |
-| `session` | list / show / resume 🛟 |
-
-### Git helpers & safety 🛡️
-
-| Command | Purpose |
-|---------|---------|
-| `diff` | Working tree diff |
-| `commit` | `git add -A && commit` helper |
-| `apply` | Apply `.slmcode/pending/` (review mode) |
-| `config` | Show / set harness config ⚙️ |
-| `completion` | Shell completion scripts |
+| `plan` | Show `PLAN.md` |
+| `session` | `list` · `show` · `resume` |
+| `doctor` | Provider / model / endpoint / workspace health |
+| `eval` | Evaluation harness |
+| `memory` | `show` · `episodes` · `facts` · `forget` |
+| `evolve` | `rules` · `why` · `regressions` · `reset` |
+| `metrics` | `show` · `compare` |
+| `version` | Version metadata (`--check` queries GitHub) |
+| `completion` | `bash\|zsh\|fish\|powershell` |
 
 ---
 
-## `run` deep dive 🚀
+## `run`
 
 ```bash
 slmcode run -v "add JWT auth"
 slmcode run --agent explorer "Where is auth handled?"
-slmcode run --skill atomic-coding "Refactor helpers"
 slmcode run --mode specialist --agent worker "…"
-slmcode run --dynamic "add JWT auth"      # force task-specific composition
-slmcode run --no-dynamic "tiny typo fix"  # use the static pipeline
+slmcode run --skill atomic-coding "Refactor helpers"
+slmcode run --dynamic "add JWT auth"          # force task-specific composition
+slmcode run --no-dynamic "tiny typo fix"      # force the static pipeline
 slmcode run --think-passes 2 --parallel 2 --retries 2 "…"
+slmcode run --on-gate-timeout=approve "…"     # headless: approve the plan
 ```
 
 | Flag | Meaning |
-|------|---------|
-| `--agent` / `--mode specialist` | Single-role run |
-| `--skill` | Pin a skill pack |
-| `--dynamic` / `--no-dynamic` | Override `dynamic_pipeline` for this run |
-| `--think-passes` | Draft → critique → refine |
-| `--parallel` | Concurrent ready tasks |
-| `--retries` | Critic loop stubbornness |
-| `--dry-run` | Simulate writes |
+|---|---|
+| `--mode` | `full` \| `specialist` (overrides config) |
+| `--agent` | run a single specialist |
+| `--skill` | pin/load a skill by name (repeatable); `@skill:name` in the query also works |
+| `--dynamic` / `--no-dynamic` | override `dynamic_pipeline` for this run |
 
-Query sugar: `@skill:name`, `@file:path`, `@folder:path` (when supported by instructions loader).
+`dynamic_pipeline` defaults on: the composer selects a task-specific subset of phases, agents,
+slots and execute-loop roles before workers run.
 
-## Dynamic pipeline & readiness 🎯
+## `compose`
 
 ```bash
-slmcode compose "add JWT auth"       # inspect phases, team, execute loop, SLM fit
+slmcode compose "add JWT auth"
 slmcode compose --json "add JWT auth"
-slmcode status                       # includes dynamic + latest composition + plan gate
-slmcode readiness                    # checks provider/model and SLM-safe settings
-slmcode readiness --fix              # enables safe local-model defaults where needed
 ```
 
-`dynamic_pipeline` defaults on: the composer selects a task-specific subset of phases,
-agents, slots, and execute-loop roles before workers run. `compose` is deterministic
-inspection only; it does not call the LLM or write code. To force the static configured
-pipeline, use `slmcode run --no-dynamic` or `slmcode config set dynamic_pipeline false`.
+Deterministic inspection only — it does not call the LLM and does not write code. Shows the
+phases, the team, the execute loop and the SLM-fit assessment the run would use.
 
-Plan approval is controlled by `plan_approve` (`off | auto | ask`) and `auto_approve`.
-When a run is paused before execute, `slmcode status` reports the pending plan gate id,
-task count, and timeout so you can approve in Studio or through the plan approval API.
+## `readiness`
 
-`readiness` is the local SLM preflight: it scores provider reachability, model
-availability, skills, dynamic pipeline, HITL, and other safety defaults. It exits
-non-zero when required checks fail; `--fix` applies the safe config patch it recommends.
+```bash
+slmcode readiness            # scores provider/model reachability + safe SLM defaults
+slmcode readiness --fix      # apply the safe config patch it recommends
+slmcode readiness --no-probe # skip the endpoint/model availability check
+slmcode readiness --json
+```
 
----
+Exits non-zero when required checks fail.
 
-## `stack` & `agent` 📦
+## `apply` / `reject`
+
+`slmcode apply` is **interactive by default**: each pending change is rendered as a coloured
+unified diff and you choose what happens to it.
+
+| Key | Action |
+|---|---|
+| `a` (or `y`) | apply this file |
+| `s` (or `n`, or Enter) | skip — stays pending |
+| `r` | reject — discard the proposal |
+| `e` | open the proposal in `$EDITOR`, re-diff, ask again |
+| `v` | view the full diff (no line cap) |
+| `A` | apply this and everything after it |
+| `q` | stop and summarise |
+
+File modes are preserved when a proposal is written.
+
+```bash
+slmcode apply --list        # summary of what is waiting
+slmcode apply --json        # machine-readable pending set (implies no prompts)
+slmcode apply --all         # apply everything without prompting
+slmcode apply pkg/x.go      # only files matching a path prefix
+slmcode reject pkg/x.go
+slmcode reject --all
+```
+
+Without a TTY, `slmcode apply` exits 2 and names the three non-interactive options.
+
+## `studio`
+
+```bash
+slmcode studio                    # default port 7420, auto-picks a free one if busy
+slmcode studio --listen :9000
+slmcode studio --no-port-auto     # fail instead of moving to a free port
+slmcode studio --kill             # terminate an existing slmcode on that port first
+slmcode studio --dev-cors         # allow the Vite dev server (npm run dev in web/)
+slmcode studio --no-auth          # drop the session token (loopback enforcement stays)
+```
+
+Studio mints a per-run session token and prints it in the URL (`http://127.0.0.1:7420/?t=…`) —
+open **that** URL, or `/api/*` returns 401. `--kill` only ever signals a process whose executable
+is exactly `slmcode`. `Ctrl+C` shuts down gracefully. See [Studio](studio.md).
+
+## `stack` & `agent`
 
 ```bash
 slmcode stack list
 slmcode stack show deepseek
 slmcode stack apply omlx-local
-slmcode stack apply deepseek --clear-agent-llm   # agents inherit stack LLM
+slmcode stack apply deepseek --clear-agent-llm   # agents inherit the stack LLM
 slmcode stack apply openai --agents              # also write optional role pins
+slmcode stack apply openai --agents --force-agents
 
-slmcode agent list
+slmcode agent list                               # agents with their effective LLM
 slmcode agent show worker
-slmcode agent set worker --model … --provider …  # pin; empty = inherit stack
+slmcode agent edit worker model=… provider=…     # pin; empty = inherit the stack
+slmcode agent clear-llm worker
 ```
 
-Stacks live in `stacks/*.yaml`. DeepSeek default endpoint: `https://api.deepseek.com`
-(OpenAI-compat client appends `/v1`). Details → [🔌 Providers](providers.md).
+Shipped stacks: `omlx-local`, `ollama-local`, `openai`, `openrouter`, `deepseek`, `groq`,
+`google`, `qwen` (`stacks/*.yaml`). Details → [Providers](providers.md).
 
-## `blocks` 🧱
+## `blocks`
 
 ```bash
-# List all building blocks, grouped by kind
 slmcode blocks list
-
-# Show details of a specific block
+slmcode blocks list --json
 slmcode blocks show pipeline go
-slmcode blocks show agent python-worker
-slmcode blocks show pack react
-
-# Apply a language pack (writes pipeline.yaml + config)
 slmcode blocks apply go
 slmcode blocks apply python --materialize-agents
 slmcode blocks apply react --force
-
-# Validate all block YAML configs
+slmcode blocks new agent my-worker --file ./my-worker.yaml
 slmcode blocks validate
 ```
 
-Blocks are marketplace-ready YAML presets: pipelines, agents, quality packs, and language packs.
-Three predefined language packs ship built-in: 🐹 Go, 🐍 Python, ⚛️ React/TypeScript.
-Custom blocks go in `.slmcode/blocks/`. Details → [🧱 Blocks](blocks.md).
+Details → [Blocks](blocks.md).
 
-## `config` ⚙️
+## `config`
 
 ```bash
-slmcode config                 # show
-slmcode config set provider ollama
-slmcode config set model qwen2.5-coder:14b
-slmcode config set permission review
+slmcode config show
+slmcode config show --origin        # where each effective value came from
+slmcode config show --json
+slmcode config get max_parallel
+slmcode config set max_parallel 6
+slmcode config unset fast_model
+slmcode config set --user model qwen2.5-coder:14b   # write the user-level layer
+slmcode config schema               # machine-readable field schema
+slmcode config path
 ```
 
-Prefer `.slmcode/auth.json` (or env) for keys — not committed YAML.
-Full field list → [⚙️ Config reference](config.md).
+Bare `slmcode config` prints help — use `config show`. Full field list →
+[Config reference](config.md).
 
----
+Keys belong in `.slmcode/auth.json` or the environment, not in committed YAML.
 
-## `doctor` reads as 🩺
+## `memory`, `evolve`, `metrics`
 
-- Active provider / model / endpoint
-- Reachability
-- Embedding mode (`openai` / `local` / `lexical`)
-- Workspace / board / skills sanity
+```bash
+slmcode memory show --role worker      # the memory block a role actually receives
+slmcode memory episodes 20             # recent runs the harness remembers
+slmcode memory facts --kind command    # distilled semantic facts
+slmcode memory forget episodic --yes
 
-Green → ship. 💚 Red → [❓ FAQ](faq.md).
+slmcode evolve rules                   # repair rules with confidence + hit counts
+slmcode evolve rules --all             # include seeded-but-unused and retired rules
+slmcode evolve why edit_format         # the posterior table behind a learned choice
+slmcode evolve regressions --run       # replay the offline regression checks
+slmcode evolve reset --yes
 
----
+slmcode metrics show --last 10
+slmcode metrics compare 12             # newest 12 runs vs the 12 before them
+```
 
-## Completions 🐚
+All take `--json`. Details → [Self-improvement & memory](self-improvement.md).
+
+## `doctor`
+
+Reports the active provider / model / endpoint, reachability with latency, the embedding mode,
+and workspace / board / skills sanity. `--json` for scripts. Exit code 4 means the endpoint is
+unreachable.
+
+## Completions
 
 ```bash
 slmcode completion zsh > "$(brew --prefix)/share/zsh/site-functions/_slmcode"
 slmcode completion bash
 slmcode completion fish
+slmcode completion powershell
 ```
-
-Installers may place these automatically on system installs.
 
 ---
 
-## Exit philosophy 🚪
+## Environment
 
-SLMCode prefers **visible failure** over silent “done” theater.
-Check the board, the diff, and `doctor` when something smells off. 👃
+| Variable | Effect |
+|---|---|
+| `SLMCODE_<KEY>` | **every** config key has one, mechanically: `SLMCODE_MAX_PARALLEL`, `SLMCODE_QA_BOOTSTRAP`, `SLMCODE_ESCALATE_ASK_TIMEOUT`, … `slmcode config schema` lists them all with types and defaults |
+| `SLMCODE_PROVIDER` `SLMCODE_MODEL` `SLMCODE_ENDPOINT` `SLMCODE_API_KEY` | provider selection |
+| `SLMCODE_BACKEND` | `slmcode` \| `claude-code` |
+| `SLMCODE_USER_CONFIG`, `XDG_CONFIG_HOME` | user-level config layer location |
+| `SLMCODE_BASH_ALLOW` | extra shell allowlist prefixes (comma-separated) |
+| `SLMCODE_BLOCKS`, `SLMCODE_STACKS` | extra block / stack search paths |
+| `SLMCODE_TUI=0`, `CI=true` | force the non-interactive path |
+| `SLMCODE_NO_QUIET=1` | do not filter dependency stderr during engine construction |
+| `SLMCODE_SKIP_UPDATE_CHECK=1` | never contact GitHub |
+| `SLMCODE_EMBEDDING_*` | embedding backend overrides |
+| `SLMCODE_STUDIO_TOKEN`, `SLMCODE_STUDIO_NO_AUTH`, `SLMCODE_STUDIO_DEV_CORS` | Studio security profile |
+| `SLMCODE_SRC`, `SLMCODE_UPDATE_REPO` | `slmcode update` source resolution |
+| `NO_COLOR`, `FORCE_COLOR`, `TERM` | colour resolution |
 
-☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)
+---
+
+## TUI
+
+Bare `slmcode` opens the interactive TUI: a non-blocking REPL with an append-only transcript and
+a sticky status footer (it does not clear the screen on repaint).
+
+| Key | Action |
+|---|---|
+| `Esc` | interrupt the running phase and redirect it mid-run |
+| `↑` / `↓` | prompt history |
+| `Ctrl-R` | reverse history search |
+| `Tab` | complete a slash command |
+| `/` | fuzzy command picker |
+| `Ctrl-A/E/K/U/W` | line editing |
+| `Ctrl-C` | cancel; twice to quit |
+
+Slash commands: `/help` `/run` `/stop` `/resume` `/plan` `/planner` `/board` `/status` `/diff`
+`/apply` `/reject` `/rewind` `/compact` `/agents` `/agent` `/model` `/models` `/provider`
+`/permission` `/auth` `/schema` `/mcp` `/skills` `/blocks` `/pack` `/sessions` `/history`
+`/stats` `/errors` `/feedback` `/escalate` `/doctor` `/studio` `/refresh` `/clear` `/q`.
+
+→ [TUI & chat](tui.md)

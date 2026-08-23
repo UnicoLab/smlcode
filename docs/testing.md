@@ -44,9 +44,9 @@ cat hello.go && slmcode board && slmcode session list
 ## Studio / API 🎨
 
 ```bash
-slmcode studio
+slmcode studio   # note the URL it prints — it carries ?t=<token> when auth is on
 curl -s http://127.0.0.1:7420/api/health | jq .
-curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # 14
+curl -s http://127.0.0.1:7420/api/agents | jq 'length'   # 20 built-ins + registry blocks
 ```
 
 Checklist: Run → pipeline moves → Live shows `@agent` → drag a card → Settings loads models.
@@ -72,11 +72,15 @@ slmcode apply
 ## Automated (devs) 🤖
 
 ```bash
-make lint && make test && make docs-build
+make bootstrap           # build the Studio UI first (e2e checks the embedded assets)
+make check               # the one gate: fmt, vet, lint, tests, race, web lint+build
 make e2e                 # offline e2e + prime CLI/API smoke
 RUN_E2E=1 make e2e       # also live oMLX / multi-agent
+make cover               # coverage against the floor in scripts/coverage-check.sh
 ./scripts/e2e_prime_smoke.sh   # stacks/agents/models/auth/mcp alone
 ```
+
+Frontend tests live in `web/`: `npm run lint && npm test` (Vitest + Testing Library).
 
 Offline prime-port coverage: `TestPrimePortsEndToEnd` (stacks apply, auth.json,
 find_models allowlist, compact, events, Studio APIs).
@@ -97,7 +101,7 @@ find_models allowlist, compact, events, Studio APIs).
 | Skills flywheel | `.slmcode/SKILLS.md` 🦋 |
 | Resume | `/stop` → `/resume` 🛟 |
 | Agent detail | Studio Agents → click row shows system prompt |
-| 14 agents | `/api/agents` |
+| 20 built-in agents | `/api/agents` |
 
 Stuck? → [❓ FAQ](faq.md)
 

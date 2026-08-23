@@ -112,12 +112,12 @@ slmcode docs show MEMORY.md
 |------|----------|
 | `auto` | Write now ✍️ |
 | `dry-run` | Simulate 🎭 |
-| `review` | Stage → `slmcode apply` 👀 |
+| `review` | Stage → `slmcode apply` (interactive) / `slmcode reject` 👀 |
 
 ```bash
 slmcode config set permission review
 slmcode run "refactor foo"
-slmcode apply && slmcode diff
+slmcode apply && slmcode diff   # `apply` is interactive; use --all in scripts
 ```
 
 Shell: `shell_permission: allow | ask | deny` — independent of file writes.
@@ -131,7 +131,12 @@ Shell: `shell_permission: allow | ask | deny` — independent of file writes.
 slmcode config set think_passes 2
 slmcode config set retries 2
 slmcode config set parallel 2
-slmcode config set max_context_kb 16
+# The pack budget comes from the model's real window, not from bytes.
+# model_profiles is a structured field — edit .slmcode/config.yaml:
+#   model_profiles:
+#     qwen2.5-coder:
+#       context_limit: 32768
+slmcode config get model_profiles
 ```
 
 | Symptom | Try |

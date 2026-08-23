@@ -65,8 +65,8 @@ func FormatStaticSection(issues []StaticIssue) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n## Static quality gate\n")
-	b.WriteString("FAILED — stub/placeholder code detected:\n")
+	b.WriteString("\n\n" + StaticSectionHeader + "\n")
+	b.WriteString(SmokeFailedMarker + " — stub/placeholder code detected:\n")
 	for _, is := range issues {
 		b.WriteString(fmt.Sprintf("- %s: %s\n", is.Path, is.Reason))
 	}
@@ -76,8 +76,8 @@ func FormatStaticSection(issues []StaticIssue) string {
 
 // StaticFailedInOutput reports whether output already carries a failed static gate.
 func StaticFailedInOutput(output string) bool {
-	return strings.Contains(output, "## Static quality gate") &&
-		strings.Contains(output, "FAILED")
+	return strings.Contains(output, StaticSectionHeader) &&
+		strings.Contains(output, SmokeFailedMarker)
 }
 
 func collectQualityPaths(root string, t plan.Task) []string {

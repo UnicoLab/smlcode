@@ -233,12 +233,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 					"shell approval required: "+truncate(ask.Command, 120), "", string(b))
 			}
 		},
-		// Tool-layer knobs. Zero keeps the package default; see options.go for
-		// the config fields these should read once pkg/config grows them.
-		DisableSyntaxCheck: envBool(envDisableSyntaxCheck, false),
-		ReadWindowLines:    envInt(envReadWindowLines, 0),
-		MaxToolChars:       envInt(envMaxToolChars, 0),
-		ShellTimeout:       envDuration(envShellTimeout, 0),
+		// Tool-layer knobs. Zero keeps the package default. These read the
+		// config fields (disable_syntax_check, read_window_lines,
+		// max_tool_chars, shell_timeout) with the legacy SLMCODE_* variables
+		// still honoured as overrides — see options.go.
+		DisableSyntaxCheck: o.syntaxCheckDisabled(),
+		ReadWindowLines:    o.readWindowLines(),
+		MaxToolChars:       o.maxToolChars(),
+		ShellTimeout:       o.shellTimeout(),
 	})
 	if err != nil {
 		return nil, err

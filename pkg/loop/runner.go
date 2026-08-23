@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/compact"
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
@@ -110,6 +111,12 @@ type Runner struct {
 	MaxWaves       int
 	correctiveRuns int
 	MaxParallel    int
+	// BootstrapDeps is the dependency-install policy for acceptance smoke:
+	// off | ask | auto. Empty means "ask", i.e. NOTHING is installed
+	// unattended — the acceptance path used to run `pip install -r
+	// requirements.txt` / `npm install` against a manifest the worker may have
+	// written moments earlier in the same run.
+	BootstrapDeps  string
 	Timeout        time.Duration
 	IdleWait       time.Duration // wait for human to promote to_scope → ready
 	Log            Logger
@@ -361,7 +368,9 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 	if r.BuildInput != nil {
 		prompt = r.BuildInput(t)
 	} else {
-		prompt = fallbackTaskPrompt(t)
+		// The fallback now restates the same worker rules the gates enforce,
+		// including the project's language-appropriate smoke command.
+		prompt = fallbackTaskPromptWithLang(t, detectProjectLangHint(r.rootDir()))
 	}
 	if brief := r.sharedBriefSection(board, t); brief != "" {
 		prompt += brief
@@ -626,13 +635,7 @@ func (r *Runner) executeWave(ctx context.Context, board *plan.Board, ws *waveSta
 	if r.Executor == nil {
 		return reqs, nil, fmt.Errorf("nil executor")
 	}
-	// A single-task wave can carry its task id in ctx; a batched wave cannot —
-	// the executor must derive the tool ctx from SubAgentRequest.TaskID there.
-	callCtx := ctx
-	if len(reqs) == 1 {
-		callCtx = r.taskCtx(ctx, reqs[0].TaskID)
-	}
-	results, err := r.Executor.ExecuteSubAgents(callCtx, reqs, r.Shared)
+	results, err := r.dispatchWave(ctx, reqs)
 	if err != nil {
 		r.logf("wave execution warning: %v", err)
 	}
@@ -652,6 +655,64 @@ func (r *Runner) executeWave(ctx context.Context, board *plan.Board, ws *waveSta
 		results = filled
 	}
 	return reqs, results, err
+}
+
+// dispatchWave runs the wave's requests with a PER-TASK tool context.
+//
+// workspace.WithTaskID keys the tool layer's loop guard, and a batched call has
+// exactly one ctx for N tasks — so every task in a batched wave used to share
+// the "" bucket and trip its neighbours' loop detection (two workers
+// legitimately reading go.mod hard-stopping each other). The task id cannot be
+// pushed down from inside the batch either: GoLangGraph's SubAgentExecutor
+// hands the SAME ctx to every subagent goroutine and offers no per-request
+// hook, so a batched call can only ever carry one id.
+//
+// The fix is to stop batching. Each request is dispatched on its own, under a
+// ctx tagged with its own SubAgentRequest.TaskID, and the calls run
+// concurrently here instead of inside the executor. That is behavior-neutral
+// for GoLangGraph's executor — its parallel path is one goroutine per request
+// calling executeSingle, which is exactly what this does — and the wave is
+// already capped at MaxParallel, so the concurrency is unchanged.
+//
+// results[j] always corresponds to reqs[j]. The returned error is the first
+// non-nil one, matching the batched executor's contract.
+func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentRequest) (
+	[]ggagent.SubAgentResult, error) {
+	if len(reqs) == 0 {
+		return nil, nil
+	}
+	if len(reqs) == 1 {
+		return r.Executor.ExecuteSubAgents(r.taskCtx(ctx, reqs[0].TaskID), reqs, r.Shared)
+	}
+
+	results := make([]ggagent.SubAgentResult, len(reqs))
+	errs := make([]error, len(reqs))
+	var wg sync.WaitGroup
+	for i := range reqs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := reqs[i]
+			out, err := r.Executor.ExecuteSubAgents(
+				r.taskCtx(ctx, req.TaskID), []ggagent.SubAgentRequest{req}, r.Shared)
+			errs[i] = err
+			if len(out) > 0 {
+				results[i] = out[0]
+				return
+			}
+			results[i] = ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: req.TaskID, Error: err}
+		}(i)
+	}
+	wg.Wait()
+
+	var first error
+	for _, err := range errs {
+		if err != nil {
+			first = err
+			break
+		}
+	}
+	return results, first
 }
 
 // collectWaveResults folds each worker result back into its OWN slice element,
@@ -1523,44 +1584,30 @@ func (r *Runner) escalateTask(current plan.Task, review plan.ReviewResult, attem
 	return current, &escalation{detail: detail, attempt: attempt}, nil
 }
 
-// fallbackTaskPrompt is a MINIMAL rendering of a task, used only when
-// BuildInput is nil — i.e. in tests and in embedding callers that forgot to set
-// it. Production always goes through the orchestrator's formatWorkerPromptFor.
+// rootDir is the nil-safe project root.
+func (r *Runner) rootDir() string {
+	if r == nil {
+		return ""
+	}
+	return r.Root
+}
+
+// fallbackTaskPromptWithLang renders a task for the worker when BuildInput is
+// nil — tests and embedding callers that do not install the orchestrator's
+// builder.
 //
-// This deliberately does NOT restate the worker rules (focus scope, no extra
-// helper files, ws_patch retry, ws_shell smoke, no stubs). The old
-// formatWorkerPrompt did, which made pkg/loop look like a second source of
-// truth for the worker contract while production silently used a different,
-// shorter prompt that omitted exactly the rules the review gates reject on.
-// One builder must own those rules: the orchestrator's.
-func fallbackTaskPrompt(t plan.Task) string {
-	var b strings.Builder
-	b.WriteString("Atomic task — complete only this:\n\n")
-	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
-	b.WriteString(StripScopedPack(t.Description))
-	b.WriteString("\n")
-	if len(t.Files) > 0 {
-		b.WriteString("\n## Focus files\n- " + strings.Join(t.Files, "\n- ") + "\n")
-	}
-	if t.Acceptance != "" {
-		b.WriteString("\nAcceptance criteria:\n" + t.Acceptance + "\n")
-	}
-	if len(t.Checklist) > 0 {
-		b.WriteString("\nChecklist:\n")
-		for _, c := range t.Checklist {
-			mark := "[ ]"
-			if c.Done {
-				mark = "[x]"
-			}
-			b.WriteString(fmt.Sprintf("- %s %s\n", mark, c.Text))
-		}
-	}
-	if t.Notes != "" {
-		b.WriteString("\nHuman notes:\n" + t.Notes + "\n")
-	}
-	b.WriteString("\nEnd with STRICT JSON only:\n" +
-		`{"status":"done","summary":"...","files_changed":["real/path.go"],"notes":"..."}` + "\n")
-	return b.String()
+// It delegates to agents.BuildWorkerPrompt, the ONE builder that owns the
+// worker contract. The previous version deliberately restated nothing, on the
+// grounds that production used the orchestrator's builder anyway; but that
+// builder was itself missing the checklist, the "no extra helper files" rule,
+// the ws_patch retry rule, the ws_shell smoke step and the no-stubs rule — the
+// exact things the review gates reject on. A second, quieter prompt was not
+// the fix; one shared builder is.
+func fallbackTaskPromptWithLang(t plan.Task, langHint string) string {
+	return agents.BuildWorkerPrompt(t, agents.WorkerPromptOptions{
+		LangHint:    langHint,
+		Description: StripScopedPack(t.Description),
+	})
 }
 
 // StripScopedPack removes ephemeral pack headers so TASKS.md stays lean.
@@ -1789,40 +1836,29 @@ func uniqStrings(in []string) []string {
 }
 
 // harnessSectionHeaders are the exact headers the harness appends to a worker's
-// output. Two of them were WRONG here: the emitted headers are
-// "## Static quality gate" and "## Claimed files gate" (see
-// quality.FormatStaticSection / quality.FormatClaimsSection), but this list
-// looked for "## Static quality" and "## Claims gate" followed by a newline —
-// which never matched. The consequence was that harness-authored gate markdown,
-// including the literal word FAILED, stayed glued to the model's finalize text
-// when multipass.LooksCompleteJSON, quality.IncompleteFinalizeReason,
-// quality.LooksLikeToolJunk and quality.AssessResponse judged it.
-var harnessSectionHeaders = []string{
-	diskEvidenceHeader,
-	quality.SmokeSectionHeader,
-	quality.AcceptanceSectionHeader,
-	staticGateHeader,
-	claimsGateHeader,
-}
+// output. They now come from pkg/quality, which OWNS them and emits them.
+//
+// This list used to re-declare them, and two were wrong: it looked for
+// "## Static quality" and "## Claims gate" while the formatters emit
+// "## Static quality gate" and "## Claimed files gate". Nothing matched, so
+// harness-authored gate markdown — the literal word FAILED included — stayed
+// glued to the model's finalize text when multipass.LooksCompleteJSON,
+// quality.IncompleteFinalizeReason, quality.LooksLikeToolJunk and
+// quality.AssessResponse judged it. Duplicated literals is how that drift
+// happened; the drift guard below is kept, but there is nothing left to drift.
+var harnessSectionHeaders = quality.HarnessSectionHeaders
 
-// staticGateHeader / claimsGateHeader mirror quality.FormatStaticSection and
-// quality.FormatClaimsSection. pkg/quality does not export them yet (only
-// SmokeSectionHeader and AcceptanceSectionHeader are exported); they belong
-// there, and stripPostSectionsHeadersMatchQuality guards the duplication.
+// staticGateHeader / claimsGateHeader alias the exported constants so the
+// call sites and tests below read the same as before.
 const (
-	staticGateHeader = "## Static quality gate"
-	claimsGateHeader = "## Claimed files gate"
+	staticGateHeader = quality.StaticSectionHeader
+	claimsGateHeader = quality.ClaimsSectionHeader
 )
 
 // stripPostSections removes harness-appended evidence/gate sections so JSON
 // completeness checks look at the model answer, not smoke/claims appendices.
 func stripPostSections(s string) string {
-	for _, header := range harnessSectionHeaders {
-		if i := strings.Index(s, "\n"+header); i >= 0 {
-			s = s[:i]
-		}
-	}
-	return strings.TrimSpace(s)
+	return quality.StripHarnessSections(s)
 }
 
 func roleMaxIter(role string) int {
@@ -2209,8 +2245,9 @@ func hasShellFailureEvidence(output string) bool {
 	return false
 }
 
-// diskEvidenceHeader is the harness-authored evidence section header.
-const diskEvidenceHeader = "## Disk evidence"
+// diskEvidenceHeader is the harness-authored evidence section header. pkg/loop
+// writes it; pkg/quality exports it so every strip list can share one slice.
+const diskEvidenceHeader = quality.DiskEvidenceHeader
 
 // evidentialDiskMarkers are the Disk-evidence lines that actually prove this
 // task changed something. "git dirty:" is deliberately absent — see

@@ -11,8 +11,9 @@
 //     FORCE_COLOR=1.
 //
 //   - JSON. --json is available on status, doctor, readiness, board, version,
-//     apply, config show, config get and blocks list. It always writes a single
-//     JSON document to stdout with color forced off; diagnostics go to stderr.
+//     apply, blocks list, every `config` subcommand, and every `memory`,
+//     `evolve` and `metrics` subcommand. It always writes a single JSON
+//     document to stdout with color forced off; diagnostics go to stderr.
 //
 //   - Prompts. Nothing prompts without a TTY. `slmcode apply` refuses
 //     interactive review (exit 2) and points at --all/--list/--json; `slmcode`
@@ -44,11 +45,17 @@
 //
 // # Environment
 //
+//	SLMCODE_<KEY>
+//	    every config key has one, mechanically: SLMCODE_MAX_PARALLEL,
+//	    SLMCODE_QA_BOOTSTRAP, SLMCODE_ESCALATE_ASK_TIMEOUT, … Run
+//	    `slmcode config schema` for the full list with types and defaults.
 //	SLMCODE_PROVIDER, SLMCODE_MODEL, SLMCODE_ENDPOINT, SLMCODE_API_KEY
 //	    provider selection; --provider never clobbers an endpoint set by flag,
 //	    env, or an explicit non-default config value.
 //	SLMCODE_USER_CONFIG, XDG_CONFIG_HOME
 //	    location of the user-level config layer (see below).
+//	SLMCODE_STUDIO_TOKEN, SLMCODE_STUDIO_NO_AUTH, SLMCODE_STUDIO_DEV_CORS
+//	    Studio session-token and CORS overrides (see --no-auth / --dev-cors).
 //	SLMCODE_TUI=0, CI=true
 //	    force the non-interactive path.
 //	SLMCODE_NO_QUIET=1
@@ -62,5 +69,22 @@
 //
 // Lowest precedence first: built-in defaults → user file → project file
 // (.slmcode/config.yaml) → SLMCODE_* environment → command-line flags.
-// `slmcode config show --origin` prints where each effective value came from.
+// `slmcode config show --origin` attributes each effective value to
+// default | user | project | env SLMCODE_X | flag --x.
+//
+// The user file is discovered by pkg/config, so the layer applies to Studio,
+// the TUI and any embedder as well as the CLI. Candidates, most specific
+// first: $SLMCODE_USER_CONFIG, $XDG_CONFIG_HOME/slmcode/config.yaml,
+// ~/.slmcode/config.yaml, ~/.config/slmcode/config.yaml. Write to it with
+// `slmcode config set --user <key> <value>`.
+//
+// # Config files record intent
+//
+// A saved config.yaml holds only the keys that differ from what the project
+// would otherwise inherit, plus a `config_version` stamp. Three consequences:
+// `config show --origin` can tell a choice from an inherited default, a new
+// release's improved default reaches existing projects, and no absolute path
+// is embedded in a file that may be committed or copied between machines.
+// Older files are migrated forward on load; `slmcode config show` reports when
+// that happened.
 package main

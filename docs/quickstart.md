@@ -107,7 +107,7 @@ Pick your fighter. Both talk to the same harness. 🥊
 # Safer on real repos (stage first, apply later)
 slmcode config set permission review
 slmcode run -v "Add a unit test for Hello()"
-slmcode apply
+slmcode apply       # interactive: a/s/e/v/r/A/q per file (--all to apply everything)
 
 # Help small models think twice (literally)
 slmcode config set think_passes 2

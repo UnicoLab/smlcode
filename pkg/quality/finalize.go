@@ -81,19 +81,12 @@ func ProvisionalDoneFromEvidence(files []string, priorReason string) string {
 	return string(raw)
 }
 
+// stripHarnessSections delegates to the single exported strip list. It used to
+// carry its own literals, two of which ("## Static quality", "## Claims gate")
+// never matched anything the harness emits — so a "finalize" consisting of
+// nothing but a FAILED gate section read as a real answer.
 func stripHarnessSections(s string) string {
-	for _, marker := range []string{
-		"\n## Disk evidence\n",
-		"\n## Deterministic smoke\n",
-		"\n## Acceptance smoke\n",
-		"\n## Static quality\n",
-		"\n## Claims gate\n",
-	} {
-		if i := strings.Index(s, marker); i >= 0 {
-			s = s[:i]
-		}
-	}
-	return strings.TrimSpace(s)
+	return StripHarnessSections(s)
 }
 
 // FinalizeWarnMessage reminds the model to emit status JSON before turn-cap abort.
@@ -175,16 +168,10 @@ func ThinkingBudgetExceeded(output string, budgetTokens int) bool {
 	if core == "" {
 		return false
 	}
-	// Strip harness appendices.
-	for _, marker := range []string{
-		"\n## Disk evidence\n", "\n## Deterministic smoke\n",
-		"\n## Static quality\n", "\n## Claims gate\n",
-	} {
-		if i := strings.Index(core, marker); i >= 0 {
-			core = core[:i]
-		}
-	}
-	core = strings.TrimSpace(core)
+	// Strip harness appendices — gate markdown is not the model's deliberation,
+	// and counting it toward the thinking budget both inflated the estimate and
+	// (with the two headers that never matched) left FAILED text in `core`.
+	core = StripHarnessSections(core)
 	if EstimateTokensApprox(core) < budgetTokens {
 		return false
 	}

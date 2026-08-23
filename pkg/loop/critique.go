@@ -69,7 +69,8 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 	// Whitelisted acceptance commands (pytest / go test / python main.py …).
 	if acceptanceSmokeRole(role) && strings.TrimSpace(t.Acceptance) != "" {
 		started := time.Now()
-		ar := quality.RunAcceptanceSmoke(ctx, r.Root, t.Acceptance, r.Timeout)
+		ar := quality.RunAcceptanceSmokeWithPolicy(ctx, r.Root, t.Acceptance, r.Timeout,
+			quality.NormalizeBootstrapPolicy(r.BootstrapDeps))
 		r.recordSmokeTool(ar, started)
 		if ar.Ran {
 			if sec := quality.FormatAcceptanceSection(ar); sec != "" {

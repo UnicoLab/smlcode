@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +15,27 @@ import (
 )
 
 type countingExec struct {
+	mu    sync.Mutex
 	calls int
 }
 
-func (e *countingExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+// count records one dispatch. The wave now dispatches one request per task
+// concurrently (each under its own workspace task ctx), so these counters are
+// written from several goroutines.
+func (e *countingExec) count() {
+	e.mu.Lock()
 	e.calls++
+	e.mu.Unlock()
+}
+
+func (e *countingExec) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+func (e *countingExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	e.count()
 	out := make([]ggagent.SubAgentResult, len(reqs))
 	for i, req := range reqs {
 		out[i] = ggagent.SubAgentResult{
@@ -31,12 +48,21 @@ func (e *countingExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubA
 }
 
 type timeoutExec struct {
+	mu    sync.Mutex
 	calls int
 }
 
 func (e *timeoutExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	e.mu.Lock()
 	e.calls++
+	e.mu.Unlock()
 	return nil, context.DeadlineExceeded
+}
+
+func (e *timeoutExec) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
 }
 
 func TestStripScopedPack(t *testing.T) {
@@ -98,7 +124,7 @@ func TestRunCorrectiveBoardRespectsMaxWaves(t *testing.T) {
 	if err != nil || !ran {
 		t.Fatalf("first corrective run: ran=%v err=%v", ran, err)
 	}
-	firstCalls := exec.calls
+	firstCalls := exec.callCount()
 	if firstCalls == 0 {
 		t.Fatal("executor was not called")
 	}
@@ -111,8 +137,8 @@ func TestRunCorrectiveBoardRespectsMaxWaves(t *testing.T) {
 	if ran {
 		t.Fatal("second corrective wave should be skipped")
 	}
-	if exec.calls != firstCalls {
-		t.Fatalf("executor calls changed after skipped wave: before=%d after=%d", firstCalls, exec.calls)
+	if exec.callCount() != firstCalls {
+		t.Fatalf("executor calls changed after skipped wave: before=%d after=%d", firstCalls, exec.callCount())
 	}
 }
 
@@ -145,8 +171,10 @@ func TestRunBoardTimeoutsDoNotInterruptOrLeaveTasksInProgress(t *testing.T) {
 	if err := r.RunBoard(context.Background(), board); err != nil {
 		t.Fatalf("timeout wave should be recoverable, got %v", err)
 	}
-	if exec.calls != 1 {
-		t.Fatalf("executor calls=%d, want 1", exec.calls)
+	// One dispatch PER TASK: a wave carries one workspace task id per call, so
+	// the three tasks cannot share (and trip) one loop-guard bucket.
+	if got := exec.callCount(); got != 3 {
+		t.Fatalf("executor calls=%d, want 3 (one per task)", got)
 	}
 	if interventions != 3 {
 		t.Fatalf("timeout interventions=%d, want 3", interventions)

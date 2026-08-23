@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net"
@@ -24,9 +26,16 @@ import (
 )
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "init",
-		Short:   "Create .slmcode/ memory, board.json, config (provider/model overridable)",
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create .slmcode/ memory, board.json and a minimal config",
+		Long: `Scaffold a workspace.
+
+The config written here is MINIMAL: only what init detected (provider, model,
+endpoint when it is not the provider default, and the language pack). Every
+other knob follows the built-in defaults and your user-level config, so a
+later release's better default reaches this project without editing a file.
+Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 		Example: "  slmcode init\n  slmcode init --provider ollama --model qwen2.5-coder:14b",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
@@ -44,17 +53,99 @@ func initCmd() *cobra.Command {
 			if err := ensureSlmGitignore(ws.Config.SlmDir()); err != nil {
 				fmt.Println(cli.Warn("could not write .slmcode/.gitignore: " + err.Error()))
 			}
+
+			// Write intent, not a snapshot of every default.
+			detected := []string{"provider", "model"}
+			if ws.Config.Endpoint != config.DefaultEndpointFor(ws.Config.Provider) {
+				detected = append(detected, "endpoint")
+			}
+			if pack := detectLanguagePack(ws.Config.Root); pack != "" {
+				ws.Config.ActivePack = pack
+				detected = append(detected, "active_pack")
+			}
+			if err := ws.Config.SaveInitial(detected...); err != nil {
+				return err
+			}
+
 			fmt.Println(cli.Success("workspace ready"))
 			cli.KeyVal("path", ws.Config.SlmDir())
 			cli.KeyVal("gitignore", ".slmcode/.gitignore (auth.json, pending/, sessions/, …)")
 			cli.KeyVal("provider", ws.Config.Provider)
 			cli.KeyVal("model", ws.Config.Model)
 			cli.KeyVal("endpoint", ws.Config.Endpoint)
+			if ws.Config.ActivePack != "" {
+				cli.KeyVal("pack", ws.Config.ActivePack+" (detected)")
+			}
+			if p := config.UserConfigPath(); p != "" {
+				cli.KeyVal("user config", p+" (inherited)")
+			}
+			cli.KeyVal("config", fmt.Sprintf("%s — %d key(s), the rest inherited",
+				ws.Config.ConfigPath(), len(ws.Config.Diff())))
 			fmt.Println()
+			fmt.Println(cli.Dim("  slmcode config show --all      every key and its effective value"))
 			fmt.Println(cli.Info("next: slmcode run -v \"…\"  — agents fill context, plan, and tasks"))
 			return nil
 		},
 	}
+	return cmd
+}
+
+// languageMarkers maps a bundled block-pack id onto the files that prove a
+// project uses it. Ordered most specific first, and restricted to the packs
+// that actually ship in pkg/blocks/bundled/packs — writing an active_pack that
+// does not exist would be worse than writing none.
+var languageMarkers = []struct {
+	Pack  string
+	Files []string
+}{
+	{"go", []string{"go.mod"}},
+	{"rust", []string{"Cargo.toml"}},
+	{"python", []string{"pyproject.toml", "requirements.txt", "setup.py", "Pipfile"}},
+	{"java", []string{"pom.xml", "build.gradle", "build.gradle.kts"}},
+	{"cpp", []string{"CMakeLists.txt", "meson.build"}},
+	{"react", []string{"next.config.js", "next.config.ts", "next.config.mjs",
+		"vite.config.ts", "vite.config.js"}},
+	{"web", []string{"package.json"}},
+}
+
+// detectLanguagePack picks the building-block pack for a project root, or "".
+func detectLanguagePack(root string) string {
+	if root == "" {
+		return ""
+	}
+	for _, m := range languageMarkers {
+		for _, name := range m.Files {
+			path := filepath.Join(root, name)
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+			// A plain package.json is "web" unless it actually depends on
+			// React, in which case the react pack's agents and gates fit better.
+			if m.Pack == "web" && dependsOnReact(path) {
+				return "react"
+			}
+			return m.Pack
+		}
+	}
+	return ""
+}
+
+// dependsOnReact reports whether a package.json lists react as a dependency.
+func dependsOnReact(path string) bool {
+	data, err := os.ReadFile(path) //nolint:gosec // path is inside the user's own project root
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return false
+	}
+	_, prod := pkg.Dependencies["react"]
+	_, dev := pkg.DevDependencies["react"]
+	return prod || dev
 }
 
 func runCmd() *cobra.Command {
@@ -295,6 +386,8 @@ func studioCmd() *cobra.Command {
 	var forceKill bool
 	var portAuto bool
 	var noPortAuto bool
+	var devCORS bool
+	var noAuth bool
 
 	cmd := &cobra.Command{
 		Use:   "studio",
@@ -303,11 +396,18 @@ func studioCmd() *cobra.Command {
 
 If the configured port is busy the server moves to the next free one and says
 so. Killing whatever holds the port is never automatic — pass --kill, which
-only ever signals a process whose executable is exactly "slmcode".`,
+only ever signals a process whose executable is exactly "slmcode".
+
+Studio is a local agent with file-read, config-write, API-key-write and
+run-start capability. It refuses non-loopback hosts and cross-origin requests,
+and mints a random session token per launch — the printed URL carries it as
+?t=<token>. Ctrl-C shuts it down gracefully, unwinding any in-flight run.`,
 		Example: `  slmcode studio                    # default port (7420), auto-picks a free one if busy
   slmcode studio --listen :9000     # custom port
   slmcode studio --no-port-auto     # fail instead of moving to a free port
-  slmcode studio --kill             # terminate an existing slmcode on that port first`,
+  slmcode studio --kill             # terminate an existing slmcode on that port first
+  slmcode studio --dev-cors         # allow the Vite dev server (npm run dev in web/)
+  slmcode studio --no-auth          # drop the session token (loopback only, still)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			h, err := openHarness()
 			if err != nil {
@@ -348,15 +448,59 @@ only ever signals a process whose executable is exactly "slmcode".`,
 			if err != nil {
 				return err
 			}
-			url := "http://" + addr
+
+			// Studio can read files, write config, store API keys and start
+			// runs. It is loopback-only and emits no permissive CORS headers,
+			// and by default it also mints a random per-session token that the
+			// printed URL carries as ?t=… — defense in depth against other
+			// local processes. --no-auth drops the token; --dev-cors lets the
+			// Vite dev server talk to it.
+			opts := server.DefaultOptions()
+			if noAuth {
+				opts.NoAuth = true
+				opts.GenerateToken = false
+			}
+			if devCORS {
+				opts.DevCORS = true
+			}
+			srv := server.NewWithOptions(h, uiFS, opts)
+			url := srv.URL(addr)
+
 			fmt.Print(cli.Banner())
 			fmt.Println(cli.Success("Studio listening"))
 			fmt.Printf("  url             \033]8;;%s\033\\%s\033]8;;\033\\\n", url, url)
 			cli.KeyVal("root", h.Config.Root)
 			cli.KeyVal("provider", h.Config.Provider+" / "+h.Config.Model)
+			if srv.AuthEnabled() {
+				cli.KeyVal("auth", "session token required (the URL above carries it)")
+			} else {
+				fmt.Println(cli.Warn("auth disabled — any local process can drive this agent"))
+			}
+			if devCORS {
+				fmt.Println(cli.Warn("dev CORS enabled for " + strings.Join(server.DevOrigins, ", ")))
+			}
 			go openBrowser(url)
 			fmt.Println(cli.Dim("\n  Opening browser… Ctrl+C to stop.\n"))
-			return server.New(h, uiFS).ListenAndServe(addr)
+
+			ctx, cancel := signalContext()
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- srv.ListenAndServe(addr) }()
+			select {
+			case err := <-errCh:
+				return err
+			case <-ctx.Done():
+				// Graceful stop: unwind an in-flight run and close every SSE
+				// stream instead of truncating responses mid-write.
+				fmt.Println(cli.Dim("  stopping Studio…"))
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer shutCancel()
+				if err := srv.Shutdown(shutCtx); err != nil {
+					return err
+				}
+				<-errCh
+				return nil
+			}
 		},
 	}
 	cmd.Flags().StringVar(&flagListen, "listen", "", "listen address (default from config)")
@@ -364,6 +508,8 @@ only ever signals a process whose executable is exactly "slmcode".`,
 	cmd.Flags().BoolVar(&forceKill, "kill", false, "terminate an existing slmcode studio holding the port")
 	cmd.Flags().BoolVar(&portAuto, "port-auto", true, "move to the next free port when the target is busy")
 	cmd.Flags().BoolVar(&noPortAuto, "no-port-auto", false, "fail instead of moving to a free port")
+	cmd.Flags().BoolVar(&devCORS, "dev-cors", false, "allow the Vite dev server origins (npm run dev in web/)")
+	cmd.Flags().BoolVar(&noAuth, "no-auth", false, "disable the session token (loopback enforcement stays)")
 	return cmd
 }
 

@@ -13,16 +13,16 @@ import (
 // StatusTracker keeps a compact Claude Code–style footer for one-shot runs
 // (`slmcode run`, `slmcode chat`). The premium TUI uses Activity instead.
 type StatusTracker struct {
-	mu       sync.Mutex
-	phase    string
-	agent    string
-	taskID   string
-	message  string
-	active   map[string]time.Time // agent key -> start
-	done     int
-	failed   int
-	tokens   int
-	started  time.Time
+	mu      sync.Mutex
+	phase   string
+	agent   string
+	taskID  string
+	message string
+	active  map[string]time.Time // agent key -> start
+	done    int
+	failed  int
+	tokens  int
+	started time.Time
 }
 
 func NewStatusTracker() *StatusTracker {

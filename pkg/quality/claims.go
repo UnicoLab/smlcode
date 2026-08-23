@@ -51,8 +51,8 @@ func FormatClaimsSection(issues []ClaimIssue) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\n## Claimed files gate\n")
-	b.WriteString("FAILED — hallucinated or missing paths in files_changed:\n")
+	b.WriteString("\n\n" + ClaimsSectionHeader + "\n")
+	b.WriteString(SmokeFailedMarker + " — hallucinated or missing paths in files_changed:\n")
 	for _, is := range issues {
 		b.WriteString(fmt.Sprintf("- %s: %s\n", is.Path, is.Reason))
 	}
@@ -62,8 +62,8 @@ func FormatClaimsSection(issues []ClaimIssue) string {
 
 // ClaimsFailedInOutput reports a failed claims section.
 func ClaimsFailedInOutput(output string) bool {
-	return strings.Contains(output, "## Claimed files gate") &&
-		strings.Contains(output, "FAILED")
+	return strings.Contains(output, ClaimsSectionHeader) &&
+		strings.Contains(output, SmokeFailedMarker)
 }
 
 func extractClaimedPaths(output string) []string {

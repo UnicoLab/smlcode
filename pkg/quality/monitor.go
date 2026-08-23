@@ -51,26 +51,42 @@ func AssessResponse(text string, current, previous []ToolCall, knownTools map[st
 	}
 	if len(current) > 0 && len(previous) > 0 {
 		for _, tc := range current {
-			tcIn := mustJSON(tc.Input)
-			for _, prev := range previous {
-				if tc.Name == prev.Name && mustJSON(prev.Input) == tcIn {
-					envChanged := false
-					for _, r := range previous {
-						same := r.Name == tc.Name && mustJSON(r.Input) == tcIn
-						if !same && stateChangingTools[strings.ToLower(r.Name)] {
-							envChanged = true
-							break
-						}
-					}
-					if envChanged {
-						continue
-					}
-					return Assessment{OK: false, Reason: "repeated_tool_call"}
-				}
+			if repeatsWithoutProgress(tc, previous) {
+				return Assessment{OK: false, Reason: "repeated_tool_call"}
 			}
 		}
 	}
 	return Assessment{OK: true}
+}
+
+// repeatsWithoutProgress reports whether tc repeats an earlier call verbatim
+// with NOTHING having changed the workspace since that earlier call.
+//
+// `previous` is an ordered history, oldest first. The old implementation
+// scanned the WHOLE history for any state-changing call and unlocked unlimited
+// repeats when it found one — so a model that ran one ws_edit and then read the
+// same file forever kept its exemption for the rest of the window, i.e. the
+// guard switched itself off exactly when a model started looping. Only a state
+// change AFTER the last identical call can make the same call return something
+// new; that is the same rule pkg/workspace's CallTracker enforces per task.
+func repeatsWithoutProgress(tc ToolCall, previous []ToolCall) bool {
+	in := mustJSON(tc.Input)
+	last := -1
+	for i := len(previous) - 1; i >= 0; i-- {
+		if previous[i].Name == tc.Name && mustJSON(previous[i].Input) == in {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		return false
+	}
+	for _, later := range previous[last+1:] {
+		if stateChangingTools[strings.ToLower(later.Name)] {
+			return false
+		}
+	}
+	return true
 }
 
 // CorrectionMessage is steered back to the model on a quality failure.

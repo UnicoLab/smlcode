@@ -62,8 +62,15 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.Log = func(format string, args ...interface{}) {
 		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")
 	}
-	runner.OnEvent = func(kind, agent, taskID, msg, scope, output string) {
-		o.emitFull("execute", kind, agent, taskID, msg, scope, output)
+	// The STRUCTURED sink, not the legacy one. loop.AgentEvent's six string
+	// arguments cannot carry Level or Data, so routing the bridge through it
+	// dropped exactly the two fields the CLI now depends on: agent_end levels
+	// (which color the icon and count ✔/✖) and stream.Token payloads (which
+	// render live token text). Only ONE sink is installed — loop.fireEvent
+	// mirrors to both when both are set, which would double every event.
+	runner.OnEventFull = func(ev loop.LoopEvent) {
+		o.emitFullDataL("execute", ev.Kind, ev.Agent, ev.TaskID, ev.Message, ev.Scope, ev.Output,
+			ev.Level, ev.Data)
 	}
 	runner.OnEscalate = func(ctx context.Context, board *plan.Board, t plan.Task, detail string) {
 		o.runEscalateAsk(ctx, board, t, detail)

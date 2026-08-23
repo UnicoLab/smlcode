@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,38 +80,72 @@ func TestGitIgnoresOutsideRepoIsTrue(t *testing.T) {
 	}
 }
 
-func TestMergedSchemaCoversPatchOnlyKeys(t *testing.T) {
+func TestSchemaCoversEveryPatchableKey(t *testing.T) {
 	byKey := map[string]config.FieldSchema{}
-	for _, f := range mergedSchema() {
+	for _, f := range config.Schema() {
 		byKey[f.Key] = f
 	}
-	// These are settable through config.Patch but absent from config.Schema();
-	// without them `config set parallel 6` silently did nothing.
+	// These were settable through config.Patch but absent from config.Schema(),
+	// which is why the CLI carried a duplicate table. One table now.
 	for _, key := range []string{
 		"max_parallel", "max_retries", "think_passes", "permission",
 		"shell_permission", "qa_gate", "mode", "listen", "dry_run",
+		"qa_gate_max_rounds", "escalate_ask_timeout", "plan_approve_on_timeout",
+		"evolve", "deterministic", "memory_tokens", "max_task_calls",
+		"regression_checks", "architect_editor", "read_window_lines",
+		"max_tool_chars", "shell_timeout", "disable_syntax_check",
+		"structured_decoding", "qa_bootstrap",
+		"repo_map_tokens", "excerpt_window_lines", "skill_disclosure",
+		"retrieval_min_score", "retrieval_cache_dir",
 	} {
 		f, ok := byKey[key]
 		if !ok {
-			t.Errorf("merged schema is missing %q", key)
+			t.Errorf("schema is missing %q", key)
 			continue
 		}
 		if f.Type == "" || !f.Patchable {
 			t.Errorf("%q has no usable type/patchable flag: %+v", key, f)
 		}
+		if f.Group == "" || f.Label == "" {
+			t.Errorf("%q has no group/label: %+v", key, f)
+		}
+		if f.Env == "" {
+			t.Errorf("%q has no environment variable", key)
+		}
 	}
 }
 
-func TestMergedSchemaKeepsUpstreamDefinitions(t *testing.T) {
-	upstream := map[string]config.FieldSchema{}
+func TestSchemaCoversEveryConfigField(t *testing.T) {
+	described := map[string]bool{}
 	for _, f := range config.Schema() {
-		upstream[f.Key] = f
+		described[f.Key] = true
 	}
-	for _, f := range mergedSchema() {
-		if u, ok := upstream[f.Key]; ok {
-			if f.Label != u.Label || len(f.Enum) != len(u.Enum) {
-				t.Errorf("%q was overridden by the CLI table: %+v vs %+v", f.Key, f, u)
-			}
+	for _, key := range config.Keys() {
+		if key == "config_version" {
+			continue
+		}
+		if !described[key] {
+			t.Errorf("config key %q has no schema entry", key)
+		}
+	}
+}
+
+func TestSchemaDefaultsMatchDefaultConfig(t *testing.T) {
+	def := config.Default(t.TempDir())
+	for _, f := range config.Schema() {
+		if f.Secret {
+			continue
+		}
+		want, ok := def.Get(f.Key)
+		if !ok {
+			t.Errorf("schema key %q is not a config field", f.Key)
+			continue
+		}
+		if f.Default == nil {
+			continue // empty defaults are omitted from JSON
+		}
+		if fmt.Sprint(f.Default) != fmt.Sprint(want) {
+			t.Errorf("%q schema default %v != Default() %v", f.Key, f.Default, want)
 		}
 	}
 }
@@ -118,25 +153,25 @@ func TestMergedSchemaKeepsUpstreamDefinitions(t *testing.T) {
 func TestConfigSetRejectsGarbage(t *testing.T) {
 	// The whole point of routing through the schema: a bad value is an error,
 	// not a cheerful "✔ set parallel = abc".
-	if _, _, err := configPatchFromSchemaValue("max_parallel", "abc"); err == nil {
-		t.Fatal("expected an int parse error")
-	}
-	if _, _, err := configPatchFromSchemaValue("permission", "sudo"); err == nil {
-		t.Fatal("expected an enum error")
-	}
-	if _, _, err := configPatchFromSchemaValue("qa_gate", "maybe"); err == nil {
-		t.Fatal("expected a bool error")
+	c := config.Default(t.TempDir())
+	for _, tc := range []struct{ key, value string }{
+		{"max_parallel", "abc"},
+		{"permission", "sudo"},
+		{"qa_gate", "maybe"},
+	} {
+		if err := c.Set(tc.key, tc.value); err == nil {
+			t.Errorf("Set(%q, %q) should have failed", tc.key, tc.value)
+		}
 	}
 }
 
 func TestConfigSetAcceptsValidValues(t *testing.T) {
-	patch, ok, err := configPatchFromSchemaValue("max_parallel", "6")
-	if err != nil || !ok || patch.MaxParallel == nil || *patch.MaxParallel != 6 {
-		t.Fatalf("patch=%+v ok=%v err=%v", patch, ok, err)
+	c := config.Default(t.TempDir())
+	if err := c.Set("max_parallel", "6"); err != nil || c.MaxParallel != 6 {
+		t.Fatalf("max_parallel=%d err=%v", c.MaxParallel, err)
 	}
-	patch, ok, err = configPatchFromSchemaValue("permission", "review")
-	if err != nil || !ok || patch.Permission == nil || *patch.Permission != "review" {
-		t.Fatalf("patch=%+v ok=%v err=%v", patch, ok, err)
+	if err := c.Set("permission", "review"); err != nil || c.Permission != "review" {
+		t.Fatalf("permission=%q err=%v", c.Permission, err)
 	}
 }
 
@@ -148,8 +183,8 @@ func TestCanonicalConfigKeyAliases(t *testing.T) {
 		"perm":     "permission",
 		"model":    "model",
 	} {
-		if got := canonicalConfigKey(in); got != want {
-			t.Errorf("canonicalConfigKey(%q)=%q want %q", in, got, want)
+		if got := config.CanonicalKey(in); got != want {
+			t.Errorf("config.CanonicalKey(%q)=%q want %q", in, got, want)
 		}
 	}
 }

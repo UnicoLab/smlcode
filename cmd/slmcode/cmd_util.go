@@ -2,22 +2,22 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/evolve"
 	"github.com/UnicoLab/slmcode/pkg/models"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/readiness"
@@ -187,83 +187,6 @@ func sanitizeSkillName(name string) string {
 	return b.String()
 }
 
-func configPatchFromSchemaValue(key, value string) (config.Patch, bool, error) {
-	key = strings.ToLower(strings.TrimSpace(key))
-	for _, field := range mergedSchema() {
-		if field.Key != key || !field.Patchable {
-			continue
-		}
-		parsed, err := parseConfigValue(field, value)
-		if err != nil {
-			return config.Patch{}, true, err
-		}
-		b, err := json.Marshal(map[string]interface{}{field.Key: parsed})
-		if err != nil {
-			return config.Patch{}, true, err
-		}
-		var patch config.Patch
-		if err := json.Unmarshal(b, &patch); err != nil {
-			return config.Patch{}, true, err
-		}
-		return patch, true, nil
-	}
-	return config.Patch{}, false, nil
-}
-
-func parseConfigValue(field config.FieldSchema, value string) (interface{}, error) {
-	value = strings.TrimSpace(value)
-	if len(field.Enum) > 0 {
-		ok := false
-		for _, allowed := range field.Enum {
-			if value == allowed {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return nil, fmt.Errorf("%s must be one of: %s", field.Key, strings.Join(field.Enum, ", "))
-		}
-	}
-	switch field.Type {
-	case "bool":
-		v, err := parseConfigBool(value)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", field.Key, err)
-		}
-		return v, nil
-	case "int":
-		v, err := strconv.Atoi(value)
-		if err != nil {
-			return nil, fmt.Errorf("%s must be an integer", field.Key)
-		}
-		return v, nil
-	case "float":
-		v, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%s must be a number", field.Key)
-		}
-		return v, nil
-	case "string[]":
-		if value == "" || value == "-" {
-			return []string{}, nil
-		}
-		return splitCSV(value), nil
-	default:
-		return value, nil
-	}
-}
-
-func parseConfigBool(value string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on", "enable", "enabled":
-		return true, nil
-	case "0", "false", "no", "off", "disable", "disabled":
-		return false, nil
-	default:
-		return false, fmt.Errorf("must be true/false")
-	}
-}
-
 func doctorCmd() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
@@ -301,6 +224,7 @@ func runDoctorJSON() error {
 	board := ws.Board.Snapshot()
 	auth := models.ResolveAuth(ws.Config)
 
+	decoding := models.DescribeDecoding(ws.Config)
 	payload := map[string]any{
 		"root":       ws.Config.Root,
 		"provider":   ws.Config.Provider,
@@ -309,8 +233,25 @@ func runDoctorJSON() error {
 		"backend":    ws.Config.Backend,
 		"permission": ws.Config.Permission,
 		"skills":     len(skillList),
-		"tasks":      len(board.Tasks),
-		"pending":    pendingCount(ws.Config.SlmDir()),
+		"decoding": map[string]any{
+			"policy":    ws.Config.StructuredDecoding,
+			"mechanism": decoding.Mechanism,
+			"source":    decoding.Source,
+			"probed":    decoding.Probed,
+			"summary":   decoding.Summary(),
+			"support":   decoding,
+			"cached":    backends.CapabilityReport(),
+		},
+		"learning": learningStatus(ws.Config),
+		"config": map[string]any{
+			"path":           ws.Config.ConfigPath(),
+			"user_path":      ws.Config.Provenance().UserPath,
+			"config_version": config.CurrentConfigVersion,
+			"explicit_keys":  ws.Config.Diff(),
+			"warnings":       ws.Config.Provenance().Warnings,
+		},
+		"tasks":   len(board.Tasks),
+		"pending": pendingCount(ws.Config.SlmDir()),
 		"auth": map[string]any{
 			"configured": auth.Configured,
 			"required":   auth.Required,
@@ -396,6 +337,27 @@ func runDoctor() error {
 	_, embMode := retrieval.ResolveEmbedder(context.Background(), embCfg)
 	cli.KeyVal("embedding", fmt.Sprintf("%s enabled=%v model=%s endpoint=%s top_k=%d",
 		embMode, ws.Config.EmbeddingEnabled, ws.Config.EmbeddingModel, ws.Config.EmbeddingEndpoint, ws.Config.EmbeddingTopK))
+	// Which decoding mechanism a strict contract actually gets. Invisible
+	// until output quality drops, so doctor is the place to say it out loud.
+	decoding := models.DescribeDecoding(ws.Config)
+	cli.KeyVal("decoding", fmt.Sprintf("%s (policy=%s)", decoding.Summary(), ws.Config.StructuredDecoding))
+	if !decoding.Probed {
+		fmt.Println(cli.Dim("  not negotiated yet — the first run probes the endpoint"))
+	}
+	for _, line := range backends.CapabilityReport() {
+		fmt.Println(cli.Dim("  " + line))
+	}
+	learn := learningStatus(ws.Config)
+	cli.KeyVal("evolve", fmt.Sprintf("%v (%s)", learn["evolve"], learn["evolve_detail"]))
+	cli.KeyVal("memory", fmt.Sprintf("%v (%s)", learn["memory"], learn["memory_detail"]))
+	cli.KeyVal("config", fmt.Sprintf("%s — %d explicit key(s)",
+		ws.Config.ConfigPath(), len(ws.Config.Diff())))
+	if p := ws.Config.Provenance().UserPath; p != "" {
+		cli.KeyVal("user config", p)
+	}
+	for _, w := range ws.Config.Provenance().Warnings {
+		fmt.Println(cli.Warn(w))
+	}
 	if _, err := os.Stat(ws.Config.SlmDir()); err != nil {
 		fmt.Println(cli.Warn(".slmcode missing — run slmcode init"))
 	} else {
@@ -460,6 +422,51 @@ func runDoctor() error {
 		fmt.Println(cli.Success(fmt.Sprintf("readiness: %d/100 (%s)", report.Score, report.Status)))
 	}
 	return nil
+}
+
+// learningStatus reports whether the self-improvement subsystems are live and
+// how much they currently hold, so "is evolve on?" has an answer that does not
+// require reading JSONL.
+func learningStatus(cfg *config.Config) map[string]any {
+	out := map[string]any{
+		"evolve":        cfg.Evolve,
+		"deterministic": !cfg.ExploreEnabled(),
+		"memory":        cfg.Evolve && cfg.MemoryTokens > 0,
+		"memory_tokens": cfg.MemoryTokens,
+		"regressions":   cfg.RegressionChecks,
+	}
+	if !cfg.Evolve {
+		out["evolve_detail"] = "disabled — no rules, policy or memory are updated"
+		out["memory_detail"] = "disabled with evolve"
+		return out
+	}
+	explore := "exploring"
+	if !cfg.ExploreEnabled() {
+		explore = "greedy (deterministic)"
+	}
+	home, _ := os.UserHomeDir()
+	eng, err := evolve.OpenWith(cfg.Root, home, evolve.EngineOptions{ReadOnly: true})
+	if err != nil && eng == nil {
+		out["evolve_detail"] = explore + " · state unreadable: " + err.Error()
+		out["memory_detail"] = "unreadable"
+		return out
+	}
+	defer func() { _ = eng.Close() }()
+	rules, bandit, regs := eng.Rules().Count(), len(eng.Bandit().Snapshot()), eng.Regressions().Count()
+	out["rules"] = rules
+	out["policy_keys"] = bandit
+	out["regression_checks"] = regs
+	out["evolve_detail"] = fmt.Sprintf("%s · %d rules · %d policy keys · %d regression checks",
+		explore, rules, bandit, regs)
+	if mem := eng.Memory(); mem != nil {
+		eps, facts, procs := mem.Episodes().Count(), mem.Semantic().Count(), mem.Procedural().Count()
+		out["episodes"], out["facts"], out["procedures"] = eps, facts, procs
+		out["memory_detail"] = fmt.Sprintf("%d episodes · %d facts · %d procedures · %d token budget",
+			eps, facts, procs, cfg.MemoryTokens)
+	} else {
+		out["memory_detail"] = "unavailable"
+	}
+	return out
 }
 
 func printDoctorProviderProbe(check readiness.Check) {

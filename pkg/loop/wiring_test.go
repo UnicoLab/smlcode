@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -199,6 +200,101 @@ func TestPerTaskToolIsolation(t *testing.T) {
 	if ids[0] != "T1" {
 		t.Fatalf("worker call ctx task id = %q, want T1 — every parallel task would share one loop-guard bucket", ids[0])
 	}
+}
+
+// TestBatchedWaveCarriesOneTaskIDPerCall is the batched half of per-task tool
+// isolation.
+//
+// workspace.WithTaskID keys the tool layer's loop guard, and a batched call has
+// ONE ctx for N tasks — so every task in a multi-task wave landed in the shared
+// "" bucket and tripped its neighbours' loop detection. GoLangGraph's executor
+// hands the same ctx to every subagent goroutine and has no per-request hook,
+// so the loop dispatches one request per task instead.
+func TestBatchedWaveCarriesOneTaskIDPerCall(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec := &taskIDExec{}
+	r := defaultRunner(t, root, exec)
+	r.MaxRetries = 0
+	r.MaxParallel = 3
+
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Title: "Edit a", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+			Description: "update a.go", Acceptance: "a.go changed", Files: []string{"a.go"}},
+		{ID: "T2", Title: "Edit b", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+			Description: "update b.go", Acceptance: "b.go changed", Files: []string{"b.go"}},
+		{ID: "T3", Title: "Edit c", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+			Description: "update c.go", Acceptance: "c.go changed", Files: []string{"c.go"}},
+	}}
+	if err := r.RunBoard(context.Background(), board); err != nil {
+		t.Fatalf("RunBoard: %v", err)
+	}
+
+	exec.mu.Lock()
+	ids := append([]string(nil), exec.ids...)
+	exec.mu.Unlock()
+
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" {
+			t.Fatalf("a wave call carried NO task id (%v) — every task shares the loop-guard bucket", ids)
+		}
+		seen[id] = true
+	}
+	for _, want := range []string{"T1", "T2", "T3"} {
+		if !seen[want] {
+			t.Fatalf("no call carried task id %s; saw %v", want, ids)
+		}
+	}
+}
+
+// TestDispatchWavePreservesResultOrder pins the contract collectWaveResults
+// depends on: results[j] must correspond to reqs[j], however the calls were
+// scheduled.
+func TestDispatchWavePreservesResultOrder(t *testing.T) {
+	exec := &echoTaskExec{}
+	r := &Runner{Executor: exec, Log: func(string, ...interface{}) {}}
+	reqs := []ggagent.SubAgentRequest{
+		{AgentID: "worker", TaskID: "T1"},
+		{AgentID: "worker", TaskID: "T2"},
+		{AgentID: "worker", TaskID: "T3"},
+	}
+	results, err := r.dispatchWave(context.Background(), reqs)
+	if err != nil {
+		t.Fatalf("dispatchWave: %v", err)
+	}
+	if len(results) != len(reqs) {
+		t.Fatalf("got %d results for %d requests", len(results), len(reqs))
+	}
+	for i, res := range results {
+		if res.TaskID != reqs[i].TaskID {
+			t.Fatalf("results[%d].TaskID = %q, want %q", i, res.TaskID, reqs[i].TaskID)
+		}
+		if res.Output != "ctx="+reqs[i].TaskID {
+			t.Fatalf("results[%d] ran under ctx %q, want the request's own task id %q",
+				i, res.Output, reqs[i].TaskID)
+		}
+	}
+}
+
+// echoTaskExec echoes the workspace task id its ctx carried, so a mismatch
+// between request and ctx is visible in the result.
+type echoTaskExec struct{}
+
+func (echoTaskExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest,
+	_ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	out := make([]ggagent.SubAgentResult, len(reqs))
+	for i, req := range reqs {
+		out[i] = ggagent.SubAgentResult{
+			AgentID: req.AgentID, TaskID: req.TaskID,
+			Output: "ctx=" + workspace.TaskIDFrom(ctx),
+		}
+	}
+	return out, nil
 }
 
 // TestStartTaskResetsBudget covers the budget half of the per-task reset.
@@ -439,5 +535,129 @@ func TestGateStateFastPathAndRejectReason(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ── W7b: the structured sink is the ONLY sink the bridge needs ──────────────
+
+// failingExec makes the worker call fail outright.
+type failingExec struct{}
+
+func (failingExec) ExecuteSubAgents(_ context.Context, reqs []ggagent.SubAgentRequest,
+	_ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	out := make([]ggagent.SubAgentResult, len(reqs))
+	for i, req := range reqs {
+		out[i] = ggagent.SubAgentResult{
+			AgentID: req.AgentID, TaskID: req.TaskID,
+			Error: errors.New("provider refused the request"),
+		}
+	}
+	return out, errors.New("provider refused the request")
+}
+
+// bridgedEvent mirrors what pkg/orchestrator's buildRunner does with a
+// LoopEvent: it forwards Kind, Level and Data into a stream.Event. Anything
+// this conversion cannot carry never reaches the CLI.
+func bridgedEvent(ev LoopEvent) stream.Event {
+	return stream.Event{
+		Phase: "execute", Kind: ev.Kind, Level: ev.Level, Message: ev.Message,
+		TaskID: ev.TaskID, Agent: ev.Agent, Scope: ev.Scope, Output: ev.Output,
+		Data: ev.Data,
+	}
+}
+
+// TestFailingAgentReachesTheUIAsAnError drives a wave whose agent fails and
+// asserts the resulting stream.Event carries an error-class Level.
+//
+// Routing the bridge through the legacy six-string AgentEvent sink dropped
+// Level entirely, so a failed agent arrived at the CLI with Level == "" and was
+// rendered — and counted — as a success.
+func TestFailingAgentReachesTheUIAsAnError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := defaultRunner(t, root, failingExec{})
+	r.MaxRetries = 0
+
+	var mu sync.Mutex
+	var events []stream.Event
+	r.OnEventFull = func(ev LoopEvent) {
+		mu.Lock()
+		events = append(events, bridgedEvent(ev))
+		mu.Unlock()
+	}
+	board := &plan.Board{Tasks: []plan.Task{{
+		ID: "T1", Title: "Edit a", Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+		Description: "implement a.go", Acceptance: "a.go updated", Files: []string{"a.go"},
+	}}}
+	_ = r.RunBoard(context.Background(), board)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var ends int
+	var errored bool
+	for _, e := range events {
+		if e.Kind != stream.KindAgentEnd {
+			continue
+		}
+		ends++
+		if e.Level == "" {
+			t.Fatalf("agent_end reached the UI with no level: %+v", e)
+		}
+		if e.Level == stream.LevelError || e.Level == stream.LevelProblem {
+			errored = true
+		}
+	}
+	if ends == 0 {
+		t.Fatal("a failing agent must still emit agent_end")
+	}
+	if !errored {
+		t.Fatal("a failing agent must reach the UI with an error/problem level, not a success")
+	}
+}
+
+// TestTokenDeltaSurvivesTheBridge asserts the typed payload — not just the
+// message string — survives the LoopEvent → stream.Event conversion the
+// orchestrator performs. stream.Token is what pkg/cli type-asserts on to
+// render live token text and keep a running token count.
+func TestTokenDeltaSurvivesTheBridge(t *testing.T) {
+	var got []stream.Event
+	r := &Runner{OnEventFull: func(ev LoopEvent) { got = append(got, bridgedEvent(ev)) }}
+	r.TokenSink("worker", "T1")("func Add(", 7)
+
+	if len(got) != 1 {
+		t.Fatalf("emitted %d events, want 1", len(got))
+	}
+	e := got[0]
+	if e.Kind != stream.KindToken || e.Agent != "worker" || e.TaskID != "T1" {
+		t.Fatalf("token event lost its identity: %+v", e)
+	}
+	tok, ok := e.Data.(stream.Token)
+	if !ok {
+		t.Fatalf("Data is %T, want stream.Token — the CLI type-asserts on this", e.Data)
+	}
+	if tok.Delta != "func Add(" || tok.Tokens != 7 {
+		t.Fatalf("token payload = %+v, want {func Add( 7}", tok)
+	}
+	if e.Level == "" {
+		t.Fatal("every event must carry a level")
+	}
+}
+
+// TestOnlyOneSinkIsInstalledByTheBridge documents why the orchestrator must set
+// OnEventFull ALONE: fireEvent mirrors to the legacy sink too, so installing
+// both would emit every event twice.
+func TestOnlyOneSinkIsInstalledByTheBridge(t *testing.T) {
+	var full, legacy int
+	r := &Runner{OnEventFull: func(LoopEvent) { full++ }}
+	r.fire(stream.KindAgentEnd, "worker", "T1", "worker finished", "", "")
+	if full != 1 || legacy != 0 {
+		t.Fatalf("full=%d legacy=%d, want 1 and 0", full, legacy)
+	}
+	r.OnEvent = func(string, string, string, string, string, string) { legacy++ }
+	r.fire(stream.KindAgentEnd, "worker", "T1", "worker finished", "", "")
+	if full != 2 || legacy != 1 {
+		t.Fatalf("with both sinks set every event is delivered twice: full=%d legacy=%d", full, legacy)
 	}
 }

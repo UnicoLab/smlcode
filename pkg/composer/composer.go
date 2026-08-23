@@ -42,10 +42,36 @@ type PhaseChoice struct {
 	// Agent overrides the phase's default specialist (team selection).
 	Agent string `json:"agent,omitempty"`
 	// Enabled turns the phase on/off. Structural phases are always on.
+	//
+	// LISTING A PHASE MEANS ENABLING IT. A composer that emits
+	// {"id":"plan"} with no "enabled" key gets Enabled=true — see
+	// UnmarshalJSON. Omitting a field is the single most common SLM JSON
+	// slip, and Go's zero value made it mean "disabled": Apply then set
+	// When=never and the run fell through to fallbackTasks with planning and
+	// splitting silently dead. Only an EXPLICIT {"enabled":false} disables.
 	Enabled bool `json:"enabled"`
 	// When optionally forces always|auto|never. When empty, enabling a phase
 	// preserves the built-in heuristic (auto) or default (always).
 	When string `json:"when,omitempty"`
+}
+
+// UnmarshalJSON decodes a phase choice, defaulting a MISSING "enabled" key to
+// true.
+//
+// The field stays a plain bool (rather than *bool) on purpose: it is read by
+// pkg/orchestrator and mirrored into pkg/plan, and a pointer would push a
+// nil-check into every consumer for a default that belongs at the parse
+// boundary. Presence, not value, is what the decoder has to observe — and only
+// a custom unmarshaler can see it.
+func (p *PhaseChoice) UnmarshalJSON(data []byte) error {
+	type phaseChoiceAlias PhaseChoice
+	// The default applies to the whole object; an explicit "enabled" overwrites it.
+	tmp := phaseChoiceAlias{Enabled: true}
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*p = PhaseChoice(tmp)
+	return nil
 }
 
 // ExecuteChoice configures the board execute loop.

@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -360,6 +361,16 @@ type Factory struct {
 	// go-tester / go-worker straight from the blocks registry.
 	ExtraCustoms []CustomSpec
 	FastModel    string // optional faster model for lightweight agents
+	// preferFast holds PER-ROLE overrides of the fast-model decision, set by
+	// SetPreferFast. Without one, EffectiveModel falls back to the built-in
+	// isLightAgent classification — which is a decision about a whole CLASS of
+	// agents and therefore forced the orchestrator's DecRoleModel bandit arm to
+	// be a per-RUN choice over the entire light set. With one, the arm can be
+	// pulled per role.
+	preferFast map[string]bool
+	// mu guards preferFast only. Everything else on Factory is written once at
+	// construction; the per-role overrides are written between waves.
+	mu sync.RWMutex
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
 	ModelProfiles map[string]config.ModelProfile
@@ -374,7 +385,9 @@ func NewFactory(llmManager *llm.ProviderManager, toolReg *tools.ToolRegistry, mo
 	return &Factory{LLM: llmManager, Tools: toolReg, Model: model, Provider: provider}
 }
 
-// EffectiveModel returns the model an agent will use (per-agent override → fast model for light agents → global).
+// EffectiveModel returns the model an agent will use:
+// per-agent override → per-ROLE fast preference → fast model for light agents
+// → global.
 func (f *Factory) EffectiveModel(spec RoleSpec) string {
 	if strings.TrimSpace(spec.Model) != "" {
 		return strings.TrimSpace(spec.Model)
@@ -382,7 +395,16 @@ func (f *Factory) EffectiveModel(spec RoleSpec) string {
 	if f == nil {
 		return ""
 	}
-	// Use fast model for lightweight agents that don't need deep reasoning
+	if fast, ok := f.PreferFast(spec.ID); ok {
+		// An explicit per-role decision wins over the class heuristic in BOTH
+		// directions: fast=false pins a light agent to the main model, and
+		// fast=true puts a heavy one on the fast model.
+		if fast && f.FastModel != "" {
+			return f.FastModel
+		}
+		return f.Model
+	}
+	// Default: the fast model for lightweight agents that don't need deep reasoning.
 	if f.FastModel != "" && isLightAgent(spec.ID) {
 		return f.FastModel
 	}
@@ -391,6 +413,63 @@ func (f *Factory) EffectiveModel(spec RoleSpec) string {
 
 // SetFastModel sets the model for lightweight agents.
 func (f *Factory) SetFastModel(m string) { f.FastModel = m }
+
+// SetPreferFast records a PER-ROLE decision about the fast model, overriding
+// the built-in light/heavy classification for that role alone.
+//
+// The orchestrator's DecRoleModel bandit used to be able to express only
+// "every light agent on the fast model this run" or "none of them", because
+// the only lever was Factory.FastModel — a single shared field whose meaning
+// was decided by isLightAgent(spec.ID). Per-role overrides make the arm a real
+// per-role choice while leaving every unset role on the previous behavior.
+//
+// Roles are matched case-insensitively. Agents resolve their model at
+// construction time, so set this BEFORE building the agents for a wave.
+func (f *Factory) SetPreferFast(role string, fast bool) {
+	if f == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.preferFast == nil {
+		f.preferFast = map[string]bool{}
+	}
+	f.preferFast[role] = fast
+}
+
+// ClearPreferFast drops one role's override (empty role drops all of them),
+// restoring the default light/heavy classification.
+func (f *Factory) ClearPreferFast(role string) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		f.preferFast = nil
+		return
+	}
+	delete(f.preferFast, role)
+}
+
+// PreferFast reports a role's override and whether one is set.
+func (f *Factory) PreferFast(role string) (fast, ok bool) {
+	if f == nil {
+		return false, false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if len(f.preferFast) == 0 {
+		return false, false
+	}
+	fast, ok = f.preferFast[strings.ToLower(strings.TrimSpace(role))]
+	return fast, ok
+}
 
 var lightAgents = map[string]bool{
 	"reviewer": true, "coordinator": true, "splitter": true, "planner": true,

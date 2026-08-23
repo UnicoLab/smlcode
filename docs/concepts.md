@@ -173,7 +173,7 @@ Tomorrow's run starts smarter than today's. That's the product.
 |------|----------|
 | `auto` | You trust the loop (or it's a playground) 🛝 |
 | `dry-run` | Demos, CI dry checks, “what would you do?” 🎭 |
-| `review` | Real repos — stage patches, then `slmcode apply` 👀 |
+| `review` | Real repos — stage patches, then `slmcode apply` (interactive) or `slmcode reject` 👀 |
 
 Shell is separate: `shell_permission: allow | ask | deny`.
 Files and shells have different blast radii. Treat them that way.
@@ -184,7 +184,7 @@ Files and shells have different blast radii. Treat them that way.
 
 Providers are adapters. The harness stays constant.
 
-- 🏠 Local SLM → more `think_passes`, smaller `max_context_kb`, patience
+- 🏠 Local SLM → more `think_passes`, a correct `model_profiles.<family>.context_limit`, patience
 - ☁️ Frontier → raise parallel, enjoy speed, keep inspectability
 
 See [Providers](providers.md) and [Config](config.md).

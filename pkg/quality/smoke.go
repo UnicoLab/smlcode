@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,48 +23,9 @@ type SmokeResult struct {
 	Summary string
 }
 
-// Section markers embedded into task output for review gates.
-const (
-	SmokeSectionHeader      = "## Deterministic smoke"
-	AcceptanceSectionHeader = "## Acceptance smoke"
-	SmokeFailedMarker       = "FAILED"
-	SmokePassedMarker       = "PASSED"
-)
-
-// AutoFixFormatting runs language-appropriate auto-formatters and returns
-// a summary of what was fixed. Does NOT require an LLM.
-func AutoFixFormatting(root string) string {
-	var fixed []string
-	// Go: gofmt
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-		cmd := exec.Command("gofmt", "-w", ".")
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err == nil {
-			if strings.TrimSpace(string(out)) != "" {
-				fixed = append(fixed, "gofmt: "+strings.TrimSpace(string(out)))
-			}
-		}
-		// Also run goimports if available
-		if _, err := exec.LookPath("goimports"); err == nil {
-			cmd2 := exec.Command("goimports", "-w", ".")
-			cmd2.Dir = root
-			_, _ = cmd2.CombinedOutput() // best effort; goimports failures don't block the format pass
-		}
-	}
-	// Python: ruff format
-	if _, err := os.Stat(filepath.Join(root, "pyproject.toml")); err == nil {
-		if _, err := exec.LookPath("ruff"); err == nil {
-			cmd := exec.Command("ruff", "format", ".")
-			cmd.Dir = root
-			if out, err := cmd.CombinedOutput(); err == nil {
-				fixed = append(fixed, "ruff format: ok")
-			} else {
-				_ = out
-			}
-		}
-	}
-	return strings.Join(fixed, "; ")
-}
+// Section markers embedded into task output for review gates live in
+// sections.go — one definition shared by the formatters, the strip lists and
+// the review gates.
 
 // ShouldSmokeTask reports whether a task should get post-worker Go smoke.
 func ShouldSmokeTask(t plan.Task) bool {
@@ -474,15 +434,37 @@ func acceptanceToken(tok string) bool {
 }
 
 // RunAcceptanceSmoke runs whitelisted acceptance commands; first failure wins.
+//
+// Dependency bootstrap defaults to BootstrapAsk, i.e. NOTHING is installed:
+// this path used to run `pip install -r requirements.txt` / `npm install`
+// unattended against a manifest the worker may have written moments earlier.
+// Use RunAcceptanceSmokeWithPolicy to opt a trusted caller into auto-install.
 func RunAcceptanceSmoke(ctx context.Context, root, acceptance string, timeout time.Duration) SmokeResult {
+	return RunAcceptanceSmokeWithPolicy(ctx, root, acceptance, timeout, BootstrapAsk)
+}
+
+// RunAcceptanceSmokeWithPolicy is RunAcceptanceSmoke with an explicit
+// dependency-bootstrap policy. A pending (ask) or refused (off) bootstrap is
+// reported in the result summary rather than silently skipped, so a failure
+// caused by missing dependencies is diagnosable.
+func RunAcceptanceSmokeWithPolicy(ctx context.Context, root, acceptance string,
+	timeout time.Duration, policy BootstrapPolicy) SmokeResult {
 	cmds := ExtractAcceptanceCommands(acceptance)
 	if len(cmds) == 0 {
 		return SmokeResult{OK: true, Ran: false, Summary: "no acceptance commands"}
 	}
 	var combined strings.Builder
+	pending := ""
 	for i, cmd := range cmds {
-		if boot := BootstrapDeps(root, cmd); boot != "" && i == 0 {
-			_ = RunSmoke(ctx, root, boot, timeout) // best-effort install
+		if i == 0 {
+			if bp := PlanBootstrap(root, cmd, policy); bp.Command != "" || bp.Reason != "" {
+				switch {
+				case bp.Run:
+					_ = RunSmoke(ctx, root, bp.Command, timeout) // approved by policy
+				case bp.Reason != "":
+					pending = bp.Reason
+				}
+			}
 		}
 		sr := RunSmoke(ctx, root, cmd, timeout)
 		if combined.Len() > 0 {
@@ -492,15 +474,22 @@ func RunAcceptanceSmoke(ctx context.Context, root, acceptance string, timeout ti
 		if !sr.OK {
 			sr.Output = combined.String()
 			sr.Summary = fmt.Sprintf("%s: acceptance %s", SmokeFailedMarker, cmd)
+			if pending != "" {
+				sr.Summary += " [" + pending + "]"
+			}
 			return sr
 		}
 	}
-	return SmokeResult{
+	out := SmokeResult{
 		OK: true, Ran: true,
 		Command: strings.Join(cmds, " && "),
 		Output:  combined.String(),
 		Summary: SmokePassedMarker + ": acceptance",
 	}
+	if pending != "" {
+		out.Summary += " [" + pending + "]"
+	}
+	return out
 }
 
 // FormatAcceptanceSection renders acceptance smoke for task output / review gates.
@@ -521,7 +510,7 @@ func FormatAcceptanceSection(sr SmokeResult) string {
 	b.WriteString(sr.Command)
 	b.WriteString("\n")
 	if strings.TrimSpace(sr.Output) != "" {
-		b.WriteString(truncate(sr.Output, 2000))
+		b.WriteString(sectionOutput(sr))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -535,33 +524,6 @@ func AcceptanceFailedInOutput(output string) bool {
 	}
 	rest := output[idx:]
 	return strings.Contains(rest, SmokeFailedMarker)
-}
-
-// BootstrapDeps returns a dependency-install command to run before QA, or "".
-func BootstrapDeps(root, cmd string) string {
-	if root == "" {
-		return ""
-	}
-	lower := strings.ToLower(cmd)
-	switch {
-	case strings.Contains(lower, "pytest") || strings.Contains(lower, "python"):
-		if fileExists(filepath.Join(root, "uv.lock")) {
-			return "uv sync"
-		}
-		if fileExists(filepath.Join(root, "requirements.txt")) {
-			return "python -m pip install -q -r requirements.txt"
-		}
-		if fileExists(filepath.Join(root, "pyproject.toml")) {
-			return "python -m pip install -q -e ."
-		}
-	case strings.Contains(lower, "go test"):
-		return "go mod tidy"
-	case strings.Contains(lower, "npm"):
-		if fileExists(filepath.Join(root, "package.json")) && !dirExists(filepath.Join(root, "node_modules")) {
-			return "npm install --no-fund --no-audit"
-		}
-	}
-	return ""
 }
 
 // RunSmoke executes command in root and returns a structured result.
@@ -600,7 +562,7 @@ func FormatSmokeSection(sr SmokeResult) string {
 	b.WriteString(sr.Command)
 	b.WriteString("\n")
 	if strings.TrimSpace(sr.Output) != "" {
-		b.WriteString(truncate(sr.Output, 2000))
+		b.WriteString(sectionOutput(sr))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -642,9 +604,17 @@ func runCommand(ctx context.Context, root, command string, timeout time.Duration
 		timeout = 8 * time.Minute
 	}
 	res := workspace.RunBounded(ctx, root, command, timeout, 128*1024)
+	// Head-only truncation used to throw away the END of the output — which is
+	// where pytest's FAILURES summary, go test's FAIL lines and tsc/cargo's
+	// error summary all live. Failing output additionally gets its failure
+	// lines pinned to the top so they survive any further head-only cut made
+	// downstream (the QA gate still truncates this text into a corrector
+	// prompt).
 	out := res.Output
-	if len(out) > 20_000 {
-		out = out[:20_000] + "\n...[truncated]"
+	if res.TimedOut || res.Err != nil {
+		out = FailureExcerpt(out, MaxSmokeOutput)
+	} else {
+		out = TruncateOutput(out, MaxSmokeOutput)
 	}
 	if res.TimedOut {
 		return out, fmt.Errorf("command timed out after %s and its process group was killed: %s",
@@ -881,10 +851,15 @@ func firstLine(s string) string {
 	return s
 }
 
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
+// sectionOutput renders a command's output for a prompt section.
+//
+// A FAILING command gets its failure lines pinned to the top: this text is what
+// the reviewer and the corrector read, and head-only truncation routinely cut
+// the assertion off the bottom.
+func sectionOutput(sr SmokeResult) string {
+	out := strings.TrimSpace(sr.Output)
+	if sr.OK {
+		return TruncateOutput(out, MaxSectionOutput)
 	}
-	return s[:n] + "…"
+	return FailureExcerpt(out, MaxSectionOutput)
 }

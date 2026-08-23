@@ -1,0 +1,58 @@
+{
+  "id": "edit-format-fallback-py",
+  "query": "Add a retry decorator to client.py",
+  "language": "python",
+  "model": "qwen2.5-coder:7b",
+  "edit_format": "diff",
+  "task_passed": true,
+  "steps": [
+    {
+      "kind": "assistant"
+    },
+    {
+      "kind": "tool",
+      "tool": "ws_read",
+      "args": "{\"path\":\"client.py\"}",
+      "ok": true
+    },
+    {
+      "kind": "tool",
+      "tool": "ws_patch",
+      "ok": false,
+      "edit_attempt": true,
+      "args": "{\"path\":\"client.py\",\"diff\":\"@@ -1,4 +1,9 @@\\n-def fetch(url):\\n+def fetch(url, retries=3):\\n\"}",
+      "error": "hunk failed to apply: context does not match at line 1",
+      "fixed_args": "{\"path\":\"client.py\",\"old_str\":\"def fetch(url):\",\"new_str\":\"def fetch(url, retries=3):\"}"
+    },
+    {
+      "kind": "assistant"
+    },
+    {
+      "kind": "tool",
+      "tool": "ws_patch",
+      "ok": false,
+      "edit_attempt": true,
+      "args": "{\"path\":\"client.py\",\"diff\":\"@@ -1,4 +1,9 @@\\n-def fetch(url):\\n+def fetch(url, retries=3):\\n\"}",
+      "error": "hunk failed to apply: context does not match at line 1"
+    },
+    {
+      "kind": "assistant"
+    },
+    {
+      "kind": "tool",
+      "tool": "ws_edit",
+      "ok": true,
+      "edit_attempt": true,
+      "args": "{\"path\":\"client.py\",\"old_str\":\"def fetch(url):\",\"new_str\":\"def fetch(url, retries=3):\"}"
+    },
+    {
+      "kind": "tool",
+      "tool": "ws_shell",
+      "args": "{\"command\":\"python -m pytest -q\"}",
+      "ok": true
+    },
+    {
+      "kind": "assistant"
+    }
+  ]
+}

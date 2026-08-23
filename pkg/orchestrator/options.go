@@ -9,46 +9,44 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 )
 
-// Knobs this layer needs that pkg/config does not carry yet.
+// Per-run knobs.
 //
-// pkg/config is owned by another agent, so every knob below resolves from an
-// environment variable with a documented default. Each one is listed in the
-// hand-off report with the config field name, type and default it should
-// become; when the field lands, replace the body of the accessor with the
-// config read and keep the env var as an override.
+// Each accessor below resolves in one direction: config field first (which
+// already carries the full defaults → user file → project file → env → flag
+// chain from pkg/config), then the legacy SLMCODE_* variable as a last-resort
+// override for the handful of names that predate the config fields. Keeping
+// the env var live means a script or CI job that set one before these fields
+// existed still works.
 const (
-	envArchitectEditor = "SLMCODE_ARCHITECT_EDITOR" // architect_editor bool, default false
-	envEvolve          = "SLMCODE_EVOLVE"           // evolve bool, default true
-	envDeterministic   = "SLMCODE_DETERMINISTIC"    // deterministic bool, default false
+	envArchitectEditor = "SLMCODE_ARCHITECT_EDITOR"
+	envEvolve          = "SLMCODE_EVOLVE"
+	envDeterministic   = "SLMCODE_DETERMINISTIC"
 	//nolint:gosec // G101 false positive: an env var NAME, not a credential.
-	envMemoryTokens       = "SLMCODE_MEMORY_TOKENS"        // memory_tokens int, default 300
-	envMaxTaskCalls       = "SLMCODE_MAX_TASK_CALLS"       // max_task_calls int, default 6
-	envReadWindowLines    = "SLMCODE_READ_WINDOW_LINES"    // read_window_lines int, default 0 (tool default)
-	envMaxToolChars       = "SLMCODE_MAX_TOOL_CHARS"       // max_tool_chars int, default 0 (tool default)
-	envShellTimeout       = "SLMCODE_SHELL_TIMEOUT"        // shell_timeout duration, default 0 (tool default)
-	envDisableSyntaxCheck = "SLMCODE_DISABLE_SYNTAX_CHECK" // disable_syntax_check bool, default false
+	envMemoryTokens       = "SLMCODE_MEMORY_TOKENS"
+	envMaxTaskCalls       = "SLMCODE_MAX_TASK_CALLS"
+	envReadWindowLines    = "SLMCODE_READ_WINDOW_LINES"
+	envMaxToolChars       = "SLMCODE_MAX_TOOL_CHARS"
+	envShellTimeout       = "SLMCODE_SHELL_TIMEOUT"
+	envDisableSyntaxCheck = "SLMCODE_DISABLE_SYNTAX_CHECK"
 	envPlanApproveTimeout = "SLMCODE_PLAN_APPROVE_ON_TIMEOUT"
-	envEscalateTimeout    = "SLMCODE_ESCALATE_ASK_TIMEOUT" // escalate_ask_timeout duration
-	envRegressionChecks   = "SLMCODE_REGRESSION_CHECKS"    // regression_checks bool, default true
+	envEscalateTimeout    = "SLMCODE_ESCALATE_ASK_TIMEOUT"
+	envRegressionChecks   = "SLMCODE_REGRESSION_CHECKS"
+	envQABootstrap        = "SLMCODE_QA_BOOTSTRAP"
+	envStructuredDecoding = "SLMCODE_STRUCTURED_DECODING"
 )
 
-// DefaultEscalateAskTimeout is this layer's floor for the escalate HITL wait.
-//
-// pkg/config ships 30s, which is far too short for a mode literally named
-// "ask": a human has to notice the prompt, read the task and choose. Every
-// expiry costs an extra LLM call in escalateTimeoutDecide, so a short timeout
-// is not even cheap. 5 minutes matches plan_approve/clarify.
-const DefaultEscalateAskTimeout = 5 * time.Minute
-
-// DefaultQAGateRounds is the round count the repair loop needs to be reachable.
-// pkg/config ships 1, which makes round==max true on the first iteration.
-const DefaultQAGateRounds = 3
-
-// DefaultMemoryTokens is the budget for the injected memory block.
-const DefaultMemoryTokens = 300
-
-// DefaultMaxTaskCalls is the per-task LLM call budget handed to loop.Runner.
-const DefaultMaxTaskCalls = 6
+// Defaults re-exported from pkg/config so callers in this package keep a single
+// spelling. The values themselves live with the config field they belong to.
+const (
+	// DefaultEscalateAskTimeout is the escalate HITL wait.
+	DefaultEscalateAskTimeout = config.DefaultEscalateAskTimeout
+	// DefaultQAGateRounds is the round count the repair loop needs to be reachable.
+	DefaultQAGateRounds = config.DefaultQAGateRounds
+	// DefaultMemoryTokens is the budget for the injected memory block.
+	DefaultMemoryTokens = config.DefaultMemoryTokens
+	// DefaultMaxTaskCalls is the per-task LLM call budget handed to loop.Runner.
+	DefaultMaxTaskCalls = config.DefaultMaxTaskCalls
+)
 
 func envBool(name string, def bool) bool {
 	v := strings.TrimSpace(os.Getenv(name))
@@ -86,30 +84,40 @@ func envDuration(name string, def time.Duration) time.Duration {
 	return d
 }
 
+// cfg returns the orchestrator's config, or a defaulted one when the
+// orchestrator was built without it (tests, embedders).
+func (o *Orchestrator) conf() *config.Config {
+	if o != nil && o.cfg != nil {
+		return o.cfg
+	}
+	return config.Default("")
+}
+
 // architectEditorEnabled reports whether the describer→editor pipeline runs.
 // Off by default: it doubles the LLM calls for a task and only pays off when
 // the two halves are pointed at different models.
 func (o *Orchestrator) architectEditorEnabled() bool {
-	return envBool(envArchitectEditor, false)
+	return envBool(envArchitectEditor, o.conf().ArchitectEditor)
 }
 
 // evolveEnabled reports whether the self-improvement engine is opened.
 func (o *Orchestrator) evolveEnabled() bool {
-	return envBool(envEvolve, true)
+	return envBool(envEvolve, o.conf().Evolve)
 }
 
 // deterministicMode disables bandit exploration (CI, --no-explore).
 // DryRun implies it: a dry run must not move the policy.
 func (o *Orchestrator) deterministicMode() bool {
-	if o != nil && o.cfg != nil && o.cfg.DryRun {
+	c := o.conf()
+	if c.DryRun {
 		return true
 	}
-	return envBool(envDeterministic, false)
+	return envBool(envDeterministic, c.Deterministic)
 }
 
 // memoryTokens is the token budget for the injected memory block.
 func (o *Orchestrator) memoryTokens() int {
-	if n := envInt(envMemoryTokens, DefaultMemoryTokens); n > 0 {
+	if n := envInt(envMemoryTokens, o.conf().MemoryTokens); n > 0 {
 		return n
 	}
 	return DefaultMemoryTokens
@@ -117,7 +125,7 @@ func (o *Orchestrator) memoryTokens() int {
 
 // maxTaskCalls is the per-task LLM call budget.
 func (o *Orchestrator) maxTaskCalls() int {
-	if n := envInt(envMaxTaskCalls, DefaultMaxTaskCalls); n > 0 {
+	if n := envInt(envMaxTaskCalls, o.conf().MaxTaskCalls); n > 0 {
 		return n
 	}
 	return DefaultMaxTaskCalls
@@ -126,60 +134,88 @@ func (o *Orchestrator) maxTaskCalls() int {
 // regressionChecksEnabled reports whether stored regression checks are replayed
 // around the QA gate.
 func (o *Orchestrator) regressionChecksEnabled() bool {
-	return envBool(envRegressionChecks, true)
+	return envBool(envRegressionChecks, o.conf().RegressionChecks)
+}
+
+// syntaxCheckDisabled reports whether post-edit syntax verification is off.
+func (o *Orchestrator) syntaxCheckDisabled() bool {
+	return envBool(envDisableSyntaxCheck, o.conf().DisableSyntaxCheck)
+}
+
+// readWindowLines is the ws_read window size (0 = the tool's own default).
+func (o *Orchestrator) readWindowLines() int {
+	return envInt(envReadWindowLines, o.conf().ReadWindowLines)
+}
+
+// maxToolChars caps a tool result (0 = the tool's own default).
+func (o *Orchestrator) maxToolChars() int {
+	return envInt(envMaxToolChars, o.conf().MaxToolChars)
+}
+
+// shellTimeout is the ws_shell per-command timeout (0 = the tool's default).
+func (o *Orchestrator) shellTimeout() time.Duration {
+	return envDuration(envShellTimeout, o.conf().ShellTimeout)
+}
+
+// StructuredDecoding reports the constrained-decoding policy (auto | off).
+//
+// "off" pins every role to prompt-only JSON; "auto" lets pkg/backends
+// negotiate the strongest mechanism the endpoint confirms (json_schema,
+// guided_json, GBNF). Exported because the enforcement point lives in
+// pkg/backends' capability negotiation, not in this package.
+func (o *Orchestrator) StructuredDecoding() string {
+	v := strings.TrimSpace(os.Getenv(envStructuredDecoding))
+	if v == "" {
+		return config.NormalizeStructuredDecoding(o.conf().StructuredDecoding)
+	}
+	return config.NormalizeStructuredDecoding(v)
+}
+
+// QABootstrapMode reports whether the QA gate may run dependency installers
+// against agent-authored manifests (off | ask | auto). Exported because the
+// gate that consumes it lives in pkg/quality.
+func (o *Orchestrator) QABootstrapMode() string {
+	v := strings.TrimSpace(os.Getenv(envQABootstrap))
+	if v == "" {
+		return config.NormalizeQABootstrap(o.conf().QABootstrap)
+	}
+	return config.NormalizeQABootstrap(v)
 }
 
 // escalateAskTimeout is the escalate HITL wait.
-//
-// config ships 30s, which is far too short for a mode literally named "ask":
-// a human has to notice the prompt, read the task and choose, and every expiry
-// costs an extra LLM call in escalateTimeoutDecide. So an UNSET value — zero,
-// or exactly the shipped default, which are indistinguishable after
-// config.Normalize — is raised to DefaultEscalateAskTimeout. Any other value
-// is a deliberate choice and is honored exactly, including a shorter one.
 func (o *Orchestrator) escalateAskTimeout() time.Duration {
-	d := DefaultEscalateAskTimeout
-	if o != nil && o.cfg != nil {
-		switch cur := o.cfg.EscalateAskTimeout; {
-		case cur <= 0, cur == config.DefaultEscalateAskTimeout:
-			// unset / shipped default → raise
-		default:
-			d = cur
-		}
+	d := o.conf().EscalateAskTimeout
+	if d <= 0 {
+		d = DefaultEscalateAskTimeout
 	}
 	return envDuration(envEscalateTimeout, d)
 }
 
-// qaGateRounds is the QA gate round budget, floored at DefaultQAGateRounds so
-// the diagnose/fix pass is reachable under the shipped config default of 1.
+// qaGateRounds is the QA gate round budget. Below 2 the diagnose/fix pass is
+// unreachable (the loop compares round == max on entry), so a stored 1 — which
+// every project written before the default changed still carries — is raised.
 func (o *Orchestrator) qaGateRounds() int {
-	if o == nil || o.cfg == nil {
-		return DefaultQAGateRounds
-	}
-	if o.cfg.QAGateMaxRounds > DefaultQAGateRounds {
-		return o.cfg.QAGateMaxRounds
+	if n := o.conf().QAGateMaxRounds; n > DefaultQAGateRounds {
+		return n
 	}
 	return DefaultQAGateRounds
 }
 
-// PlanApproveOnTimeout values.
+// PlanApproveOnTimeout values, re-exported from pkg/config.
 const (
 	// PlanTimeoutApprove auto-approves when nobody answers (legacy default).
-	PlanTimeoutApprove = "approve"
+	PlanTimeoutApprove = config.PlanTimeoutApprove
 	// PlanTimeoutReject stops before execute when nobody answers.
-	PlanTimeoutReject = "reject"
+	PlanTimeoutReject = config.PlanTimeoutReject
 	// PlanTimeoutAuto approves only when NO subscriber was attached — i.e. when
 	// there was no UI that could have answered. This is the default.
-	PlanTimeoutAuto = "auto"
+	PlanTimeoutAuto = config.PlanTimeoutAuto
 )
 
 // planApproveOnTimeout resolves the on-timeout policy for the plan gate.
 func (o *Orchestrator) planApproveOnTimeout() string {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(envPlanApproveTimeout)))
-	switch v {
-	case PlanTimeoutApprove, PlanTimeoutReject, PlanTimeoutAuto:
-		return v
-	default:
-		return PlanTimeoutAuto
+	if v := strings.TrimSpace(os.Getenv(envPlanApproveTimeout)); v != "" {
+		return config.NormalizePlanApproveOnTimeout(v)
 	}
+	return config.NormalizePlanApproveOnTimeout(o.conf().PlanApproveOnTimeout)
 }

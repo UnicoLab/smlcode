@@ -36,7 +36,7 @@ slmcode init
 slmcode blocks apply python  # apply Python pipeline + quality pack
 slmcode config set permission review
 slmcode run -v "Add input validation to the login handler"
-slmcode apply          # when the staged patches look sane
+slmcode apply          # interactive per-file review; --all applies everything
 slmcode diff
 slmcode commit -m "slmcode: validate login input"
 ```

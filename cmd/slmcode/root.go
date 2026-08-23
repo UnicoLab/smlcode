@@ -42,6 +42,15 @@ var (
 	flagListen      string
 	flagNoBanner    bool
 	flagGateTimeout string
+
+	// Self-improvement / budget overrides. These mirror config keys of the
+	// same name; a flag is the top of the precedence chain.
+	flagNoExplore          bool
+	flagEvolve             bool
+	flagNoEvolve           bool
+	flagMaxTaskCalls       int
+	flagArchitectEditor    bool
+	flagStructuredDecoding string
 )
 
 func main() {
@@ -130,6 +139,18 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 	root.PersistentFlags().BoolVar(&flagNoBanner, "no-banner", false, "hide ASCII banner on help")
 	root.PersistentFlags().StringVar(&flagGateTimeout, "on-gate-timeout", "stop",
 		"approve|reject|stop — what a HITL gate does with no TTY attached")
+	root.PersistentFlags().BoolVar(&flagNoExplore, "no-explore", false,
+		"greedy bandit, no exploration — reproducible runs (config: deterministic)")
+	root.PersistentFlags().BoolVar(&flagEvolve, "evolve", false,
+		"force the self-improvement engine on (memory, repair rules, bandit)")
+	root.PersistentFlags().BoolVar(&flagNoEvolve, "no-evolve", false,
+		"disable the self-improvement engine for this run")
+	root.PersistentFlags().IntVar(&flagMaxTaskCalls, "max-task-calls", 0,
+		"per-task LLM call budget (config: max_task_calls)")
+	root.PersistentFlags().BoolVar(&flagArchitectEditor, "architect-editor", false,
+		"enable the describer→editor role pair (config: architect_editor)")
+	root.PersistentFlags().StringVar(&flagStructuredDecoding, "structured-decoding", "",
+		"auto|off — constrained decoding policy (config: structured_decoding)")
 
 	groupRun := &cobra.Group{ID: "run", Title: "Run & steer:"}
 	groupReview := &cobra.Group{ID: "review", Title: "Review changes:"}
@@ -149,7 +170,8 @@ and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachabl
 	all = append(all, inGroup("review", applyCmd(), rejectCmd(), diffCmd(), commitCmd())...)
 	all = append(all, inGroup("config", configCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
-		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(), versionCmd())...)
+		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
+		memoryCmd(), evolveCmd(), metricsCmd(), versionCmd())...)
 	all = append(all, completionCmd())
 	root.AddCommand(all...)
 
@@ -281,12 +303,14 @@ func quietRebuild(h *harness.Harness) error {
 }
 
 func applyFlags(c *config.Config) {
+	// The defaults → user file → project file → env chain is resolved by
+	// config.Load; this function only adds the top layer, the flags.
 	// Endpoint provenance: --provider must not clobber an endpoint the user
 	// pinned via flag, env, or an explicit non-default config value.
-	// User layer first (lowest precedence above defaults), so a project value,
-	// an env var or a flag still wins.
-	if _, unknown := applyUserConfigLayer(c, c.SlmDir()); len(unknown) > 0 && cli.CurrentLogLevel() >= cli.LogWarn {
-		fmt.Fprintln(os.Stderr, cli.Warn("user config: ignoring unknown keys "+strings.Join(unknown, ", ")))
+	for _, w := range c.Provenance().Warnings {
+		if cli.CurrentLogLevel() >= cli.LogWarn {
+			fmt.Fprintln(os.Stderr, cli.Warn(w))
+		}
 	}
 
 	fileEndpoint := strings.TrimSpace(c.Endpoint)
@@ -333,6 +357,25 @@ func applyFlags(c *config.Config) {
 	if flagThink > 0 {
 		c.ThinkPasses = flagThink
 	}
+	if flagNoExplore {
+		c.Deterministic = true
+	}
+	switch {
+	case flagNoEvolve:
+		c.Evolve = false
+	case flagEvolve:
+		c.Evolve = true
+	}
+	if flagMaxTaskCalls > 0 {
+		c.MaxTaskCalls = flagMaxTaskCalls
+	}
+	if flagArchitectEditor {
+		c.ArchitectEditor = true
+	}
+	if v := strings.TrimSpace(flagStructuredDecoding); v != "" {
+		c.StructuredDecoding = config.NormalizeStructuredDecoding(v)
+	}
+	markFlagOrigins(c)
 	c.ResolveAPIKey()
 }
 

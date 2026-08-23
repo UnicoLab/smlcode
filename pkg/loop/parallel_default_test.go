@@ -643,13 +643,32 @@ func TestStripPostSectionsRemovesEveryHarnessSection(t *testing.T) {
 	}
 }
 
+// TestStripPostSectionHeadersMatchQuality guards the emitted-vs-expected
+// contract. The literals that used to live in this package are gone (the
+// constants now alias pkg/quality's), so what is left to guard is that the
+// formatters still emit what the shared list strips — and that the strip list
+// covers every section this loop can append.
 func TestStripPostSectionHeadersMatchQuality(t *testing.T) {
-	// Guards the duplication of the two headers pkg/quality does not export.
 	if got := quality.FormatStaticSection([]quality.StaticIssue{{Path: "a.go", Reason: "stub"}}); !strings.Contains(got, staticGateHeader) {
 		t.Fatalf("staticGateHeader drifted from quality.FormatStaticSection: %q", got)
 	}
 	if got := quality.FormatClaimsSection([]quality.ClaimIssue{{Path: "b.go", Reason: "missing"}}); !strings.Contains(got, claimsGateHeader) {
 		t.Fatalf("claimsGateHeader drifted from quality.FormatClaimsSection: %q", got)
+	}
+	for _, header := range []string{
+		diskEvidenceHeader, quality.SmokeSectionHeader, quality.AcceptanceSectionHeader,
+		staticGateHeader, claimsGateHeader,
+	} {
+		found := false
+		for _, h := range harnessSectionHeaders {
+			if h == header {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%q is not in the shared strip list — its section would stay glued to the answer", header)
+		}
 	}
 }
 

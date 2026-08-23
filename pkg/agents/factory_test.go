@@ -207,3 +207,84 @@ func TestDefinitionResolvesProfilePerAgentModel(t *testing.T) {
 		t.Fatalf("inherit max_tokens=%d want 4096", cfg2.MaxTokens)
 	}
 }
+
+// TestSetPreferFastIsPerRole covers the per-role fast-model override.
+//
+// EffectiveModel keyed the fast model off isLightAgent(spec.ID) alone, so the
+// orchestrator's DecRoleModel bandit arm was a per-RUN choice over the whole
+// light-agent set. A per-role override makes the same decision per role, and
+// leaves every role without one on exactly the previous behavior.
+func TestSetPreferFastIsPerRole(t *testing.T) {
+	cases := []struct {
+		name      string
+		fastModel string
+		overrides map[string]bool
+		role      string
+		specModel string
+		want      string
+	}{
+		{"default: light agent takes the fast model", "fast-7b", nil, "reviewer", "", "fast-7b"},
+		{"default: heavy agent takes the main model", "fast-7b", nil, "worker", "", "main-32b"},
+		{"no fast model configured: everyone is on main", "", nil, "reviewer", "", "main-32b"},
+		{"override pins a light agent to the main model", "fast-7b",
+			map[string]bool{"reviewer": false}, "reviewer", "", "main-32b"},
+		{"override puts a heavy agent on the fast model", "fast-7b",
+			map[string]bool{"worker": true}, "worker", "", "fast-7b"},
+		{"an override for another role does not leak", "fast-7b",
+			map[string]bool{"reviewer": false}, "planner", "", "fast-7b"},
+		{"override is case-insensitive", "fast-7b",
+			map[string]bool{"REVIEWER": false}, "reviewer", "", "main-32b"},
+		{"a per-agent model still wins over everything", "fast-7b",
+			map[string]bool{"worker": true}, "worker", "pinned-70b", "pinned-70b"},
+		{"fast=true with no fast model configured falls back to main", "",
+			map[string]bool{"worker": true}, "worker", "", "main-32b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFactory(nil, nil, "main-32b", "ollama")
+			f.FastModel = tc.fastModel
+			for role, fast := range tc.overrides {
+				f.SetPreferFast(role, fast)
+			}
+			got := f.EffectiveModel(RoleSpec{ID: tc.role, Model: tc.specModel})
+			if got != tc.want {
+				t.Fatalf("EffectiveModel(%s) = %q, want %q", tc.role, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPreferFastAccessorsAreNilSafeAndClearable(t *testing.T) {
+	var nilF *Factory
+	nilF.SetPreferFast("worker", true) // must not panic
+	nilF.ClearPreferFast("")
+	if fast, ok := nilF.PreferFast("worker"); fast || ok {
+		t.Fatal("a nil factory has no overrides")
+	}
+
+	f := NewFactory(nil, nil, "main-32b", "ollama")
+	f.FastModel = "fast-7b"
+	if _, ok := f.PreferFast("reviewer"); ok {
+		t.Fatal("no override should be set yet")
+	}
+	f.SetPreferFast("", true) // empty role is ignored
+	if _, ok := f.PreferFast(""); ok {
+		t.Fatal("an empty role must not create an override")
+	}
+	f.SetPreferFast("reviewer", false)
+	f.SetPreferFast("worker", true)
+	if fast, ok := f.PreferFast("reviewer"); !ok || fast {
+		t.Fatalf("reviewer override = (%v,%v)", fast, ok)
+	}
+	f.ClearPreferFast("reviewer")
+	if _, ok := f.PreferFast("reviewer"); ok {
+		t.Fatal("ClearPreferFast must drop the role")
+	}
+	if got := f.EffectiveModel(RoleSpec{ID: "reviewer"}); got != "fast-7b" {
+		t.Fatalf("clearing must restore the default classification, got %q", got)
+	}
+	f.ClearPreferFast("")
+	if _, ok := f.PreferFast("worker"); ok {
+		t.Fatal("ClearPreferFast(\"\") must drop every override")
+	}
+}

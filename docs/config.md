@@ -1,258 +1,260 @@
 # ⚙️ Config reference
 
-Primary file: **`.slmcode/config.yaml`** (created by `slmcode init`).
-Knobs. Dials. The cockpit without the fake airplane noises. ✈️
-
-<div class="slm-banner" markdown>
-<span class="slm-banner__emoji">🎛️</span>
-<p class="slm-banner__text" markdown>
-<strong>Override layers (roughly):</strong> CLI flags → env → project config → built-in defaults.
-When two knobs disagree, the louder one closer to the command usually wins.
-</p>
-</div>
+Configuration lives in `.slmcode/config.yaml`. Every key below exists in `config.Config`.
 
 ```bash
-slmcode config
-slmcode config set <key> <value>
+slmcode config show              # effective config
+slmcode config show --origin     # …and which layer supplied each value
+slmcode config show --json
+slmcode config get max_parallel
+slmcode config set max_parallel 6
+slmcode config unset fast_model
+slmcode config set --user model qwen2.5-coder:14b   # write the user-level layer
+slmcode config schema            # machine-readable field schema
+slmcode config path
 ```
+
+## Layering
+
+Lowest precedence first:
+
+1. built-in defaults (`config.Default`)
+2. user file — most specific first: `$SLMCODE_USER_CONFIG`,
+   `$XDG_CONFIG_HOME/slmcode/config.yaml`, `~/.slmcode/config.yaml`,
+   `~/.config/slmcode/config.yaml`. Write to it with `slmcode config set --user <key> <value>`.
+3. project file (`.slmcode/config.yaml`)
+4. `SLMCODE_*` environment — every key has one, mechanically (`SLMCODE_MAX_PARALLEL`,
+   `SLMCODE_QA_BOOTSTRAP`, …); `slmcode config schema` lists them
+5. command-line flags
+
+The layer is discovered by `pkg/config`, so it applies to Studio, the TUI and any embedder, not
+just the CLI.
+
+A saved `config.yaml` records **intent**: only the keys that differ from what the project would
+otherwise inherit, plus a `config_version` stamp. Three consequences: `config show --origin` can
+tell a deliberate choice from an inherited default, a new release's improved default reaches
+existing projects, and no absolute path is embedded in a file that may be committed. `root` is
+never persisted for exactly that last reason. Older files are migrated forward on load, and
+`config show` reports when that happened.
 
 ---
 
-## Provider & model 🔌
+## Provider & model
 
-```yaml
-provider: omlx          # or ollama, openai, lmstudio, openrouter, …
-endpoint: http://127.0.0.1:8000/v1
-model: Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
-active_stack: omlx-local  # last applied stacks/<id>.yaml (optional UI highlight)
-api_key: ""             # prefer env vars
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `provider` | `omlx` | `omlx` `ollama` `openai` `lmstudio` `openrouter` `vllm` `litellm` `together` `groq` `deepseek` `mistral` `google` `fireworks` `anthropic` … Any other name is treated as an OpenAI-compatible gateway. |
+| `endpoint` | `http://127.0.0.1:8000/v1` | Base URL. Provider presets supply a default. |
+| `model` | `Qwen3-Coder-30B-A3B-Instruct-MLX-4bit` | Any id your provider serves |
+| `api_key` | — | Prefer `.slmcode/auth.json` or env |
+| `fast_model` | — | Smaller/faster model for light agents (reviewer, coordinator, splitter, planner, context, architect, clarifier). Empty = use `model` everywhere. |
+| `backend` | `slmcode` | `slmcode` or `claude-code` |
+| `claude_code_bin` | `claude` | Binary for the `claude-code` backend |
+| `enabled_models` | — | Scope the selectable catalog (empty = all) |
+| `active_stack` | — | Last applied stack id |
 
-| Key | Notes |
-|-----|-------|
-| `provider` | Unknown names → OpenAI-compatible ✨ |
-| `endpoint` | Auto-defaults per preset if empty |
-| `model` | Whatever your gateway serves |
-| `active_stack` | Set by `slmcode stack apply`; cleared on manual model/provider edit |
-| `active_pack` | Last applied language pack (go, python, react) via `slmcode blocks apply` |
-| `active_pipeline` | Active pipeline block id; may match active pack's pipeline |
-| `api_key` | Avoid committing; use env or `.slmcode/auth.json` 🔑 |
-| `enabled_models` | Optional allow-list of model ids (empty = all) |
-| `llm_retry_count` / `llm_retry_delay_ms` | Provider HTTP retries (≠ board `max_retries`) |
+## Run shape
 
-Env: `SLMCODE_PROVIDER`, `SLMCODE_MODEL`, `SLMCODE_ENDPOINT`, `SLMCODE_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, …
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `full` | `full` (pipeline) or `specialist` (single role) |
+| `specialist` | — | Role id when `mode: specialist` |
+| `dynamic_pipeline` | `true` | Run the composer to assemble a task-specific pipeline first |
+| `pinned_skills` | — | Always loaded, in addition to `@skill:` refs and matching |
+| `max_parallel` | `4` | Concurrent tasks per wave |
+| `max_retries` | `4` | Review/correct retries before escalate |
+| `think_passes` | `1` | 2+ enables speculative digs |
+| `task_timeout` | `12m` | Per-task timeout |
+| `temperature` | `0.2` | Default sampling temperature (roles override) |
+| `max_tokens` | `4096` | Default completion cap (roles override) |
+| `dry_run` | `false` | Do not write code files |
+| `verbose` | `false` | |
+| `active_pack`, `active_pipeline` | — | Last applied block ids |
 
-**Auth resolution order:** `config.api_key` → `SLMCODE_API_KEY` → `.slmcode/auth.json` → provider env (`OPENAI_API_KEY`, …) → omlx settings.
+## Context & memory budget
 
----
+See [Context engineering](context.md) for what these actually do.
 
-## Execution shape 🏭
+| Key | Default | Meaning |
+|---|---|---|
+| `model_profiles` | built-in | Per-model-family `context_limit`, `max_tokens`, `max_turns`, `temperature`, `thinking_budget_tokens`, `skill_token_budget`, `knowledge_token_budget` |
+| `max_context_kb` | `16` | **Legacy** byte budget, used only when no model profile supplies a real context window |
+| `context_reserve_system_tokens` | `500` | Subtracted from the window before the pack gets its share |
+| `context_reserve_tool_tokens` | `900` | ” |
+| `context_reserve_response_tokens` | `2048` | ” |
+| `context_slack_percent` | `10` | Tokenizer disagreement + chat scaffolding |
+| `context_role_budget` | built-in | Per-role share of the available window, e.g. `{worker: 100, reviewer: 85}` |
+| `repo_map_tokens` | `900` | Ranked repo-symbol map's share of a pack |
+| `excerpt_window_lines` | `25` | ± lines around each relevance match |
+| `memory_tokens` | `300` | Budget for the injected memory block |
+| `skill_disclosure` | `auto` | `auto` (cards + earned bodies) · `cards` · `full` |
+| `skill_max_expanded` | `2` | How many skill bodies may be inlined at once |
+| `skills_dirs` | — | Extra skill search roots |
 
-```yaml
-backend: slmcode        # harness engine
-mode: full              # full | specialist
-specialist: worker      # when mode=specialist (any registered / custom id)
-pinned_skills:
-  - atomic-coding
-```
+## Compaction
 
-### Pipeline graph (separate file)
+| Key | Default | Meaning |
+|---|---|---|
+| `compact_mode` | `true` | Compact the run's markdown memory |
+| `context_compact` | `true` | Document compaction (gated — see [Context](context.md#7-compaction-pkgcompact)) |
+| `context_compact_engine` | `heuristic` | Compaction engine |
+| `react_compact` | `true` | Mid-run conversation compaction, tool-pair safe |
+| `react_compact_at_percent` | `80` | Trigger point, with a 5-point hysteresis band |
 
-Phases, loop reviewer/corrector, and insertable agent slots live in
-**`.slmcode/pipeline.yaml`** — not in `config.yaml`.
+## Constrained decoding & tools
 
-```bash
-# Studio → Pipeline tab, or:
-curl -s localhost:7420/api/pipeline | jq .
-```
+| Key | Default | Meaning |
+|---|---|---|
+| `structured_decoding` | `auto` | `auto` negotiates the strongest confirmed mechanism; `off` forces prompt-only JSON |
+| `read_window_lines` | `0` → 120 | `ws_read` window |
+| `max_tool_chars` | `0` → 8000 | Hard cap on every tool result |
+| `shell_timeout` | `0` → 2m | `ws_shell` per-command timeout (per-call override ceiling: 15m) |
+| `read_head_lines` | `80` | Auto-trim read head |
+| `auto_text_tools` | — | Enable text-manipulation helpers |
+| `llm_retry_count` | `3` | Provider HTTP retries (≠ `max_retries`, which is the board loop) |
+| `llm_retry_delay_ms` | `1000` | ” |
 
-See [Pipeline](pipeline.md) for the full schema (order, phases, slots, `when`, placeholders).
+## Quality gates
 
----
+| Key | Default | Meaning |
+|---|---|---|
+| `qa_gate` | `true` | Iterate a test command until green after the board finishes |
+| `qa_gate_command` | — | Empty = auto-detect from the quality block |
+| `qa_gate_max_rounds` | `3` | Rounds before escalate |
+| `post_worker_smoke` | `true` | Deterministic `py_compile` / `go test` after each worker, **before** review can approve — prevents broken-on-disk auto-approve |
+| `qa_bootstrap` | `ask` | May the QA gate run dependency installers (`pip install`, `npm install`, `go mod tidy`) against agent-authored manifests? `off` · `ask` · `auto`. `ask` is the default because an agent that invented a `requirements.txt` should not get an unattended network install. |
+| `regression_checks` | `true` | Replay stored regression checks around the QA gate |
+| `disable_syntax_check` | `false` | Turn off post-edit syntax verification |
+| `scope_judge` | `true` | Post-split PRD completeness check |
+| `placeholder_pass` | `true` | Post-execute stub scan + fill/flag specialist |
+| `auto_refine` | `false` | Auto-refinement loop |
+| `auto_refine_max_rounds` | `2` | |
 
-## Quality & throughput 📊
+## Guardrails
 
-```yaml
-temperature: 0.2
-max_tokens: 4096
-max_retries: 4
-max_parallel: 2
-max_context_kb: 32
-think_passes: 1
-task_timeout: 12m
-```
+| Key | Default | Guards against |
+|---|---|---|
+| `permission` | `auto` | `auto` \| `dry-run` \| `review` — file write policy |
+| `shell_permission` | `allow` | `allow` \| `ask` \| `deny` |
+| `shell_whitelist` | `true` | Non-allowlisted shell commands |
+| `shell_allow` | — | Extra allowlist prefixes (merged with `SLMCODE_BASH_ALLOW`) |
+| `shell_ask_timeout` | `2m` | |
+| `write_guard` | `true` | Writes outside focus files |
+| `read_before_edit` | `true` | Editing a file not read this session |
+| `shell_write_guard` | `true` | `cat >file` / `tee` clobber |
+| `over_edit_guard` | `true` | Whole-file rewrites through `ws_edit` |
+| `claims_gate` | `true` | Hallucinated `files_changed` |
+| `static_quality` | `true` | Stub / placeholder code |
+| `require_smoke` | `true` | Coding tasks approved without a smoke check |
+| `quality_monitor` | `true` | Empty output, tool loops, hallucinated tools |
+| `finalize_warn` | `true` | Silent `MaxIter` exhaustion |
+| `worker_critique` | `true` | Weak worker output (auto self-fix pass) |
+| `thinking_budget` | `true` | Endless deliberation (commit-to-implementation nudge) |
+| `thinking_budget_tokens` | `4096` | |
+| `tool_guidance` | `true` | Per-turn tool skill cards |
+| `knowledge_inject` | `true` | Keyword knowledge cards |
+| `hooks_enabled` | `true` | Loads `.slmcode/hooks.json` |
+| `file_checkpoints` | `true` | Per-file snapshots before each write |
+| `wave_snapshots` | `true` | Per-wave snapshots |
+| `max_task_calls` | `6` | Per-task LLM call budget in the inner loop |
 
-| Key | SLM tip |
-|-----|---------|
-| `think_passes` | Try `2` on 7–14B 🐣 (also deepens board workers) |
-| `max_context_kb` | Lower if models wander 🥴 |
-| `max_parallel` | `1` on slow local GPUs 🐢 |
-| `max_retries` | Critic stubbornness 💪 |
+Details → [Permissions & safety](permissions.md).
 
----
+## Human-in-the-loop
 
-## Safety 🛡️
+| Key | Default | Meaning |
+|---|---|---|
+| `clarify_mode` | `ask` | `off` \| `auto` \| `ask` |
+| `clarify_timeout` | `2m` | |
+| `plan_approve` | `ask` | `off` \| `auto` \| `ask` |
+| `plan_approve_timeout` | `2m` | |
+| `plan_approve_on_timeout` | `auto` | `approve` \| `reject` \| `auto` — `auto` approves only when no event subscriber was attached |
+| `continue_ask` | `ask` | Another wave, or stop, when retries are exhausted |
+| `continue_ask_timeout` | `2m` | |
+| `escalate_ask` | `ask` | Retry / re-scope / abort at max retries |
+| `escalate_ask_timeout` | `5m` | |
+| `escalate_timeout_agent` | — | Empty = auto-pick `@escalate` |
+| `auto_approve` | `false` | `true` bypasses every gate |
 
-```yaml
-dry_run: false
-permission: auto          # auto | dry-run | review
-shell_permission: ask     # allow | ask | deny
-auto_approve: false
-verbose: false
-compact_mode: true        # quieter TUI/Studio live stream (default)
-```
+With a human attached, gates block rather than expiring. Headless resolution is controlled by
+`--on-gate-timeout` (default `stop`).
 
-| Mode | Effect |
-|------|--------|
-| `permission: review` | Stage under `.slmcode/pending/` → `slmcode apply` 👀 |
-| `dry_run: true` | Never write code files 🎭 |
-| `shell_permission` | Independent of file writes |
+## Self-improvement
 
----
+| Key | Default | Meaning |
+|---|---|---|
+| `evolve` | `true` | Memory, repair rules, bandit policy, regression checks |
+| `deterministic` | `false` | Greedy policy, no exploration — for CI and reproducible runs. `dry_run` implies it. |
+| `architect_editor` | `false` | The `describer` → `editor` role pair. Off by default: it doubles the LLM calls per task and only pays off when the two halves point at different models. |
 
-## QA gate (on by default) ✅
+Details → [Self-improvement & memory](self-improvement.md).
 
-```yaml
-clarify_mode: ask         # auto | ask | off  (Claude Code AskUserQuestion style)
-clarify_timeout: 2m       # ask mode: wait then apply recommended
-scope_judge: true         # post-split PRD completeness gate
-plan_approve: ask         # off | auto | ask  (Plan Mode gate before execute)
-plan_approve_timeout: 2m  # ask mode: wait then approve by default
-auto_approve: false       # skip plan/shell/clarify HITL waits
-shell_permission: allow   # allow | ask | deny (ask = interactive approve)
-context_compact: true     # mid-run CONTEXT.md summarization
-context_compact_engine: heuristic  # heuristic | llm | auto
-react_compact: true       # ReAct conversation watchdog (compact at %)
-react_compact_at_percent: 80
-session_event_log: true   # .slmcode/queries/<id>/events.jsonl
-auto_refine: false        # append wave lessons into CONTEXT as refine notes
-auto_refine_max_rounds: 2
-enabled_models: []        # optional catalog allow-list
-llm_retry_count: 3
-llm_retry_delay_ms: 1000
-wave_snapshots: true      # per-wave rewind under .slmcode/waves/
-file_checkpoints: true    # first-write-wins backup before edit/write
-shell_whitelist: true     # SAFE_PREFIXES for ws_shell (little-coder)
-shell_allow: []           # extra prefixes (or SLMCODE_BASH_ALLOW env)
-thinking_budget_tokens: 4096
-model_profiles: {}        # optional per-model skill/knowledge/token budgets
-hooks_enabled: true       # load .slmcode/hooks.json Pre/PostToolUse
-mcp_servers: []           # thin read-only MCP (stdio or HTTP)
-qa_gate: true
-qa_gate_command: ""       # empty = auto-detect (go/pytest/uv/npm/compileall)
-qa_gate_max_rounds: 3
-post_worker_smoke: true   # py_compile / go test after each worker before review
-escalate_ask: ask         # ask | auto | off — pause on max-retry escalate
-escalate_ask_timeout: 30s # timeout → @escalate SLM decides (not blind re_scope)
-escalate_timeout_agent: "" # empty = auto (@escalate → @reviewer → @coordinator)
-continue_ask: ask         # ask | auto | off — after QA exhausted
-continue_ask_timeout: 2m
-```
+## Retrieval & embeddings
 
-### Planning / scope
+| Key | Default | Meaning |
+|---|---|---|
+| `embedding_enabled` | `false` | |
+| `embedding_endpoint` | — | OpenAI-compatible `/v1/embeddings` |
+| `embedding_model` | — | |
+| `embedding_api_key` | — | |
+| `embedding_top_k` | `5` | |
+| `retrieval_min_score` | `0` | Overrides the calibrated similarity floor |
+| `retrieval_cache_dir` | — | Embedding cache location |
 
-Vague queries get an **interviewer** pass (options + recommended defaults).
-- `auto` — lock recommended decisions into a PRD (no pause)
-- `ask` — emit SSE `kind=ask`, write `.slmcode/clarify/ask.json`, wait for
-  Studio modal or `POST /api/clarify/answer` with the pending `ask.id` as
-  `ask_id` (timeout → recommended)
-- `off` — skip interview
+## Cost tracking
 
-`scope_judge` then checks every task has concrete acceptance/files before
-execute. `plan_approve: ask` pauses with a Studio modal / `POST /api/plan/approve`
-using the pending plan `ask.id` as `ask_id`.
+| Key | Meaning |
+|---|---|
+| `price_preset` | Named pricing preset |
+| `price_prompt_per_mtok` | $ per million prompt tokens |
+| `price_completion_per_mtok` | $ per million completion tokens |
 
-### Hooks / MCP / rewind
+## Studio & integrations
 
-Copy `.slmcode-hooks.example.json` → `.slmcode/hooks.json`. PreToolUse non-zero
-exit blocks the tool. PostToolUse can run `compileall` after writes.
-
-`mcp_servers` registers a **single** read-only meta-tool `mcp_call` (do not
-explode one tool per MCP capability). Status: TUI `/mcp`, API `GET /api/mcp`.
-Wave snapshots: TUI `/rewind list` / `/rewind <id>`, API `GET/POST /api/rewind`.
-Context compact: `/compact context` (or `/compact llm|auto|heuristic`),
-`POST /api/compact`. Session event tree: `GET /api/queries/{id}/events`.
-Config field schema: `GET /api/config/schema`. Auth store: `PUT /api/auth`,
-TUI `/auth set <key>`.
-
-### QA / smoke / acceptance
-
-After workers, `post_worker_smoke` runs a fast deterministic check (`python -m
-py_compile` / `go test -short`) and blocks approve-on-disk-only when it fails.
-
-When a task's acceptance text includes a **whitelisted** command (`python -m
-pytest`, `go test`, `python main.py`, …), the harness also runs **Acceptance
-smoke** and rejects the task until those commands exit 0. Free-form prose in
-acceptance is never executed as shell.
-
-`worker_critique` keeps refining (up to `max_retries`) while smoke / static /
-acceptance sections stay red — not just a single self-fix pass.
-
-After the finalize tester, `qa_gate` runs a real project command (and bootstraps
-deps when needed: `pip install -r requirements.txt`, `uv sync`, `go mod tidy`).
-Auto-detect prefers `pytest` for greenfield Python (`main.py` +
-`requirements.txt`), not `compileall`. Syntax-only gates cannot alone mark the
-run successful. On failure, tester diagnoses → corrector patches → re-run.
-
----
-
-## Embeddings (memory ranking) 🧲
-
-```yaml
-embedding_enabled: true
-embedding_endpoint: ""    # defaults to chat endpoint
-embedding_model: ""
-embedding_api_key: ""
-embedding_top_k: 8
-```
-
-Fallback order: provider embeddings → pure-Go local hashing → lexical TF-IDF.
-`slmcode doctor` reports which mode is active.
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `127.0.0.1:7420` | Studio listen address |
+| `session_event_log` | `true` | Persist per-run event logs under `.slmcode/queries/` |
+| `mcp_servers` | — | MCP servers: `{name, command, args, env, url, read_only}` |
 
 ---
 
-## Pricing display (optional) 💸
+## A worked local-SLM config
 
 ```yaml
-price_preset: ""          # off | local | omlx | openai | anthropic | openrouter | auto
-price_prompt_per_mtok: 0
-price_completion_per_mtok: 0
-```
-
-TUI `/stats` shows tokens; dollars only if you configure rates (no fake `$`). Honesty > theater.
-
----
-
-## Studio & skills paths 🎨
-
-```yaml
-listen: 127.0.0.1:7420
-skills_dirs: []           # extra skill roots
-claude_code_bin: claude   # only if you use that backend
-```
-
----
-
-## Example: Ollama project 🦙
-
-```yaml
+# .slmcode/config.yaml
 provider: ollama
 endpoint: http://127.0.0.1:11434
 model: qwen2.5-coder:14b
-think_passes: 2
-max_context_kb: 16
-max_parallel: 1
-permission: review
-pinned_skills:
-  - atomic-coding
+fast_model: qwen2.5-coder:7b
+
+model_profiles:
+  qwen2.5-coder:
+    context_limit: 32768     # the number that actually decides the pack budget
+    max_tokens: 4096
+    max_turns: 24
+
+max_parallel: 2              # a local server serialises inference anyway
+think_passes: 1
+task_timeout: 20m
+
+structured_decoding: auto
+skill_disclosure: auto
+repo_map_tokens: 900
+
+permission: review           # nothing lands without you
+shell_permission: ask
+shell_allow:
+  - "make "
+
+plan_approve: ask
+evolve: true
 ```
 
----
+`slmcode readiness --fix` will suggest and apply most of the safe local-model defaults for you.
 
-## Related 🔗
-
-- [🔌 Providers](providers.md)
-- [⌨️ CLI](cli.md)
-- [❓ FAQ](faq.md)
-
-☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)
+!!! note "Structured fields"
+    `model_profiles`, `mcp_servers` and `context_role_budget` are structured values —
+    `slmcode config set` takes a whole YAML/JSON document for them, not a dotted path. For
+    anything non-trivial, edit `.slmcode/config.yaml` directly and check the result with
+    `slmcode config show --origin`.

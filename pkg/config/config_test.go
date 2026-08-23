@@ -34,7 +34,7 @@ func TestDefaultHITLTimeoutsStayConsistentAfterNormalize(t *testing.T) {
 	if c.ClarifyTimeout != 2*time.Minute ||
 		c.PlanApproveTimeout != 2*time.Minute ||
 		c.ContinueAskTimeout != 2*time.Minute ||
-		c.EscalateAskTimeout != 30*time.Second ||
+		c.EscalateAskTimeout != 5*time.Minute ||
 		c.ShellAskTimeout != 2*time.Minute {
 		t.Fatalf("hitl timeouts: clarify=%s plan=%s continue=%s escalate=%s shell=%s",
 			c.ClarifyTimeout, c.PlanApproveTimeout, c.ContinueAskTimeout, c.EscalateAskTimeout, c.ShellAskTimeout)

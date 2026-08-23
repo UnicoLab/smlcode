@@ -128,10 +128,29 @@ and a critic that looks at the **disk**, not just the vibes.
 
     ---
 
-    Full CLI, `config.yaml`, FAQ, and “why is doctor red?” triage.
-    For when things get spicy. 🌶️
+    Full CLI, `config.yaml`, the tool contract, constrained decoding, context
+    budgets, the permission model, and error-keyed triage.
 
     [:octicons-arrow-right-24: CLI reference](cli.md)
+
+-   :material-shield-check:{ .lg .middle } **🛡️ Safety & tools**
+
+    ---
+
+    What the agent may run and write, what every `ws_*` tool promises, and what
+    each refusal message means.
+
+    [:octicons-arrow-right-24: Permissions](permissions.md) ·
+    [Tools](tools.md) · [Troubleshooting](troubleshooting.md)
+
+-   :material-brain:{ .lg .middle } **🧬 Self-improvement**
+
+    ---
+
+    Four memory layers, repair rules that fire once, a bandit over harness
+    choices, and per-run metrics you can diff.
+
+    [:octicons-arrow-right-24: Memory & evolve](self-improvement.md)
 
 </div>
 
@@ -162,7 +181,7 @@ You stay in the TUI or Studio — not in a black box labeled “trust me bro”.
 |---------|----------------|
 | 👀 Live visibility | Agent, scope, patches, latency — not a spinner cult |
 | 🛟 Recoverable runs | `/stop` → checkpoint → `/resume` |
-| 🛡️ Safety rails | `dry-run` / `review` / shell allow·ask·deny |
+| 🛡️ Safety rails | `dry-run` / `review` / shell allow·ask·deny · tiered command whitelist |
 | 🔌 Model-agnostic | Same harness for local SLM or cloud frontier |
 | ✈️ Offline Studio | Vendored UI; cafe Wi‑Fi optional |
 
@@ -217,7 +236,7 @@ Then: `slmcode doctor` → [Quick start](quickstart.md). If doctor is green, you
 <div class="slm-tile" markdown>
 <span class="slm-tile__emoji">❓</span>
 <strong>Things broke</strong>
-<p markdown>[FAQ](faq.md) — the “it’s the context window” desk.</p>
+<p markdown>[Troubleshooting](troubleshooting.md) — keyed on the real error messages.</p>
 </div>
 
 </div>

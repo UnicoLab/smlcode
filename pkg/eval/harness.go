@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/eval/metrics"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -38,6 +39,10 @@ type Result struct {
 	Error         string        `json:"error,omitempty"`
 	Summary       string        `json:"summary,omitempty"`
 	Interventions int           `json:"interventions"`
+	// Metrics is this case's harness record: edit-apply rate, tool error rate,
+	// LLM calls and tokens per task. Pass/fail alone cannot say whether a
+	// change improved the harness; these numbers can.
+	Metrics metrics.Metrics `json:"metrics"`
 }
 
 // Report aggregates many results.
@@ -48,6 +53,35 @@ type Report struct {
 	Results  []Result `json:"results"`
 	Passed   int      `json:"passed"`
 	Failed   int      `json:"failed"`
+}
+
+// Metrics returns one record per case, in case order — the input to Compare.
+func (r Report) Metrics() []metrics.Metrics {
+	out := make([]metrics.Metrics, 0, len(r.Results))
+	for _, res := range r.Results {
+		out = append(out, res.Metrics)
+	}
+	return out
+}
+
+// Summary pools every case's metrics into one aggregate.
+func (r Report) Summary() metrics.Summary { return metrics.Aggregate(r.Metrics()) }
+
+// CompareTo produces the baseline→this delta, so `slmcode eval` can answer
+// "did this change improve the harness" rather than only "did it pass".
+func (r Report) CompareTo(baseline Report) metrics.Comparison {
+	return metrics.Compare(baseline.Metrics(), r.Metrics())
+}
+
+// RecordMetrics appends every case's record to the project's metrics log, so a
+// later run can Compare against it.
+func (r Report) RecordMetrics(projectDir string) error {
+	for _, m := range r.Metrics() {
+		if err := metrics.AppendTo(projectDir, m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DefaultCases returns offline-friendly coding checks (no network).
@@ -130,12 +164,21 @@ func RunCase(ctx context.Context, c Case, baseCfg *config.Config) Result {
 		return res
 	}
 	interventions := 0
+	collector := newMetricsCollector()
 	orch.OnEvent(func(e orchestrator.Event) {
 		if e.Kind == "intervention" {
 			interventions++
 		}
+		collector.observe(e)
 	})
-	h.Orchestrator = orch
+	// SetOrchestrator, not a bare assignment: harness.New already built one,
+	// and dropping that pointer leaked its MCP subprocesses and evolve engine
+	// for every eval case.
+	if cerr := h.SetOrchestrator(orch); cerr != nil {
+		res.Error = cerr.Error()
+		return res
+	}
+	defer func() { _ = h.Close() }()
 
 	runCtx := ctx
 	if c.Timeout > 0 {
@@ -165,6 +208,7 @@ func RunCase(ctx context.Context, c Case, baseCfg *config.Config) Result {
 	}
 	if err != nil && (out == nil || !strings.Contains(strings.ToLower(err.Error()), "canceled")) {
 		res.Error = err.Error()
+		res.Metrics = collector.snapshot(res, out, cfg.Model, cfg.Provider, start)
 		return res
 	}
 
@@ -203,6 +247,7 @@ func RunCase(ctx context.Context, c Case, baseCfg *config.Config) Result {
 	if !res.OK && res.Error == "" {
 		res.Error = "tasks not done or files incomplete"
 	}
+	res.Metrics = collector.snapshot(res, out, cfg.Model, cfg.Provider, start)
 	return res
 }
 

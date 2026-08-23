@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,174 +16,92 @@ import (
 
 // `slmcode config` — schema-driven, with provenance.
 //
-// The old `config set` had a hand-written switch above the schema path that
-// accepted anything: `config set parallel abc` printed "✔ set parallel = abc"
-// while Sscanf silently left the value unchanged. Everything now goes through
-// config.Schema(), which validates types and enums, so a bad value is an error.
+// Every key, its type, its allowed values, its default and its environment
+// variable come from config.Schema(). The CLI used to carry a second
+// hand-written table for the ~40 keys the schema did not describe; there is
+// now one table, so `config set` validation, `config show --origin` and the
+// Studio settings page cannot disagree.
 
-// configAliases maps the historical short keys onto real schema keys so the
-// documented spellings keep working.
-var configAliases = map[string]string{
-	"parallel":   "max_parallel",
-	"retries":    "max_retries",
-	"think":      "think_passes",
-	"context_kb": "max_context_kb",
-	"qa_cmd":     "qa_gate_command",
-	"qa_rounds":  "qa_gate_max_rounds",
-	"perm":       "permission",
-	"dry-run":    "dry_run",
-	"agent":      "specialist",
-	"skills":     "pinned_skills",
-	"dynamic":    "dynamic_pipeline",
-	"composer":   "dynamic_pipeline",
+// flagSources maps a schema key onto the persistent flag that overrides it,
+// when that flag was actually given this run.
+var flagSources = map[string]func() (string, bool){
+	"model":         func() (string, bool) { return "--model", flagModel != "" },
+	"provider":      func() (string, bool) { return "--provider", flagProvider != "" },
+	"endpoint":      func() (string, bool) { return "--endpoint", flagEndpoint != "" },
+	"backend":       func() (string, bool) { return "--backend", flagBackend != "" },
+	"api_key":       func() (string, bool) { return "--api-key", flagAPIKey != "" },
+	"dry_run":       func() (string, bool) { return "--dry-run", flagDryRun },
+	"max_parallel":  func() (string, bool) { return "--parallel", flagMaxParallel > 0 },
+	"max_retries":   func() (string, bool) { return "--retries", flagMaxRetries > 0 },
+	"think_passes":  func() (string, bool) { return "--think-passes", flagThink > 0 },
+	"verbose":       func() (string, bool) { return "--verbose", flagVerbose || flagVeryVerbose },
+	"deterministic": func() (string, bool) { return "--no-explore", flagNoExplore },
+	"evolve": func() (string, bool) {
+		if flagNoEvolve {
+			return "--no-evolve", true
+		}
+		return "--evolve", flagEvolve
+	},
+	"max_task_calls":      func() (string, bool) { return "--max-task-calls", flagMaxTaskCalls > 0 },
+	"architect_editor":    func() (string, bool) { return "--architect-editor", flagArchitectEditor },
+	"structured_decoding": func() (string, bool) { return "--structured-decoding", flagStructuredDecoding != "" },
+	"listen":              func() (string, bool) { return "--listen", flagListen != "" },
 }
 
-func canonicalConfigKey(k string) string {
-	k = strings.ToLower(strings.TrimSpace(k))
-	if real, ok := configAliases[k]; ok {
-		return real
-	}
-	return k
-}
-
-// configOrigin describes where an effective value came from.
-type configOrigin string
-
-const (
-	originDefault configOrigin = "default"
-	originUser    configOrigin = "user"
-	originFile    configOrigin = "project"
-	originEnv     configOrigin = "env"
-	originFlag    configOrigin = "flag"
-)
-
-// envKeyFor maps a schema key onto its SLMCODE_* environment variable.
-func envKeyFor(key string) string { return "SLMCODE_" + strings.ToUpper(key) }
-
-// flagSetKeys lists schema keys a persistent flag can override this run.
-var flagSetKeys = map[string]func() bool{
-	"model":        func() bool { return flagModel != "" },
-	"provider":     func() bool { return flagProvider != "" },
-	"endpoint":     func() bool { return flagEndpoint != "" },
-	"backend":      func() bool { return flagBackend != "" },
-	"api_key":      func() bool { return flagAPIKey != "" },
-	"dry_run":      func() bool { return flagDryRun },
-	"max_parallel": func() bool { return flagMaxParallel > 0 },
-	"max_retries":  func() bool { return flagMaxRetries > 0 },
-	"think_passes": func() bool { return flagThink > 0 },
-	"verbose":      func() bool { return flagVerbose || flagVeryVerbose },
-}
-
-// originOf resolves where the effective value for key came from.
-//
-// Note: config.Save() rewrites every field, so "present in config.yaml" is not
-// evidence that a human chose it. A file value therefore only counts as
-// "project" when it actually differs from the built-in default.
-func originOf(key string, fileValues, defaults map[string]any, effective any) configOrigin {
-	if fn, ok := flagSetKeys[key]; ok && fn() {
-		return originFlag
-	}
-	if os.Getenv(envKeyFor(key)) != "" {
-		return originEnv
-	}
-	if userPath != "" {
-		if v, ok := userValues[key]; ok && fmt.Sprint(v) == fmt.Sprint(effective) {
-			if d, has := defaults[key]; !has || fmt.Sprint(d) != fmt.Sprint(effective) {
-				return originUser
-			}
+// markFlagOrigins records every persistent flag that actually set a value, so
+// `config show --origin` can report "flag --model" instead of guessing.
+func markFlagOrigins(c *config.Config) {
+	for key, fn := range flagSources {
+		if name, set := fn(); set {
+			c.MarkFlag(key, name)
 		}
 	}
-	if _, inFile := fileValues[key]; inFile {
-		if d, has := defaults[key]; !has || fmt.Sprint(d) != fmt.Sprint(effective) {
-			return originFile
-		}
-	}
-	return originDefault
 }
 
-// userPath / userValues are populated by loadOriginSources before rendering.
-var (
-	userPath   string
-	userValues map[string]any
-)
-
-// loadOriginSources caches the user-layer file so origin reporting can name it.
-func loadOriginSources() {
-	userPath = UserConfigPath()
-	userValues = map[string]any{}
-	if userPath == "" {
-		return
+// originTag renders one origin for the human-readable table.
+func originTag(origin string) string {
+	switch {
+	case strings.HasPrefix(origin, "flag"):
+		return cli.Yellow(origin)
+	case strings.HasPrefix(origin, "env"):
+		return cli.Cyan(origin)
+	case origin == string(config.LayerUser):
+		return cli.Blue(origin)
+	case origin == string(config.LayerProject):
+		return cli.Green(origin)
+	default:
+		return cli.Dim(origin)
 	}
-	if m, err := readYAMLMap(userPath); err == nil {
-		userValues = m
-	}
-}
-
-// defaultConfigMap renders the built-in defaults for comparison.
-func defaultConfigMap(root string) map[string]any {
-	return effectiveConfigMap(config.Default(root))
 }
 
 // configFilePath returns the project config.yaml location.
 func configFilePath(slmDir string) string { return filepath.Join(slmDir, "config.yaml") }
-
-// readConfigFileValues loads the raw project config.yaml as a key→value map so
-// `config show --origin` can tell "written down" from "default".
-func readConfigFileValues(slmDir string) map[string]any {
-	out := map[string]any{}
-	data, err := os.ReadFile(configFilePath(slmDir))
-	if err != nil {
-		return out
-	}
-	// The config is YAML but every scalar we care about is a simple `key: value`
-	// line; parsing that directly avoids depending on the config package's
-	// internal marshaling.
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || line != trimmed {
-			continue // skip comments and any nested/indented block
-		}
-		k, v, ok := strings.Cut(trimmed, ":")
-		if !ok {
-			continue
-		}
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		out[strings.TrimSpace(k)] = strings.Trim(v, `"'`)
-	}
-	return out
-}
-
-// effectiveConfigMap renders the config as a flat key→value map via its JSON
-// tags, which mirror the schema keys.
-func effectiveConfigMap(c *config.Config) map[string]any {
-	out := map[string]any{}
-	data, err := json.Marshal(c.Public())
-	if err != nil {
-		return out
-	}
-	_ = json.Unmarshal(data, &out)
-	return out
-}
 
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show, get, set and unset harness config",
 		Example: `  slmcode config show
+  slmcode config show --all
   slmcode config show --origin
-  slmcode config show --json
+  slmcode config show --group hitl
   slmcode config get max_parallel
   slmcode config set max_parallel 6
+  slmcode config set --user provider ollama
   slmcode config unset fast_model
+  slmcode config schema --json
   slmcode config path`,
 	}
 
-	// ── show ──
-	var showJSON, showOrigin bool
-	showCmd := &cobra.Command{
+	cmd.AddCommand(configShowCmd(), configGetCmd(), configSetCmd(),
+		configUnsetCmd(), configSchemaCmd(), configPathCmd())
+	return cmd
+}
+
+func configShowCmd() *cobra.Command {
+	var showJSON, showOrigin, showAll bool
+	var group string
+	c := &cobra.Command{
 		Use:   "show",
 		Short: "Print the effective config",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -193,49 +110,76 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			eff := effectiveConfigMap(ws.Config)
-			fileVals := readConfigFileValues(ws.Config.SlmDir())
-			defaults := defaultConfigMap(ws.Config.Root)
-			loadOriginSources()
+			cfg := ws.Config
+			prov := cfg.Provenance()
+			values := cfg.Values()
+
+			visible := make([]config.FieldSchema, 0, len(config.Schema()))
+			for _, f := range config.Schema() {
+				if group != "" && !strings.EqualFold(f.Group, group) {
+					continue
+				}
+				if f.Advanced && !showAll && group == "" {
+					continue
+				}
+				visible = append(visible, f)
+			}
 
 			if showJSON {
-				payload := map[string]any{"config": ws.Config.Public()}
+				payload := map[string]any{
+					"config": cfg.Public(),
+					"path":   configFilePath(cfg.SlmDir()),
+				}
+				if prov.UserPath != "" {
+					payload["user_path"] = prov.UserPath
+				}
 				if showOrigin {
 					origins := map[string]string{}
-					for k, v := range eff {
-						origins[k] = string(originOf(k, fileVals, defaults, v))
+					for k := range values {
+						origins[k] = prov.Describe(k)
 					}
 					payload["origin"] = origins
-					payload["user_path"] = userPath
 				}
-				payload["path"] = configFilePath(ws.Config.SlmDir())
+				if len(prov.Warnings) > 0 {
+					payload["warnings"] = prov.Warnings
+				}
 				return emitJSON(payload)
 			}
 
 			cli.Header("Config")
-			keys := make([]string, 0, len(eff))
-			for k := range eff {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				v := eff[k]
-				if k == "api_key" {
+			lastGroup := ""
+			for _, f := range visible {
+				if f.Group != lastGroup {
+					lastGroup = f.Group
+					fmt.Println()
+					fmt.Println("  " + cli.Bold(strings.ToUpper(f.Group)))
+				}
+				v := values[f.Key]
+				if f.Secret {
 					v = redactKey(fmt.Sprint(v))
 				}
 				val := formatConfigValue(v)
 				if showOrigin {
-					org := originOf(k, fileVals, defaults, eff[k])
-					fmt.Printf("  %s  %s  %s\n", cli.Dim(cli.PadWidth(k, 26)),
-						cli.PadWidth(val, 34), originTag(org))
+					fmt.Printf("  %s  %s  %s\n", cli.Dim(cli.PadWidth(f.Key, 30)),
+						cli.PadWidth(val, 30), originTag(prov.Describe(f.Key)))
 					continue
 				}
-				fmt.Printf("  %s  %s\n", cli.Dim(cli.PadWidth(k, 26)), val)
+				fmt.Printf("  %s  %s\n", cli.Dim(cli.PadWidth(f.Key, 30)), val)
 			}
 			fmt.Println()
-			fmt.Println(cli.Dim("  file: " + configFilePath(ws.Config.SlmDir())))
-			if userPath != "" {
-				fmt.Println(cli.Dim("  user: " + userPath))
+			fmt.Println(cli.Dim("  file: " + configFilePath(cfg.SlmDir())))
+			if prov.UserPath != "" {
+				fmt.Println(cli.Dim("  user: " + prov.UserPath))
+			}
+			if prov.Migrated {
+				fmt.Println(cli.Dim(fmt.Sprintf("  migrated from config_version %d → %d",
+					prov.FromVersion, config.CurrentConfigVersion)))
+			}
+			for _, w := range prov.Warnings {
+				fmt.Println(cli.Warn(w))
+			}
+			if !showAll && group == "" {
+				fmt.Println(cli.Dim("  slmcode config show --all      include advanced keys"))
 			}
 			if !showOrigin {
 				fmt.Println(cli.Dim("  slmcode config show --origin   where each value came from"))
@@ -243,13 +187,16 @@ func configCmd() *cobra.Command {
 			return nil
 		},
 	}
-	showCmd.Flags().BoolVar(&showJSON, "json", false, "machine-readable output")
-	showCmd.Flags().BoolVar(&showOrigin, "origin", false, "annotate each value with default|project|env|flag")
-	cmd.AddCommand(showCmd)
+	c.Flags().BoolVar(&showJSON, "json", false, "machine-readable output")
+	c.Flags().BoolVar(&showOrigin, "origin", false, "annotate each value with default|user|project|env SLMCODE_X|flag --x")
+	c.Flags().BoolVar(&showAll, "all", false, "include advanced keys")
+	c.Flags().StringVar(&group, "group", "", "only this group ("+strings.Join(config.Groups, ", ")+")")
+	return c
+}
 
-	// ── get ──
+func configGetCmd() *cobra.Command {
 	var getJSON bool
-	getCmd := &cobra.Command{
+	c := &cobra.Command{
 		Use:   "get [key]",
 		Short: "Print one effective value",
 		Args:  cobra.ExactArgs(1),
@@ -259,156 +206,253 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			key := canonicalConfigKey(args[0])
-			eff := effectiveConfigMap(ws.Config)
-			v, ok := eff[key]
+			key := config.CanonicalKey(args[0])
+			v, ok := ws.Config.Get(key)
 			if !ok {
-				return failf(2, "unknown key %q — see `slmcode config show`", args[0])
+				return failf(2, "unknown key %q — `slmcode config show --all` lists every key", args[0])
 			}
-			if key == "api_key" {
+			if f, ok := config.Field(key); ok && f.Secret {
 				v = redactKey(fmt.Sprint(v))
 			}
 			if getJSON {
-				loadOriginSources()
 				return emitJSON(map[string]any{
-					"key":   key,
-					"value": v,
-					"origin": string(originOf(key, readConfigFileValues(ws.Config.SlmDir()),
-						defaultConfigMap(ws.Config.Root), v)),
+					"key":    key,
+					"value":  v,
+					"origin": ws.Config.Provenance().Describe(key),
 				})
 			}
 			fmt.Println(formatConfigValue(v))
 			return nil
 		},
 	}
-	getCmd.Flags().BoolVar(&getJSON, "json", false, "machine-readable output")
-	cmd.AddCommand(getCmd)
+	c.Flags().BoolVar(&getJSON, "json", false, "machine-readable output")
+	return c
+}
 
-	// ── set ──
-	cmd.AddCommand(&cobra.Command{
-		Use:     "set [key] [value]",
-		Short:   "Set a config value (validated against the schema)",
-		Args:    cobra.ExactArgs(2),
-		Example: "  slmcode config set max_parallel 6\n  slmcode config set permission review",
+func configSetCmd() *cobra.Command {
+	var toUser bool
+	c := &cobra.Command{
+		Use:   "set [key] [value]",
+		Short: "Set a config value (validated against the schema)",
+		Args:  cobra.ExactArgs(2),
+		Example: `  slmcode config set max_parallel 6
+  slmcode config set permission review
+  slmcode config set escalate_ask_timeout 10m
+  slmcode config set --user provider ollama`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			key := canonicalConfigKey(args[0])
+			key := config.CanonicalKey(args[0])
 			value := args[1]
 
-			patch, ok, err := configPatchFromSchemaValue(key, value)
-			if err != nil {
-				return failf(2, "%s", err.Error())
-			}
+			field, ok := config.PatchableField(key)
 			if !ok {
-				return failf(2, "unknown or non-patchable key %q — `slmcode config show` lists every key", args[0])
+				if _, exists := config.Field(key); exists {
+					return failf(2, "%s is read-only — edit it in %s",
+						key, configFilePath(ws.Config.SlmDir()))
+				}
+				return failf(2, "unknown config key %q — `slmcode config show --all` lists every key%s",
+					args[0], didYouMean(key))
 			}
-			c := ws.Config
+			if toUser {
+				return setUserConfigValue(field, value)
+			}
+
+			cfg := ws.Config
 			// Switching provider re-defaults the endpoint only when the user has
 			// not pinned one via flag/env/explicit config value.
 			if key == "provider" {
 				next := config.NormalizeProvider(value)
 				endpointPinned := flagEndpoint != "" ||
 					strings.TrimSpace(os.Getenv("SLMCODE_ENDPOINT")) != "" ||
-					(c.Endpoint != "" && c.Endpoint != config.DefaultEndpointFor(c.Provider))
-				if next != config.NormalizeProvider(c.Provider) && !endpointPinned {
-					c.Endpoint = config.DefaultEndpointFor(next)
-					fmt.Println(cli.Dim("  endpoint → " + c.Endpoint + " (provider default)"))
+					(cfg.Endpoint != "" && cfg.Endpoint != config.DefaultEndpointFor(cfg.Provider))
+				if next != config.NormalizeProvider(cfg.Provider) && !endpointPinned {
+					cfg.Endpoint = config.DefaultEndpointFor(next)
+					fmt.Println(cli.Dim("  endpoint → " + cfg.Endpoint + " (provider default)"))
 				}
+				// A manual provider choice unpins the stack highlight.
+				cfg.ActiveStack = ""
 			}
-			c.ApplyPatch(patch)
-			if key == "permission" {
-				c.DryRun = strings.EqualFold(value, "dry-run")
+			if err := cfg.Set(key, value); err != nil {
+				return failf(2, "%s", err.Error())
 			}
-			if key == "dry_run" {
-				if b, perr := parseConfigBool(value); perr == nil && b {
-					c.Permission = "dry-run"
-				}
-			}
-			if err := c.Save(); err != nil {
+			cfg.Normalize()
+			if err := cfg.Save(); err != nil {
 				return err
 			}
-			// Read back so the printed value is what was actually stored.
-			eff := effectiveConfigMap(c)
-			stored := formatConfigValue(eff[key])
-			fmt.Println(cli.Success(fmt.Sprintf("%s = %s", key, stored)))
+			stored, _ := cfg.Get(key)
+			fmt.Println(cli.Success(fmt.Sprintf("%s = %s", key, formatConfigValue(stored))))
+			fmt.Println(cli.Dim("  " + configFilePath(cfg.SlmDir())))
 			return nil
 		},
-	})
+	}
+	c.Flags().BoolVar(&toUser, "user", false, "write to the user-level config instead of this project")
+	return c
+}
 
-	// ── unset ──
-	cmd.AddCommand(&cobra.Command{
+// setUserConfigValue writes one key into the user-level config file, creating
+// it if needed. It rewrites only that key, leaving the rest of the file alone.
+func setUserConfigValue(field config.FieldSchema, value string) error {
+	path := config.UserConfigPath()
+	if path == "" {
+		path = config.DefaultUserConfigPath()
+	}
+	if path == "" {
+		return failf(1, "cannot resolve a user config location — set SLMCODE_USER_CONFIG")
+	}
+	// Validate against a throwaway config before touching the file.
+	probe := config.Default("")
+	if err := probe.Set(field.Key, value); err != nil {
+		return failf(2, "%s", err.Error())
+	}
+	stored, _ := probe.Get(field.Key)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	if err := config.WriteUserValue(path, field.Key, stored); err != nil {
+		return err
+	}
+	fmt.Println(cli.Success(fmt.Sprintf("%s = %s (user)", field.Key, formatConfigValue(stored))))
+	fmt.Println(cli.Dim("  " + path))
+	return nil
+}
+
+func configUnsetCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "unset [key]",
-		Short: "Reset a config value to its default",
+		Short: "Reset a config value to what it would inherit (user config, else default)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			key := canonicalConfigKey(args[0])
-			field, ok := schemaField(key)
-			if !ok {
-				return failf(2, "unknown or non-patchable key %q", args[0])
+			key := config.CanonicalKey(args[0])
+			if _, ok := config.PatchableField(key); !ok {
+				return failf(2, "unknown or read-only key %q%s", args[0], didYouMean(key))
 			}
-			zero := zeroForType(field.Type)
-			patch, _, err := configPatchFromSchemaValue(key, zero)
-			if err != nil {
+			if err := ws.Config.Unset(key); err != nil {
 				return failf(2, "%s", err.Error())
 			}
-			ws.Config.ApplyPatch(patch)
 			if err := ws.Config.Save(); err != nil {
 				return err
 			}
-			eff := effectiveConfigMap(ws.Config)
-			fmt.Println(cli.Success(fmt.Sprintf("%s reset to %s", key, formatConfigValue(eff[key]))))
+			v, _ := ws.Config.Get(key)
+			fmt.Println(cli.Success(fmt.Sprintf("%s reset to %s (%s)",
+				key, formatConfigValue(v), ws.Config.Provenance().Describe(key))))
 			return nil
 		},
-	})
+	}
+}
 
-	// ── path ──
-	cmd.AddCommand(&cobra.Command{
-		Use:   "path",
-		Short: "Print the config file path",
+func configSchemaCmd() *cobra.Command {
+	var asJSON bool
+	var group string
+	c := &cobra.Command{
+		Use:     "schema",
+		Short:   "List every config key with its type, default and allowed values",
+		Example: "  slmcode config schema\n  slmcode config schema --group hitl\n  slmcode config schema --json",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
+			fields := config.Schema()
+			if group != "" {
+				var kept []config.FieldSchema
+				for _, f := range fields {
+					if strings.EqualFold(f.Group, group) {
+						kept = append(kept, f)
+					}
+				}
+				fields = kept
+			}
+			if asJSON {
+				return emitJSON(map[string]any{"fields": fields, "groups": config.Groups})
+			}
+			cli.Header("Config schema")
+			lastGroup := ""
+			for _, f := range fields {
+				if f.Group != lastGroup {
+					lastGroup = f.Group
+					fmt.Println()
+					fmt.Println("  " + cli.Bold(strings.ToUpper(f.Group)))
+				}
+				kind := f.Type
+				if len(f.Enum) > 0 {
+					kind = strings.Join(f.Enum, "|")
+				}
+				fmt.Printf("  %s %s  %s\n",
+					cli.Accent(cli.PadWidth(f.Key, 30)),
+					cli.Dim(cli.PadWidth(kind, 22)),
+					cli.Dim("default: "+formatPlainValue(f.Default)))
+				if f.Description != "" {
+					fmt.Printf("  %s%s\n", strings.Repeat(" ", 30), cli.Dim(f.Description))
+				}
+			}
+			fmt.Println()
+			fmt.Println(cli.Dim("  every key is also settable as its environment variable, e.g. SLMCODE_MAX_PARALLEL"))
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	c.Flags().StringVar(&group, "group", "", "only this group")
+	return c
+}
+
+func configPathCmd() *cobra.Command {
+	var asJSON bool
+	c := &cobra.Command{
+		Use:   "path",
+		Short: "Print the config file paths (project and user)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jsonMode(asJSON)
 			ws, err := openWorkspace()
 			if err != nil {
 				return err
 			}
-			fmt.Println(configFilePath(ws.Config.SlmDir()))
+			project := configFilePath(ws.Config.SlmDir())
+			user := config.UserConfigPath()
+			if asJSON {
+				return emitJSON(map[string]any{
+					"project":         project,
+					"user":            user,
+					"user_candidates": config.UserConfigPaths(),
+				})
+			}
+			fmt.Println(project)
+			if user != "" {
+				fmt.Println(cli.Dim("user: " + user))
+			}
 			return nil
 		},
-	})
-
-	return cmd
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
+	return c
 }
 
-func schemaField(key string) (config.FieldSchema, bool) {
-	for _, f := range mergedSchema() {
-		if f.Key == key && f.Patchable {
-			return f, true
+// didYouMean suggests the closest key when a typo is likely.
+func didYouMean(key string) string {
+	var best string
+	bestScore := 0
+	for _, f := range config.Schema() {
+		score := commonPrefixLen(f.Key, key)
+		if score > bestScore && score >= 4 {
+			best, bestScore = f.Key, score
 		}
 	}
-	return config.FieldSchema{}, false
-}
-
-// zeroForType returns the "unset" literal for a schema type. For enums the
-// first allowed value is used, since an empty string would fail validation.
-func zeroForType(t string) string {
-	switch t {
-	case "bool":
-		return "false"
-	case "int":
-		return "0"
-	case "float":
-		return "0"
-	case "string[]":
-		return "-"
-	default:
+	if best == "" {
 		return ""
 	}
+	return " — did you mean " + best + "?"
+}
+
+func commonPrefixLen(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
 }
 
 func formatConfigValue(v any) string {
@@ -425,11 +469,18 @@ func formatConfigValue(v any) string {
 			return cli.Green("true")
 		}
 		return cli.Dim("false")
+	case int:
+		return strconv.Itoa(t)
 	case float64:
 		if t == float64(int64(t)) {
 			return strconv.FormatInt(int64(t), 10)
 		}
 		return strconv.FormatFloat(t, 'g', -1, 64)
+	case []string:
+		if len(t) == 0 {
+			return cli.Dim("(empty)")
+		}
+		return strings.Join(t, ", ")
 	case []any:
 		if len(t) == 0 {
 			return cli.Dim("(empty)")
@@ -439,24 +490,52 @@ func formatConfigValue(v any) string {
 			parts = append(parts, fmt.Sprint(x))
 		}
 		return strings.Join(parts, ", ")
+	case map[string]int:
+		if len(t) == 0 {
+			return cli.Dim("(empty)")
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, t[k]))
+		}
+		return strings.Join(parts, " ")
 	default:
-		return fmt.Sprint(v)
+		return formatPlainValue(v)
 	}
 }
 
-func originTag(o configOrigin) string {
-	switch o {
-	case originFlag:
-		return cli.Yellow("flag")
-	case originEnv:
-		return cli.Cyan("env")
-	case originUser:
-		return cli.Blue("user")
-	case originFile:
-		return cli.Green("project")
-	default:
-		return cli.Dim("default")
+// formatPlainValue is formatConfigValue without color, for schema listings.
+func formatPlainValue(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "-"
+	case string:
+		if t == "" {
+			return `""`
+		}
+		return t
+	case []string:
+		if len(t) == 0 {
+			return "[]"
+		}
+		return strings.Join(t, ",")
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case float64:
+		return strconv.FormatFloat(t, 'g', -1, 64)
 	}
+	rv := fmt.Sprint(v)
+	if rv == "map[]" || rv == "[]" {
+		return "-"
+	}
+	return cli.Clip(rv, 40)
 }
 
 func redactKey(k string) string {

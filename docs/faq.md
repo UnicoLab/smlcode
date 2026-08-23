@@ -86,7 +86,7 @@ Take a number. Or just `Ctrl+F`.
 ## Quality issues 🥴
 
 ??? question "📂 It edits the wrong files"
-    - Lower `max_context_kb`
+    - Set a correct `model_profiles.<family>.context_limit`, or lower `context_role_budget` / `repo_map_tokens`
     - Pin `atomic-coding`
     - Add a stern `AGENTS.md`
     - Force a fresh explore once:

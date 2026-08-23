@@ -451,7 +451,11 @@ detected and rebuilt from the log.
 
 | Knob | Where | Effect |
 |---|---|---|
-| `EngineOptions.Deterministic` | `evolve.OpenWith` | greedy policy, no exploration — for CI and reproducible runs (`--no-explore`) |
+| `evolve` | config / `--evolve` / `--no-evolve` | turn the whole subsystem on or off (default on) |
+| `deterministic` | config / `--no-explore` | greedy policy, no exploration — for CI and reproducible runs; `dry_run` implies it |
+| `memory_tokens` | config | token budget for the injected memory block (default 300) |
+| `regression_checks` | config | replay stored regression checks around the QA gate |
+| `EngineOptions.Deterministic` | `evolve.OpenWith` | the library-level form of `deterministic` |
 | `EngineOptions.Seed` | `evolve.OpenWith` | reproducible exploration |
 | `EngineOptions.ReadOnly` | `evolve.OpenWith` | open every store without writing |
 | `EngineOptions.ProjectPolicy` | `evolve.OpenWith` | keep bandit posteriors in the project instead of `~` |
@@ -467,7 +471,30 @@ detected and rebuilt from the log.
 
 ## 6. Inspecting and resetting
 
-Look at what the harness believes:
+### From the CLI
+
+```bash
+slmcode memory show --role worker      # the memory block a role actually receives
+slmcode memory show --budget 500       # …at a different token budget
+slmcode memory episodes 20             # the most recent runs the harness remembers
+slmcode memory facts --kind command    # distilled semantic facts, filtered by kind
+slmcode memory forget episodic --yes   # working|episodic|semantic|procedural|project|all
+
+slmcode evolve rules                   # repair rules with confidence and hit counts
+slmcode evolve rules --all             # include seeded-but-unused and retired rules
+slmcode evolve why edit_format         # the posterior table behind a learned choice
+slmcode evolve regressions             # stored regression checks and their status
+slmcode evolve regressions --run       # replay the offline (file-based) checks now
+slmcode evolve reset --yes             # rules, policy, regressions and memory
+
+slmcode metrics show                   # the latest run
+slmcode metrics show --last 10         # …plus an aggregate over the last 10
+slmcode metrics compare 12             # newest 12 runs vs the 12 before them
+```
+
+Every one of these takes `--json`.
+
+### From the shell
 
 ```bash
 cat .slmcode/memory/SEMANTIC.md        # distilled project facts

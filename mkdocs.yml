@@ -143,22 +143,28 @@ nav:
   - 📘 Handbook:
       - 🧭 User guide: guide.md
       - 🖥️ TUI & chat: tui.md
-      - 🦋 Skills: skills.md
       - 🎨 Studio: studio.md
+      - 🦋 Skills: skills.md
       - 🧩 Agents: agents.md
       - 🧱 Blocks: blocks.md
-      - 🛠️ Customization: customization.md
       - 🏭 Pipeline: pipeline.md
+      - 🛠️ Customization: customization.md
       - 🧪 Recipes: recipes.md
   - 📚 Reference:
       - ⌨️ CLI: cli.md
       - ⚙️ Config: config.md
-      - 🏭 Pipeline: pipeline.md
+      - 🧰 Tools (ACI): tools.md
+      - 🔒 Constrained decoding: decoding.md
+      - 📐 Context engineering: context.md
+      - 🛡️ Permissions & safety: permissions.md
       - ✅ Testing: testing.md
+      - 🩺 Troubleshooting: troubleshooting.md
       - ❓ FAQ: faq.md
   - 🔧 Internals:
       - 🏗️ Architecture: architecture.md
+      - 🧭 Conventions: conventions.md
       - 🧬 Self-improvement & memory: self-improvement.md
   - 💚 Project:
+      - 🚚 Migration notes: migration.md
       - 📝 Changelog: changelog.md
       - 🤝 Contributing: contributing.md

@@ -1,6 +1,6 @@
 # 🧩 Agents
 
-Seventeen specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
+Twenty built-in specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
 <div class="slm-banner" markdown>
 <span class="slm-banner__emoji">🧬</span>
@@ -33,6 +33,9 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
 | `composer` | — | pipeline JSON | Assemble a task-specific pipeline (dynamic_pipeline) 🎯 |
+| `reviewer-strict` | — | approve JSON | Second opinion in the speculative review race (`max_parallel >= 3`), temperature 0 🔍🔍 |
+| `describer` | — | prose | Architect half of the describer→editor pair (`architect_editor`) 🗣️ |
+| `editor` | ✅ + `find_models` / `mcp_call` | status | Editor half: applies a described change, minimal reasoning, strict format ✍️ |
 
 !!! note "🧰 Coding tools"
     Coding agents share `ws_*` + `git_*` plus **`find_models`** (auth-gated catalog)
@@ -40,7 +43,8 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 
 !!! note "⚖ @escalate"
     Fired only when a task hits **max review retries** and the human does not answer
-    the escalate modal / `/escalate` within `escalate_ask_timeout` (default 30s).
+    the escalate modal / `/escalate` within `escalate_ask_timeout` (default 5m) — and only when
+    no human is attached; with a TTY or a Studio client the gate blocks instead of expiring.
     Override the specialist with `escalate_timeout_agent` (auto: escalate → reviewer → coordinator).
 
 ```bash
@@ -55,9 +59,14 @@ curl -s localhost:7420/api/agents | jq '.[].id'
 `.slmcode/agents/<id>.yaml` or `~/.slmcode/agents/`.
 
 ```bash
-/agent new id=night-auditor title=Night provider=ollama model=qwen2.5-coder:14b
+# TUI
 /agent edit worker model=qwen2.5-coder:14b
-/agent show night-auditor
+
+# CLI
+slmcode agent list
+slmcode agent show worker
+slmcode agent edit worker model=qwen2.5-coder:14b provider=ollama
+slmcode agent clear-llm worker
 ```
 
 Fields: `skills`, `model`, `provider`, `endpoint`, `tools`, `temperature`, `max_tokens`, `max_iter`, `system_prompt`.

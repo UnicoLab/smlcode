@@ -1,0 +1,15 @@
+{
+  "id": "unrepairable-js",
+  "query": "Wire the new endpoint into the router",
+  "language": "javascript",
+  "model": "qwen2.5-coder:7b",
+  "edit_format": "search_replace",
+  "task_passed": false,
+  "steps": [
+    {"kind": "assistant"},
+    {"kind": "tool", "tool": "ws_edit", "ok": false, "edit_attempt": true,
+     "args": "{\"path\":\"src/router.js\",\"old_str\":\"app.use(routes)\",\"new_str\":\"app.use(routes2)\"}",
+     "error": "permission denied: src/router.js is outside the focus scope"},
+    {"kind": "assistant"}
+  ]
+}

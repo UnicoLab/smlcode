@@ -210,3 +210,87 @@ func TestSkillsByRoleAndAgentSet(t *testing.T) {
 		}
 	}
 }
+
+// TestOmittedEnabledMeansEnabled is the regression guard for the single most
+// common SLM JSON slip: listing a phase without an "enabled" key.
+//
+// Go's zero value made that mean DISABLED, so a composer emitting
+// {"id":"plan"},{"id":"split"} silently killed planning and splitting and the
+// run fell through to the loop's fallback tasks. Listing a phase now means
+// enabling it; only an explicit false turns one off.
+func TestOmittedEnabledMeansEnabled(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantEnabled map[string]bool
+	}{
+		{
+			name:        "every phase listed with no enabled key survives Apply",
+			raw:         `{"phases":[{"id":"plan"},{"id":"split"},{"id":"execute"},{"id":"test"}]}`,
+			wantEnabled: map[string]bool{"plan": true, "split": true, "execute": true, "test": true},
+		},
+		{
+			name:        "explicit false still disables",
+			raw:         `{"phases":[{"id":"plan","enabled":false},{"id":"execute"}]}`,
+			wantEnabled: map[string]bool{"plan": false, "execute": true},
+		},
+		{
+			name:        "explicit true is unchanged",
+			raw:         `{"phases":[{"id":"plan","enabled":true},{"id":"execute","enabled":true}]}`,
+			wantEnabled: map[string]bool{"plan": true, "execute": true},
+		},
+		{
+			name:        "mixed keys in one document are decoded independently",
+			raw:         `{"phases":[{"id":"plan"},{"id":"split","enabled":false},{"id":"execute","enabled":true}]}`,
+			wantEnabled: map[string]bool{"plan": true, "split": false, "execute": true},
+		},
+		{
+			name:        "an agent override without enabled still enables",
+			raw:         `{"phases":[{"id":"execute","agent":"go-worker"},{"id":"test"}]}`,
+			wantEnabled: map[string]bool{"execute": true, "test": true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			comp, err := Parse(tc.raw)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			got := map[string]bool{}
+			for _, p := range comp.Phases {
+				got[p.ID] = p.Enabled
+			}
+			for id, want := range tc.wantEnabled {
+				if got[id] != want {
+					t.Fatalf("phase %q Enabled = %v, want %v (parsed %+v)", id, got[id], want, comp.Phases)
+				}
+			}
+
+			cfg, err := Apply(comp)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			for id, want := range tc.wantEnabled {
+				ps, ok := cfg.Phases[id]
+				if !ok {
+					t.Fatalf("phase %q missing from the applied pipeline", id)
+				}
+				live := ps.EnabledOrDefault() && ps.When != pipeline.WhenNever
+				if live != want {
+					t.Fatalf("phase %q after Apply: enabled=%v when=%q, want live=%v",
+						id, ps.EnabledOrDefault(), ps.When, want)
+				}
+			}
+		})
+	}
+}
+
+// TestGoConstructedPhaseChoiceIsUnaffected pins the decode-boundary scope of
+// the default: the field is still a plain bool, so Go callers keep full
+// control and pkg/orchestrator's raw-JSON workaround stays compile-compatible.
+func TestGoConstructedPhaseChoiceIsUnaffected(t *testing.T) {
+	p := PhaseChoice{ID: "plan"}
+	if p.Enabled {
+		t.Fatal("a Go-constructed PhaseChoice must keep its zero value; the default belongs to the JSON decoder")
+	}
+}

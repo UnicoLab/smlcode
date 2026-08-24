@@ -94,15 +94,15 @@ func FormatPlaceholderReport(gaps []PreciseGap) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Placeholder gaps (precise)\n")
-	b.WriteString(fmt.Sprintf("%d file(s) still need real implementations:\n", len(gaps)))
+	fmt.Fprintf(&b, "%d file(s) still need real implementations:\n", len(gaps))
 	for _, g := range gaps {
 		loc := g.Path
 		if g.Line > 0 {
 			loc = fmt.Sprintf("%s:%d", g.Path, g.Line)
 		}
-		b.WriteString(fmt.Sprintf("- `%s` — %s\n", loc, g.Reason))
+		fmt.Fprintf(&b, "- `%s` — %s\n", loc, g.Reason)
 		if s := strings.TrimSpace(g.Snippet); s != "" {
-			b.WriteString(fmt.Sprintf("  snippet: `%s`\n", truncateRunes(s, 80)))
+			fmt.Fprintf(&b, "  snippet: `%s`\n", truncateRunes(s, 80))
 		}
 	}
 	b.WriteString("Fill each gap with working code, or leave a `// TODO(precise): …` " +

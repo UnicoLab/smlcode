@@ -292,7 +292,7 @@ func FormatAgentListWithGlobals(custom []agents.CustomSpec, globalProvider, glob
 			}
 			extra = "  " + Dim(tag)
 		}
-		b.WriteString(fmt.Sprintf("  %s @%-14s %s%s\n", mark, id, title, extra))
+		fmt.Fprintf(&b, "  %s @%-14s %s%s\n", mark, id, title, extra)
 	}
 	b.WriteString(Dim("  /agent show|new|edit|delete <id>  ·  inline: /agent new id=foo title=Bar provider=openai endpoint=http://…\n"))
 	b.WriteString(Dim("  empty model/provider = inherit active stack / global config\n"))
@@ -316,7 +316,7 @@ func FormatAgentShow(a map[string]interface{}) string {
 		if !ok || v == nil || v == "" {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+		fmt.Fprintf(&b, "  %s: %v\n", k, v)
 	}
 	return b.String()
 }

@@ -405,7 +405,7 @@ func processIsSlmcode(pid int, pidStr string) bool {
 		return filepath.Base(strings.TrimSpace(argv0)) == "slmcode"
 	}
 	// macOS/BSD: ps prints the command name.
-	psOut, err := exec.Command("ps", "-p", pidStr, "-o", "comm=").Output()
+	psOut, err := exec.Command("ps", "-p", pidStr, "-o", "comm=").Output() //nolint:gosec // pidStr is a numeric PID string, argv-only (no shell)
 	if err != nil {
 		return false
 	}

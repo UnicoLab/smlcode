@@ -59,7 +59,7 @@ func gitIgnores(root, rel string) bool {
 	if !isGitRepo(root) {
 		return true // not a repo: nothing can be staged
 	}
-	c := exec.Command("git", "-C", root, "check-ignore", "-q", rel)
+	c := exec.Command("git", "-C", root, "check-ignore", "-q", rel) //nolint:gosec // argv-only git invocation, no shell; root/rel are local paths
 	return c.Run() == nil
 }
 

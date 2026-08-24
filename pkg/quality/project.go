@@ -239,12 +239,12 @@ func FormatCompletenessReport(issues []CompletenessIssue) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Project completeness (reference bar)\n")
-	b.WriteString(fmt.Sprintf("%d gap(s) vs expert-quality deliverable:\n", len(issues)))
+	fmt.Fprintf(&b, "%d gap(s) vs expert-quality deliverable:\n", len(issues))
 	for _, is := range issues {
 		if is.Path != "" {
-			b.WriteString(fmt.Sprintf("- [%s] `%s` — %s\n", is.Code, is.Path, is.Reason))
+			fmt.Fprintf(&b, "- [%s] `%s` — %s\n", is.Code, is.Path, is.Reason)
 		} else {
-			b.WriteString(fmt.Sprintf("- [%s] %s\n", is.Code, is.Reason))
+			fmt.Fprintf(&b, "- [%s] %s\n", is.Code, is.Reason)
 		}
 	}
 	b.WriteString("Do not mark success until these match a working, tested template.\n")

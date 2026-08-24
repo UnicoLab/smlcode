@@ -84,7 +84,7 @@ func enrichProjectScaffold(projPath, query string, board *plan.Board) error {
 			if i >= 10 {
 				break
 			}
-			rows.WriteString(fmt.Sprintf("| %s | touched by recent run |\n", f))
+			fmt.Fprintf(&rows, "| %s | touched by recent run |\n", f)
 		}
 		body = replaceMDSection(body, "Key paths", rows.String())
 	}
@@ -145,13 +145,13 @@ func renderSkillsIndex(list []skills.Skill, lessons string) string {
 	var b strings.Builder
 	b.WriteString("# Project Skills\n\n")
 	b.WriteString("_Auto-updated by SLMCode. Injected into specialist packs when relevant._\n\n")
-	b.WriteString(fmt.Sprintf("Updated: %s\n\n", time.Now().Format(time.RFC3339)))
+	fmt.Fprintf(&b, "Updated: %s\n\n", time.Now().Format(time.RFC3339))
 	b.WriteString("## Catalog\n\n")
 	if len(list) == 0 {
 		b.WriteString("_No skills discovered yet._\n\n")
 	}
 	for _, s := range list {
-		b.WriteString(fmt.Sprintf("- **%s** — %s\n  `%s`\n", s.Name, s.Description, s.Path))
+		fmt.Fprintf(&b, "- **%s** — %s\n  `%s`\n", s.Name, s.Description, s.Path)
 	}
 	if strings.TrimSpace(lessons) != "" {
 		b.WriteString("\n## Latest lessons\n\n")
@@ -173,8 +173,8 @@ func mergeLearnedSkill(path, query string, board *plan.Board, lessons string) st
 	}
 
 	var add strings.Builder
-	add.WriteString(fmt.Sprintf("\n## Session %s\n\n", time.Now().Format("2006-01-02 15:04")))
-	add.WriteString(fmt.Sprintf("Query: %s\n\n", firstLine(query)))
+	fmt.Fprintf(&add, "\n## Session %s\n\n", time.Now().Format("2006-01-02 15:04"))
+	fmt.Fprintf(&add, "Query: %s\n\n", firstLine(query))
 	if board != nil {
 		done, fail := 0, 0
 		for _, t := range board.Tasks {
@@ -186,13 +186,13 @@ func mergeLearnedSkill(path, query string, board *plan.Board, lessons string) st
 				fail++
 			}
 		}
-		add.WriteString(fmt.Sprintf("Board: %d done / %d blocked / %d total\n\n", done, fail, len(board.Tasks)))
+		fmt.Fprintf(&add, "Board: %d done / %d blocked / %d total\n\n", done, fail, len(board.Tasks))
 		for _, t := range board.Tasks {
 			t.Normalize()
 			if t.Column != plan.ColDone || len(t.Files) == 0 {
 				continue
 			}
-			add.WriteString(fmt.Sprintf("- ✓ %s touched `%s`\n", t.ID, strings.Join(t.Files, "`, `")))
+			fmt.Fprintf(&add, "- ✓ %s touched `%s`\n", t.ID, strings.Join(t.Files, "`, `"))
 		}
 	}
 	if strings.TrimSpace(lessons) != "" {

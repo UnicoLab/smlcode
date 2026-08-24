@@ -373,13 +373,13 @@ func RenderBlock(skills []ToolSkill, knowledge []KnowledgeEntry) string {
 	if len(skills) > 0 {
 		b.WriteString("\n\n## Tool Usage Guidance\n")
 		for _, s := range skills {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", s.Target, s.Body))
+			fmt.Fprintf(&b, "\n### %s\n%s\n", s.Target, s.Body)
 		}
 	}
 	if len(knowledge) > 0 {
 		b.WriteString("\n\n## Algorithm Reference\n")
 		for _, e := range knowledge {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", e.Topic, e.Body))
+			fmt.Fprintf(&b, "\n### %s\n%s\n", e.Topic, e.Body)
 		}
 	}
 	b.WriteString("\n## Runtime invariants\n")

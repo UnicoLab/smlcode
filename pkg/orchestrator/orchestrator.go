@@ -1763,8 +1763,8 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		brief.WriteString("Wave results for learning:\n")
 		for _, t := range wave {
 			t.Normalize()
-			brief.WriteString(fmt.Sprintf("- %s [%s] %s | out=%s | err=%s\n",
-				t.ID, t.Column, t.Title, truncate(t.Output, 240), truncate(t.Error, 120)))
+			fmt.Fprintf(&brief, "- %s [%s] %s | out=%s | err=%s\n",
+				t.ID, t.Column, t.Title, truncate(t.Output, 240), truncate(t.Error, 120))
 		}
 		if distilled, err := o.runRole(ctx, "memory", agents.PromptLearner+"\n\n"+brief.String()); err == nil {
 			if bullets := learning.JSONLessonsToMarkdown(distilled); bullets != "" {

@@ -83,7 +83,7 @@ func buildTelemetryMarkdown() string {
 	if dropped := backends.DroppedToolCalls(); len(dropped) > 0 {
 		b.WriteString("### Dropped tool calls\n\n")
 		for _, k := range sortedIntKeys(dropped) {
-			b.WriteString(fmt.Sprintf("- %s: %d\n", k, dropped[k]))
+			fmt.Fprintf(&b, "- %s: %d\n", k, dropped[k])
 		}
 		b.WriteString("\n")
 	}

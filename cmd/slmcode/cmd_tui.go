@@ -964,7 +964,7 @@ func firstNonEmptyLine(s string) string {
 }
 
 func gitDirtySummary(root string) string {
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain")
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain") //nolint:gosec // argv-only git invocation, no shell; root is a local path
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
 		return ""

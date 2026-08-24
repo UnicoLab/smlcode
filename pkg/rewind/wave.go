@@ -155,7 +155,7 @@ func CopyTree(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755) //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		}
-		in, err := os.Open(path)
+		in, err := os.Open(path) //nolint:gosec // CopyTree is a test helper; path is walked from a local src tree, not external input
 		if err != nil {
 			return err
 		}

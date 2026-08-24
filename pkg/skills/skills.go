@@ -456,7 +456,7 @@ func WriteSkill(skillsDir string, sk Skill) (string, error) {
 	if !inv && len(sk.Agents) == 0 {
 		inv = true
 	}
-	b.WriteString(fmt.Sprintf("user-invocable: %v\n", inv))
+	fmt.Fprintf(&b, "user-invocable: %v\n", inv)
 	b.WriteString("---\n\n")
 	body := strings.TrimSpace(sk.Body)
 	if body == "" {

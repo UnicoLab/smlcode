@@ -78,12 +78,12 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 		if len(files) == 0 && len(known) > 0 {
 			files = append(files, known...)
 		}
-		tasks[i].Files = ReconcileFiles(root, files, known)
-		EnrichTaskFilesForRename(&tasks[i], query)
+		tasks[i].Files = ReconcileFiles(root, files, known) //nolint:gosec // i ranges over tasks, so i < len(tasks)
+		EnrichTaskFilesForRename(&tasks[i], query)          //nolint:gosec // i ranges over tasks, so i < len(tasks)
 		// Infer focus files from title/description for create/scaffold tasks.
-		if len(tasks[i].Files) == 0 || onlyRootManifest(tasks[i].Files) {
-			if inferred := InferCreateFiles(tasks[i].Title + " " + tasks[i].Description + " " + tasks[i].Acceptance); len(inferred) > 0 {
-				tasks[i].Files = uniq(append(inferred, tasks[i].Files...))
+		if len(tasks[i].Files) == 0 || onlyRootManifest(tasks[i].Files) { //nolint:gosec // i ranges over tasks, so i < len(tasks)
+			if inferred := InferCreateFiles(tasks[i].Title + " " + tasks[i].Description + " " + tasks[i].Acceptance); len(inferred) > 0 { //nolint:gosec // i ranges over tasks, so i < len(tasks)
+				tasks[i].Files = uniq(append(inferred, tasks[i].Files...)) //nolint:gosec // i ranges over tasks, so i < len(tasks)
 			}
 		}
 	}

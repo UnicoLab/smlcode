@@ -126,7 +126,7 @@ func RunBounded(ctx context.Context, dir, command string, timeout time.Duration,
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "bash", "-c", command)
+	cmd := exec.CommandContext(cctx, "bash", "-c", command) //nolint:gosec // running an operator/LLM-issued shell command in the workspace IS the feature (the run_command tool); scoped to the local user's own project
 	cmd.Dir = dir
 	buf := newHeadTailBuffer(maxOutput)
 	cmd.Stdout = buf

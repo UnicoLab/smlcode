@@ -81,7 +81,7 @@ type ApplyResult struct {
 // FindDir locates the stacks/ directory (env, cwd walk, executable, source tree).
 func FindDir() string {
 	if v := strings.TrimSpace(os.Getenv("SLMCODE_STACKS")); v != "" {
-		if st, err := os.Stat(v); err == nil && st.IsDir() {
+		if st, err := os.Stat(v); err == nil && st.IsDir() { //nolint:gosec // v is the user's own SLMCODE_STACKS env var, a local override path
 			return v
 		}
 	}

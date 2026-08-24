@@ -68,7 +68,7 @@ func FormatStaticSection(issues []StaticIssue) string {
 	b.WriteString("\n\n" + StaticSectionHeader + "\n")
 	b.WriteString(SmokeFailedMarker + " — stub/placeholder code detected:\n")
 	for _, is := range issues {
-		b.WriteString(fmt.Sprintf("- %s: %s\n", is.Path, is.Reason))
+		fmt.Fprintf(&b, "- %s: %s\n", is.Path, is.Reason)
 	}
 	b.WriteString("Corrector must replace stubs with real implementations before status=done.\n")
 	return b.String()

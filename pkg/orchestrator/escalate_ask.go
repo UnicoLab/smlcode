@@ -251,7 +251,7 @@ func formatEscalateDecidePrompt(t plan.Task, detail string) string {
 	var b strings.Builder
 	b.WriteString("Human escalate HITL timed out. Decide the next action for this task.\n\n")
 	b.WriteString("## Task\n")
-	b.WriteString(fmt.Sprintf("- id: %s\n- title: %s\n- role: %s\n", t.ID, t.Title, t.Role))
+	fmt.Fprintf(&b, "- id: %s\n- title: %s\n- role: %s\n", t.ID, t.Title, t.Role)
 	if len(t.Files) > 0 {
 		b.WriteString("- files: " + strings.Join(t.Files, ", ") + "\n")
 	}

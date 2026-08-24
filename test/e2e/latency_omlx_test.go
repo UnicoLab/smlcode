@@ -74,7 +74,7 @@ func TestLiveOMLXLatencyBenchmark(t *testing.T) {
 
 	var report strings.Builder
 	report.WriteString("\n=== oMLX multi-turn latency benchmark ===\n")
-	report.WriteString(fmt.Sprintf("provider=%s model=%s endpoint=%s\n", cfg.Provider, cfg.Model, cfg.Endpoint))
+	fmt.Fprintf(&report, "provider=%s model=%s endpoint=%s\n", cfg.Provider, cfg.Model, cfg.Endpoint)
 
 	for _, tr := range turns {
 		start := time.Now()
@@ -83,7 +83,7 @@ func TestLiveOMLXLatencyBenchmark(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tr.name, err)
 		}
-		report.WriteString(fmt.Sprintf("\n--- %s success=%v wall=%s ---\n", tr.name, res.Success, wall.Round(time.Millisecond)))
+		fmt.Fprintf(&report, "\n--- %s success=%v wall=%s ---\n", tr.name, res.Success, wall.Round(time.Millisecond))
 		if len(res.LatencyMs) == 0 {
 			report.WriteString("(no per-role latency recorded)\n")
 			continue
@@ -94,9 +94,9 @@ func TestLiveOMLXLatencyBenchmark(t *testing.T) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			report.WriteString(fmt.Sprintf("  %-14s %6dms\n", k, res.LatencyMs[k]))
+			fmt.Fprintf(&report, "  %-14s %6dms\n", k, res.LatencyMs[k])
 		}
-		report.WriteString(fmt.Sprintf("  %-14s %6dms\n", "TOTAL", wall.Milliseconds()))
+		fmt.Fprintf(&report, "  %-14s %6dms\n", "TOTAL", wall.Milliseconds())
 		t.Logf("%s wall=%s latency=%v success=%v", tr.name, wall, res.LatencyMs, res.Success)
 	}
 

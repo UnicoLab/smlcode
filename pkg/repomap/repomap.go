@@ -131,7 +131,7 @@ func Build(root string, opts Options) (*Map, error) {
 			files = append(files, cached)
 			return nil
 		}
-		data, rerr2 := os.ReadFile(path)
+		data, rerr2 := os.ReadFile(path) //nolint:gosec // path is walked from the user's own project root (abs); single-user local tool, no symlink-race trust boundary here
 		if rerr2 != nil {
 			return nil
 		}

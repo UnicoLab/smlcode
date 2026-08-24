@@ -191,9 +191,9 @@ func resolveUpdateSource(flag string) (src, via string, err error) {
 }
 
 func looksLikeCheckout(root string) bool {
-	_, err1 := os.Stat(filepath.Join(root, "go.mod"))
-	_, err2 := os.Stat(filepath.Join(root, "cmd", "slmcode"))
-	_, err3 := os.Stat(filepath.Join(root, "scripts", "install.sh"))
+	_, err1 := os.Stat(filepath.Join(root, "go.mod"))                //nolint:gosec // root comes from a CLI flag, install.json, or a fixed local-path shortlist
+	_, err2 := os.Stat(filepath.Join(root, "cmd", "slmcode"))        //nolint:gosec // root comes from a CLI flag, install.json, or a fixed local-path shortlist
+	_, err3 := os.Stat(filepath.Join(root, "scripts", "install.sh")) //nolint:gosec // root comes from a CLI flag, install.json, or a fixed local-path shortlist
 	return err1 == nil && err2 == nil && err3 == nil
 }
 
@@ -216,7 +216,7 @@ func readSourceVersion(root string) string {
 }
 
 func readSourceCommit(root string) string {
-	c := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD")
+	c := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD") //nolint:gosec // argv-only git invocation, no shell; root is a local checkout path
 	out, err := c.Output()
 	if err != nil {
 		return "unknown"

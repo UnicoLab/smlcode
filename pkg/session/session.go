@@ -101,8 +101,8 @@ func Archive(slmDir, runID, query, summary string) (string, error) {
 
 	// Bundle key docs for the archive thread.
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# Archive %s\n\n", runID))
-	b.WriteString(fmt.Sprintf("**When:** %s\n\n", time.Now().Format(time.RFC3339)))
+	fmt.Fprintf(&b, "# Archive %s\n\n", runID)
+	fmt.Fprintf(&b, "**When:** %s\n\n", time.Now().Format(time.RFC3339))
 	b.WriteString("## Query\n\n")
 	b.WriteString(strings.TrimSpace(query))
 	b.WriteString("\n\n## Summary\n\n")

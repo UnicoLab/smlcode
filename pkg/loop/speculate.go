@@ -17,6 +17,19 @@ type SpecSlot struct {
 	Required bool
 	Local    func(ctx context.Context) (string, error)
 	Timeout  time.Duration // per-slot timeout; if zero, falls back to r.Timeout
+	// Delay holds a real (non-Local) slot back before it is actually
+	// dispatched to the executor. A race with no Delay launches every slot's
+	// goroutine at once, so cancellation can only ever save WALL-CLOCK time —
+	// by the time a fast winner calls cancel(), a same-speed loser has
+	// already been sent to the executor (and, with an executor that ignores
+	// ctx entirely, already run to completion). That is exactly the gap that
+	// let a "one race, one budget unit" review always spend TWO real LLM
+	// calls: reviewer and reviewer-strict both fired unconditionally instead
+	// of the second firing only when the first did not answer in time. A
+	// short Delay gives the primary slot a genuine head start; the extra
+	// slot's dispatch is skipped (Skipped, not Err) whenever gctx is already
+	// canceled by the time its wait elapses.
+	Delay time.Duration
 }
 
 // SpecResult is the outcome of one speculative slot.
@@ -95,6 +108,21 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
+				if j.slot.Delay > 0 {
+					// Give the un-delayed slot(s) a genuine head start: wait
+					// out the delay (or bail the instant the race is already
+					// won) BEFORE ever reaching the executor.
+					select {
+					case <-gctx.Done():
+						mu.Lock()
+						if results[j.idx].Role == "" {
+							results[j.idx] = SpecResult{Role: j.slot.Role, Skipped: true, Err: gctx.Err()}
+						}
+						mu.Unlock()
+						continue
+					case <-time.After(j.slot.Delay):
+					}
+				}
 				select {
 				case <-gctx.Done():
 					mu.Lock()
@@ -160,11 +188,11 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 	selfCanceled := raceWon && ctx.Err() == nil
 	for i := range results {
 		if results[i].Role == "" {
-			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
+			results[i] = SpecResult{Role: slots[i].Role, Skipped: true} //nolint:gosec // results := make([]SpecResult, len(slots)); i ranges over results so i < len(slots)
 			continue
 		}
 		if selfCanceled && IsContextCancelErr(results[i].Err) {
-			results[i] = SpecResult{Role: slots[i].Role, Skipped: true}
+			results[i] = SpecResult{Role: slots[i].Role, Skipped: true} //nolint:gosec // results := make([]SpecResult, len(slots)); i ranges over results so i < len(slots)
 		}
 	}
 	return results

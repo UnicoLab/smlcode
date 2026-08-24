@@ -1325,6 +1325,14 @@ func (r *Runner) decideReview(ctx context.Context, current plan.Task, g gateStat
 	return r.plainReview(ctx, current, g)
 }
 
+// reviewerStrictDelay gives the primary reviewer a head start before the
+// strict second reviewer is even dispatched. A real LLM essentially never
+// answers this fast, so production still fans out to both reviewers exactly
+// as before; the delay only matters against a fast/local answer (disk
+// evidence, a quick model, a test double), where it lets the race actually
+// skip the second slot instead of firing it and discarding the result.
+const reviewerStrictDelay = 20 * time.Millisecond
+
 // speculativeReview races a disk/acceptance probe against the reviewer LLM (and
 // a strict second reviewer when capacity allows).
 func (r *Runner) speculativeReview(ctx context.Context, current plan.Task, g gateState,
@@ -1435,6 +1443,14 @@ func (r *Runner) reviewSlots(current plan.Task, g gateState, baseline map[string
 				Role: strict, Required: false,
 				Prompt:  reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
 				Timeout: revTimeout,
+				// A genuine head start for the primary reviewer: a real LLM
+				// almost never answers inside this window, so production
+				// still races both reviewers as before. But it means the
+				// strict slot's dispatch — and its real budget/wall-clock
+				// cost — is actually skippable, not just cancelable after
+				// the fact, whenever the primary reviewer is fast enough to
+				// have already decided the race.
+				Delay: reviewerStrictDelay,
 			})
 		}
 	}

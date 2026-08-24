@@ -293,7 +293,7 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		if looksLikeRawJSON(s) {
 			continue
 		}
-		p.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+		fmt.Fprintf(&p, "%d. %s\n", i+1, s)
 	}
 	if len(b.Plan.Assumptions) > 0 {
 		p.WriteString("\n## Assumptions\n\n")
@@ -323,8 +323,8 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		deps := strings.Join(task.DependsOn, ",")
 		done, total := task.ChecklistProgress()
 		check := fmt.Sprintf("%d/%d", done, total)
-		t.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
-			task.ID, escapePipe(task.Title), task.Column, task.Role, check, deps))
+		fmt.Fprintf(&t, "| %s | %s | %s | %s | %s | %s |\n",
+			task.ID, escapePipe(task.Title), task.Column, task.Role, check, deps)
 	}
 	t.WriteString("\n## Details\n\n")
 	// Name a command every renderer has, not one UI's panel: TASKS.md is
@@ -336,18 +336,18 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 		"run `slmcode task show <id>`, or open the task in Studio._\n")
 	for _, task := range b.Tasks {
 		task.Normalize()
-		t.WriteString(fmt.Sprintf("\n### %s — %s\n\n", task.ID, task.Title))
-		t.WriteString(fmt.Sprintf("- **Column:** %s\n", task.Column))
-		t.WriteString(fmt.Sprintf("- **Role:** %s\n", task.Role))
+		fmt.Fprintf(&t, "\n### %s — %s\n\n", task.ID, task.Title)
+		fmt.Fprintf(&t, "- **Column:** %s\n", task.Column)
+		fmt.Fprintf(&t, "- **Role:** %s\n", task.Role)
 		if task.Assignee != "" {
-			t.WriteString(fmt.Sprintf("- **Assignee:** %s\n", task.Assignee))
+			fmt.Fprintf(&t, "- **Assignee:** %s\n", task.Assignee)
 		}
-		t.WriteString(fmt.Sprintf("- **Status:** %s\n", task.Status))
+		fmt.Fprintf(&t, "- **Status:** %s\n", task.Status)
 		if len(task.Files) > 0 {
-			t.WriteString(fmt.Sprintf("- **Files:** %s\n", strings.Join(task.Files, ", ")))
+			fmt.Fprintf(&t, "- **Files:** %s\n", strings.Join(task.Files, ", "))
 		}
 		if task.Acceptance != "" {
-			t.WriteString(fmt.Sprintf("- **Acceptance:** %s\n", truncateMD(task.Acceptance, 280)))
+			fmt.Fprintf(&t, "- **Acceptance:** %s\n", truncateMD(task.Acceptance, 280))
 		}
 		if len(task.Checklist) > 0 {
 			t.WriteString("\n#### Checklist\n\n")
@@ -356,7 +356,7 @@ func (b *Board) ToMarkdown() (planMD, tasksMD string) {
 				if c.Done {
 					mark = "[x]"
 				}
-				t.WriteString(fmt.Sprintf("- %s %s (`%s`)\n", mark, c.Text, c.ID))
+				fmt.Fprintf(&t, "- %s %s (`%s`)\n", mark, c.Text, c.ID)
 			}
 		}
 		desc := leanTaskDescription(task.Description)

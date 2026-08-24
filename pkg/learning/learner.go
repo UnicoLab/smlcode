@@ -75,7 +75,7 @@ func RenderMarkdown(lessons []Lesson) string {
 		case "success":
 			prefix = "✓"
 		}
-		b.WriteString(fmt.Sprintf("- %s %s\n", prefix, l.Text))
+		fmt.Fprintf(&b, "- %s %s\n", prefix, l.Text)
 	}
 	return b.String()
 }

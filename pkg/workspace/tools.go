@@ -1108,7 +1108,7 @@ func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (in
 			// Cross-device (or otherwise un-renamable): copy, VERIFY, then remove.
 			// The old fallback discarded the ReadFile error and could leave a
 			// zero-byte destination while deleting the source.
-			if werr := os.WriteFile(toAbs, content, srcInfo.Mode().Perm()); werr != nil {
+			if werr := os.WriteFile(toAbs, content, srcInfo.Mode().Perm()); werr != nil { //nolint:gosec // toAbs already root-confined by checkFocus/guardWrite above
 				return fmt.Sprintf(
 					"ws_mv failed: could not write %s (%v). %s is untouched — pick a writable destination.",
 					to, werr, from), nil
@@ -1407,7 +1407,7 @@ func (w *Workspace) grep(_ context.Context, args map[string]interface{}) (interf
 		if grel, gerr := filepath.Rel(w.Root, path); gerr == nil && HideFromListing(grel) {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := os.ReadFile(path) //nolint:gosec // path is walked from base under w.Root, the user's own workspace; single-user local tool, no symlink-race trust boundary here
 		if rerr != nil || len(data) > 500_000 || isProbablyBinary(data) {
 			return nil
 		}

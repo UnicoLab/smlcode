@@ -54,7 +54,7 @@ func FormatClaimsSection(issues []ClaimIssue) string {
 	b.WriteString("\n\n" + ClaimsSectionHeader + "\n")
 	b.WriteString(SmokeFailedMarker + " — hallucinated or missing paths in files_changed:\n")
 	for _, is := range issues {
-		b.WriteString(fmt.Sprintf("- %s: %s\n", is.Path, is.Reason))
+		fmt.Fprintf(&b, "- %s: %s\n", is.Path, is.Reason)
 	}
 	b.WriteString("Fix: only list paths you actually wrote/edited; reconcile with disk.\n")
 	return b.String()

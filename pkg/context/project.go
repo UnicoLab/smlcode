@@ -20,7 +20,7 @@ func SeedProjectMarkdown(root, projectName string) string {
 	paths := detectKeyPaths(root)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# Project: %s\n\n", projectName))
+	fmt.Fprintf(&b, "# Project: %s\n\n", projectName)
 	b.WriteString("## Overview\n\n")
 	b.WriteString(overview)
 	b.WriteString("\n\n## Conventions\n\n")
@@ -35,7 +35,7 @@ func SeedProjectMarkdown(root, projectName string) string {
 		b.WriteString("| . | project root |\n")
 	} else {
 		for _, p := range paths {
-			b.WriteString(fmt.Sprintf("| %s | %s |\n", p.path, p.role))
+			fmt.Fprintf(&b, "| %s | %s |\n", p.path, p.role)
 		}
 	}
 	return b.String()

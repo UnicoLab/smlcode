@@ -637,11 +637,11 @@ func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", url) //nolint:gosec // argv-only, no shell; url is our own local studio server URL, not attacker input
 	case "linux":
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", url) //nolint:gosec // argv-only, no shell; url is our own local studio server URL, not attacker input
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url) //nolint:gosec // argv-only, no shell; url is our own local studio server URL, not attacker input
 	}
 	if cmd != nil {
 		_ = cmd.Run()

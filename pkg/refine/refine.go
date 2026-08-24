@@ -30,7 +30,7 @@ func Build(in Input) Output {
 		return Output{Skip: true, Reason: "no lessons"}
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Refine %s (round %d)\n\n", time.Now().Format("15:04:05"), in.Round))
+	fmt.Fprintf(&b, "## Refine %s (round %d)\n\n", time.Now().Format("15:04:05"), in.Round)
 	if q := strings.TrimSpace(in.Query); q != "" {
 		b.WriteString("Query: " + firstLine(q, 160) + "\n\n")
 	}

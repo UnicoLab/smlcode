@@ -108,7 +108,7 @@ func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
 
 	var b strings.Builder
 	b.WriteString("Atomic task — complete only this:\n\n")
-	b.WriteString(fmt.Sprintf("ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role))
+	fmt.Fprintf(&b, "ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role)
 	if h := strings.TrimSpace(opt.LangHint); h != "" {
 		b.WriteString("## Project language\n" + h + "\n\n")
 	}
@@ -136,7 +136,7 @@ func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
 			if c.Done {
 				mark = "[x]"
 			}
-			b.WriteString(fmt.Sprintf("- %s %s\n", mark, c.Text))
+			fmt.Fprintf(&b, "- %s %s\n", mark, c.Text)
 		}
 	}
 	if strings.TrimSpace(t.Notes) != "" {

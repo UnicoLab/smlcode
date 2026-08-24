@@ -472,8 +472,8 @@ func tasksBrief(board *plan.Board) string {
 	var b strings.Builder
 	for _, t := range board.Tasks {
 		t.Normalize()
-		b.WriteString(fmt.Sprintf("- %s [%s/%s] %s files=%v err=%s\n",
-			t.ID, t.Column, t.Role, t.Title, t.Files, firstSentence(t.Error)))
+		fmt.Fprintf(&b, "- %s [%s/%s] %s files=%v err=%s\n",
+			t.ID, t.Column, t.Role, t.Title, t.Files, firstSentence(t.Error))
 	}
 	return b.String()
 }

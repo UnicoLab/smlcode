@@ -132,8 +132,8 @@ func WriteTurnSummary(slmDir string, t *Turn, board plan.Board, extraNotes strin
 func BuildSummaryMarkdown(t *Turn, board plan.Board, extraNotes string) string {
 	var b strings.Builder
 	b.WriteString("# Query summary\n\n")
-	b.WriteString(fmt.Sprintf("**Query ID:** %s\n\n", t.ID))
-	b.WriteString(fmt.Sprintf("**When:** %s\n\n", t.UpdatedAt))
+	fmt.Fprintf(&b, "**Query ID:** %s\n\n", t.ID)
+	fmt.Fprintf(&b, "**When:** %s\n\n", t.UpdatedAt)
 	b.WriteString("## Asked\n\n")
 	b.WriteString(strings.TrimSpace(t.Query))
 	b.WriteString("\n\n## Outcome\n\n")
@@ -145,10 +145,10 @@ func BuildSummaryMarkdown(t *Turn, board plan.Board, extraNotes string) string {
 	if failed > 0 {
 		status = "failed"
 	}
-	b.WriteString(fmt.Sprintf("- **Status:** %s\n", status))
-	b.WriteString(fmt.Sprintf("- **Tasks:** %d/%d done, %d failed\n", done, total, failed))
+	fmt.Fprintf(&b, "- **Status:** %s\n", status)
+	fmt.Fprintf(&b, "- **Tasks:** %d/%d done, %d failed\n", done, total, failed)
 	if board.Plan.Summary != "" {
-		b.WriteString(fmt.Sprintf("- **Plan:** %s\n", strings.TrimSpace(board.Plan.Summary)))
+		fmt.Fprintf(&b, "- **Plan:** %s\n", strings.TrimSpace(board.Plan.Summary))
 	}
 	b.WriteString("\n## Files touched\n\n")
 	files := collectTouchedFiles(board)
@@ -169,9 +169,9 @@ func BuildSummaryMarkdown(t *Turn, board plan.Board, extraNotes string) string {
 		case task.Column == plan.ColBlocked || task.Status == plan.StatusFailed || task.Error != "":
 			mark = "✗"
 		}
-		b.WriteString(fmt.Sprintf("- %s **%s** (%s) — %s\n", mark, task.ID, task.Column, task.Title))
+		fmt.Fprintf(&b, "- %s **%s** (%s) — %s\n", mark, task.ID, task.Column, task.Title)
 		if task.Error != "" {
-			b.WriteString(fmt.Sprintf("  - error: %s\n", firstLine(task.Error)))
+			fmt.Fprintf(&b, "  - error: %s\n", firstLine(task.Error))
 		}
 	}
 	if strings.TrimSpace(extraNotes) != "" {
@@ -184,7 +184,7 @@ func BuildSummaryMarkdown(t *Turn, board plan.Board, extraNotes string) string {
 		b.WriteString(board.Plan.Summary + "\n")
 	}
 	for i, s := range board.Plan.Steps {
-		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, s))
+		fmt.Fprintf(&b, "%d. %s\n", i+1, s)
 	}
 	return b.String()
 }
@@ -337,7 +337,7 @@ func appendSummariesIndex(slmDir string, t *Turn, fullBody string) error {
 	existing, _ := os.ReadFile(path)
 	var b strings.Builder
 	b.WriteString(string(existing))
-	b.WriteString(fmt.Sprintf("\n\n## Turn %s (%s)\n\n", t.ID, t.UpdatedAt))
+	fmt.Fprintf(&b, "\n\n## Turn %s (%s)\n\n", t.ID, t.UpdatedAt)
 	b.WriteString("**Query:** " + firstLine(t.Query) + "\n\n")
 	// Keep index lean — outcome + files + lessons excerpt.
 	excerpt := fullBody

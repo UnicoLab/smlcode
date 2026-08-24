@@ -226,7 +226,7 @@ func (w *Workspace) checkSyntaxOfText(ctx context.Context, abs, text string) Syn
 	defer func() { _ = os.RemoveAll(dir) }()
 	tmp := filepath.Join(dir, "before"+filepath.Ext(abs))
 	// Scratch copy under a private temp dir, read only by the checker below.
-	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil { //nolint:gosec // tmp is our own os.MkdirTemp-generated private scratch path, not external input
 		return SyntaxResult{Status: SyntaxSkipped}
 	}
 	return CheckSyntax(ctx, tmp, w.syntaxTimeout())

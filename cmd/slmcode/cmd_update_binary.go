@@ -390,7 +390,7 @@ func atomicReplace(src, dst string) error {
 // failure here is not actionable (the original error already dominates) but
 // is worth a warning since it can leave debris behind.
 func removeStale(path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) { //nolint:gosec // path is our own generated temp file from the update flow
 		fmt.Fprintf(os.Stderr, "warning: failed to remove temp file %s: %v\n", path, err)
 	}
 }

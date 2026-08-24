@@ -96,7 +96,7 @@ func TextToolNudge(calls []ExtractedCall) string {
 			b.WriteString("…\n")
 			break
 		}
-		b.WriteString(fmt.Sprintf("%d) %s(%s)\n", i+1, c.Name, summarizeInput(c.Input)))
+		fmt.Fprintf(&b, "%d) %s(%s)\n", i+1, c.Name, summarizeInput(c.Input))
 	}
 	return strings.TrimSpace(b.String())
 }

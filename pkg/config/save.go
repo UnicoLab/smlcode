@@ -167,7 +167,7 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.Int() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return v.IsNil()
 	}
 	return false

@@ -862,7 +862,7 @@ func isLeanRole(role string) bool {
 // changed every time.
 func (p *TaskPack) Render() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# Scoped context for role=%s\n\n", p.Role))
+	fmt.Fprintf(&b, "# Scoped context for role=%s\n\n", p.Role)
 
 	if p.Skills != "" {
 		b.WriteString(p.Skills)

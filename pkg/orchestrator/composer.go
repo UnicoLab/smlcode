@@ -1072,13 +1072,13 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 	}
 	if len(inventory) > 0 {
 		ranked := rankComposerInventory(query, inventory, o.composerInventoryLimit())
-		b.WriteString(fmt.Sprintf("## Workspace inventory (top %d of %d authoritative paths — do NOT invent paths)\n",
-			len(ranked), len(inventory)))
+		fmt.Fprintf(&b, "## Workspace inventory (top %d of %d authoritative paths — do NOT invent paths)\n",
+			len(ranked), len(inventory))
 		for _, f := range ranked {
 			b.WriteString("- " + f + "\n")
 		}
 		if len(ranked) < len(inventory) {
-			b.WriteString(fmt.Sprintf("- ... %d more paths omitted for context budget\n", len(inventory)-len(ranked)))
+			fmt.Fprintf(&b, "- ... %d more paths omitted for context budget\n", len(inventory)-len(ranked))
 		}
 		b.WriteString("\n")
 	}
@@ -1102,7 +1102,7 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 		if agent == "" {
 			agent = "(engine)"
 		}
-		b.WriteString(fmt.Sprintf("- %s — label=%q default_agent=%s when=%s\n", id, ps.Label, agent, ps.When))
+		fmt.Fprintf(&b, "- %s — label=%q default_agent=%s when=%s\n", id, ps.Label, agent, ps.When)
 	}
 	b.WriteString("\n")
 
@@ -1112,7 +1112,7 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 		if len(s.Tools) > 0 {
 			tools = "true"
 		}
-		b.WriteString(fmt.Sprintf("- %s — %s (tools=%s)\n", s.ID, s.Title, tools))
+		fmt.Fprintf(&b, "- %s — %s (tools=%s)\n", s.ID, s.Title, tools)
 	}
 	b.WriteString("\n")
 
@@ -1122,7 +1122,7 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 		b.WriteString("(none)\n")
 	}
 	for _, s := range skillList {
-		b.WriteString(fmt.Sprintf("- %s — %s\n", s.Name, truncate(s.Description, 120)))
+		fmt.Fprintf(&b, "- %s — %s\n", s.Name, truncate(s.Description, 120))
 	}
 	b.WriteString("\n")
 
@@ -1211,21 +1211,21 @@ func compositionMarkdown(c composer.Composition) string {
 		if agent == "" {
 			agent = "(default)"
 		}
-		b.WriteString(fmt.Sprintf("- `%s` — %s — agent=%s\n", p.ID, state, agent))
+		fmt.Fprintf(&b, "- `%s` — %s — agent=%s\n", p.ID, state, agent)
 	}
 	b.WriteString("\n## Execute loop\n\n")
-	b.WriteString(fmt.Sprintf("- default_role=%s · reviewer=%s · corrector=%s · max_waves=%d\n",
-		c.Execute.DefaultRole, c.Execute.Reviewer, c.Execute.Corrector, c.Execute.MaxWaves))
+	fmt.Fprintf(&b, "- default_role=%s · reviewer=%s · corrector=%s · max_waves=%d\n",
+		c.Execute.DefaultRole, c.Execute.Reviewer, c.Execute.Corrector, c.Execute.MaxWaves)
 	if len(c.Team) > 0 {
 		b.WriteString("\n## Team & skills\n\n")
 		for _, t := range c.Team {
-			b.WriteString(fmt.Sprintf("- `%s` → %s\n", t.Role, strings.Join(t.Skills, ", ")))
+			fmt.Fprintf(&b, "- `%s` → %s\n", t.Role, strings.Join(t.Skills, ", "))
 		}
 	}
 	if len(c.Slots) > 0 {
 		b.WriteString("\n## Slots\n\n")
 		for _, s := range c.Slots {
-			b.WriteString(fmt.Sprintf("- `%s` (%s)\n", s.ID, s.Agent))
+			fmt.Fprintf(&b, "- `%s` (%s)\n", s.ID, s.Agent)
 		}
 	}
 	return b.String()

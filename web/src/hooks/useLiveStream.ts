@@ -160,7 +160,18 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
     const es = createEventSource(lastSeqRef.current);
     esRef.current = es;
     if (mountedRef.current) {
-      setConnection(attemptsRef.current > 0 ? 'reconnecting' : 'connecting');
+      // Once escalated to 'down', a dispatched retry must not silently
+      // downgrade the banner back to 'reconnecting' — the user would lose
+      // the severity signal on every subsequent attempt, right when it
+      // matters most. 'down' only clears on an actual successful connection
+      // (the 'connected'/onopen handlers reset attemptsRef to 0 below).
+      setConnection(
+        attemptsRef.current >= DOWN_AFTER_ATTEMPTS
+          ? 'down'
+          : attemptsRef.current > 0
+            ? 'reconnecting'
+            : 'connecting',
+      );
     }
 
     es.addEventListener('connected', () => {
@@ -314,10 +325,19 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
       try {
         const h = await getHealth();
         if (cancelled || !mountedRef.current) return;
-        attemptsRef.current = 0;
         const es = esRef.current;
-        // EventSource.OPEN === 1; CONNECTING === 0.
-        setConnection(es && es.readyState === 1 ? 'live' : 'reconnecting');
+        // EventSource.OPEN === 1; CONNECTING === 0. A successful health
+        // check only means the plain HTTP API answered — it says nothing
+        // about the SSE connection itself. Only promote state (and reset
+        // the backoff) when the EventSource is genuinely open; otherwise
+        // leave connection/attemptsRef alone so the escalated 'down' state
+        // from repeated onerror failures survives until the stream
+        // actually reconnects, instead of flapping back to 'reconnecting'
+        // (and resetting backoff to its fastest delay) on every poll tick.
+        if (es && es.readyState === 1) {
+          attemptsRef.current = 0;
+          setConnection('live');
+        }
         if (typeof h.running === 'boolean' && h.running !== runningRef.current) {
           setRunning(h.running);
         }

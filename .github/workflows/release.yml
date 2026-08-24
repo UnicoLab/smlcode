@@ -75,10 +75,16 @@ jobs:
         run: make web-deps
 
       - name: Install golangci-lint
+        # `go install` (not the release install.sh + prebuilt binary) so the
+        # linter is always built with the SAME Go toolchain this job just set
+        # up — golangci-lint refuses to run when built with an older Go than
+        # the module it's targeting, so a prebuilt binary silently breaks
+        # every time the pinned toolchain in go.mod moves past it. install.sh
+        # also matched the wrong release asset for v2.13.1 (grabbed the
+        # .sbom.json instead of the tarball) and failed checksum verification.
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       # ORDER IS LOAD-BEARING. `make ui-react` builds web/ and syncs web/dist into

@@ -60,8 +60,15 @@ jobs:
         run: make ui-react
 
       - name: Install golangci-lint
+        # `go install` (not the release install.sh + prebuilt binary) so the
+        # linter is always built with the SAME Go toolchain this job just set
+        # up — golangci-lint refuses to run when built with an older Go than
+        # the module it's targeting, so a prebuilt binary silently breaks
+        # every time the pinned toolchain in go.mod moves past it. install.sh
+        # also matched the wrong release asset for v2.13.1 (grabbed the
+        # .sbom.json instead of the tarball) and failed checksum verification.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: make check (fmt, vet, lint, unit+race tests, web lint+build)
@@ -161,8 +168,15 @@ jobs:
         run: make ui-react
 
       - name: Install golangci-lint
+        # `go install` (not the release install.sh + prebuilt binary) so the
+        # linter is always built with the SAME Go toolchain this job just set
+        # up — golangci-lint refuses to run when built with an older Go than
+        # the module it's targeting, so a prebuilt binary silently breaks
+        # every time the pinned toolchain in go.mod moves past it. install.sh
+        # also matched the wrong release asset for v2.13.1 (grabbed the
+        # .sbom.json instead of the tarball) and failed checksum verification.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.1
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run pre-commit

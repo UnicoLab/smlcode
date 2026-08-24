@@ -79,7 +79,7 @@ export default function LiveView() {
   // navigation and stays connected while the user is on another page. This view
   // is a pure consumer — it holds no EventSource and no event state of its own,
   // which is what made the log collapse to a single entry before.
-  const events = ctx?.liveEvents ?? [];
+  const events = useMemo(() => ctx?.liveEvents ?? [], [ctx?.liveEvents]);
   const running = ctx?.liveRunning ?? false;
   const setRunning = ctx?.setLiveRunning ?? (() => {});
   const resetEvents = ctx?.resetLiveEvents ?? (() => {});
@@ -249,7 +249,7 @@ export default function LiveView() {
   const shownComposition = dynamicComposition || (!running ? compositionPreview : null);
   const shownCompositionMode = dynamicComposition ? 'runtime' : compositionPreview ? 'preview' : '';
   const shownCompositionFit = shownComposition?.slm_fit || (shownCompositionMode === 'preview' ? compositionPreviewFit : []);
-  const shownCompositionPhases = shownComposition?.phases || [];
+  const shownCompositionPhases = useMemo(() => shownComposition?.phases || [], [shownComposition]);
   const activeExecute = dynamicComposition?.execute || pipelineView?.config?.execute;
 
   const dynamicPhaseOrder = useMemo(() => {

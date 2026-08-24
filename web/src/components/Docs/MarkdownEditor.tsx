@@ -30,7 +30,7 @@ export default function MarkdownEditor() {
     fetchDoc();
   }, [fetchDoc]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!docId) return;
     setSaving(true);
     setSaved(false);
@@ -43,7 +43,7 @@ export default function MarkdownEditor() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [docId, content]);
 
   // Keyboard shortcut: Cmd/Ctrl + S
   useEffect(() => {
@@ -55,7 +55,7 @@ export default function MarkdownEditor() {
     };
     window.addEventListener('keydown', handle);
     return () => window.removeEventListener('keydown', handle);
-  }, [content, docId]);
+  }, [handleSave]);
 
   if (loading) {
     return (
@@ -154,7 +154,7 @@ function renderMD(text: string): string {
     // HR
     .replace(/^---$/gm, '<hr class="border-gray-200 dark:border-gray-700 my-4" />')
     // Lists
-    .replace(/^\- (.+)$/gm, '<li class="ml-4 list-disc text-sm">$1</li>')
+    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-sm">$1</li>')
     // Paragraphs
     .replace(/\n\n/g, '</p><p class="text-sm leading-relaxed my-2">');
 

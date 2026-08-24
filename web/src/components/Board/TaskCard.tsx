@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -56,10 +56,17 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<TaskDraft>(() => taskToDraft(task));
+  const titleFieldRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setDraft(taskToDraft(task));
   }, [task]);
+
+  useEffect(() => {
+    if (editing) {
+      titleFieldRef.current?.focus();
+    }
+  }, [editing]);
 
   const {
     attributes,
@@ -142,7 +149,15 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
         task.status === 'failed' && 'ring-1 ring-red-300 dark:ring-red-800',
         task.status === 'done' && 'ring-1 ring-emerald-300 dark:ring-emerald-800',
       )}
+      role="button"
+      tabIndex={0}
       onClick={() => !editing && setExpanded((v) => !v)}
+      onKeyDown={(e) => {
+        if (!editing && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          setExpanded((v) => !v);
+        }
+      }}
     >
       <div className="flex items-start gap-2">
         <button
@@ -221,13 +236,19 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
       </div>
 
       {expanded && (
-        <div className="mt-3 space-y-2 border-t border-gray-100 pt-3 dark:border-gray-800" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="mt-3 space-y-2 border-t border-gray-100 pt-3 dark:border-gray-800"
+          role="button"
+          tabIndex={0}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
           {editing ? (
             <div className="space-y-3">
               <label>
                 <span className="label">Title</span>
                 <textarea
-                  autoFocus
+                  ref={titleFieldRef}
                   value={draft.title}
                   onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
                   rows={2}

@@ -223,7 +223,8 @@ export function useConfirm(): (opts: ConfirmOptions) => Promise<boolean> {
     if (ctx) return ctx.confirm;
     return async (opts: ConfirmOptions) =>
       typeof window !== 'undefined'
-        ? window.confirm(`${opts.title}${opts.description ? `\n\n${opts.description}` : ''}`)
+        ? // eslint-disable-next-line no-alert -- intentional fallback when no ConfirmProvider is mounted; the provider itself never reaches this branch
+          window.confirm(`${opts.title}${opts.description ? `\n\n${opts.description}` : ''}`)
         : false;
   }, [ctx]);
 }

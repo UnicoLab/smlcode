@@ -33,6 +33,7 @@ export default function TopBar() {
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
   const agentRef = useRef<HTMLDivElement>(null);
+  const modelFilterRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function close(e: MouseEvent) {
@@ -52,6 +53,13 @@ export default function TopBar() {
       setCurrentModel(ctx.config.model);
     }
   }, [ctx?.config]);
+
+  // Focus the model search input when the dropdown opens (autoFocus is flagged by a11y linting).
+  useEffect(() => {
+    if (showModelMenu) {
+      modelFilterRef.current?.focus();
+    }
+  }, [showModelMenu]);
 
   const fetchModels = async (q = '') => {
     try {
@@ -215,7 +223,7 @@ export default function TopBar() {
           <div className="absolute top-full right-0 mt-1 w-72 card p-1 shadow-xl z-20 animate-fade-in max-h-80 overflow-auto">
             <div className="px-2 py-1.5 sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800">
               <input
-                autoFocus
+                ref={modelFilterRef}
                 value={modelFilter}
                 onChange={(e) => {
                   setModelFilter(e.target.value);

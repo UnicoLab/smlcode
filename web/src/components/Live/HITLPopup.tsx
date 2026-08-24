@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useId } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import {
   Clock,
@@ -312,6 +312,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
   }, [running, askSignal]);
 
   // ── Focus first action while the modal is open ──
+  const currentPendingKey = useMemo(() => (pending ? pendingKey(pending) : ''), [pending]);
   useEffect(() => {
     if (!pending) return;
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -320,7 +321,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
       window.clearTimeout(timer);
       previouslyFocused?.focus();
     };
-  }, [pending ? pendingKey(pending) : '']);
+  }, [pending, currentPendingKey]);
 
   // ── Countdown timer ──
   useEffect(() => {

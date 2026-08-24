@@ -178,12 +178,27 @@ export default function AgentManager() {
         {/* Agent Form — modal overlay */}
         {showForm && (
           <div
+            role="button"
+            tabIndex={0}
+            aria-label="Close dialog"
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm sm:p-6"
-            onMouseDown={handleCancel}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) handleCancel();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                handleCancel();
+              } else if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                e.preventDefault();
+                handleCancel();
+              }
+            }}
           >
             <div
               className="card my-4 flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden"
-              onMouseDown={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label={creating ? 'Create Agent' : `Edit ${editing?.title || ''}`}
             >
               <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
                 <h2 className="font-bold text-lg">
@@ -215,8 +230,9 @@ export default function AgentManager() {
                 {!detailLoading && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label className="label">Agent ID</label>
+                      <label className="label" htmlFor="agent-id-input">Agent ID</label>
                       <input
+                        id="agent-id-input"
                         type="text"
                         value={form.id}
                         onChange={(e) => setForm({ ...form, id: e.target.value })}
@@ -226,8 +242,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div>
-                      <label className="label">Title</label>
+                      <label className="label" htmlFor="agent-title-input">Title</label>
                       <input
+                        id="agent-title-input"
                         type="text"
                         value={form.title}
                         onChange={(e) => setForm({ ...form, title: e.target.value })}
@@ -236,8 +253,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="label">Description</label>
+                      <label className="label" htmlFor="agent-description-input">Description</label>
                       <input
+                        id="agent-description-input"
                         type="text"
                         value={form.description}
                         onChange={(e) => setForm({ ...form, description: e.target.value })}
@@ -246,8 +264,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="label">System Prompt</label>
+                      <label className="label" htmlFor="agent-system-prompt-textarea">System Prompt</label>
                       <textarea
+                        id="agent-system-prompt-textarea"
                         value={form.system_prompt || ''}
                         onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
                         className="input font-mono text-xs h-48 resize-y"
@@ -257,8 +276,8 @@ export default function AgentManager() {
                         Base instructions for this agent. At runtime, the orchestrator automatically injects: project context (PROJECT.md, CONTEXT.md), matched skills, current plan, task details, and tool guidance. Keep this prompt focused on the agent's core role and output format.
                       </p>
                     </div>
-                    <div className="md:col-span-2">
-                      <label className="label">Skills</label>
+                    <fieldset className="md:col-span-2 m-0 border-0 p-0">
+                      <legend className="label">Skills</legend>
                       {!skillsLoaded ? (
                         <p className="text-xs text-gray-400">Loading skills…</p>
                       ) : allSkills.length === 0 ? (
@@ -315,10 +334,11 @@ export default function AgentManager() {
                           </div>
                         </>
                       )}
-                    </div>
+                    </fieldset>
                     <div>
-                      <label className="label">Temperature</label>
+                      <label className="label" htmlFor="agent-temperature-input">Temperature</label>
                       <input
+                        id="agent-temperature-input"
                         type="number"
                         step="0.01"
                         min="0"
@@ -329,8 +349,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div>
-                      <label className="label">Max Tokens</label>
+                      <label className="label" htmlFor="agent-max-tokens-input">Max Tokens</label>
                       <input
+                        id="agent-max-tokens-input"
                         type="number"
                         value={form.max_tokens}
                         onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) })}
@@ -338,8 +359,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div>
-                      <label className="label">Max Iterations</label>
+                      <label className="label" htmlFor="agent-max-iter-input">Max Iterations</label>
                       <input
+                        id="agent-max-iter-input"
                         type="number"
                         value={form.max_iter || 8}
                         onChange={(e) => setForm({ ...form, max_iter: parseInt(e.target.value) })}
@@ -347,8 +369,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div>
-                      <label className="label">Model (override)</label>
+                      <label className="label" htmlFor="agent-model-input">Model (override)</label>
                       <input
+                        id="agent-model-input"
                         type="text"
                         value={form.model || ''}
                         onChange={(e) => setForm({ ...form, model: e.target.value })}
@@ -357,8 +380,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div>
-                      <label className="label">Provider (override)</label>
+                      <label className="label" htmlFor="agent-provider-input">Provider (override)</label>
                       <input
+                        id="agent-provider-input"
                         type="text"
                         value={form.provider || ''}
                         onChange={(e) => setForm({ ...form, provider: e.target.value })}
@@ -367,8 +391,9 @@ export default function AgentManager() {
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="label">Endpoint (override)</label>
+                      <label className="label" htmlFor="agent-endpoint-input">Endpoint (override)</label>
                       <input
+                        id="agent-endpoint-input"
                         type="text"
                         value={form.endpoint || ''}
                         onChange={(e) => setForm({ ...form, endpoint: e.target.value })}

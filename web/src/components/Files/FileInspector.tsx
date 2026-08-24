@@ -464,7 +464,9 @@ export default function FileInspector({ events, running }: Props) {
               </h3>
               {allCommentsFlat.slice(0, 8).map(c => (
                 <div key={c.id} className="flex items-start gap-1.5 text-[10px] py-1 px-1.5 rounded hover:bg-amber-50 dark:hover:bg-amber-900/10 cursor-pointer"
-                  onClick={() => setSelectedFile(c.file)}>
+                  role="button" tabIndex={0}
+                  onClick={() => setSelectedFile(c.file)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedFile(c.file); } }}>
                   <MessageSquare size={10} className="text-amber-400 shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
                     <span className="font-mono text-[9px] text-brand-500">{c.file}:L{c.line}</span>
@@ -532,7 +534,18 @@ export default function FileInspector({ events, running }: Props) {
                                   <div className="absolute right-0 top-full mt-1 z-20 w-56 p-2 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-[10px] shadow-xl opacity-0 pointer-events-none group-hover/bubble:opacity-100 transition-opacity"><p className="leading-relaxed">{c.text}</p></div>
                                 </div>
                               ))}
-                              {!hasComments && <div className="w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" onClick={() => handleLineClick(selectedFile, lineNum)}><PlusCircle size={12} className="text-gray-300 dark:text-gray-600 hover:text-brand-500" /></div>}
+                              {!hasComments && (
+                                <div
+                                  className="w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-label={`Add comment on line ${lineNum}`}
+                                  onClick={() => handleLineClick(selectedFile, lineNum)}
+                                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleLineClick(selectedFile, lineNum); } }}
+                                >
+                                  <PlusCircle size={12} className="text-gray-300 dark:text-gray-600 hover:text-brand-500" />
+                                </div>
+                              )}
                             </div>
                           </div>
                           {isActiveLine && (

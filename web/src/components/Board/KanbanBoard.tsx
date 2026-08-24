@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -57,6 +57,7 @@ export default function KanbanBoard() {
   const [draft, setDraft] = useState<NewTaskDraft>(EMPTY_DRAFT);
   const [savingAdd, setSavingAdd] = useState(false);
   const [addError, setAddError] = useState('');
+  const addTitleRef = useRef<HTMLInputElement>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -74,6 +75,12 @@ export default function KanbanBoard() {
       setRefreshing(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (showAdd) {
+      addTitleRef.current?.focus();
+    }
+  }, [showAdd]);
 
   useEffect(() => {
     fetchBoard();
@@ -250,7 +257,7 @@ export default function KanbanBoard() {
             <label className="lg:col-span-2">
               <span className="label">Title</span>
               <input
-                autoFocus
+                ref={addTitleRef}
                 value={draft.title}
                 onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
                 className="input"

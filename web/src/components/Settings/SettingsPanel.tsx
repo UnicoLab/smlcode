@@ -163,8 +163,9 @@ export default function SettingsPanel() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label">Provider</label>
+              <label htmlFor="settings-provider" className="label">Provider</label>
               <input
+                id="settings-provider"
                 type="text"
                 value={cfg.provider}
                 onChange={(e) => handleChange('provider', e.target.value)}
@@ -173,8 +174,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Model</label>
+              <label htmlFor="settings-model" className="label">Model</label>
               <input
+                id="settings-model"
                 type="text"
                 value={cfg.model}
                 onChange={(e) => handleChange('model', e.target.value)}
@@ -183,8 +185,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="label">Endpoint</label>
+              <label htmlFor="settings-endpoint" className="label">Endpoint</label>
               <input
+                id="settings-endpoint"
                 type="text"
                 value={cfg.endpoint}
                 onChange={(e) => handleChange('endpoint', e.target.value)}
@@ -193,11 +196,12 @@ export default function SettingsPanel() {
               />
             </div>
             <div className="md:col-span-2">
-              <label className="label flex items-center gap-2">
+              <label htmlFor="settings-api-key" className="label flex items-center gap-2">
                 <Key size={14} className="text-gray-400" />
                 API Key
               </label>
               <input
+                id="settings-api-key"
                 type="password"
                 value={local.api_key ?? ''}
                 onChange={(e) => handleChange('api_key', e.target.value)}
@@ -243,8 +247,9 @@ export default function SettingsPanel() {
               </div>
             </div>
             <div>
-              <label className="label">Backend</label>
+              <label htmlFor="settings-backend" className="label">Backend</label>
               <select
+                id="settings-backend"
                 value={cfg.backend}
                 onChange={(e) => handleChange('backend', e.target.value)}
                 className="input"
@@ -254,8 +259,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Mode</label>
+              <label htmlFor="settings-mode" className="label">Mode</label>
               <select
+                id="settings-mode"
                 value={cfg.mode}
                 onChange={(e) => handleChange('mode', e.target.value)}
                 className="input"
@@ -300,8 +306,9 @@ export default function SettingsPanel() {
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
-              <label className="label">Temperature</label>
+              <label htmlFor="settings-temperature" className="label">Temperature</label>
               <input
+                id="settings-temperature"
                 type="number"
                 step="0.01"
                 min="0"
@@ -312,8 +319,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Max Tokens</label>
+              <label htmlFor="settings-max-tokens" className="label">Max Tokens</label>
               <input
+                id="settings-max-tokens"
                 type="number"
                 value={cfg.max_tokens}
                 onChange={(e) => handleChange('max_tokens', parseInt(e.target.value))}
@@ -321,8 +329,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Max Parallel</label>
+              <label htmlFor="settings-max-parallel" className="label">Max Parallel</label>
               <input
+                id="settings-max-parallel"
                 type="number"
                 value={cfg.max_parallel}
                 onChange={(e) => handleChange('max_parallel', parseInt(e.target.value))}
@@ -330,8 +339,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Max Retries</label>
+              <label htmlFor="settings-max-retries" className="label">Max Retries</label>
               <input
+                id="settings-max-retries"
                 type="number"
                 value={cfg.max_retries}
                 onChange={(e) => handleChange('max_retries', parseInt(e.target.value))}
@@ -339,8 +349,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Context KB</label>
+              <label htmlFor="settings-max-context-kb" className="label">Context KB</label>
               <input
+                id="settings-max-context-kb"
                 type="number"
                 value={cfg.max_context_kb}
                 onChange={(e) => handleChange('max_context_kb', parseInt(e.target.value))}
@@ -348,8 +359,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Think Passes</label>
+              <label htmlFor="settings-think-passes" className="label">Think Passes</label>
               <input
+                id="settings-think-passes"
                 type="number"
                 value={cfg.think_passes}
                 onChange={(e) => handleChange('think_passes', parseInt(e.target.value))}
@@ -357,8 +369,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">QA Gate Rounds</label>
+              <label htmlFor="settings-qa-gate-rounds" className="label">QA Gate Rounds</label>
               <input
+                id="settings-qa-gate-rounds"
                 type="number"
                 value={cfg.qa_gate_max_rounds}
                 onChange={(e) => handleChange('qa_gate_max_rounds', parseInt(e.target.value))}
@@ -409,8 +422,9 @@ export default function SettingsPanel() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label">Permission</label>
+              <label htmlFor="settings-permission" className="label">Permission</label>
               <select
+                id="settings-permission"
                 value={cfg.permission}
                 onChange={(e) => handleChange('permission', e.target.value)}
                 className="input"
@@ -421,8 +435,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Shell Permission</label>
+              <label htmlFor="settings-shell-permission" className="label">Shell Permission</label>
               <select
+                id="settings-shell-permission"
                 value={cfg.shell_permission || 'auto'}
                 onChange={(e) => handleChange('shell_permission', e.target.value)}
                 className="input"
@@ -433,8 +448,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Clarify Mode</label>
+              <label htmlFor="settings-clarify-mode" className="label">Clarify Mode</label>
               <select
+                id="settings-clarify-mode"
                 value={cfg.clarify_mode}
                 onChange={(e) => handleChange('clarify_mode', e.target.value)}
                 className="input"
@@ -445,8 +461,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Clarify Timeout (s)</label>
+              <label htmlFor="settings-clarify-timeout" className="label">Clarify Timeout (s)</label>
               <input
+                id="settings-clarify-timeout"
                 type="number"
                 min="5"
                 value={secondsValue('clarify_timeout_sec', 'clarify_timeout', 120)}
@@ -455,8 +472,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Plan Approve</label>
+              <label htmlFor="settings-plan-approve" className="label">Plan Approve</label>
               <select
+                id="settings-plan-approve"
                 value={cfg.plan_approve}
                 onChange={(e) => handleChange('plan_approve', e.target.value)}
                 className="input"
@@ -467,8 +485,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Plan Timeout (s)</label>
+              <label htmlFor="settings-plan-timeout" className="label">Plan Timeout (s)</label>
               <input
+                id="settings-plan-timeout"
                 type="number"
                 min="5"
                 value={secondsValue('plan_approve_timeout_sec', 'plan_approve_timeout', 120)}
@@ -477,8 +496,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Continue Ask</label>
+              <label htmlFor="settings-continue-ask" className="label">Continue Ask</label>
               <select
+                id="settings-continue-ask"
                 value={cfg.continue_ask}
                 onChange={(e) => handleChange('continue_ask', e.target.value)}
                 className="input"
@@ -489,8 +509,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Continue Timeout (s)</label>
+              <label htmlFor="settings-continue-timeout" className="label">Continue Timeout (s)</label>
               <input
+                id="settings-continue-timeout"
                 type="number"
                 min="5"
                 value={secondsValue('continue_ask_timeout_sec', 'continue_ask_timeout', 60)}
@@ -499,8 +520,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Escalate Ask</label>
+              <label htmlFor="settings-escalate-ask" className="label">Escalate Ask</label>
               <select
+                id="settings-escalate-ask"
                 value={cfg.escalate_ask}
                 onChange={(e) => handleChange('escalate_ask', e.target.value)}
                 className="input"
@@ -511,8 +533,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Escalate Timeout (s)</label>
+              <label htmlFor="settings-escalate-timeout" className="label">Escalate Timeout (s)</label>
               <input
+                id="settings-escalate-timeout"
                 type="number"
                 min="5"
                 value={secondsValue('escalate_ask_timeout_sec', 'escalate_ask_timeout', 30)}
@@ -521,8 +544,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">Shell Timeout (s)</label>
+              <label htmlFor="settings-shell-timeout" className="label">Shell Timeout (s)</label>
               <input
+                id="settings-shell-timeout"
                 type="number"
                 min="5"
                 value={secondsValue('shell_ask_timeout_sec', 'shell_ask_timeout', 120)}
@@ -586,8 +610,9 @@ export default function SettingsPanel() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
             <div>
-              <label className="label">Context Compact Engine</label>
+              <label htmlFor="settings-context-compact-engine" className="label">Context Compact Engine</label>
               <select
+                id="settings-context-compact-engine"
                 value={cfg.context_compact_engine || 'heuristic'}
                 onChange={(e) => handleChange('context_compact_engine', e.target.value)}
                 className="input"
@@ -598,8 +623,9 @@ export default function SettingsPanel() {
               </select>
             </div>
             <div>
-              <label className="label">Enabled Models (comma-separated)</label>
+              <label htmlFor="settings-enabled-models" className="label">Enabled Models (comma-separated)</label>
               <input
+                id="settings-enabled-models"
                 type="text"
                 value={(cfg.enabled_models || []).join(', ')}
                 onChange={(e) =>
@@ -616,8 +642,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">LLM Retry Count</label>
+              <label htmlFor="settings-llm-retry-count" className="label">LLM Retry Count</label>
               <input
+                id="settings-llm-retry-count"
                 type="number"
                 value={cfg.llm_retry_count ?? 3}
                 onChange={(e) => handleChange('llm_retry_count', parseInt(e.target.value) || 0)}
@@ -625,8 +652,9 @@ export default function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="label">LLM Retry Delay (ms)</label>
+              <label htmlFor="settings-llm-retry-delay-ms" className="label">LLM Retry Delay (ms)</label>
               <input
+                id="settings-llm-retry-delay-ms"
                 type="number"
                 value={cfg.llm_retry_delay_ms ?? 1000}
                 onChange={(e) => handleChange('llm_retry_delay_ms', parseInt(e.target.value) || 0)}

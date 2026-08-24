@@ -2,7 +2,7 @@
 // Supports pack, pipeline, agent, and quality blocks. Meta fields are shared;
 // the `spec` section is rendered per kind. Validation happens client-side for
 // the common rules; backend errors (400/409) are surfaced inline.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createBlock, getBlock, getBlocks, getAgents, updateBlock } from '@/api/client';
 import type {
@@ -77,7 +77,7 @@ const KIND_ICON_COLORS: Record<string, string> = {
 // block editors produce. Parsing is tolerant — on error we surface an inline
 // message and block saving.
 
-const YAML_QUOTE_RE = /[:#\[\]{}&*!|>'"%@`,\n\r]/;
+const YAML_QUOTE_RE = /[:#[\]{}&*!|>'"%@`,\n\r]/;
 const YAML_NUMERIC_RE = /^[-+]?(\d+\.?\d*|\.\d+)/;
 const YAML_BOOLISH_RE = /^(true|false|null|~|yes|no|on|off|y|n)$/i;
 const YAML_CHOMP_RE = /^(\||\|-|\|\+|>|>-|>\+)$/;
@@ -928,14 +928,26 @@ export default function BlockEditor({ open, kind, mode, block, onClose, onSaved 
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm sm:p-6"
+      role="button"
+      tabIndex={0}
+      aria-label="Close dialog"
       onMouseDown={onClose}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClose();
+        }
+      }}
     >
       <div
         className={clsx(
           'card my-4 flex max-h-[88vh] w-full flex-col overflow-hidden',
           kind === 'pipeline' ? 'max-w-4xl' : 'max-w-2xl',
         )}
+        role="button"
+        tabIndex={0}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-6 py-4 dark:border-gray-800">
@@ -1339,14 +1351,17 @@ function PipelineSpecEditor({ spec, onChange, agentOptions }: {
     });
   };
 
-  const isArchived = (id: string) => {
-    const p = spec.phases[id];
-    if (!p) return false;
-    if (p.when === 'never' && p.enabled === false) {
-      return !spec.groups.some((g) => (g.steps ?? []).includes(id));
-    }
-    return false;
-  };
+  const isArchived = useCallback(
+    (id: string) => {
+      const p = spec.phases[id];
+      if (!p) return false;
+      if (p.when === 'never' && p.enabled === false) {
+        return !spec.groups.some((g) => (g.steps ?? []).includes(id));
+      }
+      return false;
+    },
+    [spec.phases, spec.groups],
+  );
 
   const movePhase = (id: string, toGroup: string) => {
     const from = spec.phases[id]?.group ?? '';
@@ -1471,11 +1486,11 @@ function PipelineSpecEditor({ spec, onChange, agentOptions }: {
   const grouped = useMemo(() => new Set(spec.groups.flatMap((g) => g.steps ?? [])), [spec.groups]);
   const orphanIds = useMemo(
     () => Object.keys(spec.phases ?? {}).filter((id) => !grouped.has(id) && !isArchived(id)),
-    [spec.phases, grouped],
+    [spec.phases, grouped, isArchived],
   );
   const archivedIds = useMemo(
     () => Object.keys(spec.phases ?? {}).filter((id) => isArchived(id)),
-    [spec.phases, grouped],
+    [spec.phases, isArchived],
   );
 
   const renderPhaseRow = (id: string, phase: PhaseSpec) => (

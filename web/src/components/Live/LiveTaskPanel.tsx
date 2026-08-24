@@ -1,7 +1,7 @@
 // ── LiveTaskPanel ──
 // Compact sidebar panel for task management + context injection in LiveView.
 // Self-contained: fetches its own data from the API.
-import { useState, useEffect, useCallback, useContext, useMemo } from 'react';
+import { useState, useEffect, useCallback, useContext, useMemo, useRef } from 'react';
 import { AppContext } from '@/App';
 import {
   getTasks,
@@ -134,14 +134,28 @@ export default function LiveTaskPanel() {
   const [newTask, setNewTask] = useState<NewTaskForm>(EMPTY_FORM);
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const newTaskTitleRef = useRef<HTMLInputElement>(null);
+
+  // Focus the title field when the add-task form is opened (replaces autoFocus,
+  // which jsx-a11y flags; the form only mounts on open, so this runs once per open).
+  useEffect(() => {
+    if (showAddForm) newTaskTitleRef.current?.focus();
+  }, [showAddForm]);
 
   // ── State: edit ──
   const [editingId, setEditingId] = useState<string | null>(null);
+  const editTitleRef = useRef<HTMLInputElement>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editAcceptance, setEditAcceptance] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Focus the inline title edit input when editing starts (replaces autoFocus,
+  // which jsx-a11y flags; the input only mounts while editingId matches).
+  useEffect(() => {
+    if (editingId) editTitleRef.current?.focus();
+  }, [editingId]);
 
   // ── State: delete confirmation ──
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -411,7 +425,7 @@ export default function LiveTaskPanel() {
   // ── Derived: tasks grouped by column ──
   const columns = board?.columns || [];
   const byColumn = board?.by_column || {};
-  const allTasks = board?.tasks || [];
+  const allTasks = useMemo(() => board?.tasks || [], [board?.tasks]);
   const taskCount = allTasks.length;
   const taskHealth = useMemo(() => summarizeTaskHealth(allTasks), [allTasks]);
 
@@ -680,12 +694,12 @@ export default function LiveTaskPanel() {
           </div>
 
           <input
+            ref={newTaskTitleRef}
             type="text"
             value={newTask.title}
             onChange={(e) => setNewTask((p) => ({ ...p, title: e.target.value }))}
             placeholder="Task title *"
             className="input text-xs h-8"
-            autoFocus
           />
           <textarea
             value={newTask.description}
@@ -845,6 +859,7 @@ export default function LiveTaskPanel() {
                             {isEditing ? (
                               <div className="flex items-center gap-1">
                                 <input
+                                  ref={editTitleRef}
                                   type="text"
                                   value={editTitle}
                                   onChange={(e) => setEditTitle(e.target.value)}
@@ -854,7 +869,6 @@ export default function LiveTaskPanel() {
                                   }}
                                   onBlur={() => handleEditTitle(task)}
                                   className="input text-xs h-7 flex-1"
-                                  autoFocus
                                 />
                                 <button
                                   onMouseDown={(e) => {

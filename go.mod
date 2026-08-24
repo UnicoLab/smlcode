@@ -2,7 +2,7 @@ module github.com/UnicoLab/slmcode
 
 go 1.23.0
 
-toolchain go1.27.0
+toolchain go1.26.7
 
 require (
 	github.com/piotrlaczkowski/GoLangGraph v0.2.2

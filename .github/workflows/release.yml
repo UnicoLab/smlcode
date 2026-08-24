@@ -11,7 +11,7 @@ permissions:
 env:
   # Keep in lockstep with .github/workflows/ci.yml. The release gate must be the
   # same gate CI runs, not a weaker one.
-  GOLANGCI_LINT_VERSION: v2.5.0
+  GOLANGCI_LINT_VERSION: v2.13.1
 
 jobs:
   release:

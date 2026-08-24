@@ -112,7 +112,7 @@ reversible with `git tag -d` and `git reset`.
 | 2 | `scripts/check-version.sh --tag` | the tag disagrees with `version.go` / `Makefile` / the formula |
 | 3 | `scripts/check-repo-refs.sh` | a broken repo slug reached a download URL |
 | 4 | `make web-deps` | npm cannot install by either route |
-| 5 | Install golangci-lint `v2.5.0` | — (without this, `scripts/lint.sh` *silently skips* linting) |
+| 5 | Install golangci-lint `v2.13.1` (must be built with Go >= go.mod's toolchain) | — (without this, `scripts/lint.sh` *silently skips* linting) |
 | 6 | **`make ui-react`** | the Vite build fails |
 | 7 | Strip `*.map` from `cmd/slmcode/ui/` | — (keeps the TSX source out of the binaries) |
 | 8 | `make check` | gofmt, vet, lint, coverage floor, race or web build fails |

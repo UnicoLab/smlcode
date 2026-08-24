@@ -1,5 +1,7 @@
 # golangci-lint v2 config (schema requires golangci-lint >= v2; verified
-# against v2.5.0). See scripts/lint.sh / `make lint` / `make lint-strict`.
+# against v2.13.1 — must be built with a Go version >= this module's
+# toolchain directive in go.mod, or golangci-lint refuses to run at all).
+# See scripts/lint.sh / `make lint` / `make lint-strict`.
 #
 # Baseline: 0 issues.
 #

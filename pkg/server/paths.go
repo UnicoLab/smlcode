@@ -104,6 +104,27 @@ func (s *Server) workspacePath(rel string) (string, error) {
 	return resolveWorkspacePath(s.rootDir(), rel)
 }
 
+// realRootDir is s.rootDir() passed through the same EvalSymlinks-or-fall-back
+// resolution resolveWorkspacePath applies to the root before joining rel. On
+// macOS, $TMPDIR (and thus every t.TempDir() workspace root in tests) is
+// itself a symlink into /private, so a raw filepath.Rel(s.rootDir(), full)
+// against a resolveWorkspacePath result — which IS symlink-resolved — never
+// matches and every "is this path under .slmcode/" check silently passes
+// paths it should refuse. Any caller that derives a workspace-relative path
+// from a resolveWorkspacePath/workspacePath result must root it here, not at
+// s.rootDir() directly.
+func (s *Server) realRootDir() string {
+	root := s.rootDir()
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return root
+	}
+	if real, err := filepath.EvalSymlinks(absRoot); err == nil {
+		return real
+	}
+	return filepath.Clean(absRoot)
+}
+
 // ErrSecretPath is returned for a workspace path that names harness credential
 // state. The Studio file browser sits behind loopback + same-origin + a session
 // token, but "authenticated" is not a reason to serve the operator's provider
@@ -118,7 +139,7 @@ func (s *Server) workspaceReadPath(rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root := s.rootDir()
+	root := s.realRootDir()
 	if r, rerr := filepath.Rel(root, full); rerr == nil && workspace.IsHarnessSecretPath(r) {
 		return "", ErrSecretPath
 	}

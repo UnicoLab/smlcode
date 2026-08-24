@@ -119,7 +119,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter) {
 	if !s.AuthEnabled() {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly+SameSite=Strict are set; Secure is intentionally omitted because Studio is plain HTTP on loopback (see setSessionCookie doc above) and a Secure cookie would be dropped outright — loopback, not TLS, is the trust boundary here
 		Name:     TokenCookieName,
 		Value:    s.opts.Token,
 		Path:     "/",

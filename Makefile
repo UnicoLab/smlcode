@@ -1,6 +1,6 @@
 MODULE := github.com/UnicoLab/slmcode
 BIN    := slmcode
-VERSION ?= 0.17.0
+VERSION ?= 0.18.0
 PREFIX ?= $(HOME)/.local
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)

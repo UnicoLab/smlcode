@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.18.0 — 2026-08-24
+
+Memory that connects, and the defects that only appear when you run a real model.
+
+This release does two things. It makes the harness's learning *relational* — records that
+were already being written but never joined are now traversable, attempts keep their
+lineage, and the reviewer can be grounded against recorded facts. And it fixes nine
+defects, seven of which were invisible to a passing test suite and surfaced only by
+running the harness end to end against local models (Qwen3.8-27B and Qwen3.5-9B on oMLX).
+
+Nothing here needs a config migration. Two new subsystems are opt-in and default off.
+
+### ⚠️ Behaviour changes
+
+| What changed | Who it affects | What to do |
+|---|---|---|
+| **Headless gates proceed instead of stopping.** With no TTY, the plan / clarify / continue / escalate gates now announce a decision at run start and continue. Previously they resolved to "stop" *after* the planning work was already done. | Scripts and CI that relied on a headless run stopping at the plan gate. | Pass `--on-gate-timeout=stop` — an explicit choice still wins. The decision is printed at `init` either way. |
+| **The shell-permission gate never auto-approves headless.** It refuses at run start with exit 6. | Headless runs that needed a shell command requiring approval. | Add the command to `shell_allow`, or set `shell_permission` explicitly. A safety gate is not a convenience gate. |
+| **`IsInteractive` requires stdin *and* stdout to be TTYs.** | `slmcode run … \| tee` — which previously wrote a gate card into the pipe and blocked on a question nobody could see. | Nothing; this is the fix. |
+| **A dependency is satisfied only by `done`.** A `blocked` (failed) upstream no longer licenses its dependents; they become blocked too, with the failed upstream named. | Boards that relied on work continuing past a failed prerequisite. | Nothing — the previous behaviour built work on a foundation that was never laid. |
+| **Role timeouts are measured, not fractional.** Derived from p95 latency per model family instead of a fixed fraction of `task_timeout`. | Anyone on a slow model whose `context`/`composer`/`architect` roles were timing out. | Nothing. Cold start grants the full budget; `task_timeout` remains a hard ceiling. |
+
+### Added
+
+- **`pkg/graph` — a traversable index over records the harness already wrote.** `Fact.Sources`,
+  `Rule.Evidence`, `Episode.FilesChanged`, `FailureNote.ResolvedBy` and `Episode.RunID` were
+  stored as opaque strings that nothing followed. They are now typed edges, so a question
+  spanning several stores — *"what failure classes has this file produced, and which rule
+  resolved them"* — is one traversal instead of three lookups joined by hand.
+  It is **not** entity extraction over your source: node identity is exact, no fuzzy matching,
+  so the classic false-merge failure mode does not apply. Inspect with `slmcode graph`
+  (`stats`, `file <path>`, `neighbors`, `walk`, `backfill`, `prune`, `forget`). Derived data —
+  `rm -rf .slmcode/graph` costs a backfill and nothing else. See [Knowledge graph](graph.md).
+- **`pkg/autoresearch` — a ratchet over this project's own prompts and knobs.** The mutable
+  surface is already data (`.slmcode/agents/*.yaml` carry `system_prompt`, `temperature`,
+  `max_tokens`); the evaluator is the existing `pkg/eval` harness. Reversibility is a file
+  snapshot, never a git commit, so an experiment cannot touch your history. Guards check the
+  primary metric against **both** the champion and the run's own baseline, so a sequence of
+  individually-tolerable regressions cannot accumulate into a large one. Two-key opt-in
+  (`--apply` **and** `autoresearch: true`); the default invocation calls the evaluator zero
+  times. See [Autoresearch](autoresearch.md).
+- **Attempt lineage.** Each attempt is persisted with a parent pointer, its hypothesis, diff
+  stat, gate signals, reviewer verdict and failure class. The corrector now receives
+  *approaches already tried and rejected, with the reason each was rejected*, deduplicated —
+  which is what stops a small model re-proposing something the reviewer already refused twice.
+- **Knowledge grounding for the reviewer.** A deterministic pass reconciles the worker's command
+  claims against semantic memory and emits structured contradictions (`decision` / `claim` /
+  `reason` / `required_evidence`). Precision over recall: a claim is contradicted only when the
+  tool appears in *no* recorded command at any confidence, so a Go repo with a `web/` tree never
+  has `npm test` flagged as hallucinated. Zero additional model calls.
+- **Measured role latency**, persisted per model family in `~/.slmcode/memory/latency.json`.
+
+### Fixed
+
+- **The reviewer could not see the evidence it was told to judge on.** `runGates` appends
+  `## Disk evidence` / `## Deterministic smoke` / `## Acceptance smoke` to the **end** of the
+  worker's output, and the review prompt clipped that output **head-first** at 3500 chars. A
+  verbose worker therefore deleted the evidence, and the reviewer — following its own *"reject
+  if output is only claims"* rule — rejected correct code. Observed live: **seven consecutive
+  score-0 rejections across 22 minutes** of an implementation whose tests all passed, with no
+  correction round able to fix it. Prose and evidence are now budgeted separately.
+- **Headless runs discarded completed work.** A 27B run spent 9m17s, produced a green scope
+  judge and a valid four-task board, then wrote nothing. The gate mechanism existed; its default
+  punished the headless case maximally.
+- **Slow models were starved by fractional timeouts.** On `task_timeout: 5m`, `context` got 75s
+  and failed every run on a 27B while `explorer` — comparable work, same workspace — got 300s
+  and used 128s. Timeouts are now recorded as censored lower bounds, so an under-measured budget
+  widens itself instead of failing forever.
+- **A read-only role could burn its whole budget fighting the focus guard.** The refusal said
+  what was blocked and never what to do instead, so an explorer retried the same impossible
+  `ws_edit` six times, then wandered off-task. Refusals now name the role's contract and a
+  terminating next action. Out-of-scope writes are also a classified failure with a seeded
+  repair rule, so the self-improvement loop can finally learn from a failure mode it hit
+  constantly.
+- **A failed dependency silently unblocked everything downstream**, and `pkg/plan` had no cycle
+  detection anywhere — a cycle meant those tasks were simply never executable, silently.
+- **Concurrent workers could write the same file with no guard.** Verified load-bearing: without
+  the per-path lock, **11 of 16** concurrent updates were lost. Wave admission additionally
+  defers overlapping tasks to the next wave.
+- **The keyword gate on learned lessons is gone.** The only path from a stored lesson to a future
+  prompt dropped any line not containing one of eleven hardcoded substrings; on this repository's
+  own `MEMORY.md` that discarded **4 of 7** lessons. Lessons now become confidence-scored,
+  contradiction-tracked `Fact`s, ranked by the BM25F scorer that already existed. Relevance
+  *orders* the block rather than filtering it — filtering on a token mismatch could empty it.
+  `RenderMarkdown` also no longer discards `TaskID` and `At` at write time.
+
 ## v0.17.0 — 2026-08-23
 
 The largest release since the project started: a rebuilt engine, 13 language packs, a

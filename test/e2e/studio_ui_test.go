@@ -168,7 +168,7 @@ func TestStudioUIInteraction(t *testing.T) {
 		}
 	}
 	for _, marker := range []string{
-		"/api/events", "/runs", "/runs/stop", "/runs/latest",
+		"/events", "/runs", "/runs/stop", "/runs/latest",
 		"/agents", "/board", "/config", "/skills",
 		"/pipeline", "/tasks", "/stacks",
 		"/health", "/auth", "/mcp",
@@ -347,20 +347,33 @@ func discoverAssets(t *testing.T, baseURL string) (htmlPath, jsPath, cssPath str
 
 	// Extract local CSS path: find <link rel="stylesheet" ... href="/assets/...">
 	// Skip the Google Fonts stylesheet (which uses href before rel).
+	//
+	// The href must come from THIS <link> tag's own attributes, not a
+	// preceding one: a ±N-char window around "rel=\"stylesheet\"" can spill
+	// into an earlier <link rel="modulepreload" ... href="..."> tag's href,
+	// since that tag's href sits before this tag's rel in the document.
 	search := html
 	for {
 		idx := strings.Index(search, `rel="stylesheet"`)
 		if idx < 0 {
 			break
 		}
-		// Look for href= within this link element's scope
-		seg := search[max(0, idx-200):min(len(search), idx+200)]
-		hrefIdx := strings.Index(seg, `href="`)
+		tagStart := strings.LastIndex(search[:idx], "<link")
+		if tagStart < 0 {
+			tagStart = idx
+		}
+		tagEndOffset := strings.Index(search[idx:], ">")
+		tagEnd := len(search)
+		if tagEndOffset >= 0 {
+			tagEnd = idx + tagEndOffset
+		}
+		tag := search[tagStart:tagEnd]
+		hrefIdx := strings.Index(tag, `href="`)
 		if hrefIdx >= 0 {
 			hrefStart := hrefIdx + 6
-			hrefEnd := strings.Index(seg[hrefStart:], `"`)
+			hrefEnd := strings.Index(tag[hrefStart:], `"`)
 			if hrefEnd >= 0 {
-				candidate := seg[hrefStart : hrefStart+hrefEnd]
+				candidate := tag[hrefStart : hrefStart+hrefEnd]
 				if strings.HasPrefix(candidate, "/assets/") {
 					cssPath = candidate
 					break

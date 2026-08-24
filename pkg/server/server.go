@@ -2480,7 +2480,7 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path traversal", http.StatusForbidden)
 		return
 	}
-	info, err := os.Stat(fullPath)
+	info, err := os.Stat(fullPath) //nolint:gosec // fullPath is resolved by workspaceReadPath, which EvalSymlinks-validates it stays inside the workspace root (see doc above)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -2493,7 +2493,7 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	data, err := os.ReadFile(fullPath)
+	data, err := os.ReadFile(fullPath) //nolint:gosec // fullPath is resolved by workspaceReadPath, which EvalSymlinks-validates it stays inside the workspace root (see doc above)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -2539,7 +2539,7 @@ func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 		// Never advertise the credential store, even to an authenticated
 		// browser: a listing that names auth.json is a map for anything that
 		// later gets to read a path of its choosing.
-		if rel, rerr := filepath.Rel(s.rootDir(), filepath.Join(fullPath, name)); rerr == nil &&
+		if rel, rerr := filepath.Rel(s.realRootDir(), filepath.Join(fullPath, name)); rerr == nil &&
 			workspace.IsHarnessSecretPath(rel) {
 			continue
 		}

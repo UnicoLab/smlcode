@@ -72,7 +72,7 @@ func (s *Server) pendingTargetAllowed(rel string) error {
 	if err != nil {
 		return ErrPathEscape
 	}
-	inRoot, rerr := filepath.Rel(s.rootDir(), target)
+	inRoot, rerr := filepath.Rel(s.realRootDir(), target)
 	if rerr != nil {
 		return ErrPathEscape
 	}

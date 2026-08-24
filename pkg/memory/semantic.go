@@ -299,25 +299,50 @@ func (s *Facts) enforceCapLocked() {
 // DefaultSemanticTk). Facts are grouped by kind in a fixed, action-first order
 // and only the highest-scoring few of each kind are included: precision over
 // recall, because a plausible-but-wrong fact is worse than no fact.
+//
+// Render is the unconditioned form — use it for the human-readable mirror and
+// for callers with no task in hand. RenderFor is the same block ordered by
+// relevance to the current task.
 func (s *Facts) Render(budgetTokens int) string {
+	return s.RenderFor(Query{}, budgetTokens)
+}
+
+// RenderFor is Render conditioned on the task at hand: within each kind, facts
+// that lexically match the query take the limited slots first, ordered by
+// relevance, and the remainder keep the unconditioned confidence-and-recency
+// order. Everything else — the kind grouping, the action-first heading order,
+// the confidence gate, the per-kind cap and the token budget — is unchanged.
+//
+// An empty query (no text, files or tags) is byte-for-byte identical to
+// Render: the conditioning is strictly additive, never a different block.
+//
+// The block is *ordered* by relevance, not filtered by it. A fact that matches
+// nothing is still a fact about this project, and dropping the whole block on a
+// query that happens to share no tokens with it would be a regression, not
+// precision.
+func (s *Facts) RenderFor(q Query, budgetTokens int) string {
 	if budgetTokens <= 0 {
 		budgetTokens = DefaultSemanticTk
 	}
 	s.mu.RLock()
 	now := s.now()
 	grouped := map[FactKind][]Fact{}
+	var eligible []Fact
 	for _, id := range s.order {
 		f, ok := s.byID[id]
 		if !ok || f.Score(now) < minRenderConfiden {
 			continue
 		}
 		grouped[f.Kind] = append(grouped[f.Kind], *f)
+		eligible = append(eligible, *f)
 	}
 	s.mu.RUnlock()
 
 	if len(grouped) == 0 {
 		return ""
 	}
+	relevance := factRelevance(q, eligible)
+
 	var b strings.Builder
 	b.WriteString("## What we know about this project\n\n")
 	wrote := false
@@ -326,7 +351,15 @@ func (s *Facts) Render(budgetTokens int) string {
 		if len(list) == 0 {
 			continue
 		}
-		sort.SliceStable(list, func(i, j int) bool { return list[i].Score(now) > list[j].Score(now) })
+		sort.SliceStable(list, func(i, j int) bool {
+			if relevance != nil {
+				ri, rj := relevance[list[i].ID], relevance[list[j].ID]
+				if ri != rj {
+					return ri > rj
+				}
+			}
+			return list[i].Score(now) > list[j].Score(now)
+		})
 		if len(list) > renderMaxPerKind {
 			list = list[:renderMaxPerKind]
 		}
@@ -341,6 +374,34 @@ func (s *Facts) Render(budgetTokens int) string {
 		return ""
 	}
 	return fitToTokens(strings.TrimRight(b.String(), "\n")+"\n", budgetTokens, s.count)
+}
+
+// factRelevance scores facts against the current task with the shared BM25F
+// ranker. It returns nil when the query carries no terms, which is what makes
+// RenderFor collapse exactly onto Render.
+//
+// Candidates are handed to the ranker with a zero timestamp on purpose:
+// staleness is already priced into Fact.Score, and decaying it twice would let
+// a fresh but barely-relevant fact outrank an old and exactly-relevant one.
+func factRelevance(q Query, facts []Fact) map[string]float64 {
+	if len(facts) == 0 || len(queryTerms(q)) == 0 {
+		return nil
+	}
+	cands := make([]TextCandidate, len(facts))
+	for i, f := range facts {
+		cands[i] = TextCandidate{Text: f.Subject + " " + f.Text}
+	}
+	hits := RankText(q, cands, 0)
+	if len(hits) == 0 {
+		// Still non-nil: "the query matched nothing" is a real answer and must
+		// not be confused with "there was no query".
+		return map[string]float64{}
+	}
+	out := make(map[string]float64, len(hits))
+	for _, h := range hits {
+		out[facts[h.Index].ID] = h.Score
+	}
+	return out
 }
 
 // sameClaim reports whether two fact texts assert the same thing, ignoring

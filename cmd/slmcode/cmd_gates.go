@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/session"
 )
 
 // Human-in-the-loop gates, wired to the terminal.
@@ -24,13 +29,137 @@ type gateHost interface {
 	AskGate(ctx context.Context, g cli.Gate) (cli.GateAnswer, bool)
 }
 
-// nonInteractivePolicy resolves --on-gate-timeout for headless runs.
+// prepareHeadlessGates resolves this run's HITL gate policy BEFORE the first
+// model call, and refuses the run outright when a gate it is guaranteed to
+// reach cannot be answered.
+//
+// This is the fix for the worst failure mode the CLI had: a headless
+// `slmcode run` spent its ENTIRE budget on explore → compose → plan → split →
+// scope-judge (9m17s in the reported case), reached the plan gate, resolved it
+// to "not approved" instantly because there was no TTY, and printed one line —
+// "plan not approved — stopping before execute". Nine minutes of compute, a
+// green scope judge, a valid board, and zero code written.
+//
+// A run that cannot finish now costs zero seconds and says which flag to set.
+func prepareHeadlessGates(cmd *cobra.Command, h *harness.Harness) error {
+	gateTimeoutExplicit = flagChanged(cmd, "on-gate-timeout")
+	if h == nil || h.Orchestrator == nil {
+		return nil
+	}
+	// One TTY probe, in the layer that owns the terminal. The engine is told.
+	h.Orchestrator.SetHeadlessGates(orchestrator.HeadlessGates{
+		Headless: !cli.IsInteractive(),
+		Policy:   orchestrator.NormalizeHeadlessPolicy(string(nonInteractivePolicy())),
+		Explicit: gateTimeoutExplicit,
+	})
+	// The decisions themselves are emitted by the engine at run start, so they
+	// land in the transcript (and events.jsonl) with everything else. Only the
+	// refusal is rendered here — there is no run to attach it to.
+	if _, err := h.Orchestrator.GatePreflight(); err != nil {
+		var blocked *orchestrator.GateBlockedError
+		if errors.As(err, &blocked) {
+			fmt.Println(cli.Warn(blocked.Reason))
+			fmt.Println()
+			fmt.Println(cli.Dim("  pick one:"))
+			for _, r := range blocked.Remedies {
+				fmt.Println(cli.Dim("    " + r))
+			}
+			return failf(6, "refusing to start: the %s gate cannot be answered with no TTY attached", blocked.Gate)
+		}
+		return err
+	}
+	return nil
+}
+
+// flagChanged reports whether the operator actually passed a flag, checking the
+// command's own set and the root's persistent set (--on-gate-timeout lives on
+// the root, so a subcommand sees it only through inheritance).
+func flagChanged(cmd *cobra.Command, name string) bool {
+	if cmd == nil {
+		return false
+	}
+	if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+		return true
+	}
+	if root := cmd.Root(); root != nil {
+		if f := root.PersistentFlags().Lookup(name); f != nil && f.Changed {
+			return true
+		}
+	}
+	return false
+}
+
+// retainedRunHint names what a stopped run KEPT and the command that resumes it.
+//
+// Stopping at a gate is allowed; losing the work is not. pkg/session writes
+// board.json, PLAN.md, TASKS.md and QUERY.md under .slmcode/queries/<runID>/ as
+// the board is built — before any gate opens — and `slmcode session resume
+// <runID>` continues from that checkpoint instead of replanning from zero. The
+// CLI used to say "stopping before execute" and leave the user to guess.
+func retainedRunHint(slmDir string) []string {
+	turns, err := session.ListQueries(slmDir)
+	if err != nil || len(turns) == 0 {
+		return nil
+	}
+	t := turns[0]
+	if len(t.Board.Tasks) == 0 {
+		return nil
+	}
+	noun := "tasks"
+	if len(t.Board.Tasks) == 1 {
+		noun = "task"
+	}
+	return []string{
+		fmt.Sprintf("nothing was discarded — %d planned %s are on disk and resumable:", len(t.Board.Tasks), noun),
+		"  " + session.TurnDir(slmDir, t.ID) + cli.Dim("   board.json · PLAN.md · TASKS.md"),
+		"  slmcode session resume " + t.ID + cli.Dim("   continue from the plan, no replanning"),
+	}
+}
+
+// printRetainedRunHint renders retainedRunHint, or nothing when there is no
+// board worth pointing at.
+func printRetainedRunHint(slmDir string) {
+	lines := retainedRunHint(slmDir)
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Println()
+	for _, l := range lines {
+		fmt.Println(cli.Dim("  " + l))
+	}
+}
+
+// gateTimeoutExplicit records whether the operator actually typed
+// --on-gate-timeout, as opposed to inheriting its "stop" default.
+//
+// The distinction is the whole fix: the default must not punish the headless
+// case (do all the work, then discard it), but an explicit choice is a choice
+// and is never overridden. Set once by prepareHeadlessGates; a run that never
+// calls it (the TUI, chat) keeps the old behavior because it has a human.
+var gateTimeoutExplicit bool
+
+// nonInteractivePolicy resolves the literal --on-gate-timeout value.
 func nonInteractivePolicy() cli.GateTimeoutPolicy {
 	p, ok := cli.ParseGateTimeoutPolicy(flagGateTimeout)
 	if !ok {
 		return cli.GateTimeoutStop
 	}
 	return p
+}
+
+// effectiveGatePolicy is what an unanswerable gate actually does.
+//
+// A headless invocation is BY DEFINITION one where nobody can answer, and the
+// operator asked for work to be done — so the default resolves to "approve"
+// rather than "stop". `--on-gate-timeout=stop` still stops.
+func effectiveGatePolicy() cli.GateTimeoutPolicy {
+	if gateTimeoutExplicit {
+		return nonInteractivePolicy()
+	}
+	if !cli.IsInteractive() {
+		return cli.GateTimeoutApprove
+	}
+	return nonInteractivePolicy()
 }
 
 // gateAudit records what happened to the gates in one run so the CLI can turn
@@ -95,7 +224,7 @@ func (a *gateAudit) hint() string {
 	lines := []string{
 		"the " + strings.Join(a.unanswered, " and ") + " " + noun +
 			" needed a human and none was attached (--on-gate-timeout=" +
-			string(nonInteractivePolicy()) + ")",
+			string(effectiveGatePolicy()) + ")",
 		"run the same command on a terminal to answer inline, or choose a headless policy:",
 		"  slmcode run --on-gate-timeout=approve \"…\"   answer every gate with yes",
 	}
@@ -124,12 +253,17 @@ func maxInt(a, b int) int {
 // three planner+splitter round-trips to reach a stop it could have taken at the
 // first gate.
 func resolveHeadless(audit *gateAudit, g cli.Gate) cli.GateAnswer {
-	switch nonInteractivePolicy() {
+	policy := effectiveGatePolicy()
+	switch policy {
 	case cli.GateTimeoutApprove:
 		for _, o := range g.Options {
 			switch o.Value {
 			case "approve", "continue", "retry":
-				return cli.GateAnswer{Value: o.Value, Notes: "auto-approved (--on-gate-timeout=approve)"}
+				note := "auto-approved (--on-gate-timeout=approve)"
+				if !gateTimeoutExplicit {
+					note = "no TTY: auto-approved (override with --on-gate-timeout=stop)"
+				}
+				return cli.GateAnswer{Value: o.Value, Notes: note}
 			}
 		}
 	case cli.GateTimeoutReject:
@@ -145,7 +279,7 @@ func resolveHeadless(audit *gateAudit, g cli.Gate) cli.GateAnswer {
 	return cli.GateAnswer{
 		Value: g.NonTTYDefault,
 		Notes: "not answered (no terminal attached; --on-gate-timeout=" +
-			string(nonInteractivePolicy()) + ")",
+			string(policy) + ")",
 	}
 }
 

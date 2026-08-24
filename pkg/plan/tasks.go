@@ -121,9 +121,10 @@ type Board struct {
 var boardMu sync.RWMutex
 
 // ReadyTasks returns executable tasks (ready_to_dev with deps met).
+// Write lock, not read: see ExecutableTasks.
 func (b *Board) ReadyTasks() []Task {
-	boardMu.RLock()
-	defer boardMu.RUnlock()
+	boardMu.Lock()
+	defer boardMu.Unlock()
 	return b.executableTasksLocked()
 }
 

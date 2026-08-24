@@ -213,18 +213,29 @@ func (b *Board) ByColumn() map[string][]Task {
 }
 
 // ExecutableTasks are ready for the agent loop (ready_to_dev, deps satisfied).
-// Blocked upstream deps are soft-skipped so one failed locate task cannot freeze the board.
+//
+// It takes the WRITE lock because computing readiness also settles it: a task
+// whose dependency can never be satisfied is moved to blocked rather than left
+// in ready_to_dev for a scheduler that will never pick it. See PropagateBlocked.
 func (b *Board) ExecutableTasks() []Task {
-	boardMu.RLock()
-	defer boardMu.RUnlock()
+	boardMu.Lock()
+	defer boardMu.Unlock()
 	return b.executableTasksLocked()
 }
 
 func (b *Board) executableTasksLocked() []Task {
+	// Settle the unsatisfiable tasks before deciding who is ready, so the two
+	// answers cannot disagree: whatever is not returned below is either waiting
+	// on live work or has just been moved to blocked with the reason attached.
+	b.propagateBlockedLocked()
+	// ONLY done satisfies a dependency. Blocked used to count as satisfied so
+	// that one failed locate task could not freeze the board — but a dependent
+	// released that way runs on a foundation that was never built, which is how
+	// a single failure becomes a whole wave of them.
 	satisfied := map[string]bool{}
 	for _, t := range b.Tasks {
 		t.Normalize()
-		if t.Column == ColDone || t.Column == ColBlocked {
+		if t.Column == ColDone {
 			satisfied[t.ID] = true
 		}
 	}

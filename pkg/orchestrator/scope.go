@@ -31,6 +31,13 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	if o.cfg.AutoApprove && mode == plan.ClarifyAsk {
 		mode = plan.ClarifyAuto // never block HITL when auto_approve
 	}
+	// Headless: nobody can answer an interview, so run it the way an
+	// unattended run should — recommended options locked in, and the interview
+	// skipped entirely for queries concrete enough not to need one. Ask mode
+	// used to force the round-trip regardless, spending an LLM call on a
+	// question that could only ever be answered with its own default.
+	// GatePreflight announced this at run start.
+	mode = o.headlessGateMode(mode, plan.ClarifyAsk, plan.ClarifyAuto)
 	if mode == plan.ClarifyOff {
 		return plan.ScopeInterview{}
 	}

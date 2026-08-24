@@ -123,6 +123,50 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 			}
 		}
 	}
+
+	// Knowledge grounding. The gates above ask the DISK whether the worker did
+	// what it said; this one asks the RECORD whether what it said is true of
+	// this project at all. It is last because it is the least authoritative:
+	// it never mints a FAILED verdict and nothing in outputWeak reads it — it
+	// exists so the reviewer validates claims against stored facts instead of
+	// judging whether an answer looks right.
+	if sec := r.knowledgeConflictSection(*t); sec != "" {
+		t.Output = appendHarnessSection(t.Output, sec)
+		if opt.verbose {
+			r.logf("%s knowledge conflicts flagged against stored facts", t.ID)
+			r.fireLevel(stream.KindAgentEnd, "qa", t.ID, "claims conflict with stored knowledge",
+				scope, truncate(sec, 600), stream.LevelWarn)
+		}
+	}
+}
+
+// knowledgeConflictSection reconciles the worker's own claims against semantic
+// memory and renders the disagreements, or "" when there are none.
+//
+// Best-effort in the strict sense: every step that could be absent is a plain
+// early return, so a run with --no-evolve, a memory store that failed to open,
+// or simply an empty fact file produces the byte-identical output it produced
+// before this existed. Memory is an optimization here, never a dependency.
+func (r *Runner) knowledgeConflictSection(t plan.Task) string {
+	if r == nil || r.Evolve == nil {
+		return ""
+	}
+	mem := r.Evolve.Memory()
+	if mem == nil {
+		return ""
+	}
+	facts := mem.Semantic()
+	if facts == nil {
+		return ""
+	}
+	// Read the MODEL's text only. The harness's own sections quote the commands
+	// it ran ("cmd: go test ./..."), and re-extracting those would have the
+	// harness contradicting itself with its own evidence.
+	claims := quality.ExtractClaims(stripPostSections(t.Output))
+	if len(claims) == 0 {
+		return ""
+	}
+	return quality.RenderContradictions(quality.Reconcile(claims, facts.All()))
 }
 
 // acceptanceSmokeRole reports whether a role's output should be acceptance-smoked.
@@ -341,7 +385,7 @@ func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) stri
 			"NOTHING — the focus files are byte-identical to their last committed state. " +
 			"Your previous answer did not reach disk. Make a real ws_edit/ws_patch this time.\n\n")
 	}
-	if led := attemptLogSection(t); led != "" {
+	if led := r.attemptLogSection(t); led != "" {
 		b.WriteString(strings.TrimLeft(led, "\n") + "\n")
 	}
 	if tried := r.attempts.list(t.ID); len(tried) > 0 {

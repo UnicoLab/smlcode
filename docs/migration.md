@@ -111,14 +111,21 @@ a plan — whether or not anyone was watching.
   renders and **blocks until answered**. It does not expire. A gate that silently auto-approves
   after two minutes is worse than no gate, because you believed you had one. `slmcode run` on a
   terminal prompts inline and takes a single keystroke — it does not need the TUI.
-- **No human attached**: the gate resolves immediately using the new `--on-gate-timeout` flag,
-  which defaults to **`stop`** — a plan is never auto-approved in a headless run. A stopped run
-  exits **6** and prints the flag or config key that lets it proceed unattended.
+- **No human attached** (no TTY on stdin *or* stdout): the decision is taken at **run start,
+  before the first model call**, and logged. With `--on-gate-timeout` unset the plan / clarify /
+  continue / escalate gates answer themselves with "yes" — nobody can answer, and you asked for
+  work to be done. An explicit `--on-gate-timeout=stop|reject` is honored, and the run then
+  refuses **at the door** with exit **6**, naming the flag or config key. It never spends the
+  whole budget planning and discards the plan at a gate nobody could answer.
+- **`shell_permission=ask` is a safety gate**, not a convenience gate: it never auto-approves.
+  Headless it refuses the run up front — set `allow` or `deny` for unattended use.
+- **A stopped run keeps its work.** The message names `.slmcode/queries/<runID>/`
+  (`board.json`, `PLAN.md`, `TASKS.md`) and `slmcode session resume <runID>`.
 
-**If your CI relied on the old permissive behaviour:**
+**If your CI wants the gate to stop rather than proceed:**
 
 ```bash
-slmcode run --on-gate-timeout=approve "…"   # old behaviour
+slmcode run --on-gate-timeout=stop "…"      # refuse before planning
 slmcode run --on-gate-timeout=reject "…"    # fail closed
 ```
 

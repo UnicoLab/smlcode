@@ -52,6 +52,9 @@ const (
 	ClassPermissionDenied Class = "permission_denied"
 	ClassDependency       Class = "dependency_missing"
 	ClassReviewRejected   Class = "review_rejected"
+	// ClassOutOfScopeWrite is a write refused by the focus guard: either the
+	// path is outside the task's focus files, or the role does not edit at all.
+	ClassOutOfScopeWrite Class = "out_of_scope_write"
 )
 
 // AllClasses is every class, in a stable order (docs, UIs, tests).
@@ -61,7 +64,7 @@ var AllClasses = []Class{
 	ClassPatchFailed, ClassMalformedJSON, ClassTruncatedOutput, ClassCompileError,
 	ClassTestFailure, ClassLintError, ClassTimeout, ClassContextOverflow,
 	ClassProviderError, ClassRateLimit, ClassNoProgress, ClassPermissionDenied,
-	ClassDependency, ClassReviewRejected, ClassUnknown,
+	ClassOutOfScopeWrite, ClassDependency, ClassReviewRejected, ClassUnknown,
 }
 
 // structuralClasses are failures whose identity is fully determined by class
@@ -85,6 +88,22 @@ var structuralClasses = map[Class]bool{
 	ClassPatchFailed:     true,
 	ClassToolArgs:        true,
 	ClassReviewRejected:  true,
+	// STRUCTURAL, deliberately. An out-of-scope write is one problem — "you
+	// wrote where you are not allowed to write" — and the parts of the message
+	// that vary are exactly the presentational ones: the path, the role name,
+	// and which of the three refusal texts applied. Content-classing it would
+	// mint a fresh fingerprint for every (role, path) pair, so the harness
+	// would have to rediscover the same lesson for the explorer, then the docs
+	// reader, then the reviewer — which is the "rediscovers this every run"
+	// waste this class was added to end.
+	//
+	// It also keeps the rule set honest: because all variants collapse to ONE
+	// fingerprint, there is exactly one repair to bind to it. A per-role split
+	// of the repair would be bound to the same fingerprint by
+	// Rules.BindFingerprint and could then hand a worker the explorer's advice.
+	// The role-specific instruction belongs where it already is — in the tool's
+	// own refusal, which the agent reads directly above the repair guidance.
+	ClassOutOfScopeWrite: true,
 }
 
 // Signal is everything known about a failure at the moment it happens.
@@ -245,6 +264,16 @@ type classifier struct {
 // classifiers are evaluated in order; the first match wins, so the most
 // specific patterns come first.
 var classifiers = []classifier{
+	// First, and on full phrases only. The focus guard refuses a write with a
+	// message that names an edit tool and a path, so a needle any looser than
+	// this ("scope", "blocked", "write") would be stolen by — or would steal
+	// from — the edit classifiers below. Same discipline as the bare-word
+	// `timeout` note on hasNeedle: a misfire here sends an edit-syntax repair
+	// to a boundary refusal, which is the exact loop this class exists to stop.
+	{class: ClassOutOfScopeWrite, any: []string{
+		"out-of-scope write blocked", "out-of-scope files_changed",
+		"does not edit files at all",
+	}},
 	{class: ClassEditLineNumbers, any: []string{"line-number prefix", "line number prefix", "still contains ws_read's line-number"}},
 	{class: ClassEditEmptyOldStr, any: []string{"old_str is empty", "empty old_str", "old_str is empty (or only whitespace)"}},
 	{class: ClassEditNoOp, any: []string{"no-op edit refused", "old_str and new_str are identical"}},
@@ -413,6 +442,8 @@ func Describe(c Class) string {
 		return "the same call was repeated with no progress"
 	case ClassPermissionDenied:
 		return "the command or path is not permitted"
+	case ClassOutOfScopeWrite:
+		return "a write landed outside the task's focus files, or came from a role that does not edit"
 	case ClassDependency:
 		return "a required tool or module is missing"
 	case ClassReviewRejected:

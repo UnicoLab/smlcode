@@ -164,6 +164,8 @@ nav:
       - 🏗️ Architecture: architecture.md
       - 🧭 Conventions: conventions.md
       - 🧬 Self-improvement & memory: self-improvement.md
+      - 🕸️ Knowledge graph: graph.md
+      - 🔬 Autoresearch: autoresearch.md
   - 💚 Project:
       - 🚚 Migration notes: migration.md
       - 📝 Changelog: changelog.md

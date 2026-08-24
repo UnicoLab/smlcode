@@ -265,9 +265,13 @@ Full detail, including every refused flag and why: **[docs/permissions.md](docs/
 | `escalate_ask` | `ask` | retry / re-scope / abort for a task at max retries |
 | `shell_permission` | `allow` | shell commands, in `ask` mode |
 
-With a TTY attached these render inline and **block** until answered. Headless, they resolve
-immediately via `--on-gate-timeout` (`stop` by default — a plan is never auto-approved in a
-headless run; pass `approve` to opt into the old behaviour, `reject` to fail closed).
+With a TTY attached these render inline and **block** until answered. Headless, the decision is
+taken at **run start, before the first model call**, and logged: with `--on-gate-timeout` unset
+the four convenience gates answer themselves with "yes", while an explicit `stop`/`reject`
+refuses the run at the door (exit **6**) instead of planning for minutes and discarding the
+result. `shell_permission=ask` is a safety gate and never auto-approves — headless it refuses up
+front. A run that does stop names the retained `.slmcode/queries/<runID>/` board and the
+`slmcode session resume <runID>` command.
 
 ### Studio
 

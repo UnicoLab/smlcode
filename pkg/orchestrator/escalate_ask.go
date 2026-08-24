@@ -38,6 +38,10 @@ func (o *Orchestrator) runEscalateAsk(ctx context.Context, board *plan.Board, t 
 	if o.cfg.AutoApprove {
 		mode = plan.EscalateAskAuto
 	}
+	// Headless: decide now instead of burning escalate_ask_timeout per task and
+	// then spending an extra LLM call in the timeout arbitrator. Auto is capped
+	// by escalate_max_retries exactly as a human answer is.
+	mode = o.headlessGateMode(mode, plan.EscalateAskAsk, plan.EscalateAskAuto)
 	timeout := o.escalateAskTimeout()
 	timeoutSec := int(timeout / time.Second)
 	ask := plan.BuildEscalateAskWithCap(t, detail, timeoutSec, o.maxGateRetries())

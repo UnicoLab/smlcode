@@ -21,6 +21,8 @@ type PrunePolicy struct {
 	MaxFactAge        time.Duration
 	MaxProcedures     int
 	MaxProcedureAge   time.Duration
+	MaxLatencyKeys    int
+	MaxLatencyAge     time.Duration
 }
 
 // DefaultPrunePolicy is what a run applies at the end of a turn.
@@ -33,6 +35,11 @@ func DefaultPrunePolicy() PrunePolicy {
 		MaxFactAge:        365 * 24 * time.Hour,
 		MaxProcedures:     DefaultMaxProcedures,
 		MaxProcedureAge:   365 * 24 * time.Hour,
+		MaxLatencyKeys:    DefaultMaxLatencyKeys,
+		// Shorter than a procedure's year: a measured duration goes stale when
+		// the hardware or the served model changes, and a year-old sample would
+		// keep a budget wrong long after the machine got faster.
+		MaxLatencyAge: 90 * 24 * time.Hour,
 	}
 }
 
@@ -59,6 +66,12 @@ func (p PrunePolicy) withDefaults() PrunePolicy {
 	if p.MaxProcedureAge == 0 {
 		p.MaxProcedureAge = d.MaxProcedureAge
 	}
+	if p.MaxLatencyKeys == 0 {
+		p.MaxLatencyKeys = d.MaxLatencyKeys
+	}
+	if p.MaxLatencyAge == 0 {
+		p.MaxLatencyAge = d.MaxLatencyAge
+	}
 	return p
 }
 
@@ -67,6 +80,7 @@ type PruneReport struct {
 	Episodes   int `json:"episodes_removed"`
 	Facts      int `json:"facts_removed"`
 	Procedures int `json:"procedures_removed"`
+	Latency    int `json:"latency_removed"`
 }
 
 // Prune enforces the policy across every layer and rewrites the on-disk stores.
@@ -85,6 +99,7 @@ func (s *Store) PruneReport(policy PrunePolicy) (PruneReport, error) {
 		Episodes:   s.episodes.Prune(policy),
 		Facts:      s.facts.Prune(policy),
 		Procedures: s.procedures.Prune(policy),
+		Latency:    s.latency.Prune(policy),
 	}
 	return rep, s.Flush()
 }
@@ -324,14 +339,21 @@ func (s *Store) Forget(scope Scope) error {
 		}
 		s.facts = openFacts(s.memDir, s.limits.MaxFacts, s.now, s.count)
 	case ScopeProcedural:
+		// Latency memory lives in the same user-scoped namespace and is keyed
+		// by the same model family, so "forget what you learned about this
+		// model" has to take it with it.
 		if s.userMemDir != "" {
-			for _, name := range []string{"procedures.json", "procedures.json.corrupt", "PROCEDURES.md"} {
+			for _, name := range []string{
+				"procedures.json", "procedures.json.corrupt", "PROCEDURES.md",
+				"latency.json", "latency.json.corrupt", "LATENCY.md",
+			} {
 				if err := os.Remove(filepath.Join(s.userMemDir, name)); err != nil && !os.IsNotExist(err) {
 					errs = append(errs, err)
 				}
 			}
 		}
 		s.procedures = openProcedures(s.userMemDir, s.limits.MaxProcedures, s.now, s.count)
+		s.latency = openLatencies(s.userMemDir, s.limits.MaxLatencyKeys, s.now)
 	case ScopeProject:
 		forgetProject()
 	case ScopeAll:

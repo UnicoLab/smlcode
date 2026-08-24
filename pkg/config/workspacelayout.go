@@ -59,6 +59,7 @@ var SlmIgnoreEntries = []SlmIgnoreEntry{
 	{"continue/", ".slmcode/continue/ask.json", "HITL continue handshake"},
 	{"escalate/", ".slmcode/escalate/ask.json", "HITL escalation handshake"},
 	{"evolve/", ".slmcode/evolve/policy.json", "learned policy, rules and stored regressions"},
+	{"autoresearch/", ".slmcode/autoresearch/trials.jsonl", "self-tuning trial log and pre-run file snapshots"},
 	{"metrics/", ".slmcode/metrics/runs.jsonl", "per-run metrics, including query text"},
 	{"skills/learned/", ".slmcode/skills/learned/SKILL.md", "skills the harness wrote about this repo"},
 	{"capabilities.json", ".slmcode/capabilities.json", "probed backend capabilities"},

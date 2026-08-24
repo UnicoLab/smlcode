@@ -21,12 +21,21 @@ func TestNonInteractivePolicyDefaultsToStop(t *testing.T) {
 	}
 }
 
+// setGateFlag pins --on-gate-timeout for one test, recording whether the
+// operator "typed" it. Explicitness is load-bearing: the flag's stop default is
+// only honored when it was chosen on purpose.
+func setGateFlag(t *testing.T, value string, explicit bool) {
+	t.Helper()
+	oldValue, oldExplicit := flagGateTimeout, gateTimeoutExplicit
+	t.Cleanup(func() { flagGateTimeout, gateTimeoutExplicit = oldValue, oldExplicit })
+	flagGateTimeout, gateTimeoutExplicit = value, explicit
+}
+
 // TestHeadlessPlanGateNeverAutoApproves is the regression for the old default:
 // plan_approve_timeout expired after two minutes and AUTO-APPROVED the plan.
+// An EXPLICIT stop still refuses, headless or not.
 func TestHeadlessPlanGateNeverAutoApproves(t *testing.T) {
-	old := flagGateTimeout
-	defer func() { flagGateTimeout = old }()
-	flagGateTimeout = "stop"
+	setGateFlag(t, "stop", true)
 
 	g := cli.PlanGate("id", "query", "summary", nil, []string{"T1: do a thing"}, 1)
 	ans := resolveHeadless(&gateAudit{}, g)
@@ -39,9 +48,7 @@ func TestHeadlessPlanGateNeverAutoApproves(t *testing.T) {
 }
 
 func TestHeadlessPolicyApproveOptsIn(t *testing.T) {
-	old := flagGateTimeout
-	defer func() { flagGateTimeout = old }()
-	flagGateTimeout = "approve"
+	setGateFlag(t, "approve", true)
 
 	if got := resolveHeadless(&gateAudit{}, cli.PlanGate("i", "q", "s", nil, nil, 0)); got.Value != "approve" {
 		t.Fatalf("--on-gate-timeout=approve should approve, got %+v", got)
@@ -52,9 +59,7 @@ func TestHeadlessPolicyApproveOptsIn(t *testing.T) {
 }
 
 func TestHeadlessPolicyReject(t *testing.T) {
-	old := flagGateTimeout
-	defer func() { flagGateTimeout = old }()
-	flagGateTimeout = "reject"
+	setGateFlag(t, "reject", true)
 
 	if got := resolveHeadless(&gateAudit{}, cli.EscalateGate("i", "T1", "t", "d", nil)); got.Value != "abort" {
 		t.Fatalf("escalate gate under reject policy: %+v", got)
@@ -62,9 +67,7 @@ func TestHeadlessPolicyReject(t *testing.T) {
 }
 
 func TestHeadlessAnswersCarryAnExplanation(t *testing.T) {
-	old := flagGateTimeout
-	defer func() { flagGateTimeout = old }()
-	flagGateTimeout = "stop"
+	setGateFlag(t, "stop", true)
 
 	ans := resolveHeadless(&gateAudit{}, cli.ContinueGate("i", "r", "s", nil, nil))
 	if ans.Notes == "" {

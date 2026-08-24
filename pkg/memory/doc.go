@@ -14,6 +14,14 @@
 //	                                     scored facts about THIS project.
 //	Procedural (user, on disk)           what works for a given model family and
 //	                                     language, across all projects.
+//	Latency    (user, on disk)           how long each role actually takes on a
+//	                                     given model family, as a bounded series
+//	                                     of recent durations. A sibling of
+//	                                     procedural memory, not a layer of its
+//	                                     own: same directory, same folding, same
+//	                                     bounds — but a distribution rather than
+//	                                     a success tally, because a timeout
+//	                                     budget needs a quantile.
 //
 // Design rules that the whole package obeys:
 //

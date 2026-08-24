@@ -151,6 +151,31 @@ func SeedRules() []Rule {
 			},
 		},
 		{
+			// force_different_action, not guidance. The two cost the same at
+			// the tool seam, but this failure is definitionally "the call you
+			// made cannot succeed, take a different one" — the same shape as
+			// the repeated-tool-call repair above — and naming it as an action
+			// keeps it in the family the harness can route without a prompt,
+			// with Retry:false so nothing re-issues the refused write.
+			//
+			// One rule covers every role because ClassOutOfScopeWrite is
+			// structural: all variants share a fingerprint, so a second,
+			// role-specific rule could be bound to that same fingerprint and
+			// hand a worker the explorer's advice. The role's own contract is
+			// already stated verbatim by the tool refusal this text is appended
+			// to; the repair's job is only to stop the retry loop.
+			trigger: Trigger{Class: ClassOutOfScopeWrite},
+			repair: Repair{
+				Kind: RepairAction, Action: ActionForceDifferent, Retry: false,
+				Guidance: "The write was refused for WHERE it points, not for how it was written. Read-only roles " +
+					"(explorer, docs, context, planner, splitter, reviewer) do not edit files at all; editing roles " +
+					"write only inside their task focus files. Rewording the call, adding surrounding context, or " +
+					"exploring more files cannot change that. Do the allowed thing instead — edit a focus file, or " +
+					"report the change that is needed in your answer — and finish.",
+			},
+			note: "an out-of-scope write is a scope decision, never an edit-syntax problem",
+		},
+		{
 			trigger: Trigger{Class: ClassFileNotFound},
 			repair: Repair{
 				Kind: RepairAction, Action: ActionRereadFile, Retry: false,

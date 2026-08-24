@@ -21,14 +21,27 @@
 //     --yes. On a TTY, prompts that offer single-letter choices (`slmcode
 //     apply`, every HITL gate) answer on the keystroke — no Enter.
 //
-//   - HITL gates. With a TTY attached, plan-approve / continue / escalate /
-//     clarify gates render inline and block until answered — they never expire
-//     into an automatic decision. This includes `slmcode run`, which draws the
-//     gate card itself when there is no dashboard. Without a TTY they resolve
-//     immediately using --on-gate-timeout, which defaults to "stop": the run
-//     stops ONCE at the gate, exits 6, and prints the flag or config key that
-//     would let it proceed unattended. Pass --on-gate-timeout=approve to opt
-//     into the old permissive behavior, or =reject to fail closed.
+//   - HITL gates. With a TTY attached (stdin AND stdout), plan-approve /
+//     continue / escalate / clarify gates render inline and block until
+//     answered — they never expire into an automatic decision. This includes
+//     `slmcode run`, which draws the gate card itself when there is no
+//     dashboard.
+//
+//     Without a TTY the decision is taken at RUN START, before the first model
+//     call, and it is logged. With --on-gate-timeout unset, those four
+//     CONVENIENCE gates answer themselves with "yes": nobody can answer, and
+//     you asked for work to be done. Passing --on-gate-timeout=stop|reject is
+//     an explicit choice and is honored — the run then refuses AT THE DOOR
+//     (exit 6) naming the flag or config key, rather than exploring, planning
+//     and splitting for minutes and discarding the result at a gate nobody
+//     could answer.
+//
+//     shell_permission=ask is a SAFETY gate, not a convenience gate: it never
+//     auto-approves. Headless, it refuses the run up front instead.
+//
+//     A gate that does stop a run always reports the board / PLAN.md /
+//     TASKS.md it produced as retained under .slmcode/queries/<runID>/, plus
+//     the `slmcode session resume <runID>` command that picks them back up.
 //
 //   - Rendering verbosity. --log-level=error|warn|info|debug (with -v for info
 //     and --vv for debug) decides what the CLI prints. Errors always surface.

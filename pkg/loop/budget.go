@@ -175,6 +175,14 @@ func (r *Runner) taskCtx(ctx context.Context, taskID string) context.Context {
 	return workspace.WithTaskID(ctx, taskID)
 }
 
+// agentCtx is taskCtx plus the role that is about to run, so the workspace
+// write guard can state THAT role's contract when it refuses a write. Without
+// it an explorer's blocked ws_edit reads as an edit-syntax problem and the
+// model spends its whole budget rewording the call.
+func (r *Runner) agentCtx(ctx context.Context, taskID, role string) context.Context {
+	return workspace.WithRole(r.taskCtx(ctx, taskID), role)
+}
+
 // spend consumes one LLM call for a task. When the budget is exhausted it logs
 // and emits an intervention event so the operator sees an escalation rather
 // than silent looping, and returns false.
@@ -223,7 +231,7 @@ func (r *Runner) execOne(ctx context.Context, taskID, what string, req ggagent.S
 		return ggagent.SubAgentResult{Error: fmt.Errorf("nil executor")}, true
 	}
 	defer r.streamTokens(req.AgentID, taskID)()
-	res, err := r.Executor.ExecuteSubAgents(r.taskCtx(ctx, taskID),
+	res, err := r.Executor.ExecuteSubAgents(r.agentCtx(ctx, taskID, req.AgentID),
 		[]ggagent.SubAgentRequest{req}, r.Shared)
 	if len(res) == 0 {
 		return ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: taskID, Error: err}, true

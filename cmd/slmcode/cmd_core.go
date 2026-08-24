@@ -160,7 +160,8 @@ func runCmd() *cobra.Command {
 		Example: `  slmcode run "add JWT auth"
   slmcode run --agent explorer "where is the retry logic?"
   slmcode run --dynamic "refactor the parser"
-  slmcode run --on-gate-timeout=approve "…"   # headless: approve the plan`,
+  slmcode run "…"                             # no TTY: gates auto-approve, logged
+  slmcode run --on-gate-timeout=stop "…"      # no TTY: refuse up front instead`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			h, err := openHarness()
@@ -195,7 +196,16 @@ func runCmd() *cobra.Command {
 				}
 			}
 
-			// Pre-flight: refuse to start against a dead endpoint instead of
+			// Pre-flight #1, and it costs nothing: resolve every human-in-the-
+			// loop gate BEFORE the first model call. A headless run whose gate
+			// policy would stop it refuses here, at t=0, instead of spending
+			// its whole budget planning and discarding the result at a gate
+			// nobody can answer.
+			if err := prepareHeadlessGates(cmd, h); err != nil {
+				return err
+			}
+
+			// Pre-flight #2: refuse to start against a dead endpoint instead of
 			// marching through every phase emitting per-agent failures.
 			probe := cli.ProbeEndpoint(cmd.Context(), h.Config.Provider, h.Config.Endpoint,
 				h.Config.Model, h.Config.APIKey, 2*time.Second)
@@ -208,9 +218,9 @@ func runCmd() *cobra.Command {
 			defer cancel()
 
 			// HITL gates answer from this terminal (registerGates installs a
-			// plain terminal prompt when there is no dashboard); with no TTY
-			// they follow --on-gate-timeout (default: stop) instead of
-			// auto-approving.
+			// plain terminal prompt when there is no dashboard). With no TTY
+			// the policy resolved by prepareHeadlessGates above applies, and
+			// the engine has already announced what each gate will do.
 			gates := registerGates(h, nil)
 
 			fmt.Print(cli.Banner())
@@ -293,6 +303,7 @@ func runCmd() *cobra.Command {
 				}
 				if gates.blocked() {
 					fmt.Println(cli.Dim("  " + strings.ReplaceAll(gates.hint(), "\n", "\n  ")))
+					printRetainedRunHint(h.Config.SlmDir())
 					return failf(6, "stopped at a human-in-the-loop gate")
 				}
 				return failf(5, "run finished with failures — see `slmcode board` and `slmcode apply`")
@@ -777,7 +788,17 @@ func runFailure(ctx context.Context, err error, gates *gateAudit, opt outcomeOpt
 	case gates.blocked():
 		fmt.Println()
 		fmt.Println(cli.Dim("  " + strings.ReplaceAll(gates.hint(), "\n", "\n  ")))
-		return failf(6, "stopped at a human-in-the-loop gate")
+		printRetainedRunHint(opt.slmDir)
+		// Keep the engine's own reason: it names the gate and, for the plan
+		// gate, the run id whose board is still on disk. Replacing it with a
+		// bare "stopped at a gate" is how a stop came to look like a discard.
+		return failf(6, "stopped at a human-in-the-loop gate — %s", cli.Clip(err.Error(), 200))
+	}
+	// A gate that stopped the run without tripping the audit (an explicit
+	// [n]o at the terminal, a rejected plan from Studio) still produced a
+	// board. Say what it kept.
+	if strings.Contains(strings.ToLower(err.Error()), "plan not approved") {
+		printRetainedRunHint(opt.slmDir)
 	}
 	return err
 }

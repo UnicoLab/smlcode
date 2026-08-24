@@ -274,9 +274,19 @@ unrelated to the task does not count as evidence. If you see it anyway, capture 
 
 ### The run stops at the plan gate in CI
 
-Default `--on-gate-timeout=stop` means a plan is **never** auto-approved in a headless run. Pass
-`--on-gate-timeout=approve` to opt into the old behaviour, or `=reject` to fail closed. Exit code
-**6** means a gate could not be answered.
+With `--on-gate-timeout` **unset**, a headless run no longer stops there: nobody can answer and
+you asked for work to be done, so the plan gate auto-approves at run start and logs
+`no TTY: auto-approving plan gate (override with --on-gate-timeout=stop)`.
+
+If you passed `--on-gate-timeout=stop` or `=reject` on purpose, the run refuses **before the
+first model call** with exit code **6** and names the flag or config key — it never spends the
+whole budget planning and then throws the plan away.
+
+A run that does stop always names what it kept: `.slmcode/queries/<runID>/` holds `board.json`,
+`PLAN.md` and `TASKS.md`, and `slmcode session resume <runID>` continues from them.
+
+`shell_permission=ask` is a **safety** gate: it never auto-approves. Headless it refuses the run
+up front — set `shell_permission` to `allow` or `deny` for unattended use.
 
 ### `slmcode apply` exits 2
 

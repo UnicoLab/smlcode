@@ -1,9 +1,7 @@
 package memory
 
 import (
-	"math"
 	"path"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -150,85 +148,21 @@ func (s *Episodes) RecallScored(q Query, n int) []Scored {
 		return nil
 	}
 
-	// Document frequency over the candidate set only: relevance is relative to
-	// what this project has actually done.
-	df := make(map[string]int, len(terms))
-	total := 0
-	for _, c := range candidates {
-		total += c.doc.length
-		for _, t := range terms {
-			if c.doc.tf[t] > 0 {
-				df[t]++
-			}
-		}
+	items := make([]rankable, len(candidates))
+	for i, c := range candidates {
+		items[i] = rankable{doc: c.doc, at: c.At, success: c.Success}
 	}
-	avgLen := float64(total) / float64(len(candidates))
-	if avgLen <= 0 {
-		avgLen = 1
-	}
-	nDocs := float64(len(candidates))
+	// rankDocs (rank.go) is the shared BM25F pipeline: coverage gate, optional
+	// absolute floor, recency decay, success boost, relative floor, sort, cap.
+	hits := rankDocs(terms, items, now, q.MinCoverage, q.MinScore, n)
 
-	minCoverage := q.MinCoverage
-	if minCoverage == 0 {
-		minCoverage = DefaultMinCoverage
-	}
-
-	scored := make([]Scored, 0, len(candidates))
-	best := 0.0
-	for _, c := range candidates {
-		score, matched := 0.0, 0
-		for _, t := range terms {
-			tf := float64(c.doc.tf[t])
-			if tf == 0 {
-				continue
-			}
-			matched++
-			idf := math.Max(minIDF, math.Log(1+(nDocs-float64(df[t])+0.5)/(float64(df[t])+0.5)))
-			norm := tf * (bm25K1 + 1) / (tf + bm25K1*(1-bm25B+bm25B*float64(c.doc.length)/avgLen))
-			score += idf * norm
-		}
-		if score <= 0 {
-			continue
-		}
-		if coverage := float64(matched) / float64(len(terms)); coverage < minCoverage {
-			continue
-		}
-		if q.MinScore > 0 && score < q.MinScore {
-			continue
-		}
-		score *= recency(c.At, now, recallHalfLifeDays)
-		if c.Success {
-			// A remembered success is more actionable than a remembered mess.
-			score *= 1.15
-		}
-		if score > best {
-			best = score
-		}
-		scored = append(scored, Scored{Score: score, Episode: Episode{ID: c.ID}})
-	}
-	if len(scored) == 0 {
-		return nil
-	}
-
-	floor := best * relativeFloor
-
-	kept := scored[:0]
-	for _, sc := range scored {
-		if sc.Score >= floor {
-			kept = append(kept, sc)
-		}
-	}
-	sort.SliceStable(kept, func(i, j int) bool { return kept[i].Score > kept[j].Score })
-	if len(kept) > n {
-		kept = kept[:n]
-	}
-	out := make([]Scored, 0, len(kept))
-	for _, sc := range kept {
-		full, ok := s.Get(sc.Episode.ID)
+	out := make([]Scored, 0, len(hits))
+	for _, h := range hits {
+		full, ok := s.Get(candidates[h.index].ID)
 		if !ok {
 			continue
 		}
-		out = append(out, Scored{Episode: full, Score: sc.Score})
+		out = append(out, Scored{Episode: full, Score: h.score})
 	}
 	return out
 }

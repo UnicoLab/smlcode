@@ -436,6 +436,10 @@ type Workspace struct {
 	observer  ToolObserver
 	retrySink ToolRetrySink
 
+	// pathMu serializes writers of the same file across a parallel wave; see
+	// pathlock.go. Zero value is ready, so a bare &Workspace{} gets it too.
+	pathMu pathLocks
+
 	todoMu sync.Mutex
 	todos  []TodoItem
 
@@ -481,14 +485,16 @@ func (w *Workspace) backup(path string) {
 }
 
 // checkFocus enforces both the harness-state boundary and the focus allowlist.
-func (w *Workspace) checkFocus(path string) error {
+// ctx carries the executing role, which is what makes the refusal actionable
+// for a role that is not allowed to write at all (see FocusGuard.Check).
+func (w *Workspace) checkFocus(ctx context.Context, path string) error {
 	if err := CheckHarnessStateWrite(path); err != nil {
 		return err
 	}
 	if w == nil || w.Focus == nil {
 		return nil
 	}
-	return w.Focus.Check(path)
+	return w.Focus.Check(ctx, path)
 }
 
 func (w *Workspace) notify(path, kind, detail string) {
@@ -756,9 +762,13 @@ func (w *Workspace) writeFile(ctx context.Context, args map[string]interface{}) 
 	if err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(path); err != nil {
+	if err := w.checkFocus(ctx, path); err != nil {
 		return nil, err
 	}
+	// Held from the first look at the file through the write, so a concurrent
+	// worker cannot slip its own version in between the overwrite guard's view
+	// of `prev` and the write derived from it.
+	defer w.lockPath(path)()
 	prev, existed := readIfExists(abs)
 	if w.WriteGuard {
 		if refuse, reason := w.checkOverwrite(path, abs, existed, prev, content, allowShrink); refuse {
@@ -852,12 +862,16 @@ func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (
 	if err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(path); err != nil {
+	if err := w.checkFocus(ctx, path); err != nil {
 		return nil, err
 	}
 	if err := w.requireRead(path); err != nil {
 		return err.Error(), nil
 	}
+	// The whole read-modify-write is one critical section: `next` below is
+	// computed from `text`, so a concurrent editor that writes between the read
+	// and the write has its edit silently overwritten by ours.
+	defer w.lockPath(path)()
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return readErrorHint(path, err), nil
@@ -975,9 +989,12 @@ func (w *Workspace) patchFile(ctx context.Context, args map[string]interface{}) 
 	if err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(path); err != nil {
+	if err := w.checkFocus(ctx, path); err != nil {
 		return nil, err
 	}
+	// Same read-modify-write window as ws_edit: ApplyPatch resolves its hunks
+	// against `prev`, so `prev` must not change under us before we write.
+	defer w.lockPath(path)()
 	data, err := os.ReadFile(abs)
 	existed := err == nil
 	if err != nil {
@@ -1040,7 +1057,7 @@ func commonPrefixLen(a, b string) int {
 	return n
 }
 
-func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+func (w *Workspace) moveFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	from := w.normalizeRelPath(strArg(args, "from"))
 	to := w.normalizeRelPath(strArg(args, "to"))
 	if strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
@@ -1054,12 +1071,16 @@ func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (in
 	if err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(from); err != nil {
+	if err := w.checkFocus(ctx, from); err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(to); err != nil {
+	if err := w.checkFocus(ctx, to); err != nil {
 		return nil, err
 	}
+	// Both endpoints, for the whole exists-check → copy → remove sequence: the
+	// destination's "already exists" verdict and the source's content are both
+	// read before anything is written, and either can go stale.
+	defer w.lockPaths(from, to)()
 	srcInfo, err := os.Stat(fromAbs)
 	if err != nil {
 		return fmt.Sprintf(
@@ -1135,7 +1156,7 @@ func (w *Workspace) moveFile(_ context.Context, args map[string]interface{}) (in
 	return msg, nil
 }
 
-func (w *Workspace) deleteFile(_ context.Context, args map[string]interface{}) (interface{}, error) {
+func (w *Workspace) deleteFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	path := w.normalizeRelPath(strArg(args, "path"))
 	if strings.TrimSpace(path) == "" {
 		return "ws_delete: path is required, e.g. {\"path\":\"pkg/foo/old.go\"}.", nil
@@ -1144,9 +1165,12 @@ func (w *Workspace) deleteFile(_ context.Context, args map[string]interface{}) (
 	if err != nil {
 		return nil, err
 	}
-	if err := w.checkFocus(path); err != nil {
+	if err := w.checkFocus(ctx, path); err != nil {
 		return nil, err
 	}
+	// Covers stat → checkpoint → remove, so the backup the checkpointer takes
+	// is the content that is actually about to be deleted.
+	defer w.lockPath(path)()
 	st, err := os.Stat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {

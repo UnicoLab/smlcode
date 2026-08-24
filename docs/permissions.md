@@ -309,13 +309,23 @@ gate card and takes a **single keystroke** (`y` / `n` / `r`, or type free text t
 notes). `[n]o` stops the run; `[r]eplan` sends the planner back for another attempt — they are
 different answers.
 
-**Without a human attached**, gates resolve immediately using `--on-gate-timeout`:
+**Without a human attached** (no TTY on stdin *or* stdout), the decision is taken at **run start,
+before the first model call**, and logged:
 
-| Value | Effect |
+| `--on-gate-timeout` | Effect |
 |---|---|
-| `stop` *(default)* | stop at the gate, once. The run ends with exit code **6** and prints the flag or config key that would let it proceed unattended. |
-| `approve` | answer every gate affirmatively (the old permissive behaviour) |
-| `reject` | fail closed |
+| *unset* | The plan / clarify / continue / escalate gates answer themselves with "yes" and log `no TTY: …`. Nobody can answer, and you asked for work to be done. |
+| `approve` | The same, stated explicitly. |
+| `stop` | An explicit choice, and honored: the run **refuses at the door** with exit code **6**, naming the flag or config key. It never plans for minutes and then discards the plan. |
+| `reject` | The same refusal, failing closed. |
+
+`shell_permission=ask` is a **safety** gate, not a convenience gate: it is never auto-approved.
+Headless, it refuses the run up front regardless of `--on-gate-timeout` — every `ws_shell` call
+would otherwise wait out `shell_ask_timeout` and come back denied, silently skipping every build
+and test. Set `shell_permission` to `allow` or `deny` for unattended runs.
+
+A gate that does stop a run reports what it kept: `.slmcode/queries/<runID>/` holds `board.json`,
+`PLAN.md` and `TASKS.md`, and the message names `slmcode session resume <runID>`.
 
 `plan_approve_on_timeout` (`approve` / `reject` / `auto`) covers the plan gate specifically;
 `auto` approves only when **no** event subscriber was attached — i.e. when there was no UI that

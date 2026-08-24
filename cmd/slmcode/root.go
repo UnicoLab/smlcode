@@ -68,9 +68,14 @@ Point at any OpenAI-compatible endpoint (oMLX, Ollama, LM Studio, cloud OpenAI, 
   SLMCODE_PROVIDER=lmstudio SLMCODE_MODEL=… slmcode run "…"
 
 Non-interactive: --json (status/doctor/readiness/board/version/apply/config/blocks),
---color=never, --log-level, --on-gate-timeout=stop (never auto-approves a plan),
-and deterministic exit codes: 2 usage · 3 no workspace · 4 provider unreachable
-· 5 failing tasks · 130 interrupted.`)
+--color=never, --log-level, and deterministic exit codes: 2 usage · 3 no workspace
+· 4 provider unreachable · 5 failing tasks · 6 unanswerable gate · 130 interrupted.
+
+With no TTY on stdin+stdout the plan/clarify/continue/escalate gates answer
+themselves with "yes" and log the decision — nobody is there to answer, and you
+asked for work to be done. --on-gate-timeout=stop|reject overrides that, and
+then the run refuses AT THE DOOR rather than planning for minutes first. The
+shell-permission gate is a safety gate: it never auto-approves.`)
 
 func main() {
 	// Keep CLI UX clean — GoLangGraph registries are chatty at Info.
@@ -156,7 +161,9 @@ func main() {
 	root.PersistentFlags().BoolVar(&flagNoBanner, "no-banner", false,
 		"hide the ASCII banner (help, studio, TUI, version)")
 	root.PersistentFlags().StringVar(&flagGateTimeout, "on-gate-timeout", "stop",
-		"approve|reject|stop — what a HITL gate does with no TTY attached")
+		"approve|reject|stop — what a HITL gate does with no TTY attached "+
+			"(unset + no TTY: convenience gates auto-approve and say so; "+
+			"an explicit stop|reject refuses the run up front)")
 	root.PersistentFlags().BoolVar(&flagNoExplore, "no-explore", false,
 		"greedy bandit, no exploration — reproducible runs (config: deterministic)")
 	root.PersistentFlags().BoolVar(&flagEvolve, "evolve", false,
@@ -192,7 +199,7 @@ func main() {
 	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), hooksCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
-		memoryCmd(), evolveCmd(), metricsCmd(), versionCmd())...)
+		memoryCmd(), evolveCmd(), graphCmd(), autoresearchCmd(), metricsCmd(), versionCmd())...)
 	all = append(all, completionCmd())
 	for _, c := range all {
 		rejectUnknownSubcommands(c)

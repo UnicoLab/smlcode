@@ -171,9 +171,11 @@ var schemaFields = map[string]schemaMeta{
 	"file_checkpoints":  {"File checkpoints", "Snapshot each file before its first write (first-write-wins)", "safety", nil, false, false, false, false},
 
 	// ── memory & learning ──
-	"evolve":                 {"Evolve", "Enable the self-improvement engine: memory, learned repair rules, bandit policy and regression checks", "memory", nil, false, false, false, false},
-	"memory_tokens":          {"Memory tokens", "Token budget for the memory block injected into each role's prompt", "memory", nil, false, false, false, false},
-	"deterministic":          {"Deterministic", "Greedy bandit, no exploration — for CI and reproducible runs. dry_run implies it", "learning", nil, false, false, false, false},
+	"evolve":        {"Evolve", "Enable the self-improvement engine: memory, learned repair rules, bandit policy and regression checks", "memory", nil, false, false, false, false},
+	"memory_tokens": {"Memory tokens", "Token budget for the memory block injected into each role's prompt", "memory", nil, false, false, false, false},
+	"deterministic": {"Deterministic", "Greedy bandit, no exploration — for CI and reproducible runs. dry_run implies it", "learning", nil, false, false, false, false},
+	"autoresearch": {"Autoresearch", "Let `slmcode autoresearch` apply the changes it proposes to agent prompts and whitelisted config knobs. Off by default; without it the command only dry-runs",
+		"learning", nil, false, false, false, false},
 	"auto_refine":            {"Auto refine", "Append refine notes from wave lessons into CONTEXT", "learning", nil, false, false, false, false},
 	"auto_refine_max_rounds": {"Refine max rounds", "Cap on refine passes per run", "learning", nil, false, false, false, false},
 	"session_event_log":      {"Session event log", "Write .slmcode/queries/<id>/events.jsonl during runs", "learning", nil, false, false, false, false},

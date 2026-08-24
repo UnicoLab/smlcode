@@ -46,12 +46,19 @@ type DashboardState struct {
 	PendingGate     string      // one-line description of a waiting HITL gate
 }
 
-// IsInteractive reports whether stdin is a TTY suitable for the premium TUI.
+// IsInteractive reports whether a human can both SEE a prompt and ANSWER it.
+//
+// BOTH ends have to be terminals. Checking stdin alone called
+// `slmcode run "…" | tee log` interactive: the gate card was written to the
+// pipe, so the human saw an idle terminal while the run blocked on a question
+// it had asked into a file. This is the one TTY probe in the codebase — the
+// engine is TOLD the answer (orchestrator.SetHeadlessGates) rather than
+// probing a second time.
 func IsInteractive() bool {
 	if os.Getenv("SLMCODE_TUI") == "0" || os.Getenv("CI") == "true" {
 		return false
 	}
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // RenderDashboard paints the multi-panel status view.

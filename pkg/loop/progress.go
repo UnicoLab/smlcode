@@ -117,6 +117,85 @@ func (a *attemptTracker) get(taskID string) int {
 	return a.n[taskID]
 }
 
+// admitDisjoint picks up to maxP tasks off the ordered ready list, skipping any
+// whose files a task already picked for this wave has claimed.
+//
+// This is scheduling-level mutual exclusion. A wave fans out one goroutine per
+// task against ONE working tree, and the FocusGuard write allowlist is the
+// UNION of the wave's files — it constrains the wave against the repo, not the
+// workers against each other. Two tasks that both edit main.go therefore raced,
+// and each worker's context went stale the moment the other one wrote. Planning
+// already folds tasks with IDENTICAL file sets into one (plan's
+// shouldCollapseSameFile); overlapping-but-not-identical sets are the case that
+// slipped past it.
+//
+// A deferred task is NOT dropped and NOT failed — it stays in ready_to_dev and
+// is the first thing the next wave takes, because `ready` keeps its order. The
+// per-path write lock in pkg/workspace is the correctness backstop underneath:
+// this can only see the files a task DECLARED, and a worker that writes a file
+// its task never listed is still serialized there.
+//
+// Deterministic: the ready order is preserved and the claim list is a slice
+// scanned in admission order, so the same board always produces the same wave.
+func (r *Runner) admitDisjoint(ready []plan.Task, maxP int) []plan.Task {
+	if maxP < 1 {
+		maxP = 1
+	}
+	type claim struct{ path, taskID string }
+	claims := make([]claim, 0, len(ready))
+	out := make([]plan.Task, 0, maxP)
+	for _, t := range ready {
+		if len(out) >= maxP {
+			break
+		}
+		files := waveClaimPaths(t)
+		deferred := false
+		for _, f := range files {
+			for _, c := range claims {
+				if !pathsCollide(f, c.path) {
+					continue
+				}
+				r.logf("%s deferred to the next wave: %s is already claimed by %s in this one",
+					t.ID, f, c.taskID)
+				deferred = true
+				break
+			}
+			if deferred {
+				break
+			}
+		}
+		if deferred {
+			continue
+		}
+		for _, f := range files {
+			claims = append(claims, claim{path: f, taskID: t.ID})
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// waveClaimPaths normalizes a task's declared files into contention keys, using
+// the same cleaning as the workspace path lock so "./a.go" and "a.go" are one
+// file here too.
+func waveClaimPaths(t plan.Task) []string {
+	out := make([]string, 0, len(t.Files))
+	for _, f := range t.Files {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		out = append(out, filepath.ToSlash(filepath.Clean(strings.TrimSpace(f))))
+	}
+	return out
+}
+
+// pathsCollide reports whether two cleaned paths are the same file, or one is a
+// directory holding the other. Tasks legitimately declare directories ("src/"),
+// and src vs src/main.go is the same contention as two tasks on one file.
+func pathsCollide(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
 // admitWave splits a ready wave into the tasks that may still be attempted and
 // the ones that have spent their board-level attempt ceiling.
 //

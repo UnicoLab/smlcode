@@ -74,6 +74,20 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 		return planApprovalDecision{Approved: true}, nil
 	}
 
+	// ask mode, but nobody is attached who could answer.
+	//
+	// Decide HERE rather than build the ask, hand it to a handler that will
+	// refuse it on the operator's behalf, and throw a finished plan away. The
+	// same decision was already announced at run start by GatePreflight, so
+	// this can never surprise anyone: a headless run either said "auto-
+	// approving plan gate" at t=0 or refused to start at all.
+	if o.headlessAutoApproves() {
+		o.emitFull("plan", stream.KindOutput, "plan-approve", "",
+			"no TTY: auto-approving plan gate (override with --on-gate-timeout=stop)",
+			"", truncate(payload, 1200))
+		return planApprovalDecision{Approved: true}, nil
+	}
+
 	// ask mode
 	if err := hitl.WriteAsk(o.cfg.SlmDir(), "plan", ask); err != nil {
 		return planApprovalDecision{}, fmt.Errorf("write plan approval ask: %w", err)
@@ -120,12 +134,16 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 			return planApprovalDecision{Approved: true}, nil
 		case PlanTimeoutReject:
 			o.emitProblem("plan", "plan approval timeout — NOT approving (plan_approve_on_timeout=reject)", "")
-			return planApprovalDecision{}, fmt.Errorf("plan approval timed out after %s and plan_approve_on_timeout=reject", timeout)
+			o.emitRetainedWork("plan", board)
+			return planApprovalDecision{}, o.stoppedAtGateError(
+				fmt.Sprintf("plan approval timed out after %s and plan_approve_on_timeout=reject", timeout))
 		default: // PlanTimeoutAuto
 			if subscribed {
 				o.emitProblem("plan",
 					"plan approval timeout with a listener attached — NOT auto-approving; re-run or set plan_approve=off", "")
-				return planApprovalDecision{}, fmt.Errorf("plan approval timed out after %s with no answer", timeout)
+				o.emitRetainedWork("plan", board)
+				return planApprovalDecision{}, o.stoppedAtGateError(
+					fmt.Sprintf("plan approval timed out after %s with no answer", timeout))
 			}
 			o.emitWarn("plan", "plan approval timeout with no listener attached — auto-approving", "")
 			return planApprovalDecision{Approved: true}, nil
@@ -141,8 +159,11 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 		return planApprovalDecision{Replan: true, Notes: note}, nil
 	}
 	if !plan.IsPlanApproved(ans) {
-		o.emit("plan", "plan not approved — stopping before execute", "")
-		return planApprovalDecision{}, fmt.Errorf("plan not approved")
+		o.emitProblem("plan", "plan not approved — stopping before execute", "")
+		// Nothing is discarded: the board, PLAN.md and TASKS.md this run
+		// produced are on disk and resumable. Say so, with the command.
+		o.emitRetainedWork("plan", board)
+		return planApprovalDecision{}, o.stoppedAtGateError("plan not approved")
 	}
 	if note := strings.TrimSpace(ans.Notes); note != "" && board != nil {
 		board.Plan.Assumptions = append(board.Plan.Assumptions, "User plan note: "+note)

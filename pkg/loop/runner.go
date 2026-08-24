@@ -20,6 +20,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/compact"
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/evolve"
+	"github.com/UnicoLab/slmcode/pkg/graph"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
@@ -199,6 +200,18 @@ type Runner struct {
 	// attempts remembers what the corrector was already told, per task.
 	attempts attemptLedger
 
+	// attemptDB is the PERSISTED companion to `attempts`: one record per pass
+	// at a task, carrying its hypothesis, diffstat, gate signals and reviewer
+	// verdict, and pointing at the pass it grew out of. attemptGraphDB is the
+	// edge index those records are mirrored into. Both are opened once per
+	// runner because their indexes are whole-file caches — two stores over one
+	// directory would each flush a view missing the other's writes. See
+	// attempts.go.
+	attemptOnce      sync.Once
+	attemptDB        *plan.Attempts
+	attemptGraphOnce sync.Once
+	attemptGraphDB   *graph.Store
+
 	// waveAttempts counts how many times each task has been dispatched to a
 	// wave — the board-level attempt ceiling. See progress.go.
 	waveAttempts attemptTracker
@@ -323,7 +336,6 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		}
 		idleRounds = 0
 
-		wave := ready
 		// MaxParallel <= 0 must mean "one at a time", never "no tasks". A
 		// zero-valued Runner (struct literal, embedding caller, a config path
 		// that skipped normalization) sliced the wave to wave[:0], executed
@@ -334,9 +346,12 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		if maxP < 1 {
 			maxP = 1
 		}
-		if len(wave) > maxP {
-			wave = wave[:maxP]
-		}
+		// Fill the wave with tasks that do NOT share files, rather than taking
+		// the first maxP off the list: workers in one wave run concurrently
+		// against one working tree, so two tasks on the same file are two
+		// workers overwriting each other. Whatever is skipped here keeps its
+		// place at the head of the next wave.
+		wave := r.admitDisjoint(ready, maxP)
 		// Park anything that has spent its board-level attempt ceiling BEFORE
 		// spending another worker call on it.
 		if wave = r.admitWave(board, wave); len(wave) == 0 {
@@ -459,7 +474,7 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 		// including the project's language-appropriate smoke command.
 		prompt = fallbackTaskPromptWithLang(t, detectProjectLangHint(r.rootDir()))
 	}
-	if led := attemptLogSection(t); led != "" {
+	if led := r.attemptLogSection(t); led != "" {
 		prompt += led
 	}
 	if brief := r.sharedBriefSection(board, t); brief != "" {
@@ -478,14 +493,31 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 }
 
 // attemptLogSection renders the cross-attempt "do not repeat this" ledger a
-// gate retry carries forward (plan.Task.AttemptLog).
+// gate retry carries forward.
 //
 // Without it, answering "retry" at the escalate gate sent the worker back with
 // a byte-identical prompt: same task text, same scope, same acceptance, and no
 // record that this exact attempt had already been made and rejected. A small
 // model given the same prompt returns the same answer, which is why the gate
 // loop never converged.
-func attemptLogSection(t plan.Task) string {
+//
+// It has two halves. The first is the PERSISTED lineage: the approaches already
+// tried at this task and the reason each one was refused, deduplicated by
+// reason and bounded in bytes (see attempts.go). The second is the original
+// plan.Task.AttemptLog prose, which the escalate gate still writes and reads —
+// this is additive, not a replacement. The structured half comes first because
+// it is the half that names an approach; six truncated strings only ever named
+// a number.
+func (r *Runner) attemptLogSection(t plan.Task) string {
+	var b strings.Builder
+	b.WriteString(r.rejectedApproachSection(t))
+	b.WriteString(attemptLogProse(t))
+	return b.String()
+}
+
+// attemptLogProse renders plan.Task.AttemptLog, the prose ledger carried across
+// gate retries.
+func attemptLogProse(t plan.Task) string {
 	if len(t.AttemptLog) == 0 {
 		return ""
 	}
@@ -524,6 +556,15 @@ func (r *Runner) adaptiveLessonsSection() string {
 		adaptiveGuidance(raw, 900) + "\n"
 }
 
+// adaptiveGuidance turns the stored lessons into prompt lines.
+//
+// The canned advice below is ENRICHMENT: for the handful of failure classes the
+// harness understands natively it adds a concrete instruction the raw lesson
+// text does not spell out. It is no longer a gate. Selecting *which* lessons
+// survive is done upstream by learning.RecentAdaptiveMemoryFor, which ranks
+// them against the actual task with the BM25F scorer in pkg/memory; every
+// lesson that reaches this function is emitted, whatever words it happens to
+// contain.
 func adaptiveGuidance(raw string, limit int) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || limit <= 0 {
@@ -552,6 +593,16 @@ func adaptiveGuidance(raw string, limit int) string {
 	return out
 }
 
+// recentLessonLines emits the most recent stored lessons verbatim.
+//
+// It used to drop any line that did not contain one of eight hardcoded
+// substrings (timeout, deadline, smoke, qa_gate, acceptance, placeholder, stub,
+// max retries) — the tail of the same allowlist that used to gate
+// learning.RecentAdaptiveMemory. A lesson about an import cycle, a flaky
+// fixture or a naming convention was learned, written to disk, and then
+// silently discarded on its way to the only place it could ever be useful.
+// Relevance is now decided upstream, by ranking lessons against the actual
+// task; here every line survives and only the count is bounded.
 func recentLessonLines(raw string) []string {
 	fields := strings.Split(raw, "\n")
 	var picked []string
@@ -560,12 +611,8 @@ func recentLessonLines(raw string) []string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") ||
-			strings.Contains(lower, "smoke") || strings.Contains(lower, "qa_gate") ||
-			strings.Contains(lower, "acceptance") || strings.Contains(lower, "placeholder") ||
-			strings.Contains(lower, "stub") || strings.Contains(lower, "max retries") {
-			picked = append(picked, normalizeLessonLine(line))
+		if norm := normalizeLessonLine(line); norm != "" {
+			picked = append(picked, norm)
 		}
 	}
 	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
@@ -575,12 +622,29 @@ func recentLessonLines(raw string) []string {
 }
 
 func normalizeLessonLine(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimLeft(line, "-•⚠✓ ")
+	line = stripLessonProvenance(strings.TrimSpace(line))
+	line = strings.TrimSpace(strings.TrimLeft(line, "-•⚠⚙✓ "))
 	if line == "" {
 		return ""
 	}
 	return "- Learned: " + line
+}
+
+// stripLessonProvenance removes the trailing `<!-- slm … -->` bookkeeping that
+// MEMORY.md bullets carry so a lesson can be parsed back into a typed fact.
+// A model must never see it. Belt-and-braces: the orchestrator already strips
+// it before publishing lessons to shared state, but shared state has other
+// writers and a stray HTML comment in a prompt is pure noise for a 7B model.
+func stripLessonProvenance(line string) string {
+	i := strings.LastIndex(line, "<!--")
+	if i < 0 {
+		return line
+	}
+	rest := line[i:]
+	if !strings.HasSuffix(strings.TrimSpace(rest), "-->") {
+		return line
+	}
+	return strings.TrimRight(line[:i], " \t")
 }
 
 func dedupeLines(lines []string) []string {
@@ -807,7 +871,8 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 	}
 	if len(reqs) == 1 {
 		defer r.streamTokens(reqs[0].AgentID, reqs[0].TaskID)()
-		return r.Executor.ExecuteSubAgents(r.taskCtx(ctx, reqs[0].TaskID), reqs, r.Shared)
+		return r.Executor.ExecuteSubAgents(
+			r.agentCtx(ctx, reqs[0].TaskID, reqs[0].AgentID), reqs, r.Shared)
 	}
 
 	results := make([]ggagent.SubAgentResult, len(reqs))
@@ -823,7 +888,7 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 			// deltas apart.
 			defer r.streamTokens(req.AgentID, req.TaskID)()
 			out, err := r.Executor.ExecuteSubAgents(
-				r.taskCtx(ctx, req.TaskID), []ggagent.SubAgentRequest{req}, r.Shared)
+				r.agentCtx(ctx, req.TaskID, req.AgentID), []ggagent.SubAgentRequest{req}, r.Shared)
 			errs[i] = err
 			if len(out) > 0 {
 				results[i] = out[0]
@@ -1686,7 +1751,13 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 	}
 	current := t
 	ctx = r.taskCtx(ctx, t.ID)
+	// Attempt lineage. Every pass through this ladder is one persisted record
+	// pointing at the pass it grew out of, so the history survives the corrector
+	// overwrite below — and survives the process.
+	lin := r.newLineage(current)
+	defer lin.flush()
 	for attempt := 0; attempt <= r.MaxRetries; attempt++ {
+		startedAt := time.Now()
 		// Pick up human edits from the live store.
 		if r.Store != nil {
 			_ = r.Store.MergeFromDisk()
@@ -1702,6 +1773,11 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		g := r.gatherGateSignals(ctx, &current, baseline)
 		review, reviewRaw, err := r.decideReview(ctx, current, g, baseline)
 		if err != nil {
+			// The reviewer never produced a verdict. That is still an attempt
+			// that happened, and the next one must be able to see it.
+			lin.record(current, g, plan.ReviewResult{
+				Summary: err.Error(), Issues: []string{err.Error()},
+			}, plan.AttemptError, startedAt)
 			current.MoveTo(plan.ColBlocked)
 			current.Error = err.Error()
 			return current, nil, err
@@ -1724,6 +1800,20 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			fmt.Sprintf("review approved=%v score=%d", review.Approved, review.Score),
 			"", endOut, level)
 
+		// Persist THIS attempt — its output, its diffstat, the gates that fired
+		// and the verdict just reached — BEFORE anything overwrites
+		// current.Output further down. That overwrite is what used to destroy
+		// the intermediate attempt and the verdict that judged it.
+		outOfBudget := r.budgetExhausted(current.ID)
+		verdict := plan.AttemptRejected
+		switch {
+		case review.Approved:
+			verdict = plan.AttemptApproved
+		case attempt == r.MaxRetries || outOfBudget:
+			verdict = plan.AttemptEscalated
+		}
+		lin.record(current, g, review, verdict, startedAt)
+
 		if review.Approved {
 			mergeFilesChanged(&current)
 			current.MoveTo(plan.ColDone)
@@ -1739,7 +1829,6 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			Language: detectSignalLanguage(r.Root),
 		}, "")
 
-		outOfBudget := r.budgetExhausted(current.ID)
 		if attempt == r.MaxRetries || outOfBudget {
 			return r.escalateTask(current, review, attempt, outOfBudget)
 		}
@@ -1914,7 +2003,7 @@ Rules:
 - @explorer: approve if a real file path was found.
 - @tester: approve ONLY when output JSON has "passed":true AND real shell Observation (not fabricated commands[]). Reject if passed:false, failures listed, or "does not work".
 - Reject only if work is clearly missing or out of scope.
-`, t.ID, t.Title, t.Role, langHint, t.Acceptance, truncate(t.Output, 3500)) + r.feedbackSection()
+`, t.ID, t.Title, t.Role, langHint, t.Acceptance, clipForReview(t.Output, 3500)) + r.feedbackSection()
 }
 
 // detectProjectLangHint returns a language-pinned verification hint based on
@@ -2122,6 +2211,47 @@ func stripPostSections(s string) string {
 	return quality.StripHarnessSections(s)
 }
 
+// reviewEvidenceBudget bounds the harness-authored evidence handed to the
+// reviewer. It is generous relative to reviewPromptBudget because these
+// sections are short, factual and the only objective input the reviewer gets.
+const reviewEvidenceBudget = 2500
+
+// clipForReview budgets the review prompt so the harness's OWN evidence can
+// never be truncated away by the model's prose.
+//
+// runGates APPENDS its sections (## Disk evidence, ## Deterministic smoke,
+// ## Acceptance smoke, ## Static quality gate, ## Claimed files gate,
+// ## Knowledge conflicts) to the end of Task.Output, and the reviewer's rules
+// are written in terms of them — "approve if ... Disk evidence section shows
+// changed files", "reject if ## Deterministic smoke shows FAILED". A head-first
+// clip therefore deleted exactly the part the reviewer was told to judge on:
+// once a reasoning worker's prose passed the budget, the reviewer saw claims
+// with no evidence and applied its "reject if output is only claims" rule to
+// correct, test-passing code.
+//
+// Observed live on a 9B: seven consecutive rejections (score 0) of an
+// implementation whose tests all passed, ~22 minutes of correction rounds that
+// could not have succeeded, because no output the worker produced could put the
+// evidence back inside the window.
+//
+// Split first, budget each part separately, and keep the evidence whole.
+func clipForReview(out string, budget int) string {
+	body := strings.TrimSpace(stripPostSections(out))
+	evidence := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), body))
+	if evidence == "" {
+		return truncate(body, budget)
+	}
+	// The evidence is the smaller, denser half; clip the prose around it.
+	evidence = truncate(evidence, reviewEvidenceBudget)
+	room := budget - len(evidence)
+	if room < 600 {
+		// Never let a large evidence block starve the answer entirely: the
+		// reviewer still needs to see what the worker claims it did.
+		room = 600
+	}
+	return truncate(body, room) + "\n\n" + evidence
+}
+
 func roleMaxIter(role string) int {
 	switch role {
 	case "deep":
@@ -2270,7 +2400,7 @@ func (r *Runner) scopeOK(t plan.Task) string {
 		g.SetWave([][]string{focus})
 	}
 	if bad := g.OutOfScopeFiles(claimed); len(bad) > 0 {
-		return "out-of-scope files_changed: " + strings.Join(bad, ", ")
+		return workspace.OutOfScopeReason(t.Role, bad)
 	}
 	// Detect newly created entrypoints on disk that are not in focus.
 	if r.Root == "" || len(t.Files) == 0 {

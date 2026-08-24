@@ -8,12 +8,13 @@
 That is the requirement. This page explains how it is implemented, what it
 writes to disk, which knobs exist, and how to inspect or delete all of it.
 
-Two packages do the work:
+Four packages do the work:
 
 | Package | Responsibility |
 |---|---|
 | `pkg/memory` | Four layers of memory: working, episodic, semantic, procedural |
 | `pkg/evolve` | Failure fingerprinting, repair rules, a policy bandit, reflection, regression checks |
+| `pkg/learning` | Turning a finished task into a prose lesson, and routing it into `pkg/memory` |
 | `pkg/eval/metrics` | Per-run metrics, baseline-vs-current comparison, offline replay |
 
 Three rules apply to every part of it:
@@ -121,6 +122,20 @@ refuted, never pruned. Edit `facts.json` by hand to add one.
 The rendered block targets ≤ 400 tokens, grouped action-first (commands and
 gotchas before layout and files), at most 6 facts per kind.
 
+**The block is query-conditioned.** `Facts.RenderFor(query, budget)` scores every
+eligible fact against the current task with the same BM25F ranker episodic
+recall uses, and within each kind the matching facts take the six slots first,
+in relevance order. `Render(budget)` is the unconditioned form and is
+byte-for-byte what `RenderFor` produces for an empty query — the conditioning is
+additive, so `SEMANTIC.md` and any caller without a task in hand are unchanged.
+
+Relevance *orders* the block; it does not filter it. A fact that shares no
+tokens with the query is still a fact about this project, and emptying the block
+because a query happened to use different words would be a regression dressed up
+as precision. Candidates are ranked with a zero timestamp on purpose: staleness
+is already priced into `Fact.Score`, and decaying it twice would let a fresh but
+barely-relevant fact outrank an old and exactly-relevant one.
+
 ### Procedural memory (cross-project, user-scoped)
 
 Under `~/.slmcode/memory/`: what works for a given **model family** and
@@ -142,6 +157,86 @@ recommend anything. Lookup widens (family, language) → (family, \*) → (\*,
 language) → (\*, \*), never across languages before it has widened across
 models.
 
+### Lessons: the prose layer, and how it joins the typed one
+
+After every wave and at the end of every run, `pkg/learning` turns finished and
+blocked board tasks into `Lesson{TaskID, Kind, Text, At}` — `success`,
+`convention` or `failure` — and mirrors them into `.slmcode/MEMORY.md` as
+Markdown bullets. That mirror is for humans; it is not the memory system.
+
+Two things make it a real part of the loop rather than a write-only log.
+
+**Provenance survives the write.** A bullet carries its task and timestamp in a
+trailing HTML comment:
+
+```markdown
+- ⚠ Import cycle: pkg/graph must not import pkg/orchestrator <!-- slm task=T7 kind=failure at=2026-08-24T10:11:12Z -->
+```
+
+Invisible in any rendered Markdown, plain text in an editor, and exactly
+recoverable: `RenderMarkdown` and `ParseMarkdown` are inverses. Bullets written
+before this existed still parse, with the kind recovered from the glyph.
+`StripProvenance` removes the bookkeeping before anything reaches a prompt — a
+model has no use for it. Previously `RenderMarkdown` emitted only
+`- <glyph> <Text>` and dropped `TaskID` and `At` on the floor, which destroyed
+provenance *at write time*, before storage, so no later reader could recover it.
+
+**Every lesson becomes a `Fact`.** `learning.FactFromLesson` maps a lesson onto
+semantic memory and `RecordFacts` folds it in, so a prose observation inherits
+the whole typed machinery for free:
+
+| Lesson kind | Fact kind | Why |
+|---|---|---|
+| `failure` | `gotcha` | a trap that cost a run — the definition of a gotcha |
+| `convention` | `convention` | |
+| `success` | `convention` | a pattern observed to work here |
+| anything else | `convention` | an unrecognized kind is still an observation about this project |
+
+The fact's **subject** — its identity — is the first five significant words of
+the lesson, lowercased, namespaced `lesson: `, with task ids and bare numbers
+removed. Task ids look stable but are per-run, so keeping them would both split
+one recurring claim across every run that made it and collide two unrelated
+claims that happened to be task 1. Five words is the leading noun phrase of a
+typical bullet: enough to separate two topics, coarse enough that two rival
+claims about the same topic actually meet and can contradict each other.
+`Fact.Sources` carries the originating task and run id, so provenance is
+queryable from `facts.json` and not merely readable in `MEMORY.md`.
+
+What that buys, none of which flat Markdown could ever do: a lesson seen twice
+outranks one seen once (Beta posterior); a claim the project has outgrown is
+contradicted and eventually superseded instead of being injected forever; a
+heavily contradicted lesson stops being rendered; and the store prunes itself.
+
+The Markdown mirror keeps being written. This is additive.
+
+### Selecting lessons for a prompt
+
+`learning.RecentAdaptiveMemoryFor(query, project, global, maxBytes)` picks which
+stored lessons a worker actually sees. It ranks them against the current task
+with `memory.RankText` — the *same* BM25F scorer, coverage gate, relative floor
+and recency decay that rank episodes, factored out of `recall.go` so there is
+exactly one implementation to tune and to trust. Matching lessons lead, in
+relevance order; the remaining slots (10 lines, 1600 bytes, unchanged) are
+filled with the most recent lines, and lines are dropped whole rather than
+sliced mid-sentence. With no query the fallback is pure recency — deterministic,
+no model.
+
+> **Removed: the keyword gate.** Selection used to be an eleven-substring
+> allowlist — `timeout, timed out, deadline, max_parallel, contention, smoke,
+> qa_gate, acceptance, placeholder, stub, max retries` — applied on the *only*
+> path from a stored lesson to a future prompt. Any lesson without one of those
+> words was written to disk and then silently discarded. Measured against this
+> repo's own `MEMORY.md`, four of seven lessons never survived. Worse, the list
+> was a guess frozen at the moment it was typed: a project whose real recurring
+> problem is an import cycle, a flaky fixture or a naming convention learned
+> nothing, forever, because nobody had thought of those words. `pkg/loop`'s
+> `recentLessonLines` carried the same list and is gone too.
+>
+> `adaptiveGuidance`'s canned advice for the failure classes the harness
+> understands natively (timeouts, contention, verification, placeholders)
+> survives as **enrichment** — it says something concrete the raw lesson text
+> does not. It no longer decides which lessons live.
+
 ---
 
 ## 2. Evolve: fail once, then never again
@@ -154,10 +249,11 @@ Any failure becomes a stable `Fingerprint`:
    timestamps, durations, URLs, IPs, hex addresses, hashes, paths, line:column
    pairs, quoted payloads and bare numbers with placeholders. Lowercase,
    collapse whitespace, cap at 300 bytes.
-2. **Classify** into one of 23 classes (`edit_not_found`, `edit_ambiguous`,
+2. **Classify** into one of 24 classes (`edit_not_found`, `edit_ambiguous`,
    `edit_line_numbers`, `file_not_read`, `malformed_json`, `truncated_output`,
    `compile_error`, `test_failure`, `timeout`, `context_overflow`,
-   `provider_error`, `no_progress`, `permission_denied`, …). Needle matching
+   `provider_error`, `no_progress`, `permission_denied`, `out_of_scope_write`,
+   …). Needle matching
    uses word boundaries for bare words, so the identifier `waveTimeout` is not
    mistaken for a network timeout.
 3. **Hash** class + tool + language + model family + a *salient* string.
@@ -169,6 +265,15 @@ different messages collapse to one fingerprint. For **content** classes
 (compile errors, test failures) the normalized message participates, so
 `undefined: alpha` and `undefined: beta` stay distinct while the same
 `undefined: alpha` in two different files collapses.
+
+`out_of_scope_write` is structural for the same reason: the path, the role name
+and which of the guard's three refusal texts fired are all presentational, so
+every blocked write in a project shares one fingerprint and therefore one
+stored repair. Content-classing it would mint a fresh fingerprint per
+(role, path) pair and the harness would relearn the same lesson for the
+explorer, then the docs reader, then the reviewer. The role-specific
+instruction is not lost — it is stated by the guard's own refusal, which the
+agent reads directly above the repair guidance.
 
 ### Repair rules
 
@@ -222,6 +327,7 @@ These make the harness useful on day one:
 | Repeated identical tool call | `action: force_different_action` |
 | Reviewer rejected repeatedly | `action: split_task` |
 | Shell command not permitted | `guidance` — propose the allowed equivalent, do not retry |
+| Write outside the task focus files, or from a read-only role | `action: force_different_action` — a scope decision, not an edit-syntax problem: edit a focus file, or report the change and finish. Never reword the call |
 | Path does not exist | `action: reread_file` — list before assuming a layout |
 | Missing tool/module | `guidance` — report it, do not reimplement it |
 | Rate limited | `action: backoff_retry` |
@@ -401,20 +507,25 @@ Everything is human-readable and safe to edit, version-control or delete.
 
 ```
 <project>/.slmcode/
+├── MEMORY.md                   prose lessons, one bullet each, with provenance
 ├── memory/
 │   ├── episodes.jsonl          one JSON object per completed task/turn
 │   ├── episodes.index.json     searchable projection + byte offsets
-│   ├── facts.json              semantic memory (distilled, confidence-scored)
+│   ├── facts.json              semantic memory (distilled + lessons, confidence-scored)
 │   ├── SEMANTIC.md             human-readable mirror of facts.json
 │   ├── WORKING.md              last run's short-term state (debug only)
 │   └── REFLECTION.md           last run's intent-vs-outcome report
 ├── evolve/
 │   ├── rules.json              project-scoped + builtin repair rules
 │   └── regressions.json        fixed failures and their re-checks
+├── graph/
+│   ├── edges.jsonl             typed edges between the records above
+│   └── edges.index.json        adjacency index, rebuildable from the log
 └── metrics/
     └── runs.jsonl              one metrics record per run
 
 ~/.slmcode/
+├── MEMORY.md                   cross-project prose lessons
 ├── memory/
 │   ├── procedures.json         cross-project: what works per model + language
 │   └── PROCEDURES.md           human-readable mirror
@@ -422,6 +533,9 @@ Everything is human-readable and safe to edit, version-control or delete.
     ├── rules.json              user-scoped repair rules (model-level lessons)
     └── policy.json             bandit posteriors
 ```
+
+`MEMORY.md` is the human mirror; `facts.json` is what the harness reasons over.
+Deleting `MEMORY.md` loses the prose, not the learning.
 
 All writes go through `pkg/internal/atomicfile` (temp file + rename), except
 the two append-only JSONL logs, which use a single `write(2)` per record — on
@@ -444,6 +558,7 @@ detected and rebuilt from the log.
 | Bandit keys | 300 | least-used first |
 | Regression checks | 200 | oldest first |
 | Metrics log | 2000 runs | oldest first |
+| Graph edges | 20000 | drops edges not re-observed for 180 days, newest kept; the JSONL log is rewritten so the file shrinks too |
 
 ---
 
@@ -536,3 +651,47 @@ rm -rf ~/.slmcode/memory ~/.slmcode/evolve
 The next run starts from the shipped repair rules and the shipped bandit priors
 — which is to say, it behaves exactly like a fresh install, and then starts
 learning again.
+
+---
+
+## 7. The knowledge graph (`.slmcode/graph`)
+
+Everything above stores its cross-references as strings that nothing follows.
+`Fact.Sources` names the episodes a fact was distilled from, `Rule.Evidence`
+names what created a repair rule, `Episode.FilesChanged` names the files a turn
+touched, `FailureNote.ResolvedBy` names the rule that fixed a failure — and none
+of them could be traversed. Nothing could walk from a file to the failure classes
+it has produced to the rule that resolved them, because that join spans three
+files in two packages.
+
+`pkg/graph` is a fourth store that materializes exactly those references as
+typed edges under `.slmcode/graph`:
+
+| Record field | Edge |
+|---|---|
+| `Episode.RunID` | `run` -parent_of-> `episode` |
+| `Episode.FilesChanged` | `episode` -touched-> `file` |
+| `Episode.Failures[].Fingerprint` | `episode` -produced-> `failure` |
+| `FailureNote.ResolvedBy` | `failure` -resolved_by-> `rule` |
+| `Fact.Sources` | `fact` -derived_from-> `episode` \| `run` |
+| `Rule.Evidence` | `rule` -derived_from-> `episode` \| `run` |
+
+It adds no data of its own. Edges are content-addressed on `(from, to, type)`,
+so a run backfills after every turn without the log growing, and node identity is
+exact — no fuzzy matching, no entity resolution, and a reference that resolves to
+no known record is dropped rather than invented. The same corrupt-line, stale-
+index and `.corrupt` rules described above apply, and `rm -rf .slmcode/graph` is
+a supported operation because one backfill rebuilds every edge.
+
+```bash
+slmcode graph stats                    # edges by type, node count, file size
+slmcode graph file pkg/loop/runner.go  # failure classes seen here, and what fixed them
+slmcode graph neighbors <node>         # one hop, --dir in|out|either, --type
+slmcode graph walk <node>              # bounded traversal, --depth (hard cap 6)
+slmcode graph backfill                 # materialize edges (idempotent)
+slmcode graph prune --max-age 720h     # bound the store; rewrites the log
+slmcode graph forget --yes             # delete the index; backfill rebuilds it
+```
+
+Full reference, including the node-id scheme, the rest of the edge vocabulary and
+where the graph is *not* worth its cost: [Knowledge graph](graph.md).

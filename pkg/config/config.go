@@ -283,6 +283,17 @@ type Config struct {
 	// Deterministic makes the bandit greedy and disables exploration, for CI
 	// and reproducible runs. DryRun implies it.
 	Deterministic bool `yaml:"deterministic" json:"deterministic"`
+	// Autoresearch permits `slmcode autoresearch` to actually apply the changes
+	// it proposes — rewriting this project's agent prompts and a whitelist of
+	// safe config knobs under .slmcode/.
+	//
+	// Default FALSE, and it stays false unless someone writes it down. Every
+	// other learning knob in this struct changes how a run behaves; this one
+	// lets a background loop edit the files you wrote, so opting in is a
+	// decision, never something inherited from a stack preset or a default.
+	// Without it the command still runs — as a dry run that prints what it
+	// would try.
+	Autoresearch bool `yaml:"autoresearch" json:"autoresearch"`
 	// MemoryTokens is the token budget for the injected memory block.
 	MemoryTokens int `yaml:"memory_tokens" json:"memory_tokens"`
 	// MaxTaskCalls is the per-task LLM call budget handed to the inner loop.
@@ -539,6 +550,7 @@ func Default(root string) *Config {
 		DisableSyntaxCheck:   false,
 		Evolve:               true,
 		Deterministic:        false,
+		Autoresearch:         false,
 		MemoryTokens:         DefaultMemoryTokens,
 		MaxTaskCalls:         DefaultMaxTaskCalls,
 		ArchitectEditor:      false,

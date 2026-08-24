@@ -135,14 +135,25 @@ func TestInferCreateFiles(t *testing.T) {
 	}
 }
 
-func TestExecutableSoftSkipBlockedDep(t *testing.T) {
+// This used to assert that a blocked dependency was SOFT-SKIPPED — that T2 ran
+// even though the locate task it depends on failed. That was the bug, not the
+// feature: T2 then edits files T1 never found. A failed dependency now blocks
+// its dependents, which is what puts them in front of a human. See
+// deps_test.go for the full matrix.
+func TestExecutableBlockedDepBlocksDependent(t *testing.T) {
 	b := &Board{Tasks: []Task{
 		{ID: "T1", Column: ColBlocked, Role: RoleExplorer},
 		{ID: "T2", Column: ColReadyToDev, Role: RoleWorker, DependsOn: []string{"T1"}},
 	}}
-	ready := b.ReadyTasks()
-	if len(ready) != 1 || ready[0].ID != "T2" {
-		t.Fatalf("%+v", ready)
+	if ready := b.ReadyTasks(); len(ready) != 0 {
+		t.Fatalf("ready=%+v want none — T1 failed, so T2 has nothing to build on", ready)
+	}
+	t2, _ := b.Get("T2")
+	if t2.Column != ColBlocked {
+		t.Fatalf("T2 column=%s want blocked", t2.Column)
+	}
+	if !strings.Contains(t2.Error, "T1") {
+		t.Fatalf("T2 Error=%q want it to name the failed upstream", t2.Error)
 	}
 }
 

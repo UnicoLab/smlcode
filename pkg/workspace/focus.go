@@ -1,11 +1,88 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 )
+
+// roleKey carries the executing role (the agent id the harness dispatched)
+// through context, alongside taskIDKey in loopguard.go.
+//
+// The write guard needs it for one reason: the refusal it hands back is the
+// only thing the model reads, and for a read-only role the decisive fact is
+// not "this path is out of scope" but "your role never writes at all".
+type roleKey struct{}
+
+// WithRole tags ctx with the role that owns the tool calls made under it.
+// pkg/loop sets it when it dispatches a subagent; an untagged context simply
+// yields the role-agnostic refusal, which is still actionable.
+func WithRole(ctx context.Context, role string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	role = normalizeRole(role)
+	if role == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, roleKey{}, role)
+}
+
+// RoleFrom returns the role carried by ctx ("" when unset).
+func RoleFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(roleKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// readOnlyRoles are the roles whose contract is to READ and REPORT. Some of
+// them (explorer, docs) are handed the full coding toolset because they need
+// ws_glob/ws_grep/ws_read, and nothing but the prompt stopped them reaching for
+// ws_edit — which is exactly the failure this table exists to explain.
+//
+// Kept as data here rather than imported from pkg/agents: this package is a
+// leaf and must stay one.
+var readOnlyRoles = map[string]bool{
+	"explorer": true, "docs": true, "context": true, "planner": true,
+	"splitter": true, "reviewer": true, "reviewer-strict": true,
+	"architect": true, "describer": true, "coordinator": true,
+	"orchestrator": true, "memory": true, "composer": true, "escalate": true,
+}
+
+// roleSuffixes maps a language-specialised agent id (go-explorer,
+// python-reviewer) back to its generic role. Mirrors agents.genericRole.
+var roleSuffixes = map[string]bool{
+	"worker": true, "tester": true, "reviewer": true, "corrector": true,
+	"explorer": true, "planner": true, "splitter": true, "architect": true,
+	"editor": true, "describer": true, "docs": true, "context": true,
+	"placeholder": true, "deep": true,
+}
+
+// IsReadOnlyRole reports whether role's contract forbids editing files at all.
+func IsReadOnlyRole(role string) bool {
+	return readOnlyRoles[genericRoleName(normalizeRole(role))]
+}
+
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
+}
+
+// genericRoleName strips a language prefix ("go-explorer" → "explorer"). Ids
+// whose tail is not a known role ("reviewer-strict") are returned unchanged.
+func genericRoleName(role string) string {
+	if i := strings.LastIndex(role, "-"); i >= 0 {
+		if tail := role[i+1:]; roleSuffixes[tail] {
+			return tail
+		}
+	}
+	return role
+}
 
 // FocusGuard constrains workspace writes to task focus files / packages.
 // Safe for concurrent waves: SetWave replaces the active allowlist atomically.
@@ -132,8 +209,44 @@ func (g *FocusGuard) Allow(path string) bool {
 	return false
 }
 
+// Refusal texts. Each one names WHO is being refused, says the refusal is
+// about the path rather than the syntax of the call, and ends with a concrete
+// next action.
+//
+// The old messages said only what was blocked ("stay within focus files /
+// their packages"). A 9B explorer read that as an edit-syntax problem: it
+// retried ws_edit with more context, then with less, then listed the workspace,
+// then read go.mod — six LLM calls and its whole task budget, on a refusal that
+// could never be argued with. Naming the role's contract is the decisive fact,
+// and "finish now" is the only action that ends the loop.
+//
+// Style note: these are error strings, so they start lowercase and end without
+// punctuation (staticcheck ST1005), like the rest of this file.
+const (
+	readOnlyRoleRefusal = "out-of-scope write blocked: %s — the %s role does not edit files at all.\n" +
+		"This role reads and reports; a later task makes the change. Rewording this call cannot make it work.\n" +
+		"Next action: stop calling edit/write tools and finish now — put the file, the symbol and the " +
+		"change that is needed in your answer"
+
+	focusFileRefusal = "out-of-scope write blocked: %s — %s writes only inside the task focus files and their packages.\n" +
+		"The path is the problem, not the call: rewording it cannot make it work.\n" +
+		"Next action: make the change in a focus file. If it genuinely belongs in %s, say so in your answer " +
+		"so the planner can rescope — do not repeat this call"
+
+	entrypointRefusal = "out-of-scope write blocked: %s — %s writes only inside the task focus files, and root " +
+		"entrypoints are never created here.\n" +
+		"The path is the problem, not the call: rewording it cannot make it work.\n" +
+		"Next action: make the change in a focus file. If it genuinely belongs in %s, say so in your answer " +
+		"so the planner can rescope — do not repeat this call"
+)
+
 // Check returns an error when a write is out of scope.
-func (g *FocusGuard) Check(path string) error {
+//
+// ctx supplies the executing role (see WithRole). A read-only role gets the
+// only fact that actually resolves its situation — that this role never edits
+// anything, so no reformulation of the call will be accepted — instead of a
+// generic scope complaint it will try to satisfy by editing harder.
+func (g *FocusGuard) Check(ctx context.Context, path string) error {
 	if err := CheckHarnessStateWrite(path); err != nil {
 		return err
 	}
@@ -141,11 +254,41 @@ func (g *FocusGuard) Check(path string) error {
 		return nil
 	}
 	path = normalizeRel(path)
+	role := RoleFrom(ctx)
+	if IsReadOnlyRole(role) {
+		return fmt.Errorf(readOnlyRoleRefusal, path, role)
+	}
 	base := filepath.Base(path)
 	if isEntrypointName(base) && !strings.Contains(path, "/") {
-		return fmt.Errorf("out-of-scope write blocked: %s (not in task focus files; do not create root entrypoints)", path)
+		return fmt.Errorf(entrypointRefusal, path, writerName(role), path)
 	}
-	return fmt.Errorf("out-of-scope write blocked: %s (stay within focus files / their packages)", path)
+	return fmt.Errorf(focusFileRefusal, path, writerName(role), path)
+}
+
+// writerName names the offender for a focus-file refusal. An untagged context
+// still produces a sentence that reads correctly.
+func writerName(role string) string {
+	if role == "" {
+		return "this task"
+	}
+	return "the " + role + " role"
+}
+
+// OutOfScopeReason is Check's message for the REVIEW side: the same contract,
+// for paths a task claimed to have changed rather than a write it attempted.
+// Returns "" for an empty path list.
+func OutOfScopeReason(role string, paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	role = normalizeRole(role)
+	list := strings.Join(paths, ", ")
+	if IsReadOnlyRole(role) {
+		return "out-of-scope files_changed: " + list + " — the " + role + " role does not edit files at all. " +
+			"Report what you found instead of editing; the change is a later task's job."
+	}
+	return "out-of-scope files_changed: " + list + " — edit only the task focus files. " +
+		"If the change genuinely belongs elsewhere, say so in your answer so the planner can rescope."
 }
 
 // OutOfScopeFiles filters claimed/changed paths that violate the allowlist.

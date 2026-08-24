@@ -32,6 +32,7 @@ type Limits struct {
 	MaxEpisodes      int
 	MaxFacts         int
 	MaxProcedures    int
+	MaxLatencyKeys   int
 	WorkingTokens    int
 	SemanticTokens   int
 	ProceduralTokens int
@@ -43,6 +44,7 @@ func DefaultLimits() Limits {
 		MaxEpisodes:      DefaultMaxEpisodes,
 		MaxFacts:         DefaultMaxFacts,
 		MaxProcedures:    DefaultMaxProcedures,
+		MaxLatencyKeys:   DefaultMaxLatencyKeys,
 		WorkingTokens:    DefaultWorkingTk,
 		SemanticTokens:   DefaultSemanticTk,
 		ProceduralTokens: DefaultProceduralTk,
@@ -59,6 +61,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxProcedures <= 0 {
 		l.MaxProcedures = d.MaxProcedures
+	}
+	if l.MaxLatencyKeys <= 0 {
+		l.MaxLatencyKeys = d.MaxLatencyKeys
 	}
 	if l.WorkingTokens <= 0 {
 		l.WorkingTokens = d.WorkingTokens
@@ -121,6 +126,7 @@ type Store struct {
 	episodes   *Episodes
 	facts      *Facts
 	procedures *Procedures
+	latency    *Latencies
 
 	run      RunContext
 	warnings []string
@@ -181,9 +187,11 @@ func OpenWith(projectDir, userDir string, opt Options) (*Store, error) {
 	s.episodes = openEpisodes(s.memDir, limits.MaxEpisodes, now)
 	s.facts = openFacts(s.memDir, limits.MaxFacts, now, count)
 	s.procedures = openProcedures(s.userMemDir, limits.MaxProcedures, now, count)
+	s.latency = openLatencies(s.userMemDir, limits.MaxLatencyKeys, now)
 	s.warnings = append(s.warnings, s.episodes.Warnings()...)
 	s.warnings = append(s.warnings, s.facts.Warnings()...)
 	s.warnings = append(s.warnings, s.procedures.Warnings()...)
+	s.warnings = append(s.warnings, s.latency.Warnings()...)
 	return s, nil
 }
 
@@ -219,6 +227,10 @@ func (s *Store) Semantic() *Facts { return s.facts }
 
 // Procedural returns the cross-project procedure store.
 func (s *Store) Procedural() *Procedures { return s.procedures }
+
+// Latency returns the cross-project role-latency store — how long each role
+// actually takes on each model family. Timeout budgets are derived from it.
+func (s *Store) Latency() *Latencies { return s.latency }
 
 // SetRunContext tells the store what the current run is about. It also seeds
 // working memory with the task and focus files.
@@ -306,7 +318,11 @@ func (s *Store) RenderForPrompt(role string, budgetTokens int) string {
 	}
 	sections := []section{
 		{shares.working, func(b int) string { return s.working.Render(b) }},
-		{shares.semantic, func(b int) string { return s.facts.Render(b) }},
+		{shares.semantic, func(b int) string {
+			// Condition the fact block on what this run is actually about.
+			// With no run context set, RenderFor is identical to Render.
+			return s.facts.RenderFor(Query{Text: rc.Query, Files: rc.Files, Tags: rc.Tags}, b)
+		}},
 		{shares.episodic, func(b int) string { return s.renderEpisodes(rc, b) }},
 		{shares.procedural, func(b int) string {
 			return s.procedures.Render(rc.ModelFamily, rc.Language, b)
@@ -406,6 +422,7 @@ func (s *Store) Flush() error {
 		s.episodes.Flush(),
 		s.facts.Flush(),
 		s.procedures.Flush(),
+		s.latency.Flush(),
 		s.dumpWorking(),
 	)
 }

@@ -77,12 +77,19 @@ func (o *Orchestrator) runPlanSplitApprove(ctx context.Context, in planSplitInpu
 		if decision.Approved {
 			return board, pl, planOut, nil
 		}
+		// Stopping here is allowed; losing the work is not. The board, PLAN.md
+		// and TASKS.md this loop just produced are already on disk under
+		// .slmcode/queries/<runID>/ — every exit from here says so and names
+		// the command that picks them back up.
 		if !decision.Replan {
-			return nil, pl, planOut, fmt.Errorf("plan not approved")
+			o.emitRetainedWork("plan", board)
+			return nil, pl, planOut, o.stoppedAtGateError("plan not approved")
 		}
 		if planAttempt >= maxPlanApprovalReplans {
-			return nil, pl, planOut, fmt.Errorf("plan replan limit reached after %d revision(s): %s",
-				maxPlanApprovalReplans, decision.Notes)
+			o.emitRetainedWork("plan", board)
+			return nil, pl, planOut, o.stoppedAtGateError(fmt.Sprintf(
+				"plan replan limit reached after %d revision(s): %s",
+				maxPlanApprovalReplans, decision.Notes))
 		}
 		note := strings.TrimSpace(decision.Notes)
 		if note == "" {

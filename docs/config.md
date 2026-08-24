@@ -177,8 +177,10 @@ Details → [Permissions & safety](permissions.md).
 | `escalate_timeout_agent` | — | Empty = auto-pick `@escalate` |
 | `auto_approve` | `false` | `true` bypasses every gate |
 
-With a human attached, gates block rather than expiring. Headless resolution is controlled by
-`--on-gate-timeout` (default `stop`).
+With a human attached, gates block rather than expiring. Headless, they are resolved at run start
+and logged: unset `--on-gate-timeout` auto-approves the four convenience gates, while an explicit
+`stop`/`reject` refuses the run before the first model call. `shell_permission=ask` never
+auto-approves — headless it refuses up front.
 
 ## Self-improvement
 

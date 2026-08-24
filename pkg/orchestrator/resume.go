@@ -93,13 +93,21 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 		return o.Run(context.WithoutCancel(ctx), query)
 	}
 
+	// Resume reaches the continue/escalate/shell gates, so it gets the same
+	// run-start gate resolution a fresh run does (headless.go). Placed after
+	// the no-tasks branch above so the Run() fallback does not log it twice.
+	if err := o.preflightGates(); err != nil {
+		return nil, err
+	}
+	o.emitGateDecisions()
+
 	_ = o.store.SetQuery(query)
 	// Resume is a run too: memory needs its context, the policy needs applying
 	// and the operator needs the shell-policy notice.
 	o.startEvolveRun(runID, query)
 	o.applyRoleModelPolicy()
 	o.emitShellPolicyNotice()
-	o.seedAdaptiveLessons()
+	o.seedAdaptiveLessons(query)
 	o.shared.SetGlobal("query", query)
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
@@ -598,10 +606,18 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		if strings.TrimSpace(memOut) != "" {
 			_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
 			lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
+			// The model's bullets are lessons too: parse them back so they
+			// enter the fact store beside the deterministic ones, where they
+			// can be confirmed, contradicted and pruned like anything else.
+			allLessons = append(allLessons, learning.ParseMarkdown(memOut)...)
 		}
 		if strings.TrimSpace(lessonsMD) != "" {
 			_ = learning.AppendGlobalMemory("Session lessons", lessonsMD)
 		}
+		// Route the run's lessons into typed semantic memory. MEMORY.md above
+		// stays the human mirror; this is what gives a lesson confidence,
+		// contradiction handling, provenance and a prune policy.
+		o.recordLessonFacts(allLessons)
 	} else {
 		o.emit("memory", "phase disabled — skipping memory distillation", "")
 	}

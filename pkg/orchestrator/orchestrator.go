@@ -142,6 +142,10 @@ type Orchestrator struct {
 	llmCalls int
 	// eventSubscribed records that a UI attached an event handler.
 	eventSubscribed bool
+	// headless is what the driving process knows about the human on the other
+	// end of a HITL gate (see headless.go). Zero value = "nobody said", which
+	// falls back on Subscribed().
+	headless HeadlessGates
 	// runStart is when the in-flight run began (evolve RunReport).
 	runStart time.Time
 	// activeRunner is the inner loop for the in-flight run, kept so completeRun
@@ -544,6 +548,13 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
 	}
+	// Resolve every human-in-the-loop gate BEFORE the first model call. A
+	// headless run whose gate policy would stop it refuses here, at t=0, rather
+	// than exploring, planning and splitting for minutes and then discarding
+	// the result at a gate nobody can answer. See headless.go.
+	if err := o.preflightGates(); err != nil {
+		return nil, err
+	}
 	runID := fmt.Sprintf("run-%d", start.UnixNano())
 	if o.packer != nil {
 		o.clearPackCaches()
@@ -593,13 +604,16 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 		_ = o.boardStore.Replace(turn.Board)
 	}
 	o.emit("init", "query-scoped plan/tasks reset for "+runID, "")
+	// Now that the turn exists, the gate decisions taken above reach
+	// events.jsonl as well as the terminal.
+	o.emitGateDecisions()
 
 	_ = o.store.SetQuery(query)
 	o.startEvolveRun(runID, query)
 	o.applyRoleModelPolicy()
 	o.emitShellPolicyNotice()
 	o.injectPriorKnowledge(ctx, query)
-	o.seedAdaptiveLessons()
+	o.seedAdaptiveLessons(query)
 	o.shared.SetGlobal("query", query)
 	o.shared.SetGlobal("query_id", runID)
 	o.shared.SetGlobal("root", o.cfg.Root)
@@ -1333,47 +1347,13 @@ func (o *Orchestrator) runRole(ctx context.Context, role, input string) (string,
 	return o.runRoleTracked(ctx, role, "", input)
 }
 
-// roleTimeout gives planning/coord roles a tighter budget than full task timeout
-// so slow oMLX multi-turn runs don't stall for 12 minutes on a stuck planner call.
-// Floors avoid false failures on cold SLM loads; caps stop runaway generations.
+// roleTimeout is the measured per-role budget: clamp(p95 × safety, floor, the
+// user's task_timeout). It replaces the old fixed fractions of task_timeout,
+// which starved slow-but-capable models — see pkg/orchestrator/roletimeout.go
+// for the policy, the cold-start rule and the evidence behind them.
 func (o *Orchestrator) roleTimeout(role string) time.Duration {
-	full := o.cfg.TaskTimeout
-	if full <= 0 {
-		full = config.DefaultTaskTimeout
-	}
-	switch role {
-	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleExplorer, "docs",
-		plan.RoleTester, plan.RolePlaceholder:
-		return full
-	case plan.RolePlanner, "splitter":
-		// Local 30B SLMs often need several minutes for structured JSON plans.
-		d := full / 2
-		if d < 2*time.Minute {
-			d = 2 * time.Minute
-		}
-		if d > 8*time.Minute {
-			d = 8 * time.Minute
-		}
-		return d
-	case plan.RoleReviewer, "coordinator", "architect", plan.RoleContext, "memory":
-		d := full / 4
-		if d < 60*time.Second {
-			d = 60 * time.Second
-		}
-		if d > 3*time.Minute {
-			d = 3 * time.Minute
-		}
-		return d
-	default:
-		d := full / 2
-		if d < 90*time.Second {
-			d = 90 * time.Second
-		}
-		if d > 5*time.Minute {
-			d = 5 * time.Minute
-		}
-		return d
-	}
+	p95, samples := o.observedRoleLatency(role)
+	return roleTimeoutFrom(role, o.taskTimeoutCeiling(), p95, samples)
 }
 
 // resolveExecRole maps an unregistered role (e.g. go-tester from a pipeline
@@ -1471,11 +1451,22 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 		AgentID: execRole, Input: input, Timeout: timeout, ShareState: true,
 	}}, o.shared)
 	elapsed := time.Since(start)
-	o.recordLatency(execRole, elapsed)
+	callErr := err
+	if len(results) > 0 && results[0].Error != nil {
+		callErr = results[0].Error
+	}
+	// A success measures what the role needs; a timeout is a censored lower
+	// bound worth keeping (it widens an under-measured budget next run); any
+	// other failure is not latency evidence at all.
+	timedOut := isTimeoutError(callErr)
+	o.recordRoleLatency(execRole, elapsed, callErr == nil || timedOut)
+	if timedOut {
+		callErr = o.explainRoleTimeout(execRole, taskID, timeout, elapsed, callErr)
+	}
 	if len(results) == 0 {
 		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID, "no result", "", "", stream.LevelError)
-		if err != nil {
-			return "", err
+		if callErr != nil {
+			return "", callErr
 		}
 		return "", fmt.Errorf("no result from %s", execRole)
 	}
@@ -1486,8 +1477,8 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	o.recordResultUsage(results[0], input, out)
 	if results[0].Error != nil && out == "" {
 		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
-			"error: "+results[0].Error.Error(), "", "", stream.LevelError)
-		return "", results[0].Error
+			"error: "+callErr.Error(), "", "", stream.LevelError)
+		return "", callErr
 	}
 	endLevel := stream.LevelSuccess
 	if results[0].Error != nil {
@@ -1562,7 +1553,9 @@ func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID
 	}
 	o.think.SetPassTimeout(pass).SetBudget(budget).SetFactory(o.factory.Create)
 	o.think.OnCall = func(ci multipass.CallInfo) {
-		o.recordLatency(execRole, ci.Elapsed)
+		// Same evidence rule as the single-shot path: the per-call budget here
+		// IS roleTimeout(execRole), so these samples are directly comparable.
+		o.recordRoleLatency(execRole, ci.Elapsed, ci.Err == nil || isTimeoutError(ci.Err))
 		o.emitFull(execRole, stream.KindLatency, execRole, taskID,
 			fmt.Sprintf("%s %s#%d %dms", execRole, ci.Pass, ci.Index, ci.Elapsed.Milliseconds()), "", "")
 	}
@@ -1581,6 +1574,9 @@ func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID
 	out, err := o.think.ExecuteRole(rctx, execRole, input)
 	elapsed := time.Since(start)
 	if err != nil {
+		if isTimeoutError(err) {
+			err = o.explainRoleTimeout(execRole, taskID, budget, elapsed, err)
+		}
 		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID,
 			"error: "+err.Error(), "", "", stream.LevelError)
 		return "", err
@@ -1769,6 +1765,10 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 		if distilled, err := o.runRole(ctx, "memory", agents.PromptLearner+"\n\n"+brief.String()); err == nil {
 			if bullets := learning.JSONLessonsToMarkdown(distilled); bullets != "" {
 				md = strings.TrimSpace(md + "\n" + bullets)
+				// The distilled bullets are lessons too — parse them back so
+				// they reach the fact store on the same footing as the
+				// deterministic ones.
+				lessons = append(lessons, learning.ParseMarkdown(bullets)...)
 			}
 		}
 	}
@@ -1776,8 +1776,12 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 	if md != "" {
 		_ = o.store.Append(contextstore.DocMemory, "Wave lessons", md)
 		_ = learning.AppendGlobalMemory("Wave lessons", md)
-		o.shared.SetGlobal("latest_lessons", md)
-		o.shared.SetGlobal("adaptive_lessons", md)
+		// Prompts get the prose; only disk keeps the provenance suffix.
+		prompt := learning.StripProvenance(md)
+		o.shared.SetGlobal("latest_lessons", prompt)
+		o.shared.SetGlobal("adaptive_lessons",
+			learning.RecentAdaptiveMemoryFor(query, md, "", 1600))
+		o.recordLessonFacts(lessons)
 	}
 
 	o.refineRound++
@@ -1803,13 +1807,16 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 	}
 }
 
-func (o *Orchestrator) seedAdaptiveLessons() {
+// seedAdaptiveLessons primes the run with the stored lessons most relevant to
+// the task at hand. The query is what makes the selection task-conditioned;
+// without it the seed falls back to recency.
+func (o *Orchestrator) seedAdaptiveLessons(query string) {
 	if o == nil || o.store == nil || o.shared == nil {
 		return
 	}
 	projectMemory, _ := o.store.Read(contextstore.DocMemory)
 	globalMemory := learning.ReadGlobalMemory()
-	adaptive := learning.RecentAdaptiveMemory(projectMemory, globalMemory, 1600)
+	adaptive := learning.RecentAdaptiveMemoryFor(query, projectMemory, globalMemory, 1600)
 	if adaptive == "" {
 		return
 	}

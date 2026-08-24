@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/evolve"
+	"github.com/UnicoLab/slmcode/pkg/graph"
+	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/memory"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -45,6 +47,43 @@ func (o *Orchestrator) startEvolveRun(runID, query string) {
 		rc.Provider = o.cfg.Provider
 	}
 	mem.SetRunContext(rc)
+}
+
+// recordLessonFacts routes prose lessons into typed semantic memory.
+//
+// MEMORY.md keeps its bullets — this is additive, and a human still reads that
+// file. What the fact store adds is everything the flat Markdown could never
+// have: a Beta-posterior confidence, so a lesson seen twice outranks one seen
+// once; contradiction and supersession, so a claim the project has outgrown
+// decays instead of being repeated forever; queryable provenance in
+// Fact.Sources; and a prune policy, so the store stays bounded.
+//
+// Nil-safe from top to bottom: with `--no-evolve`, or with memory disabled, the
+// lessons simply stay prose.
+func (o *Orchestrator) recordLessonFacts(lessons []learning.Lesson) {
+	if o == nil || o.evolve == nil || len(lessons) == 0 {
+		return
+	}
+	mem := o.evolve.Memory()
+	if mem == nil {
+		return
+	}
+	facts := mem.Semantic()
+	if facts == nil {
+		return
+	}
+	n := learning.RecordFacts(facts, lessons, mem.RunContext().RunID)
+	if n == 0 {
+		return
+	}
+	// Flush now rather than at Close: a wave's lessons are worth keeping even
+	// if the run is interrupted before it ends, and facts.json is small.
+	if err := facts.Flush(); err != nil {
+		o.emitFull("learn", stream.KindDebug, "memory", "", "facts flush: "+err.Error(), "", "")
+		return
+	}
+	o.emitFull("learn", stream.KindLearn, "memory", "",
+		itoa(n)+" lesson(s) folded into semantic memory", "", "")
 }
 
 // closeEvolve releases the engine (flushes memory to disk). Safe to call twice.
@@ -147,6 +186,14 @@ func (o *Orchestrator) finishEvolveRun(ctx context.Context, res *Result, board *
 	if o.cfg != nil {
 		if merr := evolve.RecordMetrics(o.cfg.Root, rep, ref); merr != nil {
 			o.emitFull("done", stream.KindDebug, "evolve", "", "metrics: "+merr.Error(), "", "")
+		}
+		// Materialize the edges the records just written already imply. Best
+		// effort by design: the graph is derived data, so losing it costs one
+		// backfill and must never cost a run.
+		if n, gerr := graph.Backfill(o.cfg.Root); gerr != nil {
+			o.emitFull("done", stream.KindDebug, "graph", "", "graph backfill: "+gerr.Error(), "", "")
+		} else if n > 0 {
+			o.emitFull("done", stream.KindDebug, "graph", "", "graph: +"+itoa(n)+" edge(s)", "", "")
 		}
 	}
 	if strings.TrimSpace(ref.Markdown) != "" {

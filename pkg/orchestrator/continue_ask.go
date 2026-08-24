@@ -83,6 +83,10 @@ func (o *Orchestrator) runContinueAsk(ctx context.Context, query string, board *
 	if o.cfg.AutoApprove {
 		mode = plan.ContinueAskAuto
 	}
+	// Headless: one more corrective wave beats stopping silently at a question
+	// nobody is there to read. Bounded — ContinueAskAuto runs exactly one.
+	// An explicit --on-gate-timeout=stop keeps the ask (and the stop).
+	mode = o.headlessGateMode(mode, plan.ContinueAskAsk, plan.ContinueAskAuto)
 	if mode == plan.ContinueAskOff {
 		o.emit("test", "continue_ask=off — finishing with remaining work flagged", "")
 		return false, board

@@ -23,8 +23,13 @@ Every command is safe to call from a script, a CI job or another agent.
 - **Prompts.** Nothing prompts without a TTY. `slmcode apply` refuses interactive review (exit 2)
   and points at `--all`/`--list`/`--json`; `slmcode` with no workspace refuses to scaffold
   (exit 3); `slmcode update` needs `--yes`.
-- **HITL gates.** With a TTY they render inline and **block** until answered — they never expire
-  into an automatic decision. Without a TTY they resolve immediately via `--on-gate-timeout`.
+- **HITL gates.** With a TTY on **stdin and stdout** they render inline and **block** until
+  answered — they never expire into an automatic decision. Without a TTY the decision is taken at
+  **run start, before the first model call**, and logged: with `--on-gate-timeout` unset the
+  plan / clarify / continue / escalate gates answer themselves with "yes"; an explicit
+  `--on-gate-timeout=stop|reject` refuses the run **at the door** (exit 6) rather than planning
+  for minutes and discarding the result. `shell_permission=ask` is a safety gate and never
+  auto-approves — headless it refuses up front.
 - **Errors.** A failure is reported exactly once, on stderr, prefixed with `✖`.
 
 ### Exit codes
@@ -60,7 +65,7 @@ Every command is safe to call from a script, a CI job or another agent.
 | `--parallel` | max parallel workers |
 | `--retries` | review/correct retries |
 | `--think-passes` | multi-pass think loops |
-| `--on-gate-timeout` | `approve\|reject\|stop` (default `stop`) — what a HITL gate does with no TTY |
+| `--on-gate-timeout` | `approve\|reject\|stop` — what a HITL gate does with no TTY. **Unset** + no TTY: convenience gates auto-approve and say so. An explicit `stop`/`reject` refuses the run before any model call |
 | `--no-explore` | greedy bandit, no exploration — reproducible runs (config: `deterministic`) |
 | `--evolve` / `--no-evolve` | force the self-improvement engine on/off for this run |
 | `--max-task-calls` | per-task LLM call budget (config: `max_task_calls`) |
@@ -156,7 +161,8 @@ slmcode run --skill atomic-coding "Refactor helpers"
 slmcode run --dynamic "add JWT auth"          # force task-specific composition
 slmcode run --no-dynamic "tiny typo fix"      # force the static pipeline
 slmcode run --think-passes 2 --parallel 2 --retries 2 "…"
-slmcode run --on-gate-timeout=approve "…"     # headless: approve the plan
+slmcode run "…"                               # headless: gates auto-approve, logged
+slmcode run --on-gate-timeout=stop "…"        # headless: refuse up front instead
 ```
 
 | Flag | Meaning |
@@ -415,6 +421,24 @@ slmcode metrics compare 12             # newest 12 runs vs the 12 before them
 ```
 
 All take `--json`. Details → [Self-improvement & memory](self-improvement.md).
+
+## `autoresearch`
+
+Tunes the harness's *own* agent prompts and a whitelist of safe config knobs against
+the eval suite, keeping a change only when the primary metric improves and no guarded
+metric (tokens, wall clock, tool errors, edit-format apply rate) regresses.
+
+```bash
+slmcode autoresearch --surface         # what is mutable, and in what range
+slmcode autoresearch                   # DRY RUN: what it would try — no model, no writes
+slmcode autoresearch --apply --seed 7 --max-experiments 6 --budget 20m
+slmcode autoresearch --restore         # undo the last applied run
+```
+
+It writes nothing unless asked twice: `--apply` **and** `autoresearch: true` in
+`.slmcode/config.yaml`. Everything it does is reversible from the snapshot it takes
+first, and everything it records lives under `.slmcode/autoresearch/`.
+Details → [Autoresearch](autoresearch.md).
 
 ## `doctor`
 

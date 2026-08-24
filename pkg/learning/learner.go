@@ -59,25 +59,169 @@ func Extract(t plan.Task) []Lesson {
 	return out
 }
 
-// RenderMarkdown turns lessons into MEMORY.md bullets.
+// Provenance encoding for MEMORY.md bullets.
+//
+// A lesson without its task and timestamp is an anonymous opinion: nothing can
+// tell whether it came from the run that just failed or from a repo layout that
+// stopped existing six months ago, and nothing can join it back to the task
+// that produced it. RenderMarkdown used to emit `- <glyph> <text>` and drop
+// TaskID and At on the floor, which destroyed provenance at write time — before
+// storage, so no later reader could recover it.
+//
+// The fix keeps the on-disk format human-readable Markdown (a documented
+// guarantee of this subsystem) by hiding the provenance in a trailing HTML
+// comment: invisible in every rendered Markdown view, plain text in an editor,
+// and exactly recoverable by ParseMarkdown.
+const (
+	provOpen  = "<!-- slm "
+	provClose = " -->"
+)
+
+// RenderMarkdown turns lessons into MEMORY.md bullets, provenance included.
+//
+// The inverse is ParseMarkdown; the pair round-trips TaskID, Kind, Text and At.
 func RenderMarkdown(lessons []Lesson) string {
 	if len(lessons) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, l := range lessons {
-		prefix := "•"
-		switch l.Kind {
-		case "failure":
-			prefix = "⚠"
-		case "convention":
-			prefix = "⚙"
-		case "success":
-			prefix = "✓"
+		text := strings.TrimSpace(l.Text)
+		if text == "" {
+			continue
 		}
-		fmt.Fprintf(&b, "- %s %s\n", prefix, l.Text)
+		fmt.Fprintf(&b, "- %s %s%s\n", kindGlyph(l.Kind), text, renderProvenance(l))
 	}
 	return b.String()
+}
+
+// ParseMarkdown reads MEMORY.md bullets back into lessons.
+//
+// It is tolerant by design: bullets written before provenance existed (and
+// bullets a human typed) parse fine, with the kind recovered from the glyph and
+// empty TaskID/At. Anything that is not a bullet — headings, blank lines, prose
+// — is skipped rather than guessed at.
+func ParseMarkdown(md string) []Lesson {
+	var out []Lesson
+	for _, raw := range strings.Split(md, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "- ") && !strings.HasPrefix(line, "* ") {
+			continue
+		}
+		line = strings.TrimSpace(line[2:])
+
+		l := Lesson{}
+		body, fields := splitProvenance(line)
+		l.TaskID = fields["task"]
+		l.Kind = fields["kind"]
+		l.At = fields["at"]
+
+		glyphKind, text := splitGlyph(body)
+		if l.Kind == "" {
+			l.Kind = glyphKind
+		}
+		l.Text = strings.TrimSpace(text)
+		if l.Text == "" {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// StripProvenance removes the machine-readable suffix from every bullet in a
+// block, leaving the prose a model should see. Prompts get the lesson; only
+// disk and ParseMarkdown get the bookkeeping.
+func StripProvenance(md string) string {
+	if !strings.Contains(md, provOpen) {
+		return md
+	}
+	lines := strings.Split(md, "\n")
+	for i, line := range lines {
+		body, _ := splitProvenance(line)
+		lines[i] = strings.TrimRight(body, " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func kindGlyph(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "failure":
+		return "⚠"
+	case "convention":
+		return "⚙"
+	case "success":
+		return "✓"
+	default:
+		return "•"
+	}
+}
+
+func glyphKind(glyph string) string {
+	switch glyph {
+	case "⚠":
+		return "failure"
+	case "⚙":
+		return "convention"
+	case "✓":
+		return "success"
+	default:
+		return ""
+	}
+}
+
+// renderProvenance builds the trailing comment, omitting empty fields and any
+// value that would break the encoding (a space or a comment terminator).
+func renderProvenance(l Lesson) string {
+	var fields []string
+	for _, kv := range [][2]string{{"task", l.TaskID}, {"kind", l.Kind}, {"at", l.At}} {
+		v := strings.TrimSpace(kv[1])
+		if v == "" || strings.ContainsAny(v, " \t") || strings.Contains(v, "--") {
+			continue
+		}
+		fields = append(fields, kv[0]+"="+v)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return " " + provOpen + strings.Join(fields, " ") + provClose
+}
+
+// splitProvenance separates a bullet's prose from its trailing comment. The
+// LAST marker wins, so a lesson whose own text mentions the encoding cannot
+// hijack the parse.
+func splitProvenance(line string) (body string, fields map[string]string) {
+	i := strings.LastIndex(line, provOpen)
+	if i < 0 {
+		return line, nil
+	}
+	rest := line[i+len(provOpen):]
+	j := strings.Index(rest, provClose)
+	if j < 0 {
+		return line, nil
+	}
+	fields = map[string]string{}
+	for _, kv := range strings.Fields(rest[:j]) {
+		if k, v, ok := strings.Cut(kv, "="); ok && v != "" {
+			fields[k] = v
+		}
+	}
+	return strings.TrimRight(line[:i], " \t"), fields
+}
+
+// splitGlyph peels the kind glyph off a bullet, returning the kind it encodes
+// (empty when the bullet carries none) and the remaining text.
+func splitGlyph(body string) (kind, text string) {
+	body = strings.TrimSpace(body)
+	for _, g := range []string{"⚠", "⚙", "✓", "•"} {
+		if strings.HasPrefix(body, g) {
+			return glyphKind(g), strings.TrimSpace(strings.TrimPrefix(body, g))
+		}
+	}
+	return "", body
 }
 
 // ContextDelta builds a short CONTEXT.md append after a wave.

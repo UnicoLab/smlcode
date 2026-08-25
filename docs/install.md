@@ -75,7 +75,7 @@ One-liners fetch a shiny GitHub Release. Keep the compiler for contributing (or 
 
     ```bash
     curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh \
-      | bash -s -- --version v0.18.1
+      | bash -s -- --version v0.18.2
     ```
 
 === "🪟 PowerShell"
@@ -114,7 +114,7 @@ fetched, the installer says so loudly rather than pretending it checked.
 To check by hand, or to verify a binary you downloaded from the Releases page:
 
 ```bash
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.18.1/SHA256SUMS
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.18.2/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS
 sha256sum -c SHA256SUMS --ignore-missing         # Linux
 ```

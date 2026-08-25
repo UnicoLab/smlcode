@@ -42,22 +42,22 @@ class Slmcode < Formula
   on_macos do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "7406e9d76cb0ef91e8d2ef3b8e542b4a422d94ff9116ec6567934e45f8cbf74f" # v0.19.0
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_amd64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "513b1cbf9dc4ae472a0d69359ddcc73ea607f97587f0609e59eb825684e94e15" # v0.19.0
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "c65d1973cb8f0565fb629143c07a9bbebe07fe9216aab50b3c87cdb59f4945fb" # v0.19.0
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_amd64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "13fe2fb14385d5c2454d859a761f6d7db018defc028f8f9c47a98f548e71edfd" # v0.19.0
     end
   end
 

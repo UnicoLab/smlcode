@@ -153,6 +153,7 @@ nav:
   - 📚 Reference:
       - ⌨️ CLI: cli.md
       - ⚙️ Config: config.md
+      - 📏 Calibration: calibration.md
       - 🧰 Tools (ACI): tools.md
       - 🔒 Constrained decoding: decoding.md
       - 📐 Context engineering: context.md

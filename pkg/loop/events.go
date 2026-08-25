@@ -93,6 +93,10 @@ var endLevelNeedles = []struct {
 	{"blocked", stream.LevelProblem},
 	{"interrupted", stream.LevelWarn},
 	{"skipped", stream.LevelWarn},
+	// A review that reached no verdict is not a success. It no longer says
+	// "approved=false" — that line was a claim about a decision the reviewer
+	// never made — so it needs its own needle.
+	{"no verdict", stream.LevelWarn},
 }
 
 // inferEndLevel classifies an agent_end message. Anything not recognized as a

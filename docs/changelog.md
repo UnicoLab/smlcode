@@ -1,5 +1,125 @@
 # Changelog
 
+## v0.18.1 — 2026-08-25
+
+The harness stops when the work is done.
+
+Every fix in this release was found by running slmcode against real local models
+(Qwen3.5-9B and Qwen3.8-27B on oMLX) rather than by reading code or watching a
+green test suite. The pattern they share is the one that matters most for a
+local SLM: **the model did the job correctly and the harness could not tell.**
+
+In the measured baseline, a 9B implemented `Median` — including a deliberate
+no-mutation trap a naive `sort.Float64s(xs)` fails — left the protected test file
+byte-identical, and `go test ./...` went green after about five minutes. The
+harness then ran for the remaining fifteen, reported `engine_success=false`, and
+spent 201,875 prompt tokens doing it. Same shape in a second scenario. That is
+not model incapability; every one of these is a harness defect, and they are
+fixed here.
+
+**Measured, same fixtures and model and 20-minute ceiling, three runs each:**
+
+| | before | after (median of 3) |
+|---|---|---|
+| `implement-from-tests` wall | 1200s — hit the ceiling | **608s** |
+| `implement-from-tests` prompt tokens | 201,875 | **123,652** |
+| `fix-a-bug` wall | 1200s — hit the ceiling | **1075s** |
+| runs terminating within budget | 0 of 4 | **5 of 6** |
+| runs reporting a failed task | 4 of 4 | **0 of 6** |
+
+`implement-from-tests` passes all five checks in all three runs, including the
+protected-file check that previously failed. `failed_tasks` dropping to zero
+everywhere is the reviewer fix below, measured from the other end: those tasks
+were never failing, the harness was misreading its own reviewer.
+
+Not everything is solved. `fix-a-bug` still hits the ceiling in one run of
+three, and its token count did not improve. The harness adapts to the situation
+far better than it did; it does not adapt perfectly.
+
+### Added
+
+- **Auto-calibration.** slmcode now measures the endpoint it is pointed at
+  instead of guessing from a provider name: concurrency knee, p50/p95 latency,
+  throughput, and the context window (read from `GET /v1/models`, not probed).
+  Profiles are stored per **exact model id + endpoint** in
+  `~/.slmcode/memory/calibration.json`, so a 27B and a 9B of the same family
+  never share a number. It runs once per unseen pair, is hard-capped at 60s,
+  never blocks a run, and falls back to static defaults with one warning on any
+  failure. `slmcode calibrate --show` prints the measured table.
+  Nothing hardcodes a concurrency: fed a perfectly-scaling server it answers 8;
+  fed a serial one, 1. Measured here, a single local endpoint runs 4-way
+  concurrency at ~40% efficiency while per-request latency nearly triples — and
+  role timeouts are wall-clock, which is why this is a correctness issue and not
+  a tuning preference.
+  Calibration **seeds only what it measured** — throughput and role-latency
+  floors. It deliberately does not touch the bandit's posteriors: a 16-token
+  probe is evidence about none of `edit_format`, `think_passes` or review
+  strictness, and those stay with the learner that earns them from outcomes.
+- **`slmcode calibrate`** and **`make e2e-slm`** — a repeatable live-model
+  end-to-end suite (`scripts/e2e-slm.sh`, five scenarios) that asserts objective
+  outcomes: fixture tests green, protected files byte-identical, `Result.Success`.
+  Gated behind `RUN_E2E=1`; `make check` never contacts a model.
+
+### Fixed
+
+- **The harness now stops when the objective is met.** The QA gate only ran in
+  the finish path, so nothing evaluated the goal *during* the board — and because
+  a rejected task kept the board from draining, the existing post-drain probe
+  never fired. A `BetweenWaves` probe now asks the same gate (one definition of
+  "green", shared with the finish path) after each wave, bounded to two paid
+  command runs per run and skipped entirely when nothing has been written since
+  the last answer. Weak gates (syntax-only `compileall`) can never end a run
+  early, and the probe refuses while a tester rejected, while work is escalated,
+  while a task is mid-flight, and when an operator has wired their own `test`
+  phase. Abandoned tasks are reported, not swallowed: `Result.UnexecutedTasks`
+  and a summary line name the count.
+- **The reviewer no longer reports parse failures as rejections.** There was no
+  representation for "the reviewer produced no verdict" — every unreadable reply
+  became `{Approved:false, Score:0}`, byte-identical to a considered score-0
+  rejection. Three paths fed it: an empty reply short-circuited to a zero value;
+  the JSON repair ladder carved out the *first* balanced document, which is often
+  the worker JSON the reviewer echoed back, turning an approval into a rejection;
+  and the rescue that exists for exactly this was disabled by
+  `looksLikeBrokenReview`, which returns false the moment the text contains
+  `"approved"` — precisely what a reply looks like after its verdict was
+  destroyed. The corrector was consequently being asked to fix *the reviewer's*
+  JSON. `ReviewResult.NoVerdict` now carries the parser's own report and is
+  authoritative.
+- **Repeated-tool-call loops actually break.** Escalation was keyed on
+  *consecutive* refusals and reset by any successful call, so an alternating
+  A,B,A,B loop never escalated at all — and every rung, including the "HARD
+  STOP", was just more text for the model to acknowledge and ignore. The second
+  refusal of a call now withdraws that tool for the task, closing the
+  "vary the arguments and keep going" escape. Editing tools are never withdrawn
+  (varying `old_str` is a real attempt); they get a terminal finish directive.
+  Any state-changing call hands the tools back.
+- **`ws_shell` no longer bypasses the focus guard.** `ws_write`, `ws_edit`,
+  `ws_patch`, `ws_mv` and `ws_delete` all called `checkFocus`; `ws_shell` called
+  nothing, so `bash tool.sh` could rewrite a file the task was told not to touch.
+  Writes are now detected by fingerprint comparison and surfaced to the reviewer
+  as disk evidence — deliberately **not** reverted, because once a process has
+  exited its own build output is indistinguishable from a stray write.
+  A task's own "do not edit any `_test.go` file" is now derived into an enforced
+  protection: `ws_edit` refuses it and a shell write to it is flagged. Derivation
+  fails toward extracting nothing — a clause containing `unless`/`except` is
+  discarded whole rather than half-understood.
+- **Acceptance commands are no longer corrupted into failures.** Four bugs in one
+  function turned working commands into failing ones, which the smoke gate then
+  reported as `FAILED` and the reviewer rejected correct work over:
+  `TrimRight(cmd, ".,;:")` ate package patterns (`go test ./...` → `go test ./`);
+  trailing outcome prose was executed as argv (`go test ./... passes` made Go
+  look for a package named `passes`); and a substring prefix match meant
+  **`cargo test` ran `go test`** — a Go toolchain against a Rust repo, with the
+  failure blamed on the model.
+- **`make check` no longer dies as a phantom hang.** `coverage-check.sh` ran
+  `go test ./...` with no `-timeout`, inheriting Go's 10-minute-per-package
+  default. `test/e2e` takes ~520s clean; coverage instrumentation pushed it over
+  and the gate failed with `panic: test timed out` — indistinguishable at a
+  glance from a hang in the code under test.
+- **`scripts/lint.sh` excludes `.claude/`**, which holds agent worktrees — full
+  checkouts of the repo. `gofmt -l .` walked them, so another session's
+  half-written file could fail the gate for a working tree that was itself clean.
+
 ## v0.18.0 — 2026-08-24
 
 Memory that connects, and the defects that only appear when you run a real model.

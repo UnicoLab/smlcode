@@ -19,7 +19,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
+.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -40,6 +40,9 @@ help: ## Show this help
 	@echo "    make race            Run unit tests with the race detector (pkg/...)"
 	@echo "    make cover           Run tests with coverage, enforce the floor"
 	@echo "    make e2e             Run e2e tests"
+	@echo "    make e2e-slm         Live-model e2e vs a REAL SLM — needs a running oMLX,"
+	@echo "                         costs real time (~15-30 min on the 9B). Not in 'make check'."
+	@echo "                         ARGS=\"--model … --scenario … --timeout … --json … --keep\""
 	@echo "    make studio          Build & launch Studio UI"
 	@echo "    make lint            Format-check + vet + golangci-lint (blocking) + UI smoke"
 	@echo "    make lint-strict     Alias for lint (both blocking — the lint baseline is zero)"
@@ -295,6 +298,18 @@ e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 	@if [ "$$RUN_E2E" = "1" ]; then \
 		go test ./test/e2e/ -count=1 -timeout 45m -run 'TestLiveOMLX|TestIsolatedMultiAgent'; \
 	fi
+
+# Deliberately NOT a dependency of `check` or `e2e`: this one drives a REAL
+# model, so it needs a running oMLX (or any OpenAI-compatible endpoint serving
+# the model) and it costs real wall-clock time — roughly 15-30 minutes for all
+# five scenarios on the fast 9B, and an hour or more on a 27B. `make check` must
+# stay runnable on a laptop with no model, which is why this lives alone.
+#
+#   make e2e-slm                                  # all scenarios, fast 9B
+#   make e2e-slm ARGS="--model Qwen3.8-27B-4bit"  # slower, stronger
+#   make e2e-slm ARGS="--scenario fix-a-bug --keep"
+e2e-slm: ## Live-model e2e against a real SLM — NEEDS a running oMLX, costs real time (not in `make check`)
+	@./scripts/e2e-slm.sh $(ARGS)
 
 # The one gate: gofmt check + vet + golangci-lint (blocking) + unit tests
 # + race tests + web lint/build. This is exactly what CI's lint-test job and

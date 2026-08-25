@@ -18,27 +18,51 @@ import (
 
 // eventLog collects every event an orchestrator emits so a test can assert on
 // what the operator was actually told.
+//
+// It keeps the whole Event, not just its Message, so a test can single out one
+// kind of announcement (see scoped) instead of grepping the entire stream.
 type eventLog struct {
-	mu   sync.Mutex
-	msgs []string
+	mu     sync.Mutex
+	events []Event
 }
 
 func (l *eventLog) sink() EventHandler {
 	return func(e Event) {
 		l.mu.Lock()
-		l.msgs = append(l.msgs, e.Message)
+		l.events = append(l.events, e)
 		l.mu.Unlock()
 	}
 }
 
+// attach registers the log as the orchestrator's event sink, through the same
+// lock-guarded setter Studio uses.
+func (l *eventLog) attach(o *Orchestrator) { o.OnEvent(l.sink()) }
+
 func (l *eventLog) all() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return strings.Join(l.msgs, "\n")
+	msgs := make([]string, 0, len(l.events))
+	for _, e := range l.events {
+		msgs = append(msgs, e.Message)
+	}
+	return strings.Join(msgs, "\n")
 }
 
 func (l *eventLog) contains(sub string) bool {
 	return strings.Contains(l.all(), sub)
+}
+
+// scoped returns the messages of every event carrying the given scope.
+func (l *eventLog) scoped(scope string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, e := range l.events {
+		if e.Scope == scope {
+			out = append(out, e.Message)
+		}
+	}
+	return out
 }
 
 // headlessOrch builds an orchestrator with a real query turn on disk, so the

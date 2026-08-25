@@ -22,8 +22,17 @@ FLOOR="${COVERAGE_FLOOR:-63.0}"
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
-echo "==> go test -coverprofile (this can take a while)"
-go test ./... -covermode=atomic -coverprofile="$OUT" -count=1
+# -timeout is explicit because Go's default is 10 MINUTES PER PACKAGE and
+# test/e2e is already close to it: 520s uninstrumented on this machine, and
+# coverage instrumentation plus a loaded box pushes it over. The failure mode is
+# the worst kind — `panic: test timed out`, indistinguishable at a glance from a
+# hang in the code under test, on the gate CI runs. 30m matches the `make e2e`
+# target and is a backstop against a wedged test, not a budget anyone should be
+# spending; if a package ever approaches it, that package is the bug.
+COVER_TIMEOUT="${COVER_TIMEOUT:-30m}"
+
+echo "==> go test -coverprofile (this can take a while; timeout ${COVER_TIMEOUT})"
+go test ./... -covermode=atomic -coverprofile="$OUT" -count=1 -timeout "$COVER_TIMEOUT"
 
 TOTAL_LINE="$(go tool cover -func="$OUT" | tail -1)"
 # Example: "total:                                          (statements)   51.6%"

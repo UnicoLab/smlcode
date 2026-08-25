@@ -141,6 +141,9 @@ func PhraseForUser(reason string) string {
 		return "the model emitted a tool call with no name"
 	case reason == "repeated_tool_call":
 		return "the model repeated its previous tool call verbatim"
+	case strings.HasPrefix(reason, "tool_withdrawn:"):
+		return "the model kept repeating one call, so " +
+			strings.TrimPrefix(reason, "tool_withdrawn:") + " was disabled for this task"
 	case strings.HasPrefix(reason, "malformed_args:"):
 		return "the model's tool arguments were malformed (" +
 			strings.TrimPrefix(reason, "malformed_args:") + ")"

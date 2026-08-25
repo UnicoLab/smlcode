@@ -207,13 +207,10 @@ func recommendedMaxParallel(provider string, prof config.ModelProfile) (int, boo
 	}
 }
 
+// isLocalProvider defers to config.IsLocalProvider — the single local-vs-hosted
+// notion in the codebase, shared with the endpoint-aware max_parallel default.
 func isLocalProvider(provider string) bool {
-	switch config.NormalizeProvider(provider) {
-	case "local", "omlx", "ollama", "lmstudio", "vllm", "litellm", "custom":
-		return true
-	default:
-		return false
-	}
+	return config.IsLocalProvider(provider)
 }
 
 // BuildWithProbe includes a bounded live model endpoint check.

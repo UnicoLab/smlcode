@@ -17,6 +17,8 @@ slmcode/
 │   ├── compact/ skills/         compaction; SKILL.md + progressive disclosure
 │   ├── instructions/ retrieval/ AGENTS.md loading with path gating; embeddings
 │   ├── schema/ backends/ repair/ JSON+GBNF contracts, capability probe, repair ladder
+│   ├── calibrate/               endpoint measurement: concurrency knee, latency,
+│                                 throughput, context window (seeds memory + config)
 │   ├── memory/ evolve/ eval/    four memory layers; repair rules + bandit; metrics
 │                                 (fed from the tool layer via workspace.ToolObserver)
 │   ├── blocks/ pipeline/ stacks/ YAML building blocks, phase graph, provider presets
@@ -32,7 +34,7 @@ slmcode/
 │   ├── index.md · install.md · quickstart.md · concepts.md · providers.md
 │   ├── guide.md · tui.md · studio.md · skills.md · agents.md · blocks.md
 │   ├── pipeline.md · customization.md · recipes.md
-│   ├── cli.md · config.md · tools.md · decoding.md · context.md
+│   ├── cli.md · config.md · calibration.md · tools.md · decoding.md · context.md
 │   ├── permissions.md · testing.md · troubleshooting.md · faq.md
 │   ├── architecture.md · conventions.md · self-improvement.md
 │   ├── migration.md · changelog.md · contributing.md

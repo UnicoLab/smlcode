@@ -54,9 +54,27 @@ type Result struct {
 	Board       plan.Board `json:"board"`
 	Success     bool       `json:"success"`
 	FailedTasks int        `json:"failed_tasks"`
-	Duration    time.Duration
-	Summary     string `json:"summary"`
-	Backend     string `json:"backend"`
+	// Outcome names the verdict precisely, because Success alone cannot tell
+	// the two green paths apart: OutcomeSuccess is a clean board, while
+	// OutcomeSuccessWithFailures is "the objective gate is green and nothing is
+	// owed to a human, but FailedTasks subsidiary task(s) still failed".
+	// Callers that must not treat the second as flawless read this; everything
+	// that only asks "did the user get what they asked for" keeps reading
+	// Success. Empty on a Result built before the verdict was computed.
+	Outcome string `json:"outcome,omitempty"`
+	// UnexecutedTasks counts tasks that were planned and never executed because
+	// the board stopped mid-run on an already-green objective gate. Zero on
+	// every other path.
+	//
+	// Those tasks stay on the board in ready_to_dev: a task whose files were
+	// never written is not eligible for the green-gate promotion, so the run
+	// really does end with open work — deliberately. That is why the verdict
+	// has to be told about this (see completeRun's softSuccess) and why the
+	// count is reported rather than quietly folded away.
+	UnexecutedTasks int `json:"unexecuted_tasks,omitempty"`
+	Duration        time.Duration
+	Summary         string `json:"summary"`
+	Backend         string `json:"backend"`
 	// LatencyMs is wall time per phase/role for SLM tuning (plan/split/worker/…).
 	LatencyMs map[string]int64 `json:"latency_ms,omitempty"`
 	// Usage aggregates prompt/completion tokens (estimated when providers omit on early_exit).
@@ -161,6 +179,16 @@ type Orchestrator struct {
 	// the tool layer's OnFileChange hook. The QA gate formats exactly these —
 	// quality.FormatChangedFiles refuses to format anything else.
 	changedFiles map[string]bool
+
+	// qaSmoke executes the QA/acceptance command. Nil in production, where
+	// every call falls through to quality.RunSmoke; tests inject a fake so the
+	// objective gate can be exercised without a real toolchain and without a
+	// real model. See o.runSmoke in qagate.go.
+	qaSmoke func(ctx context.Context, root, cmd string, timeout time.Duration) quality.SmokeResult
+	// objective is the mid-run early-finish bookkeeping (probe budget + the
+	// write-evidence fingerprint of the last probe). Guarded by mu. See
+	// objectiveAlreadyMet in qagate.go.
+	objective objectiveProbeState
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -566,6 +594,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 		o.rebuildPacker(o.contextLimitTokens())
 	}
 	o.resetChangedFiles()
+	o.resetObjectiveProbes()
 	o.refreshRepoMap()
 	if o.cfg != nil {
 		clearDynamicRunArtifacts(o.cfg.SlmDir())

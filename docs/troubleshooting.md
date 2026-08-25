@@ -194,6 +194,60 @@ fields, or servers that advertise `json_schema` but reject `strict: true`.
 
 ---
 
+## Timeouts
+
+### Role timeouts (`context deadline exceeded`)
+
+```
+role "context" timed out after 75s (budget 75s of the 5m0s task_timeout ceiling);
+no latency measured yet for model family qwen3.8 (1/3 samples).
+```
+
+Role budgets are derived from the **measured p95** for that role on that model
+family, clamped to a per-class floor and to your `task_timeout`. Two things
+make a role blow its budget:
+
+**1. Too much parallelism for a single local endpoint.** This is the common
+one, and it is easy to miss because nothing looks misconfigured. Role budgets
+are wall-clock, and on one local model server every concurrent call shares one
+GPU. Measured on a single oMLX endpoint, running at 4-way concurrency inflates
+each role's observed latency about **2.5-2.7×** versus running it alone — so a
+role that finishes in 60s solo needs roughly 160s, and blows a 75s budget it
+would otherwise have met comfortably.
+
+Check what you are actually running at:
+
+```
+slmcode doctor | grep parallel
+```
+
+```
+  parallel        4 (project)  [calibration: measured, knee 2 — concurrency knee 2
+                  (4-way runs at 41% efficiency), p95 3.3s, 5 tok/s, ctx 262144]
+```
+
+If the measured knee is below your setting, you are paying latency for
+throughput you are not getting. Remove `max_parallel` from your config and
+slmcode will use the measured value; see
+[Calibration](calibration.md) and
+[`max_parallel` is measured, not guessed](config.md#max_parallel-is-measured-not-guessed).
+If you have never calibrated, `slmcode calibrate` takes about 10-25 seconds.
+
+**2. No latency evidence yet.** With fewer than three observations for a
+`(role, model family)` pair the policy has no basis to be stingy and hands the
+role the whole `task_timeout` ceiling — which is also the case where the
+ceiling itself may be too small for the model. Calibration seeds the store from
+the measured decode rate so the *first* run is already informed, but if
+calibration is off (`calibrate: off`, `SLMCODE_NO_CALIBRATE`) the first runs on
+a new model start cold. Either calibrate, or raise `task_timeout`; the timeout
+message names the value to set.
+
+A timed-out call is itself recorded as evidence (a censored lower bound), so a
+budget that was measured too low widens on the next run rather than failing
+forever.
+
+---
+
 ## Context and budget
 
 ### The model behaves as if it cannot see the file

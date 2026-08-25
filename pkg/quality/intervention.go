@@ -26,7 +26,8 @@ type Intervention struct {
 // ClassifyIntervention maps quality-monitor / gate reasons to banner codes.
 func ClassifyIntervention(reason string) string {
 	switch {
-	case reason == "repeated_tool_call" || strings.Contains(reason, "QUALITY MONITOR"):
+	case reason == "repeated_tool_call" || strings.HasPrefix(reason, "tool_withdrawn:") ||
+		strings.Contains(reason, "QUALITY MONITOR"):
 		return InterventionLoop
 	case strings.HasPrefix(reason, "malformed_args:"):
 		return InterventionMalformed

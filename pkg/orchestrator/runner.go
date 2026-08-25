@@ -30,6 +30,12 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.TurnID = runID
 	runner.Store = o.boardStore
 	runner.Focus = o.focus
+	// The gate side of the ws_shell scope guard. The tool layer records
+	// out-of-scope shell writes on the Workspace; the loop drains them after
+	// each worker turn for "## Disk evidence" and for the scope verdict.
+	if o.workspace != nil {
+		runner.TakeShellScope = o.workspace.TakeShellScopeEvents
+	}
 	runner.MaxRetries = o.cfg.MaxRetries
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.ReviewParallel = o.cfg.MaxParallel >= 2
@@ -98,6 +104,12 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 		o.maybeCompactContext(ctx)
 		o.coordinate(ctx, query, board, "after-wave")
 	}
+	// The objective gate, asked BETWEEN waves rather than only after the board
+	// drains. A board that keeps rejecting one task never drains, so the
+	// post-drain probes never fired on the run this exists for — the harness
+	// spent ~15 minutes on corrective rounds after the objective was already
+	// met. See objectiveMetBetweenWaves and loop.BetweenWaves.
+	runner.BetweenWaves = o.objectiveMetBetweenWaves
 	runner.BuildInput = o.buildTaskInput(query)
 
 	// Retry-ladder ordering is the inner loop's to execute, but the CHOICE is a

@@ -6,8 +6,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 echo "==> gofmt"
-# Skip gitignored workspace state (.slmcode/) and vendored trees.
-unformatted="$(gofmt -l . | grep -vE '^(vendor/|\.slmcode/)' || true)"
+# Skip gitignored workspace state and vendored trees.
+#
+# .claude/ matters as much as .slmcode/: it holds agent worktrees, which are
+# full checkouts of this repo. Walking them made `gofmt -l .` scan the tree
+# several times over, and — worse — let another session's half-written file
+# fail `make check` for a working tree that was itself clean. Neither directory
+# is ever part of the build.
+unformatted="$(gofmt -l . | grep -vE '^(vendor/|\.slmcode/|\.claude/)' || true)"
 if [[ -n "$unformatted" ]]; then
   echo "gofmt needed on:"
   echo "$unformatted"

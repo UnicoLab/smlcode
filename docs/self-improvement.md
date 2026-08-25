@@ -339,6 +339,33 @@ These make the harness useful on day one:
 To disable a shipped rule, set `"retired": true` on it in `rules.json`.
 *Deleting* it does not work — seeds are re-merged on every load.
 
+### What is learned from outcomes vs. what is measured up front
+
+Two different subsystems, deliberately not merged:
+
+| | Learned by the bandit | Measured by [calibration](calibration.md) |
+|---|---|---|
+| Answers | edit format, think passes, explore phase, review strictness, role model, retry ladder | concurrency knee, latency baseline, decode rate, context window |
+| Evidence | run **outcomes** — did the patch apply, did the gate pass | a handful of tiny completions, seconds of wall clock |
+| Cost to learn | many real runs | ~10-25 seconds, once per `(model, endpoint)` |
+
+The split is about what a cheap synthetic probe can honestly tell you. Whether
+a second think pass improves a patch is unknowable without doing the work, so
+it belongs to the bandit. How many requests the server runs at once is
+observable in seconds and does not need a single real task, so guessing it from
+a provider name was never justified.
+
+Calibration therefore **seeds**, and never competes:
+
+* it seeds role-latency memory for roles with no observations yet, so a
+  never-before-seen model does not spend its first runs on the full
+  `task_timeout` ceiling;
+* it seeds the decode-rate tracker per-call deadlines come from;
+* it seeds **no** bandit posterior. A 16-token completion is evidence about
+  none of the bandit's decisions, and the warm starts below already encode what
+  is genuinely known up front. Inventing evidence would be worse than the
+  uniform prior it replaced.
+
 ### Policy learning: a bandit over harness choices
 
 `pkg/evolve` runs a contextual multi-armed bandit keyed on

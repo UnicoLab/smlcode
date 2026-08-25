@@ -325,7 +325,8 @@ func (w *Workspace) toolDefs(wrap func(string, tools.ToolExecutor) tools.ToolExe
 			"ws_shell",
 			fmt.Sprintf(
 				"Run ONE shell command in the project root (no command substitution, no backgrounding). "+
-					"Killed after %s. Use it for tests/build/lint — never to edit files.",
+					"Killed after %s. Use it for tests/build/lint — never to edit files: any file the "+
+					"command changes outside your focus is detected and reported to the reviewer.",
 				w.shellTimeout().Round(time.Second)),
 			wrap("ws_shell", w.shell),
 			map[string]interface{}{
@@ -439,6 +440,12 @@ type Workspace struct {
 	// pathMu serializes writers of the same file across a parallel wave; see
 	// pathlock.go. Zero value is ready, so a bare &Workspace{} gets it too.
 	pathMu pathLocks
+
+	// scopeEvents is the ledger of out-of-scope ws_shell writes detected by the
+	// post-command scope guard (shellscope.go). Drained by the caller with
+	// TakeShellScopeEvents to build reviewer gate evidence.
+	scopeMu     sync.Mutex
+	scopeEvents []ShellScopeEvent
 
 	todoMu sync.Mutex
 	todos  []TodoItem
@@ -1539,20 +1546,32 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 			timeout = MaxShellTimeout
 		}
 	}
+	// Snapshot-and-compare around the command. Every OTHER file-writing tool
+	// calls checkFocus before it writes; a shell command is an opaque
+	// subprocess, so the focus boundary can only be observed after the fact.
+	// scopeScan returns nil (and costs nothing) when the task does not
+	// constrain writes at all. See shellscope.go for the cost rule and for why
+	// nothing here is reverted.
+	scopeBefore := w.scopeScan()
 	res := RunBounded(ctx, w.Root, command, timeout, MaxCapturedOutput)
+	// Runs on every path below: a command that failed or was killed can still
+	// have written half a tree before it died.
+	scope := w.reportShellScope(ctx, command, scopeBefore)
+
 	if res.TimedOut {
 		// A timeout is information for the model, not a harness error.
-		return TimeoutMessage(command, timeout, res.Output), nil
+		return TimeoutMessage(command, timeout, res.Output) + scope, nil
 	}
 	if res.Err != nil {
 		return fmt.Sprintf(
 			"exit error: %v\n%s\n\nThe command failed — read the output above, fix the cause with "+
-				"ws_edit/ws_patch, then re-run it.", res.Err, res.Output), nil
+				"ws_edit/ws_patch, then re-run it.", res.Err, res.Output) + scope, nil
 	}
 	if strings.TrimSpace(res.Output) == "" {
-		return fmt.Sprintf("(command succeeded with no output: %s)", truncateSnippet(command, 200)), nil
+		return fmt.Sprintf("(command succeeded with no output: %s)",
+			truncateSnippet(command, 200)) + scope, nil
 	}
-	return res.Output, nil
+	return res.Output + scope, nil
 }
 
 func (w *Workspace) markRead(rel string) {

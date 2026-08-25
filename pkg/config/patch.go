@@ -103,6 +103,12 @@ func (p Patch) WithValues(values map[string]any) Patch {
 // needs to report a bad value (that is what `slmcode config set` does).
 func (c *Config) applyExtra(p Patch) {
 	for _, k := range sortedKeys(p.extra) {
-		_ = c.Set(k, p.extra[k])
+		if err := c.Set(k, p.extra[k]); err != nil {
+			continue
+		}
+		// A patch is a person editing settings in Studio or the TUI, so the
+		// key stops being a default. Consumers that improve on defaults —
+		// pkg/calibrate — read this through Config.Explicit.
+		c.Provenance().Mark(k, LayerProject, "")
 	}
 }

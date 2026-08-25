@@ -543,3 +543,173 @@ func TestErrorHandlerWritesErrorsMD(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// writingExec is a worker that actually writes its task's file, so the review
+// fast path approves on disk evidence and no reviewer LLM is involved. It
+// records which TASKS were dispatched, which is what "wave 2 never ran" is.
+type writingExec struct {
+	root string
+	mu   sync.Mutex
+	ids  []string
+}
+
+func (e *writingExec) ExecuteSubAgents(_ context.Context, reqs []ggagent.SubAgentRequest,
+	_ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	out := make([]ggagent.SubAgentResult, 0, len(reqs))
+	for _, req := range reqs {
+		e.mu.Lock()
+		e.ids = append(e.ids, req.TaskID)
+		n := len(e.ids)
+		e.mu.Unlock()
+		name := strings.ToLower(req.TaskID) + ".go"
+		_ = os.WriteFile(filepath.Join(e.root, name),
+			[]byte(fmt.Sprintf("package main\n\n// rev %d\n", n)), 0o644)
+		out = append(out, ggagent.SubAgentResult{
+			AgentID: req.AgentID, TaskID: req.TaskID,
+			Output: fmt.Sprintf("Observation: ws_edit edited %s (1 replacement(s))\n", name) +
+				fmt.Sprintf(`{"status":"done","summary":"done","files_changed":[%q]}`, name),
+		})
+	}
+	return out, nil
+}
+
+func (e *writingExec) dispatched() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.ids...)
+}
+
+// fourTaskBoard is 4 independent tasks, the shape of the run that motivated the
+// between-waves probe (4 tasks, parallel=2 → two waves).
+func fourTaskBoard() *plan.Board {
+	tasks := make([]plan.Task, 0, 4)
+	for _, id := range []string{"T1", "T2", "T3", "T4"} {
+		tasks = append(tasks, plan.Task{
+			ID: id, Title: "build " + id, Role: plan.RoleWorker, Column: plan.ColReadyToDev,
+			Description: "write " + strings.ToLower(id) + ".go",
+			Acceptance:  "file written",
+			Files:       []string{strings.ToLower(id) + ".go"},
+		})
+	}
+	return &plan.Board{QueryID: "q1", Tasks: tasks}
+}
+
+// TestBetweenWavesStopsTheBoardAndReportsWhatItAbandoned pins the loop half of
+// the seam: a hook that says stop ends the board where it stands, without an
+// error, and the runner remembers how much planned work that abandoned.
+func TestBetweenWavesStopsTheBoardAndReportsWhatItAbandoned(t *testing.T) {
+	root := t.TempDir()
+	exec := &writingExec{root: root}
+	r := defaultRunner(t, root, exec)
+	r.MaxParallel = 2
+	r.MaxRetries = 0
+	probes := 0
+	r.BetweenWaves = func(context.Context, *plan.Board) (bool, string) {
+		probes++
+		return true, "objective already met (go test ./... green)"
+	}
+
+	board := fourTaskBoard()
+	if err := r.RunBoard(context.Background(), board); err != nil {
+		t.Fatalf("an early stop is not an error: %v", err)
+	}
+	if probes != 1 {
+		t.Fatalf("BetweenWaves called %d time(s), want exactly 1 (after wave 1)", probes)
+	}
+	if got := r.Waves(); got != 1 {
+		t.Fatalf("waves=%d, want 1 — wave 2 must not run", got)
+	}
+	if got := len(exec.dispatched()); got != 2 {
+		t.Fatalf("dispatched %d task(s) (%v), want the 2 of wave 1",
+			got, exec.dispatched())
+	}
+	stopped, reason, left := r.EarlyStop()
+	if !stopped {
+		t.Fatal("the runner does not report that it stopped early")
+	}
+	if !strings.Contains(reason, "objective already met") {
+		t.Fatalf("reason=%q — the caller's reason must survive", reason)
+	}
+	if left != 2 {
+		t.Fatalf("unexecuted=%d, want the 2 tasks that never ran", left)
+	}
+}
+
+// TestBoardWithoutAnEarlyStopRunsToItsNormalBound is the no-behavior-change
+// control: a hook that never says stop must leave RunBoard exactly as it was.
+func TestBoardWithoutAnEarlyStopRunsToItsNormalBound(t *testing.T) {
+	root := t.TempDir()
+	exec := &writingExec{root: root}
+	r := defaultRunner(t, root, exec)
+	r.MaxParallel = 2
+	r.MaxRetries = 0
+	probes := 0
+	r.BetweenWaves = func(context.Context, *plan.Board) (bool, string) {
+		probes++
+		return false, ""
+	}
+
+	board := fourTaskBoard()
+	if err := r.RunBoard(context.Background(), board); err != nil {
+		t.Fatalf("RunBoard: %v", err)
+	}
+	if probes < 2 {
+		t.Fatalf("BetweenWaves called %d time(s) — it must be asked after every wave", probes)
+	}
+	if got := len(exec.dispatched()); got != 4 {
+		t.Fatalf("dispatched %d task(s) (%v), want all 4", got, exec.dispatched())
+	}
+	if stopped, _, left := r.EarlyStop(); stopped || left != 0 {
+		t.Fatalf("EarlyStop reported stopped=%v left=%d on a board that ran to its bound", stopped, left)
+	}
+	if n := unexecutedTaskCount(board); n != 0 {
+		t.Fatalf("%d task(s) left unexecuted on a board that ran to its bound", n)
+	}
+}
+
+// TestBetweenWavesIsOffForCorrectiveBoards: a corrective board is entered
+// BECAUSE something was found wanting, so the early stop must not route around
+// the finding that scheduled it.
+func TestBetweenWavesIsOffForCorrectiveBoards(t *testing.T) {
+	root := t.TempDir()
+	exec := &writingExec{root: root}
+	r := defaultRunner(t, root, exec)
+	r.MaxParallel = 2
+	r.MaxRetries = 0
+	r.MaxWaves = 2
+	probes := 0
+	r.BetweenWaves = func(context.Context, *plan.Board) (bool, string) {
+		probes++
+		return true, "objective already met"
+	}
+
+	board := fourTaskBoard()
+	ran, err := r.RunCorrectiveBoard(context.Background(), board)
+	if err != nil || !ran {
+		t.Fatalf("RunCorrectiveBoard: ran=%v err=%v", ran, err)
+	}
+	if probes != 0 {
+		t.Fatalf("the early stop was consulted %d time(s) on a corrective board", probes)
+	}
+	if got := len(exec.dispatched()); got != 4 {
+		t.Fatalf("corrective board dispatched %d task(s), want all 4", got)
+	}
+	if stopped, _, _ := r.EarlyStop(); stopped {
+		t.Fatal("a corrective board reported an early stop")
+	}
+	// The hook is restored, not destroyed: the next ordinary board still gets it.
+	if r.BetweenWaves == nil || r.betweenWavesOff {
+		t.Fatal("RunCorrectiveBoard did not restore the between-waves hook")
+	}
+}
+
+func TestWavesForIsAFloorNotAGuess(t *testing.T) {
+	cases := []struct{ n, perWave, want int }{
+		{0, 2, 0}, {1, 2, 1}, {2, 2, 1}, {3, 2, 2}, {4, 2, 2}, {5, 0, 5},
+	}
+	for _, tc := range cases {
+		if got := wavesFor(tc.n, tc.perWave); got != tc.want {
+			t.Fatalf("wavesFor(%d,%d)=%d, want %d", tc.n, tc.perWave, got, tc.want)
+		}
+	}
+}

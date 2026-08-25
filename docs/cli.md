@@ -402,6 +402,25 @@ Bare `slmcode config` prints help — use `config show`. Full field list →
 
 Keys belong in `.slmcode/auth.json` or the environment, not in committed YAML.
 
+## `calibrate`
+
+Measures what the configured `(model, endpoint)` pair can actually do —
+concurrency knee, latency baseline, decode rate, context window — instead of
+guessing it from the provider name.
+
+```bash
+slmcode calibrate                  # measure (or reuse) the active pair
+slmcode calibrate --force          # re-measure regardless of the cache
+slmcode calibrate --show           # print stored profiles, probe nothing
+slmcode calibrate --json
+slmcode calibrate --model Qwen3.5-9B-MLX-4bit
+```
+
+It runs automatically, once, when a run meets an unseen pair. The full level
+table is printed so the chosen `max_parallel` is checkable rather than magic,
+and values you have set explicitly are never overridden. Details →
+[Calibration](calibration.md).
+
 ## `memory`, `evolve`, `metrics`
 
 ```bash

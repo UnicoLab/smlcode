@@ -199,7 +199,7 @@ func main() {
 	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), hooksCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
-		memoryCmd(), evolveCmd(), graphCmd(), autoresearchCmd(), metricsCmd(), versionCmd())...)
+		memoryCmd(), evolveCmd(), calibrateCmd(), graphCmd(), autoresearchCmd(), metricsCmd(), versionCmd())...)
 	all = append(all, completionCmd())
 	for _, c := range all {
 		rejectUnknownSubcommands(c)
@@ -434,7 +434,9 @@ func applyFlags(c *config.Config) {
 		c.DryRun = true
 	}
 	if flagMaxParallel > 0 {
-		c.MaxParallel = flagMaxParallel
+		// SetMaxParallel, not a field write: --parallel is an explicit choice
+		// and must survive both the endpoint-aware default and calibration.
+		c.SetMaxParallel(flagMaxParallel)
 	}
 	if flagMaxRetries > 0 {
 		c.MaxRetries = flagMaxRetries

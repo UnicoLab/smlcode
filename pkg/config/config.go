@@ -21,11 +21,45 @@ const (
 	DefaultEndpoint = "http://127.0.0.1:8000/v1"
 	DefaultModel    = "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"
 
-	DefaultMaxRetries   = 4
-	DefaultMaxParallel  = 4
-	DefaultThinkPasses  = 1
-	DefaultMaxContextKB = 16
-	DefaultTaskTimeout  = 12 * time.Minute
+	DefaultMaxRetries = 4
+	// DefaultMaxParallel is the fan-out for a HOSTED, horizontally-scaled API
+	// (openai, openrouter, anthropic, …), where an extra concurrent request
+	// lands on different hardware and costs the others nothing.
+	DefaultMaxParallel = 4
+	// DefaultMaxParallelLocal is the fan-out for a SINGLE local endpoint. It is
+	// MEASURED, not guessed — do not raise it without re-running the
+	// measurement (scripts are trivial: N identical tiny completions against a
+	// warm model, wall time per level).
+	//
+	// Single local oMLX endpoint, warm model, identical tiny prompts:
+	//
+	//	Qwen3.5-9B-MLX-4bit
+	//	  1 request      wall 0.58s
+	//	  2 concurrent   wall 0.85s  per-req 0.82s  throughput 1.37x of 2.00x ideal  (68% efficient)
+	//	  4 concurrent   wall 1.49s  per-req 1.43s  throughput 1.56x of 4.00x ideal  (39% efficient)
+	//
+	//	Qwen3.8-27B-4bit
+	//	  1 request      wall 1.66s
+	//	  2 concurrent   wall 2.44s  per-req 2.40s  throughput 1.36x of 2.00x ideal  (68% efficient)
+	//	  4 concurrent   wall 4.54s  per-req 4.43s  throughput 1.46x of 4.00x ideal  (37% efficient)
+	//
+	// A single local endpoint PARTIALLY parallelizes, with a sharp knee at 2.
+	// Going 2 → 4 buys ~10-14% more throughput and costs ~75-85% worse
+	// per-request latency (0.82→1.43s, 2.40→4.43s).
+	//
+	// Why that is a correctness issue and not only a tuning one: role timeouts
+	// are wall-clock, so at 4 each role's observed latency inflates ~2.5-2.7×
+	// versus solo. A role that needs 60s alone needs ~160s under 4-way
+	// queueing — which is exactly how a 75s role budget got blown in live runs.
+	//
+	// Since v0.19 this is the FALLBACK, not the answer: pkg/calibrate measures
+	// the knee for the concrete (model, endpoint) pair on first sight and
+	// overrides it. This constant applies before any calibration exists, and
+	// whenever calibration is off or fails.
+	DefaultMaxParallelLocal = 2
+	DefaultThinkPasses      = 1
+	DefaultMaxContextKB     = 16
+	DefaultTaskTimeout      = 12 * time.Minute
 	// DefaultQAGateRounds is 3 because the QA gate's repair loop compares
 	// `round == max` on entry: at 1 the diagnose/fix pass is unreachable and
 	// the gate degrades into a single test run.
@@ -69,6 +103,7 @@ const (
 	DefaultReserveResponseTok   = 2048
 	DefaultContextSlackPercent  = 10
 	DefaultStructuredDecoding   = "auto"
+	DefaultCalibrate            = CalibrateAuto
 	DefaultQABootstrap          = "ask"
 	DefaultSkillDisclosure      = "auto"
 	DefaultPlanApproveOnTimeout = PlanTimeoutAuto
@@ -92,6 +127,41 @@ const (
 	// DecodingOff forces prompt-only JSON.
 	DecodingOff = "off"
 )
+
+// Calibrate values — whether the endpoint calibration probe may run.
+const (
+	// CalibrateAuto probes an unseen (model, endpoint) pair once, bounded.
+	CalibrateAuto = "auto"
+	// CalibrateOff never probes; the static defaults apply.
+	CalibrateOff = "off"
+)
+
+// NormalizeCalibrate maps calibrate aliases (auto|off).
+func NormalizeCalibrate(m string) string {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "", "auto", "on", "true", "measure":
+		return CalibrateAuto
+	case "off", "none", "false", "skip", "no":
+		return CalibrateOff
+	default:
+		return CalibrateAuto
+	}
+}
+
+// CalibrationEnabled reports whether the calibration probe may run this process.
+//
+// SLMCODE_NO_CALIBRATE is honored as a hard kill switch independent of the
+// config key, so CI and sandboxes can guarantee no model is ever contacted at
+// startup without editing a workspace they may not own.
+func (c *Config) CalibrationEnabled() bool {
+	if c == nil {
+		return false
+	}
+	if v := strings.TrimSpace(os.Getenv("SLMCODE_NO_CALIBRATE")); v != "" && v != "0" && v != "false" {
+		return false
+	}
+	return NormalizeCalibrate(c.Calibrate) == CalibrateAuto
+}
 
 // QABootstrap values — whether dependency installs may run unattended.
 const (
@@ -221,6 +291,14 @@ type Config struct {
 	// report the file's real contents instead of a differently-computed count.
 	lastSavedKeys []string
 
+	// maxParallelSet records that a HUMAN chose max_parallel, at any layer.
+	// The default is endpoint-aware (parallel.go) and calibration may improve
+	// on it, so "4" written down by a user and "4" inherited from the hosted
+	// default must be distinguishable — otherwise an explicit setting would be
+	// silently re-derived away. Set by Config.SetMaxParallel / Config.Set;
+	// copied by clone, so the save baseline inherits the user layer's intent.
+	maxParallelSet bool
+
 	// Provider selects the LLM backend. Built-ins: omlx | ollama | openai |
 	// lmstudio | openrouter | vllm | litellm | together | groq | deepseek | …
 	// Any other name is treated as an OpenAI-compatible gateway (set endpoint).
@@ -252,6 +330,16 @@ type Config struct {
 	MaxContextKB int           `yaml:"max_context_kb" json:"max_context_kb"`
 	ThinkPasses  int           `yaml:"think_passes" json:"think_passes"`
 	TaskTimeout  time.Duration `yaml:"task_timeout" json:"task_timeout"`
+
+	// Calibrate controls the endpoint calibration probe: auto | off.
+	//
+	// "auto" measures a never-before-seen (model, endpoint) pair once, before
+	// the run starts — the concurrency knee, a latency baseline, and the
+	// context window the server reports — and uses the result for any of
+	// max_parallel / context budget the user has NOT set explicitly. It is
+	// bounded, cached in the user scope, and falls back to the built-in
+	// defaults on any failure. See pkg/calibrate and docs/calibration.md.
+	Calibrate string `yaml:"calibrate" json:"calibrate"`
 
 	// EnabledModels optionally scopes the selectable catalog (empty = all).
 	EnabledModels []string `yaml:"enabled_models" json:"enabled_models"`
@@ -515,11 +603,15 @@ func Default(root string) *Config {
 		// Dynamic pipeline is on by default: the composer assembles a
 		// task-specific pipeline (phases, team, tools, skills) per run. Disable
 		// via config `dynamic_pipeline: false` or `slmcode run --no-dynamic`.
-		DynamicPipeline:      true,
-		Temperature:          0.2,
-		MaxTokens:            4096,
-		MaxRetries:           DefaultMaxRetries,
-		MaxParallel:          DefaultMaxParallel,
+		DynamicPipeline: true,
+		Temperature:     0.2,
+		MaxTokens:       4096,
+		MaxRetries:      DefaultMaxRetries,
+		// Endpoint-aware, not flat: DefaultProvider/DefaultEndpoint is a single
+		// local server, so a fresh config starts at the measured local knee.
+		// normalize() re-derives this whenever a layer changes the endpoint and
+		// nothing has set max_parallel explicitly.
+		MaxParallel:          DefaultMaxParallelFor(DefaultProvider, DefaultEndpoint),
 		MaxContextKB:         DefaultMaxContextKB,
 		ThinkPasses:          DefaultThinkPasses,
 		TaskTimeout:          DefaultTaskTimeout,
@@ -545,6 +637,7 @@ func Default(root string) *Config {
 		EscalateMaxRetries:   DefaultEscalateMaxRetries,
 		EscalateTimeoutAgent: "", // auto-pick @escalate
 		PlanApproveOnTimeout: DefaultPlanApproveOnTimeout,
+		Calibrate:            DefaultCalibrate,
 		QABootstrap:          DefaultQABootstrap,
 		RegressionChecks:     true,
 		DisableSyntaxCheck:   false,
@@ -887,9 +980,15 @@ func normalize(c *Config) {
 	if c.MaxRetries < 0 {
 		c.MaxRetries = DefaultMaxRetries
 	}
-	if c.MaxParallel <= 0 {
-		c.MaxParallel = DefaultMaxParallel
+	// max_parallel's default follows the endpoint, so it has to be re-derived
+	// after every layer: a project file that sets `provider: openai` moves the
+	// answer from 2 to 4 without mentioning max_parallel at all. A value a
+	// human wrote down is never touched — see SetMaxParallel.
+	if !c.maxParallelSet || c.MaxParallel <= 0 {
+		c.maxParallelSet = false
+		c.MaxParallel = DefaultMaxParallelFor(c.Provider, c.Endpoint)
 	}
+	c.Calibrate = NormalizeCalibrate(c.Calibrate)
 	if c.ThinkPasses <= 0 {
 		c.ThinkPasses = DefaultThinkPasses
 	}
@@ -1202,7 +1301,9 @@ func (c *Config) ApplyPatch(p Patch) {
 		c.ThinkPasses = *p.ThinkPasses
 	}
 	if p.MaxParallel != nil && *p.MaxParallel > 0 {
-		c.MaxParallel = *p.MaxParallel
+		// A patch is a user editing the value in Studio or the TUI: explicit.
+		// ApplyPatch ends in normalize(), which would otherwise re-derive it.
+		c.SetMaxParallel(*p.MaxParallel)
 	}
 	if p.MaxRetries != nil && *p.MaxRetries >= 0 {
 		c.MaxRetries = *p.MaxRetries

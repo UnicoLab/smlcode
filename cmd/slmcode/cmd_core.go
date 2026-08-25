@@ -214,6 +214,13 @@ func runCmd() *cobra.Command {
 				return failf(4, "model server unreachable — %s", probe.Cause)
 			}
 
+			// Pre-flight #3: measure what this endpoint can actually do. The
+			// probe above already proved it is up, so a failure here is a
+			// calibration problem and is reported as one — never as an outage.
+			// Bounded, cached per (model, endpoint), and it only fills in
+			// values the user has not set.
+			autoCalibrate(cmd.Context(), h)
+
 			ctx, cancel := signalContext()
 			defer cancel()
 
@@ -236,6 +243,9 @@ func runCmd() *cobra.Command {
 			}
 			cli.KeyVal("think", fmt.Sprintf("%d passes", h.Config.ThinkPasses))
 			cli.KeyVal("parallel", fmt.Sprintf("%d", h.Config.MaxParallel))
+			// Why it is what it is, exactly once — only when the endpoint-aware
+			// default lowered it and calibration did not already explain it.
+			printMaxParallelNotice(h.Config)
 			fmt.Println()
 			fmt.Println(cli.Bold("Query: ") + query)
 			fmt.Println()

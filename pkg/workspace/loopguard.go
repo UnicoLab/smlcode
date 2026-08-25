@@ -12,6 +12,28 @@ import (
 // MaxLoopCorrections caps consecutive repeated-call refusals (little-coder #81).
 const MaxLoopCorrections = 2
 
+// MaxRepeatNudges is how many times the harness will ANSWER one repeated call
+// with corrective TEXT before it stops answering and takes the tool away.
+//
+// One. The first repeat gets a nudge because a model deserves to be told. A
+// model that repeats the SAME call after being told has demonstrated that the
+// text does not work, and repeating the text is not a different intervention —
+// measured live on a 9B: two identical ws calls, two identical nudges, the
+// model paraphrasing the refusal back ("The tool call was rejected because I
+// repeated the same…") and immediately re-issuing the call. The old ladder made
+// this worse than it looks: its escalation was keyed on `consecutive`, which
+// needed a THIRD refusal to fire and was reset to zero by any unrelated call
+// that happened to succeed, so an alternating A,B,A,B loop never escalated at
+// all.
+const MaxRepeatNudges = 1
+
+// ReasonToolWithdrawn prefixes the intervention reason reported when a tool is
+// withdrawn from a task. The tool name follows the colon.
+const ReasonToolWithdrawn = "tool_withdrawn"
+
+// ReasonRepeatedToolCall is the verdict reason for a verbatim repeat.
+const ReasonRepeatedToolCall = "repeated_tool_call"
+
 // DefaultLoopHistory is how many recent calls one task's history keeps.
 const DefaultLoopHistory = 12
 
@@ -62,6 +84,38 @@ type trackedCall struct {
 type taskHistory struct {
 	calls       []trackedCall
 	consecutive int
+	// refusals counts how often each EXACT call was refused. Unlike
+	// consecutive it is not cleared by an unrelated successful call, so an
+	// alternating A,B,A,B loop escalates on A's second refusal instead of
+	// resetting the ladder every other turn.
+	refusals map[string]int
+	// withdrawn holds the tools this task may no longer use at all. A
+	// withdrawn tool does not run for ANY arguments — that is the point: the
+	// model cannot keep the loop alive by tweaking the path or the pattern.
+	// Real progress (a state-changing call that actually executed) hands them
+	// all back, so a corrector that starts by editing is never starved.
+	withdrawn map[string]bool
+}
+
+func (h *taskHistory) refuse(key string) int {
+	if h.refusals == nil {
+		h.refusals = map[string]int{}
+	}
+	h.refusals[key]++
+	return h.refusals[key]
+}
+
+// progressed clears the loop state a real state change makes obsolete.
+func (h *taskHistory) progressed() {
+	h.refusals = nil
+	h.withdrawn = nil
+}
+
+func (h *taskHistory) withdraw(tool string) {
+	if h.withdrawn == nil {
+		h.withdrawn = map[string]bool{}
+	}
+	h.withdrawn[tool] = true
 }
 
 // CallTracker breaks mid-ReAct tool loops by refusing verbatim repeated tool
@@ -163,7 +217,43 @@ func (t *CallTracker) assess(h *taskHistory, c trackedCall) LoopVerdict {
 			return LoopVerdict{}
 		}
 	}
-	return LoopVerdict{Refuse: true, Reason: "repeated_tool_call"}
+	return LoopVerdict{Refuse: true, Reason: ReasonRepeatedToolCall}
+}
+
+// escalate decides what a refusal DOES, beyond what it says.
+//
+// The guard already refuses the duplicate at the tool layer, so the call never
+// runs — but until this existed that was the whole of the intervention: every
+// subsequent repeat got another paragraph of advice, and a model that ignores
+// advice is exactly the model this fires for. Rung two therefore stops being a
+// message and starts being a change to what the task CAN do: the tool is
+// withdrawn, for every argument, until the task makes a real state change.
+//
+// State-changing tools are never withdrawn. An editing task that loses ws_edit
+// cannot be completed by any strategy, and a repeat there is already bounded —
+// varying old_str is a genuinely different attempt, and the exact call that
+// failed stays refused either way. Those get the terminal finish directive
+// instead, on the second repeat rather than the third.
+//
+// Caller holds t.mu.
+func (t *CallTracker) escalate(h *taskHistory, c trackedCall, verdict LoopVerdict) (string, string) {
+	reason := verdict.Reason
+	if reason != ReasonRepeatedToolCall {
+		return reason, "QUALITY MONITOR: " + LoopCorrectionMessage(reason)
+	}
+	repeats := h.refuse(c.name + "|" + c.args)
+	max := t.MaxCorrect
+	if max <= 0 {
+		max = MaxLoopCorrections
+	}
+	if repeats <= MaxRepeatNudges && h.consecutive <= max {
+		return reason, "QUALITY MONITOR: " + LoopCorrectionMessage(reason)
+	}
+	if c.stateChange {
+		return reason, hardStopMessage()
+	}
+	h.withdraw(c.name)
+	return ReasonToolWithdrawn + ":" + c.name, withdrawnMessage(c.name)
 }
 
 // Wrap returns a ToolExecutor that refuses verbatim loops / unknown tools.
@@ -180,23 +270,27 @@ func (t *CallTracker) Wrap(name string, fn tools.ToolExecutor) tools.ToolExecuto
 		}
 		t.mu.Lock()
 		h := t.historyFor(taskID)
-		verdict := t.assess(h, c)
-		if verdict.Refuse {
+		// A withdrawn tool answers nothing, whatever the arguments. This is
+		// the rung that is not a message: the stuck strategy is no longer
+		// available to the model at all.
+		if h.withdrawn[name] {
 			h.consecutive++
-			out := "QUALITY MONITOR: " + LoopCorrectionMessage(verdict.Reason)
-			max := t.MaxCorrect
-			if max <= 0 {
-				max = MaxLoopCorrections
-			}
-			if h.consecutive > max {
-				out = "QUALITY MONITOR HARD STOP: repeated the same tool call " +
-					"too many times. Stop calling tools. Finish NOW with STRICT JSON: " +
-					`{"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
-			}
+			out := withdrawnMessage(name)
 			cb := t.OnIntervention
 			t.mu.Unlock()
 			if cb != nil {
-				cb(verdict.Reason, out)
+				cb(ReasonToolWithdrawn+":"+name, out)
+			}
+			return out, nil
+		}
+		verdict := t.assess(h, c)
+		if verdict.Refuse {
+			h.consecutive++
+			reason, out := t.escalate(h, c, verdict)
+			cb := t.OnIntervention
+			t.mu.Unlock()
+			if cb != nil {
+				cb(reason, out)
 			}
 			return out, nil
 		}
@@ -209,11 +303,36 @@ func (t *CallTracker) Wrap(name string, fn tools.ToolExecutor) tools.ToolExecuto
 		defer t.mu.Unlock()
 		h = t.historyFor(taskID)
 		h.calls = append(h.calls, c)
+		if c.stateChange {
+			// Real progress: the same read can now legitimately return
+			// something new, so the loop state that was built up against it is
+			// obsolete. This is what keeps a withdrawal from outliving the
+			// loop it broke — a corrector that opens with an edit starts clean.
+			h.progressed()
+		}
 		if t.MaxHistory > 0 && len(h.calls) > t.MaxHistory {
 			h.calls = h.calls[len(h.calls)-t.MaxHistory:]
 		}
 		return out, err
 	}
+}
+
+// hardStopMessage is the terminal directive for a tool that cannot be withdrawn.
+func hardStopMessage() string {
+	return "QUALITY MONITOR HARD STOP: repeated the same tool call " +
+		"too many times. Stop calling tools. Finish NOW with STRICT JSON: " +
+		`{"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
+}
+
+// withdrawnMessage tells the model the tool is gone, not merely discouraged.
+// It says so explicitly, because "try different arguments" is the move this
+// rung exists to remove.
+func withdrawnMessage(tool string) string {
+	return "QUALITY MONITOR HARD STOP: " + tool + " is now DISABLED for this task — you " +
+		"called it repeatedly with the same arguments and were told to do something else. " +
+		"It will not run again for ANY arguments until you make a real change. " +
+		"Use a different tool (ws_edit, ws_patch, ws_write, ws_shell) or finish NOW with " +
+		`STRICT JSON: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
 }
 
 // LoopCorrectionMessage is steered back to the model on a loop refusal.
@@ -223,10 +342,13 @@ func LoopCorrectionMessage(reason string) string {
 	case reason == "empty_tool_name":
 		return "Your tool call had an empty name. Use a real tool: ws_read, ws_write, " +
 			"ws_edit, ws_patch, ws_shell, ws_glob, ws_grep, ws_list, ws_todo."
-	case reason == "repeated_tool_call":
+	case reason == ReasonRepeatedToolCall:
 		return "You just made the exact same tool call again with nothing changed in between — " +
 			"the result will be identical. Do something DIFFERENT: change the arguments " +
-			"(different path/offset/pattern), make an edit, or finish with status JSON."
+			"(different path/offset/pattern), make an edit, or finish with status JSON. " +
+			"This is your ONE warning: repeat it and the tool is disabled for this task."
+	case strings.HasPrefix(reason, ReasonToolWithdrawn+":"):
+		return withdrawnMessage(strings.TrimPrefix(reason, ReasonToolWithdrawn+":"))
 	case strings.HasPrefix(reason, "unknown_tool:"):
 		name := strings.TrimPrefix(reason, "unknown_tool:")
 		return "Tool '" + name + "' does not exist. Available: ws_read, ws_write, ws_edit, " +

@@ -2,8 +2,6 @@ package loop
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +37,24 @@ type Logger func(format string, args ...interface{})
 // (post-update). Used for dynamic context + learning.
 type AfterWave func(ctx context.Context, board *plan.Board, wave []plan.Task)
 
+// BetweenWaves is consulted after a wave's results are persisted and BEFORE the
+// next wave is picked. A true return stops the board where it stands; RunBoard
+// then finishes normally (nil error) and the reason is what the caller reports.
+//
+// It exists because the objective gate lives in the orchestrator while the wave
+// cycle lives here — the same split AfterWave already bridges. Asking the gate
+// only once the board has DRAINED is what made the check useless on the run
+// that motivated it: one task kept getting rejected, so "no ready agent work
+// remains" was never true, and the harness ground corrective rounds for ~15
+// minutes after the fixture's test suite had already gone green. The waste
+// happens WHILE the board is still churning, so the question has to be asked
+// there.
+//
+// The hook decides nothing about cost or safety: every refusal (weak gate,
+// escalated tasks, an outstanding tester rejection, an operator-configured test
+// slot, the probe budget) belongs to the gate on the other side of the seam.
+type BetweenWaves func(ctx context.Context, board *plan.Board) (stop bool, reason string)
+
 // AgentEvent reports live agent activity for CLI/GUI streaming.
 type AgentEvent func(kind, agent, taskID, message, scope, output string)
 
@@ -68,15 +84,26 @@ type weakTaskEntry struct {
 
 // Runner executes parallel workers → review → correct against a live board.
 type Runner struct {
-	Executor  SubAgentRunner
-	Shared    *ggagent.SharedState
-	Store     *plan.LiveStore // optional — reload mid-run for human edits
-	Root      string          // workspace root for evidence checks
-	SlmDir    string          // optional; defaults to Root/.slmcode
-	TurnID    string          // query turn id for react checkpoints
-	Focus     *workspace.FocusGuard
-	AfterWave AfterWave
-	OnEvent   AgentEvent
+	Executor SubAgentRunner
+	Shared   *ggagent.SharedState
+	Store    *plan.LiveStore // optional — reload mid-run for human edits
+	Root     string          // workspace root for evidence checks
+	SlmDir   string          // optional; defaults to Root/.slmcode
+	TurnID   string          // query turn id for react checkpoints
+	Focus    *workspace.FocusGuard
+	// TakeShellScope drains the workspace's out-of-scope ws_shell ledger — set
+	// it to Workspace.TakeShellScopeEvents. nil simply means the loop reports no
+	// shell-scope evidence; every gate that reads it is nil-safe.
+	//
+	// It is a func rather than a *Workspace on purpose: this is the ONE thing
+	// the loop needs from the tool layer at gate time, and handing the runner a
+	// whole Workspace would put every file-writing method one dot away from
+	// code whose job is to judge writes, not make them.
+	TakeShellScope func() []workspace.ShellScopeEvent
+	AfterWave      AfterWave
+	// BetweenWaves is the early-stop seam described above; nil disables it.
+	BetweenWaves BetweenWaves
+	OnEvent      AgentEvent
 	// OnEventFull is the structured event sink (carries Level + typed Data).
 	// OnEvent still receives everything; set this to get agent_end levels and
 	// token-by-token streaming.
@@ -235,6 +262,24 @@ type Runner struct {
 	fpMu    sync.Mutex
 	fpCache map[string]string
 
+	// scopeMu/scopeLog hold the out-of-scope ws_shell writes drained from the
+	// workspace ledger, filed per task. See shellscope.go.
+	scopeMu  sync.Mutex
+	scopeLog map[string]*taskScopeLog
+
+	// betweenWavesOff suppresses the BetweenWaves early stop for the duration
+	// of a corrective board — see RunCorrectiveBoard.
+	betweenWavesOff bool
+
+	// earlyStop* record a BetweenWaves stop: whether it happened, why, and how
+	// many planned tasks were never executed because of it. A stop is a
+	// deliberate abandonment of work, and the caller must be able to say so
+	// rather than report a board that merely looks finished.
+	earlyStopMu     sync.Mutex
+	earlyStopped    bool
+	earlyStopReason string
+	earlyStopLeft   int
+
 	// repairMu/pendingRepairs remember which rule produced a given set of
 	// repaired tool arguments, so ToolRetryOutcome can credit or blame it
 	// without the tool layer having to carry an opaque token. Keyed on the
@@ -385,6 +430,18 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 			r.persist(board)
 		}
 
+		// The between-waves early stop. The board is at rest exactly here: this
+		// wave's results are written and the next wave has not been picked, so
+		// this is the last moment at which "the objective is already met" can
+		// still save the waves nobody has spent yet. Waiting for the board to
+		// drain cannot: a task that keeps getting rejected keeps the board
+		// moving forever, which is the run this hook exists for.
+		if r.BetweenWaves != nil && !r.betweenWavesOff {
+			if stop, reason := r.BetweenWaves(ctx, board); stop {
+				return r.stopBetweenWaves(board, reason)
+			}
+		}
+
 		// A round that changed nothing cannot become a round that changes
 		// something by being repeated. The signature is compared against the
 		// state this round started from AND against the previous round's, so a
@@ -416,7 +473,108 @@ func (r *Runner) RunCorrectiveBoard(ctx context.Context, board *plan.Board) (boo
 		return false, nil
 	}
 	r.correctiveRuns++
+	// A corrective board is entered BECAUSE something was found wanting — a
+	// tester rejection, placeholder gaps, a red QA gate, a human answering
+	// "continue". Stopping such a board between waves on a green objective
+	// would route around the very finding that scheduled it, so the early stop
+	// is off for its duration. The orchestrator's post-drain probes still cover
+	// this ground, and they carry the tester verdict explicitly.
+	prev := r.betweenWavesOff
+	r.betweenWavesOff = true
+	defer func() { r.betweenWavesOff = prev }()
 	return true, r.RunBoard(ctx, board)
+}
+
+// stopBetweenWaves ends the board because BetweenWaves said the run is already
+// done, and records what that abandoned.
+//
+// The tasks counted here are real work that was planned and will not run. The
+// count is taken at THIS moment because this is the decision point: everything
+// downstream (the green-gate board promotion, a human promoting a column, a
+// later resume) reshapes the board, and afterwards nothing distinguishes "never
+// ran" from "ran and finished". The caller turns this into the number and the
+// sentence a run reports.
+func (r *Runner) stopBetweenWaves(board *plan.Board, reason string) error {
+	left := unexecutedTaskCount(board)
+	waves := wavesFor(left, r.parallelism())
+	r.earlyStopMu.Lock()
+	r.earlyStopped = true
+	r.earlyStopReason = reason
+	r.earlyStopLeft = left
+	r.earlyStopMu.Unlock()
+
+	msg := fmt.Sprintf("%s — stopping after wave %d: %d task(s) not executed, "+
+		"at least %d further wave(s) skipped", reason, r.waveN, left, waves)
+	r.logf("RunBoard: %s", msg)
+	r.fireLevel(stream.KindLoop, "harness", "", msg, "objective_met", "", stream.LevelSuccess)
+	return nil
+}
+
+// EarlyStop reports a BetweenWaves stop: whether it happened, the reason given,
+// and how many planned tasks were never executed because of it.
+func (r *Runner) EarlyStop() (bool, string, int) {
+	if r == nil {
+		return false, "", 0
+	}
+	r.earlyStopMu.Lock()
+	defer r.earlyStopMu.Unlock()
+	return r.earlyStopped, r.earlyStopReason, r.earlyStopLeft
+}
+
+// Waves reports how many waves this runner has dispatched, so a caller (or a
+// test) can assert on waves rather than on prose.
+func (r *Runner) Waves() int {
+	if r == nil {
+		return 0
+	}
+	return r.waveN
+}
+
+// parallelism is MaxParallel normalized the way RunBoard normalizes it.
+func (r *Runner) parallelism() int {
+	if r == nil || r.MaxParallel < 1 {
+		return 1
+	}
+	return r.MaxParallel
+}
+
+// wavesFor is the FLOOR on how many more waves n tasks would have cost: one per
+// full batch, and none of the review retries each of them could still trigger.
+func wavesFor(n, perWave int) int {
+	if n <= 0 {
+		return 0
+	}
+	if perWave < 1 {
+		perWave = 1
+	}
+	return (n + perWave - 1) / perWave
+}
+
+// unexecutedTaskCount counts the tasks agents still owned when the board
+// stopped: planned, never executed, abandoned.
+func unexecutedTaskCount(board *plan.Board) int {
+	if board == nil {
+		return 0
+	}
+	n := 0
+	for _, t := range board.AllTasks() {
+		t.Normalize()
+		switch t.Column {
+		case plan.ColReadyToDev, plan.ColInProgress, plan.ColInReview:
+			n++
+		}
+	}
+	return n
+}
+
+// CorrectiveRuns reports how many corrective waves this runner has spent
+// against MaxWaves, so a caller that decides to stop early can say how much
+// budget it left on the table instead of asserting a number nobody can check.
+func (r *Runner) CorrectiveRuns() int {
+	if r == nil {
+		return 0
+	}
+	return r.correctiveRuns
 }
 
 // persist writes the board to the LiveStore. LiveStore.Replace takes the WHOLE
@@ -707,6 +865,12 @@ func (r *Runner) runWave(ctx context.Context, board *plan.Board, wave []plan.Tas
 		}
 		r.Focus.SetWave(lists)
 		defer r.Focus.Clear()
+		// …and enforce what the tasks themselves said was off limits. SetWave
+		// builds the anti-wander ALLOWLIST; this builds the DENY list, which
+		// outranks it and which Clear deliberately does not touch — hence its
+		// own undo. See protect.go for why the derivation is as narrow as it is.
+		unprotect := r.applyWaveProtections(wave)
+		defer unprotect()
 	}
 
 	ws := r.prepareWave(ctx, board, wave)
@@ -1551,7 +1715,13 @@ func (r *Runner) plainReview(ctx context.Context, current plan.Task, g gateState
 // answered with a corrector round-trip at what is only a truncation.
 func (r *Runner) parseReviewOutput(ctx context.Context, current plan.Task, raw, role, prompt string) plan.ReviewResult {
 	if strings.TrimSpace(raw) == "" {
-		return plan.ReviewResult{}
+		// NOT plan.ReviewResult{}. The zero value is byte-identical to a
+		// considered `approved=false score=0` rejection carrying no issue and
+		// no summary, so a reviewer that answered NOTHING was reported, logged
+		// and acted on exactly like a reviewer that had judged the work and
+		// found it wanting. Route it through the parser so it carries
+		// ReviewMalformedIssue and NoVerdict like every other unreadable reply.
+		return plan.ParseReviewJSON(raw)
 	}
 	fixed, rung, err := repair.RepairRole(raw, plan.RoleReviewer)
 	switch {
@@ -1559,7 +1729,7 @@ func (r *Runner) parseReviewOutput(ctx context.Context, current plan.Task, raw, 
 		if rung != "" && rung != "clean" {
 			r.logf("%s reviewer JSON repaired (%s)", current.ID, rung)
 		}
-		return plan.ParseReviewJSON(string(fixed))
+		return bestReviewParse(raw, string(fixed))
 	case errors.Is(err, repair.ErrTruncated):
 		r.logf("%s reviewer output truncated mid-string — re-asking with a larger budget", current.ID)
 		r.fireIntervention(current.ID, "truncated_output",
@@ -1585,6 +1755,31 @@ func (r *Runner) parseReviewOutput(ctx context.Context, current plan.Task, raw, 
 	}
 }
 
+// bestReviewParse keeps the repair ladder from making the verdict WORSE.
+//
+// repair.RepairRole's "extract" rung carves the FIRST balanced JSON document
+// out of the reply and throws the rest away. formatReviewPrompt hands the
+// reviewer the worker's own `{"status":"done","files_changed":[…]}` under
+// "## Agent output", and a small reviewer routinely restates it before judging
+// — so "extract" returned the echoed worker JSON and DELETED the verdict that
+// followed it. Parsing the repaired document then found no verdict at all, and
+// the harness reported that as approved=false score=0: a rejection the reviewer
+// never made, on work it had just approved.
+//
+// The repaired document still wins whenever it carries a verdict — that is what
+// the ladder is for. It only loses to the raw reply when the repair is the
+// thing that lost the verdict.
+func bestReviewParse(raw, repaired string) plan.ReviewResult {
+	fixed := plan.ParseReviewJSON(repaired)
+	if !fixed.NoVerdict {
+		return fixed
+	}
+	if direct := plan.ParseReviewJSON(raw); !direct.NoVerdict {
+		return direct
+	}
+	return fixed
+}
+
 // slmApprovalFallback trusts clear worker completion + disk/tool evidence when
 // a small reviewer model returns a broken or over-strict verdict.
 func (r *Runner) slmApprovalFallback(review plan.ReviewResult, current plan.Task,
@@ -1592,8 +1787,15 @@ func (r *Runner) slmApprovalFallback(review plan.ReviewResult, current plan.Task
 	if review.Approved || current.Role == plan.RoleTester || g.blocking() {
 		return review
 	}
+	// review.NoVerdict is the PARSER's own report that it could not read a
+	// verdict out of the reply. looksLikeBrokenReview re-derives that from the
+	// raw text and gets it wrong in exactly the case that matters: it returns
+	// false the moment the text contains `"approved"` — which is precisely what
+	// a reviewer whose verdict the extraction just destroyed looks like. Ask
+	// the parse, do not re-guess it.
+	broken := review.NoVerdict || looksLikeBrokenReview(reviewRaw)
 	if g.satisfied || g.diskWrite || g.diskSection ||
-		(g.done && (looksLikeBrokenReview(reviewRaw) || g.hasEvidence())) {
+		(g.done && (broken || g.hasEvidence())) {
 		review.Approved = true
 		review.Score = 80
 		switch {
@@ -1607,6 +1809,59 @@ func (r *Runner) slmApprovalFallback(review plan.ReviewResult, current plan.Task
 		review.Issues = nil
 	}
 	return review
+}
+
+// ReviewNoVerdictSummary is the summary of a rejection the REVIEWER never made:
+// its reply could not be read, no harness evidence rescued the task, and the
+// gates named nothing specific. Callers may match on it to tell "the reviewer
+// found problems" from "the reviewer never answered".
+const ReviewNoVerdictSummary = "reviewer produced no verdict — judged on harness evidence"
+
+// noVerdictIssue is what the CORRECTOR is told when the reviewer said nothing.
+//
+// It used to be handed plan.ReviewMalformedIssue verbatim — "reviewer returned
+// malformed or truncated JSON — treated as a rejection" — as its "## Review
+// issues" list, i.e. the worker was asked to fix the reviewer's JSON. That is
+// not a defect the worker can act on, so every correction round re-emitted the
+// same code and was rejected again until the run hit its ceiling.
+const noVerdictIssue = "no write evidence for this task: the acceptance criterion is not " +
+	"demonstrated on disk. Make a real ws_edit/ws_write/ws_patch on a focus file and prove " +
+	"it by running the project's test command with ws_shell."
+
+// resolveNoVerdict turns "the reviewer could not be read" into something the
+// rest of the ladder can act on.
+//
+// A no-verdict review is not a judgement, so it must not be reported as one.
+// When a hard gate fired, that gate is the real reason and it is stated. When
+// nothing fired — and slmApprovalFallback already declined to approve on disk
+// evidence — the honest reason is that nothing proved the work, which is an
+// instruction the corrector can actually follow.
+func resolveNoVerdict(review plan.ReviewResult, g gateState) plan.ReviewResult {
+	if review.Approved || !review.NoVerdict {
+		return review
+	}
+	if g.blocking() {
+		summary, issue := g.rejectReason()
+		review.Summary = summary
+		review.Issues = []string{issue}
+		return review
+	}
+	review.Summary = ReviewNoVerdictSummary
+	review.Issues = []string{noVerdictIssue}
+	return review
+}
+
+// reviewVerdictLine renders the review event.
+//
+// A no-verdict rejection is NOT reported as `approved=false score=0`: that line
+// is a claim about what the reviewer decided, and reading it off a reply the
+// reviewer never produced is how ~15 minutes of a live run were spent
+// correcting an implementation whose tests were already green.
+func reviewVerdictLine(review plan.ReviewResult) string {
+	if !review.Approved && review.NoVerdict {
+		return "review no verdict (reviewer reply unreadable) — judged on harness evidence"
+	}
+	return fmt.Sprintf("review approved=%v score=%d", review.Approved, review.Score)
 }
 
 // applyHardGates lets a deterministic failure beat any earlier auto-approve and
@@ -1657,7 +1912,9 @@ func (r *Runner) applyHardGates(current *plan.Task, review plan.ReviewResult, g 
 			r.logf("%s evidence gate blocked approval: %s", current.ID, why)
 		}
 	}
-	return review
+	// Last: a rejection nobody made must not leave here dressed as one. This
+	// runs after the gates so a gate that DID fire owns the verdict text.
+	return resolveNoVerdict(review, g)
 }
 
 // parseTesterOutput repairs the tester's finalize JSON before judging it.
@@ -1797,8 +2054,7 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			level = stream.LevelProblem
 		}
 		r.fireLevel(stream.KindAgentEnd, r.reviewerID(), current.ID,
-			fmt.Sprintf("review approved=%v score=%d", review.Approved, review.Score),
-			"", endOut, level)
+			reviewVerdictLine(review), "", endOut, level)
 
 		// Persist THIS attempt — its output, its diffstat, the gates that fired
 		// and the verdict just reached — BEFORE anything overwrites
@@ -2392,6 +2648,18 @@ func deletedSinceBaseline(files []string, baseline map[string]string) bool {
 
 // scopeOK rejects wander: claimed or newly created files outside task focus.
 func (r *Runner) scopeOK(t plan.Task) string {
+	// A ws_shell command that wrote a PROTECTED path is checked first because it
+	// is the only signal here that cannot be a mistake of bookkeeping: the other
+	// branches infer wander from what the worker CLAIMED, this one is a
+	// before/after sha256 of a file the task was forbidden to touch.
+	//
+	// Only Protected events count. An ordinary out-of-focus shell write is
+	// reported as disk evidence and left to the reviewer: `go build` writes
+	// caches and `make generate` writes generated code, and failing those would
+	// make the guard useless within a day.
+	if bad := r.shellScopeViolations(t.ID); len(bad) > 0 {
+		return shellScopeReason(bad)
+	}
 	claimed := parseFilesChanged(t.Output)
 	// Build a task-local guard from expanded focus (includes scaffold paths).
 	g := workspace.NewFocusGuard()
@@ -2859,13 +3127,14 @@ func (r *Runner) gitChangedFiles() []string {
 // This is the ONLY deterministic write detector in the loop, so a rolling
 // `(sum*131 + b + i) mod 1e9+7` — which collides trivially and was recomputed
 // from scratch on every check — is the wrong instrument for the job.
+//
+// The implementation lives in pkg/workspace, which owns path semantics and is
+// where the ws_shell scope guard needs the identical function. Two copies of
+// one hash format is how the loop's write detector and the tool layer's write
+// detector quietly stop agreeing; this is the one-line delegation that stops
+// that from being possible.
 func fileFingerprint(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%d:%s", len(data), hex.EncodeToString(sum[:]))
+	return workspace.FileFingerprint(path)
 }
 
 // enableFingerprintCache arms the per-wave-baseline fingerprint memo. Sibling

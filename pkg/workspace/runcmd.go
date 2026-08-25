@@ -113,6 +113,15 @@ func (b *headTailBuffer) String() (string, bool) {
 // `bash -c` (NOT `bash -lc`): the login shell sources the user's profile, which
 // is slow, non-reproducible across machines, and can silently change PATH or
 // activate a virtualenv mid-run.
+//
+// NO PATH GUARD LIVES HERE, and that is deliberate. RunBounded is a generic
+// bounded-exec helper: pkg/quality also drives the harness's OWN smoke commands
+// through it, and those are not subject to a worker's focus scope. The focus
+// boundary is enforced one layer up, in Workspace.shell — statically before the
+// command (GuardShellWrites) and by snapshot-and-compare around it
+// (shellscope.go), where the FocusGuard and the workspace root are in scope.
+// Anything that calls RunBounded directly on agent-supplied input inherits no
+// scope enforcement and must arrange its own.
 func RunBounded(ctx context.Context, dir, command string, timeout time.Duration, maxOutput int) CommandResult {
 	if timeout <= 0 {
 		timeout = DefaultShellTimeout

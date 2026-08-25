@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -96,6 +97,12 @@ type FocusGuard struct {
 	scaffold bool // allow creating project tree files
 	files    map[string]struct{}
 	dirs     map[string]struct{}
+	// protect is a DENY list that outranks everything above: paths the task was
+	// explicitly told not to touch ("do not edit, add or delete any _test.go
+	// file"). Unlike focus, it is a boundary rather than an anti-wander
+	// heuristic, so it holds even when the allowlist is disabled — and it is
+	// deliberately NOT cleared by SetWave, which only rebuilds the allowlist.
+	protect []string
 }
 
 // NewFocusGuard returns an inactive guard (all writes allowed until SetWave).
@@ -104,6 +111,93 @@ func NewFocusGuard() *FocusGuard {
 		files: map[string]struct{}{},
 		dirs:  map[string]struct{}{},
 	}
+}
+
+// Protect installs the deny list: glob patterns (MatchGlob syntax, so `**` and
+// `*` both work) naming paths no task may create, modify or delete. A pattern
+// with no `/` also matches at any depth, so `*_test.go` means what a reader
+// expects. Calling it replaces any previous list; Protect() with no arguments
+// clears it.
+//
+// The deny list outranks the focus allowlist: a protected path stays refused
+// even when it is one of the task's own focus files. That is the point — the
+// live failure this exists for was a task that legitimately owned a package and
+// was told to leave its tests alone.
+func (g *FocusGuard) Protect(patterns ...string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.protect = nil
+	for _, p := range patterns {
+		if p = strings.TrimSpace(p); p != "" {
+			g.protect = append(g.protect, filepath.ToSlash(strings.TrimPrefix(p, "./")))
+		}
+	}
+}
+
+// HasProtections reports whether a deny list is installed. Guards that key off
+// "is this workspace constrained at all" must test Enabled() OR this: a task
+// can be given protections without a focus allowlist.
+func (g *FocusGuard) HasProtections() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.protect) > 0
+}
+
+// IsProtected reports whether path matches the deny list.
+func (g *FocusGuard) IsProtected(path string) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.isProtectedLocked(normalizeRel(path))
+}
+
+// isProtectedLocked is IsProtected without the lock; callers already hold it.
+func (g *FocusGuard) isProtectedLocked(path string) bool {
+	if path == "" || len(g.protect) == 0 {
+		return false
+	}
+	for _, pat := range g.protect {
+		if MatchGlob(pat, path) {
+			return true
+		}
+		// A bare pattern ("*_test.go", "secrets.yaml") means "at any depth" —
+		// the same convenience ws_glob already gives.
+		if !strings.Contains(pat, "/") && MatchGlob("**/"+pat, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// TrackedPaths returns the concrete (non-glob) paths this guard names: the
+// focus files plus any literal deny-list entries. The shell scope guard seeds
+// its snapshot with them so a watched path is never missed for having no file
+// extension (Makefile, Dockerfile).
+func (g *FocusGuard) TrackedPaths() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]string, 0, len(g.files)+len(g.protect))
+	for f := range g.files {
+		out = append(out, f)
+	}
+	for _, p := range g.protect {
+		if !strings.ContainsAny(p, "*?[") {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Clear disables focus enforcement (explore / docs / unrestricted phases).
@@ -177,6 +271,12 @@ func (g *FocusGuard) Allow(path string) bool {
 	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	// The deny list is checked FIRST and independently of g.enabled: it is a
+	// boundary, not a wander heuristic, so a task with protections but no
+	// allowlist is still protected.
+	if g.isProtectedLocked(normalizeRel(path)) {
+		return false
+	}
 	if !g.enabled {
 		return true
 	}
@@ -233,6 +333,12 @@ const (
 		"Next action: make the change in a focus file. If it genuinely belongs in %s, say so in your answer " +
 		"so the planner can rescope — do not repeat this call"
 
+	protectedPathRefusal = "protected-path write blocked: %s — the task explicitly forbids touching this file.\n" +
+		"This is not a scope heuristic and not about how the call was worded: the path is off limits for " +
+		"the whole task, focus file or not.\n" +
+		"Next action: make the change somewhere else, or report in your answer that it cannot be done " +
+		"without editing %[1]s — do not repeat this call"
+
 	entrypointRefusal = "out-of-scope write blocked: %s — %s writes only inside the task focus files, and root " +
 		"entrypoints are never created here.\n" +
 		"The path is the problem, not the call: rewording it cannot make it work.\n" +
@@ -255,6 +361,12 @@ func (g *FocusGuard) Check(ctx context.Context, path string) error {
 	}
 	path = normalizeRel(path)
 	role := RoleFrom(ctx)
+	// A protected path fails for a different reason than a wander, and saying
+	// "stay in your focus files" about a file that IS a focus file is the kind
+	// of refusal a small model argues with for six turns.
+	if g.IsProtected(path) {
+		return fmt.Errorf(protectedPathRefusal, path)
+	}
 	if IsReadOnlyRole(role) {
 		return fmt.Errorf(readOnlyRoleRefusal, path, role)
 	}
@@ -293,13 +405,17 @@ func OutOfScopeReason(role string, paths []string) string {
 
 // OutOfScopeFiles filters claimed/changed paths that violate the allowlist.
 func (g *FocusGuard) OutOfScopeFiles(paths []string) []string {
-	if g == nil || !g.Enabled() {
+	// Protections alone are enough to make this meaningful: a task may be given
+	// a deny list without an allowlist.
+	if g == nil || (!g.Enabled() && !g.HasProtections()) {
 		return nil
 	}
 	var bad []string
 	for _, p := range paths {
 		p = normalizeRel(p)
-		if p == "" || IsHarnessStatePath(p) {
+		// Harness state is skipped as "not the worker's claim to make" — except
+		// when it is protected, which is exactly the claim worth flagging.
+		if p == "" || (IsHarnessStatePath(p) && !g.IsProtected(p)) {
 			continue
 		}
 		if !g.Allow(p) {

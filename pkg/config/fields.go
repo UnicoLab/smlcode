@@ -194,6 +194,13 @@ func (c *Config) Set(key string, raw any) error {
 		return err
 	}
 	reflect.ValueOf(c).Elem().Field(f.Index).Set(val)
+	// Set is the funnel every layer that carries user intent goes through (user
+	// file, project file, SLMCODE_* env, `slmcode config set`, Studio). Record
+	// the ones whose DEFAULT is derived rather than constant, so a later
+	// Normalize does not re-derive over a value somebody chose.
+	if key == "max_parallel" && c.MaxParallel > 0 {
+		c.maxParallelSet = true
+	}
 	return nil
 }
 

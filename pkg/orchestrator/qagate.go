@@ -65,6 +65,457 @@ func qaLooksLikeNoTests(output string) bool {
 	return false
 }
 
+// runSmoke executes the QA/acceptance command through the orchestrator's own
+// seam so a test can answer the objective question without a toolchain.
+//
+// Production leaves o.qaSmoke nil and gets quality.RunSmoke verbatim. Every
+// place in this file that used to call quality.RunSmoke directly goes through
+// here, so the gate a test drives is the gate a run drives.
+func (o *Orchestrator) runSmoke(ctx context.Context, cmd string) quality.SmokeResult {
+	var timeout time.Duration
+	if o != nil && o.cfg != nil {
+		timeout = o.cfg.TaskTimeout
+	}
+	return o.runSmokeIn(ctx, cmd, timeout)
+}
+
+// runSmokeIn is runSmoke with an explicit timeout (the build preflight uses a
+// much shorter one than a whole test suite).
+func (o *Orchestrator) runSmokeIn(ctx context.Context, cmd string, timeout time.Duration) quality.SmokeResult {
+	root := ""
+	if o != nil && o.cfg != nil {
+		root = o.cfg.Root
+	}
+	if o != nil && o.qaSmoke != nil {
+		return o.qaSmoke(ctx, root, cmd, timeout)
+	}
+	return quality.RunSmoke(ctx, root, cmd, timeout)
+}
+
+// objectiveGate is ONE evaluation of the project's objective: the same command
+// runQAGate iterates, run once, classified the same way.
+//
+// It exists so the harness has exactly one definition of "the objective is
+// met". The mid-run early-finish check (objectiveAlreadyMet) and the finish
+// path's gate rounds both classify through evalObjectiveGate, so the answer the
+// loop acts on halfway through a run cannot disagree with the answer that
+// decides the verdict.
+type objectiveGate struct {
+	Cmd string
+	// Ran is true when the command actually executed.
+	Ran bool
+	// Green is true when the objective is satisfied: the command exited clean.
+	// A "nothing to run" exit is NoTests, never Green — it verifies nothing and
+	// must not end a run early.
+	Green bool
+	// NoTests is a non-zero exit that means only "the toolchain found nothing
+	// to run", with no real failure hiding among the [no test files] lines.
+	NoTests bool
+	// Weak marks a syntax-only gate (compileall / py_compile / node --check).
+	// A weak gate may report Green and STILL never end a run early: a syntax
+	// check cannot rubber-stamp an incomplete board. See resume.go's soft
+	// success, which has refused weak gates since the TestSLMs regression.
+	Weak   bool
+	Output string
+}
+
+// evalObjectiveGate runs the objective command once and classifies the result.
+func (o *Orchestrator) evalObjectiveGate(ctx context.Context, cmd string) objectiveGate {
+	if strings.TrimSpace(cmd) == "" {
+		return objectiveGate{Cmd: cmd, Weak: quality.IsWeakQACommand(cmd)}
+	}
+	return classifySmoke(cmd, o.runSmoke(ctx, cmd))
+}
+
+// classifySmoke is the single definition of "the objective is met". A caller
+// that has just run the same command on the same tree (the deterministic
+// pre-test, the QA gate's own rounds) folds its result in here instead of
+// paying for a second identical run — which is what keeps the mid-run answer
+// and the finish-path answer from disagreeing.
+func classifySmoke(cmd string, sr quality.SmokeResult) objectiveGate {
+	g := objectiveGate{Cmd: cmd, Ran: sr.Ran, Output: sr.Output, Weak: quality.IsWeakQACommand(cmd)}
+	switch {
+	case !sr.Ran:
+	case sr.OK:
+		g.Green = true
+	case qaLooksLikeNoTests(sr.Output):
+		g.NoTests = true
+	}
+	return g
+}
+
+// maxObjectiveProbes bounds how many times ONE run may spend the objective
+// command on the mid-run "are we already done?" question.
+//
+// Two: the first probe answers it after the execute board drains, the second
+// after the one corrective wave the tester is allowed to trigger. Past that the
+// finish path's own QA gate is imminent anyway, so a third probe would buy
+// nothing and cost a full test-suite run.
+const maxObjectiveProbes = 2
+
+// objectiveProbeState is the per-run bookkeeping behind maxObjectiveProbes.
+type objectiveProbeState struct {
+	// spent counts the probes this run has PAID FOR, i.e. the ones that ran the
+	// objective command. A probe handed an already-run result costs nothing and
+	// is not charged — see probeObjective.
+	spent int
+	// lastFiles fingerprints the write evidence the last probe judged. Asking
+	// the same question of the same tree cannot give a different answer, so a
+	// probe is only worth spending once something has been written since.
+	lastFiles string
+	// met is the green gate a BETWEEN-WAVES probe established, kept so the
+	// finish path can act on the answer it already has instead of paying for
+	// the same one twice. Nil until such a probe returns green.
+	met *objectiveGate
+	// testerRejected mirrors the run's live verification verdict, so the
+	// between-waves probe honors the same refusal the post-drain probe is
+	// handed as a parameter.
+	testerRejected bool
+	// finishedEarly is set when the run ENDS on the objective gate itself, i.e.
+	// finishObjectiveMet was reached with a strong green command. completeRun
+	// reads it as the license to report success over an escalation — nothing
+	// else in the harness gets that license, and a run that took the ordinary
+	// route to the finish line never sets it.
+	finishedEarly bool
+}
+
+// resetObjectiveProbes clears the per-run early-finish bookkeeping.
+func (o *Orchestrator) resetObjectiveProbes() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.objective = objectiveProbeState{}
+}
+
+// objectiveProbesSpent reports how many probes this run has used.
+func (o *Orchestrator) objectiveProbesSpent() int {
+	if o == nil {
+		return 0
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.objective.spent
+}
+
+// noteTesterRejected records the run's current verification verdict.
+//
+// The post-drain probe receives it as an argument because its caller has just
+// computed it. The between-waves probe has no such caller — it is driven by the
+// board loop — so the verdict has to be readable from the run instead. One
+// rule, two ways of reaching it.
+func (o *Orchestrator) noteTesterRejected(rejected bool) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.objective.testerRejected = rejected
+	o.mu.Unlock()
+}
+
+// noteObjectiveEarlyFinish records that the run is ending on the objective gate
+// rather than on the ordinary finish path.
+//
+// It only counts a gate that RAN, is Green and is not Weak — the same three
+// conditions probeObjective requires before it may end a run — so the flag
+// completeRun reads can never be stronger than the measurement behind it.
+func (o *Orchestrator) noteObjectiveEarlyFinish(g objectiveGate) {
+	if o == nil || !g.Ran || !g.Green || g.Weak {
+		return
+	}
+	o.mu.Lock()
+	o.objective.finishedEarly = true
+	o.mu.Unlock()
+}
+
+// finishedOnObjectiveGate reports whether this run is ending because the strong
+// objective gate was already green.
+func (o *Orchestrator) finishedOnObjectiveGate() bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.objective.finishedEarly
+}
+
+// testerRejectedNow reports the run's current verification verdict.
+func (o *Orchestrator) testerRejectedNow() bool {
+	if o == nil {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.objective.testerRejected
+}
+
+// objectiveMetEarly returns the green gate a between-waves probe established,
+// if one did.
+//
+// The finish path consumes this instead of re-running the objective command:
+// RunBoard returns the moment the probe says green, so nothing writes to the
+// tree between the two points and a second run could only re-prove the answer —
+// at the price of a whole test suite, and of a probe budget the finish path may
+// need for a later question.
+func (o *Orchestrator) objectiveMetEarly() (objectiveGate, bool) {
+	if o == nil {
+		return objectiveGate{}, false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.objective.met == nil {
+		return objectiveGate{}, false
+	}
+	return *o.objective.met, true
+}
+
+// objectiveBlocker names the required work that forbids finishing early, or ""
+// when nothing does.
+//
+// These are the two ways a run still owes something no green command can pay
+// off: agents have work in the pipe, or verification turned the work down. A
+// green test suite is evidence about the CODE; it says nothing about a board
+// that is still moving, and it cannot overrule the tester.
+//
+// TESTER REJECTION IS NOT NEGOTIABLE. The tester is the harness's own
+// verification role, and the objective gate is the thing it is supposed to be
+// checking. Letting the gate clear its own examiner is circular, so a rejection
+// refuses here however green the command is.
+//
+// AN ESCALATION IS NOT ONE OF THESE, and used to be. A task escalates BECAUSE
+// reviews kept failing — precisely the run that is burning its budget, and
+// therefore precisely the run this probe exists to save. The board is a
+// planner's guess at a decomposition, made before anyone knew the objective was
+// reachable; the gate is the acceptance criterion the user actually stated,
+// measured against the tree that exists. When the guess and the measurement
+// disagree, the measurement wins — the same argument probeBetweenWaves already
+// makes for abandoning ready_to_dev tasks. Live measurement: three runs of the
+// same fixture, same model, same 20-minute ceiling; the only run that finished
+// was the one with failed_tasks == 0, and the other two ran to the ceiling and
+// reported `context deadline exceeded`.
+//
+// What an escalation still is, is a signal that a human should look. So it is
+// REPORTED rather than obeyed: see unfinishedForReview and escalationNotice,
+// which put the count in the stop event, the finish event and the Result
+// summary, and completeRun, which keeps such a run out of a bare success.
+func objectiveBlocker(board *plan.Board, testerRejected bool) string {
+	switch {
+	case board == nil:
+		return "no board"
+	case board.AgentWorkRemaining():
+		return "agent work remains"
+	case testerRejected:
+		return "tester rejected"
+	}
+	return ""
+}
+
+// betweenWavesBlocker is objectiveBlocker for a board that is still moving.
+//
+// It relaxes exactly ONE further refusal — "agent work remains" — because
+// between waves that is true by construction: ready_to_dev tasks are precisely
+// what the probe is deciding the fate of. See the note on probeBetweenWaves for
+// why abandoning them is defensible.
+//
+// It tightens one in exchange. A task sitting in in_progress or in_review is
+// work whose output nobody has judged yet, and possibly a file mid-write; the
+// board is not at rest and the tree the gate just measured is not the tree the
+// run will end with. RunBoard normally leaves neither column occupied between
+// waves, so this costs nothing in the ordinary case and refuses in the odd one.
+//
+// The tester rejection carries over unchanged, for objectiveBlocker's reason:
+// the gate does not get to clear the role that is checking it.
+func betweenWavesBlocker(board *plan.Board, testerRejected bool) string {
+	switch {
+	case board == nil:
+		return "no board"
+	case testerRejected:
+		return "tester rejected"
+	case taskInFlight(board):
+		return "task still in flight"
+	}
+	return ""
+}
+
+// taskInFlight reports whether any task is mid-execution or mid-review.
+func taskInFlight(board *plan.Board) bool {
+	if board == nil {
+		return false
+	}
+	for _, t := range board.AllTasks() {
+		t.Normalize()
+		if t.Column == plan.ColInProgress || t.Column == plan.ColInReview {
+			return true
+		}
+	}
+	return false
+}
+
+// testPhaseIsOperatorConfigured reports whether pipeline.yaml puts a
+// user-authored agent on the test phase (before / replace / after).
+func (o *Orchestrator) testPhaseIsOperatorConfigured() bool {
+	p := o.Pipeline()
+	for _, pos := range []string{"before", "replace", "after"} {
+		if len(p.SlotsAt("test", pos)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// objectiveAlreadyMet answers "is the objective satisfied already, so that the
+// corrective wave about to be scheduled cannot add anything?"
+//
+// FREQUENCY RULE — the gate runs a real command (minutes of GPU/CPU on a local
+// SLM run), so a probe is spent only where its answer can change what the
+// harness does next, and only when there is something new to judge:
+//
+//  1. the board must have no ready agent work left, so a corrective wave really
+//     is the next thing the loop would spend;
+//  2. the run must have written something — with no write evidence there is no
+//     implementation that could already be correct;
+//  3. the write set must have changed since the last probe, because re-asking
+//     the same question of the same tree cannot give a different answer;
+//  4. at most maxObjectiveProbes probes per run, as a hard ceiling;
+//  5. `reuse` lets a caller that has JUST run the same command on the same tree
+//     (the deterministic pre-test) hand its result over, so the common case
+//     costs zero extra command runs.
+//
+// The returned gate is Green only for a STRONG gate. A weak syntax-only command
+// is refused before it is even run: compileall proves the file parses, not that
+// the objective is met, and it must never end a run early.
+func (o *Orchestrator) objectiveAlreadyMet(ctx context.Context, board *plan.Board,
+	testerRejected bool, reuse *quality.SmokeResult) (objectiveGate, bool) {
+
+	return o.probeObjective(ctx, probeAfterDrain, board, testerRejected, reuse)
+}
+
+// objectiveProbePoint names where a probe is being taken from, which decides
+// which "this run still owes work" rule applies to it.
+type objectiveProbePoint string
+
+const (
+	// probeAfterDrain is the finish path: the execute board has no ready agent
+	// work left, so a corrective wave really is the next thing the loop would
+	// spend. objectiveBlocker applies unchanged.
+	probeAfterDrain objectiveProbePoint = "after drain"
+	// probeBetweenWaves is the board loop at rest between two waves — the point
+	// where the ~15 minutes the motivating run wasted were actually being
+	// spent. Ready tasks remain by construction, so betweenWavesBlocker applies
+	// instead.
+	//
+	// IS IT SAFE TO STOP WITH ready_to_dev TASKS ON THE BOARD? Yes, and the
+	// argument is that those tasks are a MEANS, not the end. The board was
+	// planned before anyone knew whether the objective was reachable, by a
+	// planner guessing at the decomposition; the objective gate is the
+	// acceptance criterion the user actually stated, evaluated by running their
+	// command against the tree that exists. When the two disagree, the
+	// measurement wins over the guess. What is genuinely abandoned is real:
+	// planned work that might have improved structure, coverage or docs the
+	// gate does not measure. So the run does not pretend otherwise — the stop
+	// is announced with a count, Result.UnexecutedTasks carries it, and the
+	// summary says N tasks were not executed. Nothing here is silent.
+	//
+	// An ESCALATED task is a planning artifact by the same argument, and is
+	// treated the same way: reported, not obeyed. See objectiveBlocker.
+	probeBetweenWaves objectiveProbePoint = "between waves"
+)
+
+// probeObjective is the shared body of both probes. Only the "still owes work"
+// rule and the bookkeeping of a green answer differ by point.
+func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbePoint,
+	board *plan.Board, testerRejected bool, reuse *quality.SmokeResult) (objectiveGate, bool) {
+
+	var g objectiveGate
+	if o == nil || o.cfg == nil || !o.cfg.QAGate {
+		// The objective gate IS the QA gate. With qa_gate off the harness has no
+		// configured notion of "done" to check against.
+		return g, false
+	}
+	blocked := objectiveBlocker(board, testerRejected)
+	if point == probeBetweenWaves {
+		blocked = betweenWavesBlocker(board, testerRejected)
+	}
+	if blocked != "" {
+		return g, false
+	}
+	if o.testPhaseIsOperatorConfigured() {
+		// The operator wired their own agent into the test phase. That is an
+		// explicit instruction about how this project verifies itself, and a
+		// cost optimization does not get to silently route around it.
+		return g, false
+	}
+	cmd := o.qaCommand()
+	if strings.TrimSpace(cmd) == "" || quality.IsWeakQACommand(cmd) {
+		return objectiveGate{Cmd: cmd, Weak: true}, false
+	}
+	changed := o.changedFilesSnapshot()
+	if len(changed) == 0 {
+		return g, false
+	}
+	fingerprint := strings.Join(changed, "\n")
+	reused := reuse != nil && reuse.Ran && strings.TrimSpace(reuse.Command) == strings.TrimSpace(cmd)
+
+	o.mu.Lock()
+	// The ceiling and the fingerprint both exist to stop the run PAYING for an
+	// answer, and a reused result has already been paid for by someone else.
+	// Refusing it buys nothing and costs a whole verification phase — which is
+	// exactly what would happen now that between-waves probes can arrive at the
+	// finish line having spent the budget on a tree that has since changed.
+	if !reused {
+		if o.objective.spent >= maxObjectiveProbes || o.objective.lastFiles == fingerprint {
+			o.mu.Unlock()
+			return g, false
+		}
+		o.objective.spent++
+	}
+	o.objective.lastFiles = fingerprint
+	o.mu.Unlock()
+
+	if reused {
+		g = classifySmoke(cmd, *reuse)
+	} else {
+		g = o.evalObjectiveGate(ctx, cmd)
+	}
+	// Green already excludes the "no test files" escape hatch: a toolchain that
+	// found nothing to run has verified nothing, so it cannot end a run early
+	// either. Weak is re-checked because qaCommand() is what was classified.
+	if !g.Ran || !g.Green || g.Weak {
+		return g, false
+	}
+	if point == probeBetweenWaves {
+		// Carry the answer to the finish path. RunBoard returns the moment this
+		// returns true, so nothing writes to the tree in between and this gate
+		// is still the truth when finalizeAfterExecute reads it.
+		met := g
+		o.mu.Lock()
+		o.objective.met = &met
+		o.mu.Unlock()
+	}
+	return g, true
+}
+
+// objectiveMetBetweenWaves is loop.Runner's BetweenWaves hook: it asks the
+// objective gate, at the one moment the board is at rest, whether the run is
+// already done. Every refusal is decided here, on the orchestrator's side of
+// the seam; the loop only acts on the answer.
+//
+// The reason is what loop.Runner.stopBetweenWaves puts in its stop event, so
+// the escalation notice is attached HERE: the operator watching the stream sees
+// the same sentence the Result summary will carry.
+func (o *Orchestrator) objectiveMetBetweenWaves(ctx context.Context, board *plan.Board) (bool, string) {
+	g, done := o.probeObjective(ctx, probeBetweenWaves, board, o.testerRejectedNow(), nil)
+	if !done {
+		return false, ""
+	}
+	reason := fmt.Sprintf("objective already met (%s green)", g.Cmd)
+	if notice := escalationNotice(unfinishedForReview(board)); notice != "" {
+		reason += " — " + notice
+	}
+	return true, reason
+}
+
 // runQAGate iterates a project test/smoke command until green or max rounds.
 // On failure it asks the tester/corrector specialists to fix, then re-runs.
 // Returns true when the gate ends red (caller should rewrite plan/tasks).
@@ -96,14 +547,17 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 		o.emitFull("test", stream.KindAgentStart, "qa", "",
 			fmt.Sprintf("qa_gate %d/%d: %s", round, max, cmd), "", "")
-		sr := quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
+		sr := o.runSmoke(ctx, cmd)
+		// classifySmoke, not a second opinion: the finish path and the mid-run
+		// early-finish check must agree about what green means.
+		v := classifySmoke(cmd, sr)
 
-		if !sr.OK && round == 1 && qaLooksLikeNoTests(sr.Output) {
+		if v.NoTests && round == 1 {
 			o.emitWarn("test", "qa_gate: no test files found — skipping gate (code compiles)", "")
 			o.recordGate("qa_gate", true, "no tests to run")
 			return false
 		}
-		if sr.OK {
+		if v.Green {
 			_ = o.store.Append(contextstore.DocScratch, "QA gate",
 				fmt.Sprintf("GREEN round %d\n\n%s", round, truncate(sr.Output, 2000)))
 			o.emitFullL("test", stream.KindAgentEnd, "qa", "", "qa_gate green", "",
@@ -131,8 +585,8 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 	// One final verification of the last fix pass before declaring red.
 	if err := ctx.Err(); err == nil {
-		final := quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
-		if final.OK {
+		final := o.runSmoke(ctx, cmd)
+		if classifySmoke(cmd, final).Green {
 			_ = o.store.Append(contextstore.DocScratch, "QA gate",
 				"GREEN after final fix pass\n\n"+truncate(final.Output, 2000))
 			o.emitFullL("test", stream.KindAgentEnd, "qa", "", "qa_gate green after final fix pass", "",
@@ -186,7 +640,7 @@ func (o *Orchestrator) qaPreflight(ctx context.Context, round int, cmd string) {
 	if _, err := os.Stat(filepath.Join(o.cfg.Root, "go.mod")); err != nil {
 		return
 	}
-	br := quality.RunSmoke(ctx, o.cfg.Root, "go build ./...", 30*time.Second)
+	br := o.runSmokeIn(ctx, "go build ./...", 30*time.Second)
 	if !br.OK {
 		o.emitWarn("test", "qa_gate: build failed — "+quality.FailureExcerpt(br.Output, 300), "")
 		return
@@ -260,7 +714,7 @@ func (o *Orchestrator) runQABootstrap(ctx context.Context, cmd string) {
 	} else {
 		// policy=auto: the operator opted in explicitly, so it runs unattended,
 		// exactly as quality.RunAcceptanceSmokeWithPolicy does for Run plans.
-		sr = quality.RunSmoke(ctx, o.cfg.Root, bp.Command, o.cfg.TaskTimeout)
+		sr = o.runSmoke(ctx, bp.Command)
 	}
 	_ = o.store.Append(contextstore.DocScratch, "QA bootstrap",
 		fmt.Sprintf("cmd: %s\npolicy: %s\nran=%v ok=%v\n\n%s",
@@ -323,7 +777,7 @@ func (o *Orchestrator) runGatedCommand(ctx context.Context, cmd, label string) q
 			return quality.SmokeResult{OK: true, Ran: true, Command: cmd, Output: text}
 		}
 	}
-	return quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
+	return o.runSmoke(ctx, cmd)
 }
 
 // shellRefusal detects the permission layer's prose refusals.

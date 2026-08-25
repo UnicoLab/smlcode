@@ -67,6 +67,7 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 		o.mu.Unlock()
 	}()
 
+	o.resetObjectiveProbes()
 	_ = session.ClearInterrupted(o.cfg.SlmDir(), turn)
 	session.SetPhase(o.cfg.SlmDir(), turn, session.PhaseExecute)
 	o.persistBoard(&board)
@@ -165,7 +166,30 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, skillPack string, board *plan.Board, runner *loop.Runner, start time.Time) (*Result, error) {
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseTest)
 
+	// EARLY FINISH #0 — a BETWEEN-WAVES probe already ran the objective command
+	// on this exact tree and stopped the board on the strength of it. RunBoard
+	// returned immediately, so nothing has been written since: re-running the
+	// command here (which runDeterministicPreTest would) could only re-prove the
+	// same answer, at the price of a whole test suite.
+	if g, ok := o.objectiveMetEarly(); ok {
+		return o.finishObjectiveMet(ctx, runID, query, skillPack, board, g, "between waves", start)
+	}
+
 	pre := o.runDeterministicPreTest(ctx)
+
+	// EARLY FINISH #1 — the execute board has drained and the deterministic
+	// pre-test has just run the objective command on this exact tree. If it is
+	// green on a STRONG gate the objective is already met, and everything below
+	// (the LLM tester, its corrective wave, the placeholder wave, the QA gate's
+	// own rounds, the continue waves) can only re-prove it. A live SLM run paid
+	// ~40 minutes and 412k prompt tokens for that re-proof.
+	//
+	// `pre.Smoke` is handed over so this costs ZERO extra command runs: the
+	// probe reuses the result the pre-test just produced rather than shelling
+	// out again.
+	if g, done := o.objectiveAlreadyMet(ctx, board, false, pre.Smoke); done {
+		return o.finishObjectiveMet(ctx, runID, query, skillPack, board, g, "before verification", start)
+	}
 
 	if err := o.runPipelineSlots(ctx, "test", "before", query, "", ""); err != nil {
 		return nil, err
@@ -202,9 +226,22 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		}
 	}
 	o.recordGate("tester", !testerRejected, firstSentence(testOut))
+	// Publish the verdict to the run, so any board the harness still runs sees
+	// the same "tester rejected" refusal the probes below are handed directly.
+	o.noteTesterRejected(testerRejected)
 
 	if err := ctx.Err(); err != nil {
 		return o.checkpointInterrupt(ctx, board, session.PhaseTest, err)
+	}
+
+	// EARLY FINISH #2 — the corrective tester wave above may have written to the
+	// tree, which is new evidence the first probe never saw. Ask again before
+	// runQualityGates spends the placeholder wave, the completeness reopen, the
+	// QA gate's diagnose/fix rounds and the continue waves. The probe is skipped
+	// for free when nothing was written since #1 (same fingerprint) or when the
+	// tester rejected — see objectiveAlreadyMet's frequency rule.
+	if g, done := o.objectiveAlreadyMet(ctx, board, testerRejected, nil); done {
+		return o.finishObjectiveMet(ctx, runID, query, skillPack, board, g, "after the corrective wave", start)
 	}
 
 	gate := o.runQualityGates(ctx, query, board, runner, testerRejected)
@@ -255,6 +292,10 @@ type preTest struct {
 	Ran      bool
 	Output   string
 	FailJSON string
+	// Smoke is the raw result, kept so the early-finish probe can REUSE this
+	// run of the objective command instead of paying for an identical second
+	// one. Nil when the pre-test did not run.
+	Smoke *quality.SmokeResult
 }
 
 func (o *Orchestrator) runDeterministicPreTest(ctx context.Context) preTest {
@@ -271,10 +312,12 @@ func (o *Orchestrator) runDeterministicPreTest(ctx context.Context) preTest {
 	// the permission layer, auto installs. A manifest the worker wrote moments
 	// ago is not consent to execute its install scripts.
 	o.runQABootstrap(ctx, cmd)
-	sr := quality.RunSmoke(ctx, o.cfg.Root, cmd, o.cfg.TaskTimeout)
+	sr := o.runSmoke(ctx, cmd)
+	sr.Command = cmd // the reuse check matches on it; RunSmoke sets it too
 	pt.Ran = true
 	pt.OK = sr.OK
 	pt.Output = sr.Output
+	pt.Smoke = &sr
 	// FailureExcerpt, not a head cut: this text is what the corrector is asked
 	// to act on, and every runner prints its verdict last.
 	_ = o.store.Append(contextstore.DocScratch, "Deterministic pre-test",
@@ -358,7 +401,7 @@ func (o *Orchestrator) runTesterPhase(ctx context.Context, query string, board *
 	// simply RE-RUN and its exit status decides.
 	if pre.FailJSON != "" && !plan.TesterFailed(v.Output) {
 		o.emit("test", "tester claims pass after a red pre-test — re-running "+pre.Cmd, "")
-		recheck := quality.RunSmoke(ctx, o.cfg.Root, pre.Cmd, o.cfg.TaskTimeout)
+		recheck := o.runSmoke(ctx, pre.Cmd)
 		if recheck.OK {
 			pre.OK, pre.Output, pre.FailJSON = true, recheck.Output, ""
 			o.emitSuccess("test", "pre-test re-run is green — accepting tester pass", "")
@@ -408,6 +451,7 @@ func (o *Orchestrator) correctiveTesterWave(ctx context.Context, query string, b
 	runner *loop.Runner, testPack, testOut string) (*plan.Board, string, bool, *Result, error) {
 
 	testerRejected := o.applyTesterFeedback(ctx, query, board, testOut)
+	o.noteTesterRejected(testerRejected)
 	if !testerRejected || runner == nil {
 		return board, testOut, testerRejected, nil, nil
 	}
@@ -473,6 +517,89 @@ func (o *Orchestrator) correctiveTesterWave(ctx context.Context, query string, b
 	return board, testOut, false, nil, nil
 }
 
+// finishObjectiveMet ends the run because the strong objective gate is already
+// green, and says so loudly enough that the saving is visible rather than
+// mysterious.
+//
+// `when` names the decision point ("between waves" / "before verification" /
+// "after the corrective wave"). The board is promoted exactly as a green strong
+// gate promotes it in runQualityGates, so the finished board and the verdict
+// tell the same story, and the gate is recorded under the same qa_gate name the
+// finish path would have used — this IS that gate, evaluated earlier.
+//
+// Promotion is not blanket: promoteEligible refuses a task whose declared files
+// are not on disk — and refuses an escalated one outright — so the tasks a
+// between-waves stop abandoned stay open in ready_to_dev and the escalations
+// stay open for a human. That is the honest outcome, and it is why the counts
+// below, Result.UnexecutedTasks and Result.FailedTasks exist rather than a
+// silent green board.
+func (o *Orchestrator) finishObjectiveMet(ctx context.Context, runID, query, skillPack string,
+	board *plan.Board, g objectiveGate, when string, start time.Time) (*Result, error) {
+
+	// Tell completeRun this run is ending on the gate, which is the one thing
+	// that licenses reporting success over an escalated task.
+	o.noteObjectiveEarlyFinish(g)
+	promoteBoardOnQAGreen(o.cfg.Root, board)
+	o.persistBoard(board)
+	o.recordGate("qa_gate", true, g.Cmd)
+	o.recordGate("objective_met_early", true, when+": "+g.Cmd)
+
+	skipped := o.remainingWaveBudget()
+	msg := fmt.Sprintf("objective already met (%s green) — finishing early, %d wave(s) not needed", g.Cmd, skipped)
+	// A between-waves stop abandoned planned work. Say how much, in the event
+	// the operator watches as well as in the Result they read afterwards.
+	if left := o.unexecutedTaskCount(); left > 0 {
+		msg = fmt.Sprintf("%s · %d task(s) planned but never executed", msg, left)
+	}
+	// An escalation is a signal that a human should look, so walking past one is
+	// never silent: the same sentence goes into the stop event, this finish
+	// event and the Result summary.
+	if notice := escalationNotice(unfinishedForReview(board)); notice != "" {
+		msg = msg + " · " + notice
+	}
+	o.emitSuccess("test", msg, "")
+	o.emitLoop("test", LoopEvent{
+		Action: "objective_met",
+		Reason: msg + " · checked " + when,
+		From:   "test", To: "done", Wave: o.waveCounter,
+	})
+	_ = o.store.Append(contextstore.DocScratch, "Objective gate",
+		fmt.Sprintf("%s\ncmd: %s\nchecked %s\n\n%s", msg, g.Cmd, when, truncate(g.Output, 2000)))
+
+	testOut := fmt.Sprintf(
+		`{"passed":true,"summary":"objective gate green (%s) — finished early","commands":[%q],"failures":[]}`,
+		when, g.Cmd)
+	return o.completeRun(ctx, runID, query, skillPack, board, testOut, false, false, g.Cmd, start)
+}
+
+// unexecutedTaskCount reports how many planned tasks the board loop abandoned
+// when a between-waves probe stopped it. Zero on every other path.
+func (o *Orchestrator) unexecutedTaskCount() int {
+	r := o.lastRunner()
+	if r == nil {
+		return 0
+	}
+	stopped, _, left := r.EarlyStop()
+	if !stopped {
+		return 0
+	}
+	return left
+}
+
+// remainingWaveBudget reports how many corrective waves the run still had left
+// to spend, i.e. what finishing early saved. Best-effort: 0 when the runner is
+// gone or the budget is unbounded.
+func (o *Orchestrator) remainingWaveBudget() int {
+	r := o.lastRunner()
+	if r == nil || r.MaxWaves <= 0 {
+		return 0
+	}
+	if left := r.MaxWaves - r.CorrectiveRuns(); left > 0 {
+		return left
+	}
+	return 0
+}
+
 // gateOutcome bundles the post-tester quality gates.
 type gateOutcome struct {
 	Board          *plan.Board
@@ -488,6 +615,9 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	runner *loop.Runner, testerRejected bool) gateOutcome {
 
 	out := gateOutcome{Board: board, TesterRejected: testerRejected}
+	// Keep the run's mirrored verdict in step with whatever these gates decide.
+	// There are three exits; a defer covers all of them.
+	defer func() { o.noteTesterRejected(out.TesterRejected) }()
 
 	// Polish: detect/fill placeholders before QA promotion.
 	if o.phaseEnabled("polish") {
@@ -568,6 +698,43 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	return out
 }
 
+// Outcome values for Result.Outcome.
+//
+// Success stays a bool because every existing consumer (exit codes, headless
+// JSON, the e2e scenarios) reads it and the question it answers — "did the user
+// get what they asked for?" — is genuinely binary. What a bool cannot express
+// is that a run reached a green objective gate while a subsidiary task failed,
+// so that lands here rather than being folded into Success or dropped.
+const (
+	// OutcomeSuccess: the objective is met and the board is clean.
+	OutcomeSuccess = "success"
+	// OutcomeSuccessWithFailures: the strong objective gate is green and no
+	// tester rejection stands — but subsidiary task(s) failed along the way, or
+	// escalated and were left on the board for a human. Result.FailedTasks
+	// carries the failure count; the summary names the review count, which also
+	// covers an escalation that carries no error of its own.
+	//
+	// This is the outcome a run that walked past an escalation MUST report: a
+	// caller must be able to tell it from a clean board, and OutcomeSuccess
+	// cannot.
+	OutcomeSuccessWithFailures = "success_with_failures"
+	// OutcomeFailure: the run did not meet its objective.
+	OutcomeFailure = "failure"
+)
+
+// runOutcome names the verdict. FailedTasks stays authoritative for the count;
+// this only says which of the two green shapes (or neither) the run has.
+func runOutcome(success bool, failed int) string {
+	switch {
+	case !success:
+		return OutcomeFailure
+	case failed > 0:
+		return OutcomeSuccessWithFailures
+	default:
+		return OutcomeSuccess
+	}
+}
+
 func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, qaCmd string, start time.Time) (*Result, error) {
 	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseMemory)
 	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
@@ -644,33 +811,97 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	qaGreen := o.cfg != nil && o.cfg.QAGate && !qaFailed
 	weakQA := quality.IsWeakQACommand(qaCmd)
 	escalatedLeft := boardHasEscalated(board)
+	// objectiveWon is the ONE license to report success over an escalation, and
+	// it is not "the QA gate happened to be green": it is set only by
+	// finishObjectiveMet, i.e. only when this run ENDED because the strong
+	// objective command was measured green on the tree that exists. Every other
+	// route to the finish line leaves it false and the old refusal stands.
+	//
+	// Why an escalation may be walked past at all: the board is a planner's
+	// guess at a decomposition, the gate is the acceptance criterion the user
+	// stated, and when the guess and the measurement disagree the measurement
+	// wins. A task escalates because reviews kept failing — the run that is
+	// burning its budget — so refusing there helped the cheap runs and abandoned
+	// the expensive ones. Nothing is swallowed: FailedTasks keeps the count,
+	// Outcome below refuses to say plain "success", and the summary names it.
+	objectiveWon := o.finishedOnObjectiveGate()
+	escalatedBlocks := escalatedLeft && !objectiveWon
 	// Never mark success when escalated/blocked tasks remain, even if a weak
 	// compileall QA gate was green (TestSLMs false-success regression).
 	success := !testerRejected && failed == 0 && board.AllDone() && !escalatedLeft
 	// Soft success from QA alone requires a *strong* gate (pytest / go test / …).
 	// Syntax-only compileall must not rubber-stamp an incomplete board.
-	if !success && qaGreen && !weakQA && !testerRejected && failed == 0 && !escalatedLeft &&
-		!board.AgentWorkRemaining() {
+	//
+	// `failed == 0` is deliberately NOT part of this clause any more. A live run
+	// produced byte-correct code with a green `go test ./...`, owed nothing to a
+	// human, and still reported flat failure because one subsidiary bookkeeping
+	// task had failed — the user's objective was met and the harness said no.
+	// The failure is not swallowed: it stays on Result.FailedTasks, it is named
+	// in the summary, and Outcome below distinguishes this from a clean board.
+	//
+	// The last clause has one carve-out. A DELIBERATE early stop is not agent
+	// work left dangling: the board loop stopped because the objective gate
+	// said the remaining tasks could not add anything, and that probe had
+	// already refused to fire on an in-flight task or an outstanding tester
+	// rejection. Those tasks are not promotable — their files were never
+	// written — so they sit in ready_to_dev and would otherwise make the
+	// harness report failure for obeying its own gate. Nothing is hidden by the
+	// carve-out: UnexecutedTasks carries the number and the summary says it in
+	// words.
+	//
+	// The escalation refusal is now `escalatedBlocks` rather than
+	// `escalatedLeft`, for the reason given at objectiveWon above: measured
+	// green beats a planner's guess, and the escalation is reported instead.
+	unexecuted := o.unexecutedTaskCount()
+	workLeft := board.AgentWorkRemaining() && unexecuted == 0
+	softSuccess := !success && qaGreen && !weakQA && !testerRejected && !escalatedBlocks && !workLeft
+	if softSuccess {
 		success = true
 	}
 	res := &Result{
 		ID: runID, Query: query, Board: *board,
 		Success: success, FailedTasks: failed,
-		Duration: time.Since(start), Summary: summarize(board, board.Plan),
+		Outcome:         runOutcome(success, failed),
+		UnexecutedTasks: unexecuted,
+		Duration:        time.Since(start), Summary: summarize(board, board.Plan),
 		Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
 		Usage: o.snapshotUsage(),
 	}
-	if testerRejected || escalatedLeft {
+	// A run that ended ON the objective gate with a failed or escalated task is
+	// never a BARE success. The escalation is exactly the signal that a human
+	// should look, so the verdict a caller branches on has to keep saying so
+	// even though Success is true.
+	if res.Success && objectiveWon && (failed > 0 || escalatedLeft) {
+		res.Outcome = OutcomeSuccessWithFailures
+	}
+	if testerRejected || escalatedBlocks {
 		res.Success = false
+		res.Outcome = OutcomeFailure
 		if testerRejected {
 			res.Summary = res.Summary + " (tester/QA rejected — plan/tasks rewritten)"
-		} else if escalatedLeft {
+		} else {
 			res.Summary = res.Summary + " (escalated tasks need human review)"
 		}
 	} else if qaGreen && weakQA && !success {
 		res.Summary = res.Summary + " (qa_gate is syntax-only — need pytest/tests for success)"
 	} else if qaGreen && success && !board.AllDone() {
 		res.Summary = res.Summary + " (qa_gate green)"
+	}
+	// Say it out loud wherever the verdict is read: a green objective with a
+	// failed or escalated task is a success with an asterisk, never a silent
+	// one. The count is unfinishedForReview's, the same one the stop event and
+	// the finish event quote.
+	if res.Outcome == OutcomeSuccessWithFailures {
+		if notice := escalationNotice(unfinishedForReview(board)); notice != "" {
+			res.Summary = fmt.Sprintf("%s (objective met — %s)", res.Summary, notice)
+		}
+	}
+	// Same rule for the other asterisk: a run that stopped mid-board on a green
+	// objective gate left planned work undone, and the promoted board no longer
+	// shows it. Say it where the verdict is read.
+	if res.UnexecutedTasks > 0 {
+		res.Summary = fmt.Sprintf("%s (objective met between waves — %d task(s) not executed)",
+			res.Summary, res.UnexecutedTasks)
 	}
 	extraNotes := lessonsMD
 	o.mu.Lock()
@@ -736,7 +967,7 @@ func (o *Orchestrator) checkpointInterrupt(ctx context.Context, board *plan.Boar
 			map[string]any{"resume_id": o.currentTurn.ID, "phase": phase, "saved": saved})
 		res := &Result{
 			ID: o.currentTurn.ID, Query: o.currentTurn.Query, Board: *board,
-			Success: false, FailedTasks: board.FailedCount(),
+			Success: false, FailedTasks: board.FailedCount(), Outcome: OutcomeFailure,
 			Summary: fmt.Sprintf("interrupted at %s — %s, resumable as %s",
 				phase, saved, o.currentTurn.ID),
 			Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
@@ -787,33 +1018,77 @@ func renameDiskOK(root, query string, board *plan.Board) bool {
 	return plan.RenameSatisfied(root, spec, focus)
 }
 
+// taskEscalated reports whether ONE open task is parked for a human.
+// Historical "ESCALATED…" notes on done tasks must not fail an otherwise green
+// run, so a done task is never escalated whatever its notes say.
+func taskEscalated(t plan.Task) bool {
+	t.Normalize()
+	if t.Column == plan.ColDone {
+		return false
+	}
+	if t.Column == plan.ColBlocked {
+		return true
+	}
+	blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review + " " + t.Output)
+	if strings.Contains(blob, "escalated") ||
+		strings.Contains(blob, "needs human") ||
+		strings.Contains(blob, "max retries") ||
+		strings.Contains(blob, `"status":"blocked"`) ||
+		strings.Contains(blob, `"status": "blocked"`) {
+		return true
+	}
+	return t.Column == plan.ColToScope && strings.TrimSpace(t.Error) != ""
+}
+
 // boardHasEscalated reports whether any *open* task still needs human review.
-// Historical "ESCALATED…" notes on done tasks must not fail an otherwise green run.
 func boardHasEscalated(board *plan.Board) bool {
 	if board == nil {
 		return false
 	}
 	for _, t := range board.Tasks {
-		t.Normalize()
-		if t.Column == plan.ColDone {
-			continue
-		}
-		if t.Column == plan.ColBlocked {
-			return true
-		}
-		blob := strings.ToLower(t.Error + " " + t.Notes + " " + t.Review + " " + t.Output)
-		if strings.Contains(blob, "escalated") ||
-			strings.Contains(blob, "needs human") ||
-			strings.Contains(blob, "max retries") ||
-			strings.Contains(blob, `"status":"blocked"`) ||
-			strings.Contains(blob, `"status": "blocked"`) {
-			return true
-		}
-		if t.Column == plan.ColToScope && strings.TrimSpace(t.Error) != "" {
+		if taskEscalated(t) {
 			return true
 		}
 	}
 	return false
+}
+
+// unfinishedForReview counts the tasks a human should look at when a run ends on
+// a green objective gate: everything Board.FailedCount already counts, plus any
+// OTHER open task boardHasEscalated flags — an escalation note on a task that
+// carries no error of its own. Counted per task, so one that is both failed and
+// escalated counts once, and never below FailedCount.
+//
+// This is the number the stop event, the finish event and the Result summary all
+// quote, so the three cannot drift apart.
+func unfinishedForReview(board *plan.Board) int {
+	if board == nil {
+		return 0
+	}
+	n := board.FailedCount()
+	for _, t := range board.Tasks {
+		t.Normalize()
+		// Skip everything FailedCount has already counted, and everything that
+		// finished.
+		if t.Column == plan.ColDone || t.Column == plan.ColBlocked ||
+			t.Status == plan.StatusFailed || strings.TrimSpace(t.Error) != "" {
+			continue
+		}
+		if taskEscalated(t) {
+			n++
+		}
+	}
+	return n
+}
+
+// escalationNotice is the one sentence a green-objective finish uses to report
+// what it walked past. Empty when there is nothing to report.
+func escalationNotice(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d task(s) failed or escalated and were not completed — "+
+		"left on the board for inspection", n)
 }
 
 // promoteBoardOnQAGreen closes open implement/verify tasks after a *strong* QA

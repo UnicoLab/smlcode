@@ -30,7 +30,18 @@ func TestPrecedenceDefaultsUserProjectEnv(t *testing.T) {
 		wantOrigin string
 	}{
 		{
-			name:       "default when nothing sets it",
+			// The default is endpoint-aware, and a fresh workspace points at
+			// the built-in local endpoint. This test used to assert the flat
+			// DefaultMaxParallel; that encoded the pre-measurement assumption
+			// that every backend scales like a hosted API.
+			name:       "default when nothing sets it follows the endpoint",
+			wantValue:  func(c *Config) any { return c.MaxParallel },
+			want:       DefaultMaxParallelLocal,
+			wantOrigin: "default",
+		},
+		{
+			name:       "a hosted endpoint keeps the wider default",
+			project:    "provider: openai\nendpoint: https://api.openai.com/v1\n",
 			wantValue:  func(c *Config) any { return c.MaxParallel },
 			want:       DefaultMaxParallel,
 			wantOrigin: "default",
@@ -145,7 +156,9 @@ func TestCorruptUserConfigWarnsInsteadOfFailing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a bad user file must not make the workspace unopenable: %v", err)
 	}
-	if cfg.MaxParallel != DefaultMaxParallel {
+	// The default here is the endpoint-aware one (a fresh root points at the
+	// built-in local endpoint), not the flat hosted default.
+	if cfg.MaxParallel != DefaultMaxParallelLocal {
 		t.Fatalf("bad value was applied: %d", cfg.MaxParallel)
 	}
 	if len(cfg.Provenance().Warnings) == 0 {

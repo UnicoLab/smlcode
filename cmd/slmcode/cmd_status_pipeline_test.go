@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,7 +35,12 @@ func TestFormatPipelineStatusShowsDynamicPipelineState(t *testing.T) {
 		"--on-gate-timeout",
 		"slm_budget",
 		"context=8192",
-		"max_parallel=4",
+		// The default is endpoint-aware and config.Default points at the
+		// built-in LOCAL endpoint, so the measured local knee is what a
+		// default config reports. This used to assert 4, which encoded the
+		// pre-measurement assumption that every backend scales like a hosted
+		// API.
+		"max_parallel=" + strconv.Itoa(config.DefaultMaxParallelLocal),
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pipeline status missing %q:\n%s", want, out)

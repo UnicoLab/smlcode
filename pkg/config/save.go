@@ -79,11 +79,25 @@ func (c *Config) Diff() []string {
 // project file. Load records it; a config built by hand falls back to the
 // built-in defaults for the same root.
 func (c *Config) saveBaseline() *Config {
-	if c.prov != nil && c.prov.baseline != nil {
-		return c.prov.baseline
+	base := c.prov.storedBaseline()
+	if base == nil {
+		base = Default(c.Root)
+		normalize(base)
 	}
-	base := Default(c.Root)
-	normalize(base)
+	// max_parallel's default is derived from the effective endpoint, but the
+	// baseline was built before the project file could change that endpoint.
+	// Without this, a project that only writes `provider: openai` would ALSO
+	// have `max_parallel: 4` written into it — an inherited default frozen into
+	// the file, which is exactly what intent-only persistence exists to avoid.
+	//
+	// The equality guard keeps a directly-assigned field (an embedder doing
+	// `cfg.MaxParallel = 9`) writable: only a value that IS the derived default
+	// for this endpoint is treated as inherited.
+	if !c.maxParallelSet && c.MaxParallel == DefaultMaxParallelFor(c.Provider, c.Endpoint) {
+		cp := *base
+		cp.MaxParallel = c.MaxParallel
+		base = &cp
+	}
 	return base
 }
 

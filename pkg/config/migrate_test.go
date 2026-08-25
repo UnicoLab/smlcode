@@ -108,7 +108,9 @@ func TestLoadKeepsGoingPastOneBadKey(t *testing.T) {
 	if cfg.FastModel != "tiny" {
 		t.Fatalf("the rest of the file was discarded: fast_model=%q", cfg.FastModel)
 	}
-	if cfg.MaxParallel != DefaultMaxParallel {
+	// Endpoint-aware default: the project has no provider/endpoint, so it
+	// inherits the built-in local endpoint and its measured knee.
+	if cfg.MaxParallel != DefaultMaxParallelLocal {
 		t.Fatalf("the bad value was applied: %d", cfg.MaxParallel)
 	}
 	if len(cfg.Provenance().Warnings) == 0 {

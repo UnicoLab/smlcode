@@ -37,7 +37,20 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 	mergeFilesChanged(t)
 	scope := strings.Join(t.Files, ", ")
 
-	if hint := r.diskEvidenceHint(*t, snapshot); hint != "" {
+	// Disk evidence = what the task DID (diskEvidenceHint) plus what its shell
+	// commands did behind the tool guards (shellScopeEvidence). The two halves
+	// share one section but not one meaning: only the first carries an
+	// evidentialDiskMarker, so an out-of-scope shell write can never be
+	// miscounted by hasDiskEvidenceSection as proof the task did its job. Order
+	// matters for nothing except reading — the markers are what the gates see.
+	hint := r.diskEvidenceHint(*t, snapshot)
+	if scope := r.shellScopeEvidence(t.ID); scope != "" {
+		if hint != "" {
+			hint += "\n"
+		}
+		hint += scope
+	}
+	if hint != "" {
 		t.Output = appendHarnessSection(t.Output, "\n\n"+diskEvidenceHeader+"\n"+hint)
 	}
 

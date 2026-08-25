@@ -368,7 +368,9 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 		cfg.MaxRetries = v
 	}
 	if v, ok := asInt(m["max_parallel"]); ok {
-		cfg.MaxParallel = v
+		// A stack that names max_parallel is stating intent about its models,
+		// so it must not be re-derived away by the endpoint-aware default.
+		cfg.SetMaxParallel(v)
 	}
 	if v, ok := asInt(m["max_context_kb"]); ok {
 		cfg.MaxContextKB = v
@@ -378,6 +380,9 @@ func mergeStackIntoConfig(cfg *config.Config, s *Stack) {
 	}
 	if v, ok := asInt(m["task_timeout_sec"]); ok && v > 0 {
 		cfg.TaskTimeout = time.Duration(v) * time.Second
+		// A stack that names a ceiling has chosen one: calibration must not
+		// widen it (see config.Config.Explicit).
+		cfg.Provenance().Mark("task_timeout", config.LayerProject, "")
 	}
 	if v, ok := asBool(m["qa_gate"]); ok {
 		cfg.QAGate = v
@@ -557,7 +562,7 @@ func normalizeStackCfg(cfg *config.Config) {
 		cfg.MaxRetries = config.DefaultMaxRetries
 	}
 	if cfg.MaxParallel <= 0 {
-		cfg.MaxParallel = config.DefaultMaxParallel
+		cfg.MaxParallel = config.DefaultMaxParallelFor(cfg.Provider, cfg.Endpoint)
 	}
 	if cfg.MaxContextKB <= 0 {
 		cfg.MaxContextKB = config.DefaultMaxContextKB

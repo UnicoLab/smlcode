@@ -101,6 +101,15 @@ func (p *Provenance) Describe(key string) string {
 	return string(l)
 }
 
+// storedBaseline returns the defaults+user snapshot Load recorded, or nil.
+// Nil-safe, so callers do not have to reach through c.prov themselves.
+func (p *Provenance) storedBaseline() *Config {
+	if p == nil {
+		return nil
+	}
+	return p.baseline
+}
+
 // clearProjectMark drops a project-layer attribution, falling back to the user
 // layer when that is where the value now comes from.
 func (p *Provenance) clearProjectMark(key string) {

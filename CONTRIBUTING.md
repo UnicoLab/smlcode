@@ -281,6 +281,7 @@ normalize it in `Normalize()` → handle it in `ApplyPatch()` → document it in
 | `pkg/schema` | JSON Schema contracts + GBNF generation |
 | `pkg/backends` | provider registration, capability probe, structured decoding, retry policy |
 | `pkg/repair` | the JSON repair ladder and its counters |
+| `pkg/calibrate` | endpoint measurement: concurrency knee, latency baseline, throughput, context window — the **only** place a harness parameter is derived from a live probe |
 | `pkg/memory` | working / episodic / semantic / procedural memory |
 | `pkg/evolve` | fingerprints, repair rules, bandit, reflection, regressions |
 | `pkg/eval`, `pkg/eval/metrics` | eval harness, per-run metrics, `Compare`, replay |

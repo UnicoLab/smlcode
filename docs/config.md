@@ -61,15 +61,75 @@ never persisted for exactly that last reason. Older files are migrated forward o
 | `specialist` | — | Role id when `mode: specialist` |
 | `dynamic_pipeline` | `true` | Run the composer to assemble a task-specific pipeline first |
 | `pinned_skills` | — | Always loaded, in addition to `@skill:` refs and matching |
-| `max_parallel` | `4` | Concurrent tasks per wave |
+| `max_parallel` | measured, else `2` local / `4` hosted | Concurrent tasks per wave — see [below](#max_parallel-is-measured-not-guessed) |
 | `max_retries` | `4` | Review/correct retries before escalate |
 | `think_passes` | `1` | 2+ enables speculative digs |
-| `task_timeout` | `12m` | Per-task timeout |
+| `task_timeout` | `12m` | Per-task timeout (widened automatically for a slow model when you have not set it) |
+| `calibrate` | `auto` | Measure an unseen `(model, endpoint)` pair once — see [Calibration](calibration.md) |
 | `temperature` | `0.2` | Default sampling temperature (roles override) |
 | `max_tokens` | `4096` | Default completion cap (roles override) |
 | `dry_run` | `false` | Do not write code files |
 | `verbose` | `false` | |
 | `active_pack`, `active_pipeline` | — | Last applied block ids |
+
+### `max_parallel` is measured, not guessed
+
+`max_parallel` is how many role calls are in flight at once. A hosted API scales
+horizontally, so a fourth concurrent request lands on different hardware and
+costs the other three nothing. A **single local model server does not**: every
+request shares one GPU and one KV cache.
+
+Measured against one local oMLX endpoint, warm model, identical tiny prompts:
+
+| Model | Concurrency | Wall | Per request | Throughput | Efficiency |
+|---|---|---|---|---|---|
+| Qwen3.5-9B-MLX-4bit | 1 | 0.58s | 0.58s | 1.00× of 1.00× | 100% |
+| | 2 | 0.85s | 0.82s | 1.37× of 2.00× | **68%** |
+| | 4 | 1.49s | 1.43s | 1.56× of 4.00× | **39%** |
+| Qwen3.8-27B-4bit | 1 | 1.66s | 1.66s | 1.00× of 1.00× | 100% |
+| | 2 | 2.44s | 2.40s | 1.36× of 2.00× | **68%** |
+| | 4 | 4.54s | 4.43s | 1.46× of 4.00× | **37%** |
+
+There is a sharp knee at 2. Going 2 → 4 buys roughly 10-14% more throughput and
+costs **75-85% worse per-request latency** (0.82 → 1.43s, 2.40 → 4.43s).
+
+**Why that is a correctness problem, not a preference.** Role timeouts are
+wall-clock (see [role timeouts](troubleshooting.md#role-timeouts-context-deadline-exceeded)).
+At `max_parallel: 4` on a single local endpoint every role's observed latency
+inflates about 2.5-2.7× versus running alone, so a role that needs 60s solo
+needs roughly 160s — and blows a 75s budget it would otherwise have met.
+
+**What slmcode does about it.**
+
+1. **It measures.** On first sight of a `(model, endpoint)` pair, calibration
+   times 1, 2 and 4 concurrent tiny completions (and 8 only if 4 still scales)
+   and picks the highest level still delivering at least 60% of ideal. Nothing
+   is hardcoded: a server that genuinely scales gets 8. See
+   [Calibration](calibration.md), or run `slmcode calibrate` to see the table.
+2. **Failing that, it infers from the endpoint.** With calibration off or
+   unavailable, the default is `2` for a single local endpoint and `4` for a
+   hosted API. "Local" means a local-family provider (`local`, `omlx`, `mlx`,
+   `ollama`, `lmstudio`, `llamacpp`, `vllm`, `litellm`, `custom`) **or** any
+   provider whose endpoint host is loopback, `localhost`, or a `.local` name —
+   fronting a local server with an OpenAI-compatible gateway is still local.
+   The provider name is checked first: an `ollama` on the LAN is still one
+   Ollama process.
+
+```
+max_parallel=2 (default 4): http://127.0.0.1:8000/v1 is a single local endpoint,
+which shares one GPU across concurrent calls — measured 4-way throughput was ~39%
+of ideal while per-request latency nearly doubled, and role timeouts are
+wall-clock. Override: slmcode config set max_parallel 4
+```
+
+That line is printed once per process, never per wave.
+
+**Your setting always wins.** Everything above decides a *default*. Write
+`max_parallel: 4` in a config file, pass `--parallel 4`, set
+`SLMCODE_MAX_PARALLEL=4`, or set it from Studio, and you get 4 — no
+re-derivation, no re-measurement, no notice. `slmcode config show --origin`
+reports `default` when it was inferred and `project` / `user` / `env` / `flag`
+when you chose it. `slmcode config unset max_parallel` hands it back.
 
 ## Context & memory budget
 
@@ -275,7 +335,7 @@ model_profiles:
     max_tokens: 4096
     max_turns: 24
 
-max_parallel: 2              # a local server serialises inference anyway
+max_parallel: 2              # only needed to PIN it — calibration picks this anyway
 think_passes: 1
 task_timeout: 20m
 

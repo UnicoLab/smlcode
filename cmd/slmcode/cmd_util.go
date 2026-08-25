@@ -16,6 +16,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/backends"
+	"github.com/UnicoLab/slmcode/pkg/calibrate"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/evolve"
@@ -250,7 +251,8 @@ func runDoctorJSON() error {
 			"model":    throughputForModel(ws.Config.Model),
 			"observed": backends.ThroughputSnapshot(),
 		},
-		"learning": learningStatus(ws.Config),
+		"learning":    learningStatus(ws.Config),
+		"calibration": doctorCalibrationJSON(ws.Config),
 		"config": map[string]any{
 			"path":           ws.Config.ConfigPath(),
 			"user_path":      ws.Config.Provenance().UserPath,
@@ -314,6 +316,60 @@ func gitignoreGaps(status map[string]any) []string {
 	return leaky
 }
 
+// printDoctorParallel reports the effective parallelism, where it came from,
+// and — when it is a lowered default rather than a choice or a measurement —
+// the one-line explanation.
+//
+// doctor is where config facts are supposed to be legible, so "parallel 2"
+// must never be a number the user has to go read source to understand.
+func printDoctorParallel(cfg *config.Config) {
+	origin := "default (endpoint-aware)"
+	if cfg.MaxParallelExplicit() {
+		origin = cfg.Provenance().Describe("max_parallel")
+	}
+	detail := ""
+	if p, current := openCalibrationProfile(cfg); p.MaxParallel > 0 {
+		state := "measured"
+		if !current {
+			state = "measured, stale"
+		}
+		detail = fmt.Sprintf("  [calibration: %s, knee %d — %s]", state, p.MaxParallel, p.Summary())
+	}
+	cli.KeyVal("parallel", fmt.Sprintf("%d (%s)%s", cfg.MaxParallel, origin, detail))
+	printMaxParallelNotice(cfg)
+	if !cfg.CalibrationEnabled() {
+		fmt.Println(cli.Dim("  calibration is off — `slmcode config set calibrate auto` measures this endpoint instead of guessing"))
+	}
+}
+
+// openCalibrationProfile reads the stored profile for the active pair without
+// probing anything. doctor must stay a fast, read-only command.
+func openCalibrationProfile(cfg *config.Config) (calibrate.Profile, bool) {
+	store := openCalibrationStore()
+	defer func() { _ = store.Close() }()
+	return store.Lookup(cfg.Model, cfg.Endpoint)
+}
+
+// doctorCalibrationJSON mirrors the human `parallel` line for machine readers,
+// so `doctor --json` can answer "is this endpoint measured, and does the config
+// agree with the measurement?" without shelling out to `calibrate --show`.
+func doctorCalibrationJSON(cfg *config.Config) map[string]any {
+	prof, current := openCalibrationProfile(cfg)
+	out := map[string]any{
+		"enabled":               cfg.CalibrationEnabled(),
+		"policy":                config.NormalizeCalibrate(cfg.Calibrate),
+		"max_parallel":          cfg.MaxParallel,
+		"max_parallel_explicit": cfg.MaxParallelExplicit(),
+		"max_parallel_origin":   cfg.Provenance().Describe("max_parallel"),
+		"measured":              prof.MaxParallel > 0,
+		"current":               current,
+	}
+	if prof.MaxParallel > 0 {
+		out["profile"] = prof
+	}
+	return out
+}
+
 func runDoctor() error {
 	ws, err := openWorkspace()
 	if err != nil {
@@ -336,6 +392,7 @@ func runDoctor() error {
 	cli.KeyVal("mode", ws.Config.Mode)
 	cli.KeyVal("specialist", ws.Config.Specialist)
 	cli.KeyVal("qa_gate", fmt.Sprintf("%v (rounds=%d)", ws.Config.QAGate, ws.Config.QAGateMaxRounds))
+	printDoctorParallel(ws.Config)
 	prof := config.ResolveModelProfile(ws.Config.ModelProfiles, ws.Config.Model)
 	cli.KeyVal("model_profile", fmt.Sprintf("ctx=%d max_tokens=%d think=%d skills=%d knowledge=%d turns=%d",
 		prof.ContextLimit, prof.MaxTokens, prof.ThinkingBudgetTokens,

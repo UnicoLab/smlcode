@@ -587,6 +587,20 @@ type ReviewResult struct {
 	Score    int      `json:"score"`
 	Issues   []string `json:"issues"`
 	Summary  string   `json:"summary"`
+
+	// NoVerdict marks a result the HARNESS synthesized because the reviewer
+	// never produced a readable verdict — an empty reply, prose, a tool-call
+	// echo, a truncation. It is not serialized: it describes where this value
+	// came from, not what the reviewer decided.
+	//
+	// It exists because the default-deny below is byte-identical to a
+	// considered `{"approved":false,"score":0}` rejection, and the whole ladder
+	// downstream — the `review approved=false score=0` event, the retry
+	// counter, the corrector prompt — used to treat the two the same. A model
+	// that cannot format JSON was therefore indistinguishable from a model that
+	// had judged the work and found it wanting, and correct, test-passing code
+	// was sent back for correction rounds that could not help it.
+	NoVerdict bool `json:"-"`
 }
 
 // TesterResult is the structured output of the tester specialist.
@@ -801,7 +815,7 @@ var (
 // `"approved": true` with no explicit `"approved": false` anywhere — a verdict
 // the model actually stated rather than one inferred from prose.
 func ParseReviewJSON(raw string) ReviewResult {
-	extracted := repairRole(extractJSON(raw), schema.RoleReview)
+	extracted := repairRole(verdictJSON(raw), schema.RoleReview)
 	// The verdict key must be PRESENT, not merely absent-and-therefore-false.
 	// extractJSON happily lifts `{"path":"main.go"}` out of an echoed tool call,
 	// which unmarshals without error into a zero ReviewResult — a silent
@@ -821,6 +835,7 @@ func ParseReviewJSON(raw string) ReviewResult {
 		return r
 	}
 	r.Approved = false
+	r.NoVerdict = true
 	r.Issues = []string{ReviewMalformedIssue}
 	if line := firstLine(raw); line != "" {
 		r.Issues = append(r.Issues, line)
@@ -829,6 +844,49 @@ func ParseReviewJSON(raw string) ReviewResult {
 		r.Summary = ReviewMalformedIssue
 	}
 	return r
+}
+
+// maxVerdictCandidates bounds the scan below. A reviewer runs at max_tokens=768,
+// so a reply with a dozen JSON objects in it is already pathological.
+const maxVerdictCandidates = 12
+
+// approvedKey matches the verdict KEY in any of the shapes a small model emits
+// it — quoted, bare, single-quoted. It is deliberately textual: the candidate it
+// selects is handed to the repair ladder afterwards, so it must be able to pick
+// a document that does not parse yet.
+var approvedKey = regexp.MustCompile(`(?i)['"]?approved['"]?\s*:`)
+
+// verdictJSON returns the JSON document in raw that actually carries the
+// reviewer's verdict, falling back to extractJSON's first-document behavior.
+//
+// extractJSON returns the FIRST balanced document, and for a reviewer that is
+// routinely the wrong one: formatReviewPrompt hands the reviewer the worker's
+// own `{"status":"done","files_changed":[…]}` under "## Agent output", and a
+// small model restates it before judging. The verdict that followed was then
+// discarded, the echoed worker JSON was parsed in its place, that object had no
+// "approved" key, and a real approval was reported as approved=false score=0.
+//
+// So: walk the balanced documents in order and take the first that names the
+// verdict key. Nothing is invented — when no candidate names it, this is
+// byte-for-byte extractJSON.
+func verdictJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+	first := extractJSON(s)
+	if approvedKey.MatchString(first) {
+		return first
+	}
+	at := strings.IndexByte(s, '{')
+	for n := 0; at >= 0 && n < maxVerdictCandidates; n++ {
+		if doc := balancedSpan(s, at); doc != "" && approvedKey.MatchString(doc) {
+			return doc
+		}
+		next := strings.IndexByte(s[at+1:], '{')
+		if next < 0 {
+			break
+		}
+		at += 1 + next
+	}
+	return first
 }
 
 // WorkerLooksComplete detects SLM worker/explorer success signals.
@@ -863,16 +921,26 @@ func extractJSON(s string) string {
 	startObj := strings.Index(s, "{")
 	startArr := strings.Index(s, "[")
 	start := -1
-	endChar := byte('}')
 	if startObj >= 0 && (startArr < 0 || startObj < startArr) {
 		start = startObj
-		endChar = '}'
 	} else if startArr >= 0 {
 		start = startArr
-		endChar = ']'
 	}
-	if start < 0 {
-		return s
+	if doc := balancedSpan(s, start); doc != "" {
+		return doc
+	}
+	return s
+}
+
+// balancedSpan returns the balanced JSON document opening at s[start], or ""
+// when start is out of range or the document never closes.
+func balancedSpan(s string, start int) string {
+	if start < 0 || start >= len(s) {
+		return ""
+	}
+	endChar := byte('}')
+	if s[start] == '[' {
+		endChar = ']'
 	}
 	depth := 0
 	inStr := false
@@ -905,7 +973,7 @@ func extractJSON(s string) string {
 			}
 		}
 	}
-	return s
+	return ""
 }
 
 func firstLine(s string) string {

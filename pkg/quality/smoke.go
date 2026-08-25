@@ -75,8 +75,11 @@ func RunPostWorkerSmoke(ctx context.Context, root string, t plan.Task, timeout t
 
 	// Fast-path: Go project with no _test.go files → use go vet instead of go test
 	// (go test on a package with no tests is wasteful; go vet is faster and still catches errors).
-	if projLang == "go" && strings.Contains(cmd, "go test") && !hasGoTestFiles(root) {
-		cmd = strings.Replace(cmd, "go test", "go vet", 1)
+	// indexAtWordStart, not Contains: "cargo test" contains "go test", so a
+	// polyglot repo detected as Go would have had its Rust command rewritten to
+	// the nonexistent "cargo vet".
+	if goTestAt := indexAtWordStart(cmd, "go test"); projLang == "go" && goTestAt >= 0 && !hasGoTestFiles(root) {
+		cmd = cmd[:goTestAt] + strings.Replace(cmd[goTestAt:], "go test", "go vet", 1)
 		// go vet has no -short/-race/-count flags — strip test-only flags so the
 		// rewritten command stays valid ("go vet . -short" is a hard error).
 		cmd = strings.ReplaceAll(cmd, " -short", "")
@@ -357,13 +360,14 @@ func ExtractAcceptanceCommands(acceptance string) []string {
 		lower := strings.ToLower(line)
 		for _, prefix := range safeAcceptancePrefixes {
 			p := strings.ToLower(strings.TrimSpace(prefix))
-			idx := strings.Index(lower, p)
+			idx := indexAtWordStart(lower, p)
 			if idx < 0 {
 				continue
 			}
 			cmd := strings.TrimSpace(line[idx:])
 			// Cut trailing prose after the command (period+space, " exits", " prints").
-			for _, stop := range []string{" exits", " prints", " returns", " —", " - ", ". ", " ("} {
+			for _, stop := range append([]string{" exits", " prints", " returns", " —", " - ", ". ", " ("},
+				acceptanceAssertionTails...) {
 				i := strings.Index(strings.ToLower(cmd), stop)
 				// ". " must not chop a package pattern: "go test ./... -short"
 				// used to be truncated to the unusable "go test ./".
@@ -374,7 +378,7 @@ func ExtractAcceptanceCommands(acceptance string) []string {
 					cmd = strings.TrimSpace(cmd[:i])
 				}
 			}
-			cmd = strings.TrimRight(cmd, ".,;:")
+			cmd = trimAcceptancePunctuation(cmd)
 			cmd = SanitizeAcceptanceCommand(cmd, prefix)
 			if cmd == "" || seen[cmd] {
 				continue
@@ -385,6 +389,81 @@ func ExtractAcceptanceCommands(acceptance string) []string {
 		}
 	}
 	return out
+}
+
+// indexAtWordStart is strings.Index constrained to a command-name boundary.
+//
+// A plain substring search matched a prefix in the MIDDLE of another tool's
+// name: "cargo test" contains "go test", so a Rust project's acceptance command
+// was rewritten to `go test` and the harness ran the wrong tool entirely —
+// silently, and with a failure that looked like the model's fault.
+//
+// A command name starts at the beginning of the line or after a separator; it
+// never starts mid-identifier or mid-path.
+func indexAtWordStart(s, sub string) int {
+	if sub == "" {
+		return -1
+	}
+	for from := 0; ; {
+		i := strings.Index(s[from:], sub)
+		if i < 0 {
+			return -1
+		}
+		i += from
+		if i == 0 || isCommandBoundary(s[i-1]) {
+			return i
+		}
+		from = i + 1
+	}
+}
+
+// isCommandBoundary reports whether b can precede the start of a command name.
+// Deliberately excludes '/' and '.', so "/usr/bin/cargo test" and
+// "tools.cargo test" do not resolve to `go test` either.
+func isCommandBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '(', '[', '{', ',', ':', '"', '\'', '`', '|', '&', ';', '>', '<':
+		return true
+	}
+	return false
+}
+
+// acceptanceAssertionTails are the natural-language endings an LLM appends to
+// an acceptance command to state the expected OUTCOME. They are prose, not
+// argv, and passing them through turns a working command into a failing one:
+// "go test ./... passes" makes go look for a package named `passes` and exit 1,
+// so the acceptance gate reported FAILED for a change whose tests all passed,
+// the reviewer rejected it on that evidence, and the task escalated.
+//
+// Each entry keeps its leading space so it only matches a word boundary —
+// `go test -run TestPasses` has no space before "passes" and is left alone.
+var acceptanceAssertionTails = []string{
+	" passes", " pass ", " passing", " should pass", " must pass",
+	" succeeds", " succeed", " is green", " are green", " green",
+	" works", " ok", " cleanly", " without error", " with no errors",
+	" all pass", " everything passes",
+}
+
+// trimAcceptancePunctuation strips sentence punctuation an LLM left on the end
+// of a command WITHOUT eating meaningful argv.
+//
+// The previous strings.TrimRight(cmd, ".,;:") stripped every trailing dot, so
+// the single most common Go acceptance string in this repo — "go test ./..." —
+// became "go test ./", which tests one directory instead of the module and is
+// not what the task asked for. A guard for ". " already existed a few lines
+// above; this TrimRight then undid it.
+//
+// A trailing '.' is only sentence punctuation when it does not belong to a
+// path or package pattern, i.e. when the rune before it is not '.' or '/'.
+func trimAcceptancePunctuation(cmd string) string {
+	cmd = strings.TrimRight(cmd, ",;: \t")
+	for strings.HasSuffix(cmd, ".") {
+		if n := len(cmd); n >= 2 && (cmd[n-2] == '.' || cmd[n-2] == '/') {
+			break // "./..." or "./" — part of the pattern, not punctuation
+		}
+		cmd = strings.TrimRight(cmd[:len(cmd)-1], ",;: \t")
+	}
+	return cmd
 }
 
 // acceptanceShellMeta are characters that turn a whitelisted prefix into an

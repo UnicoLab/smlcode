@@ -74,6 +74,8 @@ var schemaFields = map[string]schemaMeta{
 	"claude_code_bin":    {"Claude Code binary", "Executable used when backend=claude-code", "model", nil, false, false, false, true},
 	"structured_decoding": {"Structured decoding", "Constrained decoding: auto negotiates the strongest mechanism the endpoint supports (json_schema, guided_json, GBNF); off forces prompt-only JSON",
 		"model", []string{DecodingAuto, DecodingOff}, false, false, false, false},
+	"calibrate": {"Calibrate endpoint", "auto measures an unseen (model, endpoint) pair once — concurrency knee, latency baseline, context window — and uses it for values you have not set; off keeps the static defaults",
+		"model", []string{CalibrateAuto, CalibrateOff}, false, false, false, false},
 
 	// ── pipeline ──
 	"mode":       {"Mode", "full runs the whole pipeline; specialist runs a single role", "pipeline", []string{ModeFull, ModeSpecialist}, false, false, false, false},
@@ -81,7 +83,7 @@ var schemaFields = map[string]schemaMeta{
 	"dynamic_pipeline": {"Dynamic pipeline", "Run the composer specialist first to assemble a task-specific pipeline (phases, team, tools, skills)",
 		"pipeline", nil, false, false, false, false},
 	"pinned_skills":    {"Pinned skills", "Skills always loaded, in addition to @skill: refs and matching", "pipeline", nil, false, false, false, false},
-	"max_parallel":     {"Max parallel", "Concurrent workers on ready tasks", "pipeline", nil, false, false, false, false},
+	"max_parallel":     {"Max parallel", "Concurrent workers on ready tasks. Unset, it follows the endpoint (single local server: the measured concurrency knee; hosted API: 4)", "pipeline", nil, false, false, false, false},
 	"max_retries":      {"Max retries", "Review/correct retries per task before escalation (0 = one attempt)", "pipeline", nil, false, false, false, false},
 	"think_passes":     {"Think passes", "Multi-pass deliberation loops per role", "pipeline", nil, false, false, false, false},
 	"task_timeout":     {"Task timeout", "Wall-clock ceiling for a single task", "pipeline", nil, false, false, false, false},
@@ -351,6 +353,12 @@ func (c *Config) Unset(key string) error {
 	base := c.saveBaseline()
 	v := reflect.ValueOf(*base).Field(f.Index)
 	reflect.ValueOf(c).Elem().Field(f.Index).Set(v)
+	// Intent has to be restored alongside the value: unsetting a key the user
+	// layer also supplies keeps that layer's explicit choice, while unsetting
+	// one nobody else supplies hands the key back to the derived default.
+	if key == "max_parallel" {
+		c.maxParallelSet = base.maxParallelSet
+	}
 	c.Provenance().clearProjectMark(key)
 	normalize(c)
 	return nil

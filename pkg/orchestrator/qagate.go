@@ -240,6 +240,11 @@ func (o *Orchestrator) resetObjectiveProbes() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.objective = objectiveProbeState{}
+	// The harvested shell observation is per-run too. Leaving it would let a
+	// previous run's green answer be reused by the next: both would start with
+	// an empty changed-file set, so even the fingerprint guard would agree they
+	// describe "the same" tree.
+	o.objectiveShell = nil
 }
 
 // objectiveProbesSpent reports how many probes this run has used.
@@ -628,7 +633,13 @@ func (o *Orchestrator) noteProbeCost(d time.Duration) {
 // the escalation notice is attached HERE: the operator watching the stream sees
 // the same sentence the Result summary will carry.
 func (o *Orchestrator) objectiveMetBetweenWaves(ctx context.Context, board *plan.Board) (bool, string) {
-	g, done := o.probeObjective(ctx, probeBetweenWaves, board, o.testerRejectedNow(), nil)
+	// A worker may already have run the objective command itself and watched it
+	// pass. That is the same answer this probe would pay a full test run for,
+	// and objectiveShellEvidence discards it the moment anything is written
+	// after it — so reusing it is free and cannot be stale. See
+	// shellobjective.go.
+	g, done := o.probeObjective(ctx, probeBetweenWaves, board, o.testerRejectedNow(),
+		o.objectiveShellEvidence())
 	if !done {
 		return false, ""
 	}

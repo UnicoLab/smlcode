@@ -224,6 +224,20 @@ func (r *Runner) budgetExhausted(taskID string) bool {
 // spending one unit of the task's call budget. It returns ok=false when the
 // budget refused the call — callers must escalate, never retry.
 func (r *Runner) execOne(ctx context.Context, taskID, what string, req ggagent.SubAgentRequest) (ggagent.SubAgentResult, bool) {
+	// Out of runway: refuse the call rather than spend the finish reserve on it.
+	//
+	// The wave loop already stops admitting NEW waves at this point, and that is
+	// not sufficient — a worker that stalls right up to the reserve boundary is
+	// still followed, inside the same wave, by a review and possibly a
+	// correction. Each of those got a floor-sized budget and together they ate
+	// the reserve the stall had just spared. execOne is the one choke point
+	// every loop-side dispatch passes through, so the rule belongs here.
+	//
+	// ok=false is the same answer the call budget gives, and callers already
+	// handle it correctly: escalate, never retry.
+	if r.runwaySpent(ctx) {
+		return ggagent.SubAgentResult{}, false
+	}
 	if !r.spend(taskID, what) {
 		return ggagent.SubAgentResult{}, false
 	}

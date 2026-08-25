@@ -26,6 +26,17 @@ type FileChangeFunc func(path, kind, detail string)
 // ShellAskNotify is called when a shell command needs interactive approval.
 type ShellAskNotify func(ask ShellAsk)
 
+// ShellResultFunc observes a ws_shell command that actually executed, and may
+// return advisory text to append to the tool result the model sees.
+//
+// ok reports a clean exit; a timeout or a non-zero status is ok=false. It fires
+// for BOTH, because "the project's test command just failed" is as much a fact
+// about the tree as "it passed" — an observer that only heard about successes
+// could never retract a stale conclusion.
+//
+// Returning "" appends nothing, which is the normal case.
+type ShellResultFunc func(command string, ok bool, output string) string
+
 // DefaultReadWindow is the ws_read line window. SWE-agent's ablation put the
 // sweet spot near 100 lines: 30-line windows cost 3.7 points and whole-file
 // reads cost 5.3 points on SWE-bench relative to a ~100-line window.
@@ -84,6 +95,15 @@ type ToolOpts struct {
 	CheckpointSession string
 	// OnIntervention reports harness gate refusals to TUI/Studio.
 	OnIntervention func(reason, message string)
+	// OnShellResult reports every completed ws_shell command and its exit
+	// status, and may return advisory text to append to the tool result.
+	//
+	// The workspace deliberately knows nothing about what any command MEANS —
+	// it reports "this ran, it exited clean", and whoever installed the hook
+	// decides whether that matters. That is what lets the orchestrator notice
+	// its own objective command going green inside a worker's tool loop without
+	// this package acquiring a notion of "objective".
+	OnShellResult ShellResultFunc
 	// OnToolCall / OnToolRetry are the self-improvement seam (observer.go).
 	// Both may also be installed after registration with SetToolObserver,
 	// which is what the orchestrator does — its Workspace exists before the
@@ -169,6 +189,7 @@ func NewWorkspace(root string, opts ToolOpts) (*Workspace, *CallTracker, error) 
 		ShellWhitelist:  opts.ShellWhitelist,
 		ShellAllow:      opts.ShellAllow,
 		OnIntervention:  opts.OnIntervention,
+		OnShellResult:   opts.OnShellResult,
 		observer:        opts.OnToolCall,
 		retrySink:       opts.OnToolRetry,
 	}
@@ -420,6 +441,8 @@ type Workspace struct {
 	Checkpointer       *FileCheckpointer
 	Loop               *CallTracker
 	OnIntervention     func(reason, message string)
+	// OnShellResult observes completed ws_shell commands; see ShellResultFunc.
+	OnShellResult ShellResultFunc
 	// ReadHeadLines caps auto-trimmed full-file reads (0 = default 80).
 	ReadHeadLines int
 	// ReadWindow is the default ws_read line window (0 = DefaultReadWindow).
@@ -1558,20 +1581,51 @@ func (w *Workspace) shell(ctx context.Context, args map[string]interface{}) (int
 	// have written half a tree before it died.
 	scope := w.reportShellScope(ctx, command, scopeBefore)
 
+	// Report the outcome to whoever installed the hook, on every path where the
+	// command actually RAN. A worker verifying its own work with the project's
+	// test command is the single most informative event in a tool loop, and
+	// until this existed the harness watched it go by: the run could only learn
+	// the objective was met after the whole task ended, so a model that fixed
+	// the bug on its tenth call kept going for another twenty-two.
+	advice := w.noteShellResult(command, !res.TimedOut && res.Err == nil, res.Output)
+
 	if res.TimedOut {
 		// A timeout is information for the model, not a harness error.
-		return TimeoutMessage(command, timeout, res.Output) + scope, nil
+		return TimeoutMessage(command, timeout, res.Output) + scope + advice, nil
 	}
 	if res.Err != nil {
 		return fmt.Sprintf(
 			"exit error: %v\n%s\n\nThe command failed — read the output above, fix the cause with "+
-				"ws_edit/ws_patch, then re-run it.", res.Err, res.Output) + scope, nil
+				"ws_edit/ws_patch, then re-run it.", res.Err, res.Output) + scope + advice, nil
 	}
 	if strings.TrimSpace(res.Output) == "" {
 		return fmt.Sprintf("(command succeeded with no output: %s)",
-			truncateSnippet(command, 200)) + scope, nil
+			truncateSnippet(command, 200)) + scope + advice, nil
 	}
-	return res.Output + scope, nil
+	return res.Output + scope + advice, nil
+}
+
+// noteShellResult runs the OnShellResult hook and returns whatever advisory it
+// wants appended. A panicking or absent hook must never take a tool call down
+// with it: this is an observation seam, not part of the command's contract.
+func (w *Workspace) noteShellResult(command string, ok bool, output string) (advice string) {
+	if w == nil || w.OnShellResult == nil {
+		return ""
+	}
+	// The recover is not decoration. This runs on the WORKER'S goroutine in the
+	// middle of a tool call, so a panic in an observer would take down the tool
+	// call, the task, and the run — for a hook whose entire job is to watch. An
+	// observation seam must never be able to fail the thing it observes.
+	defer func() {
+		if r := recover(); r != nil {
+			advice = ""
+		}
+	}()
+	out := w.OnShellResult(command, ok, output)
+	if strings.TrimSpace(out) == "" {
+		return ""
+	}
+	return "\n\n" + strings.TrimSpace(out)
 }
 
 func (w *Workspace) markRead(rel string) {

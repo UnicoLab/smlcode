@@ -189,6 +189,9 @@ type Orchestrator struct {
 	// write-evidence fingerprint of the last probe). Guarded by mu. See
 	// objectiveAlreadyMet in qagate.go.
 	objective objectiveProbeState
+	// objectiveShell is the last clean run of the objective command observed
+	// inside a worker's own tool loop. See shellobjective.go.
+	objectiveShell *objectiveShellRun
 }
 
 func New(cfg *config.Config) (*Orchestrator, error) {
@@ -261,6 +264,9 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 				o.emitFull("execute", stream.KindIntervention, "harness", "",
 					message, code, reason)
 			}
+		},
+		OnShellResult: func(command string, ok bool, output string) string {
+			return o.noteShellObjectiveRun(command, ok, output)
 		},
 		OnFileChange: func(path, kind, detail string) {
 			if o != nil {
@@ -1385,6 +1391,52 @@ func (o *Orchestrator) roleTimeout(role string) time.Duration {
 	return roleTimeoutFrom(role, o.taskTimeoutCeiling(), p95, samples)
 }
 
+// roleTimeoutWithin is roleTimeout capped by the runway the RUN has left.
+//
+// MEASURED MOTIVATION. Three of the four fix-a-bug ceiling misses across
+// v0.18.1, v0.18.2 and the harvest build are the same event: a worker burns its
+// full 8-minute task timeout producing nothing, the harness starts a SECOND
+// full-length attempt, and the 20-minute wall arrives in the middle of it. The
+// run then dies on `context deadline exceeded` with engine_success=false —
+// having, in every one of those runs, already left a correct tree on disk.
+//
+// Starting an attempt longer than the time remaining cannot succeed. It can
+// only convert a run that would have reported honestly into one that is killed
+// mid-call, losing the finish path: no QA gate, no board persist, no summary.
+// So the budget is clamped to the runway, keeping a fifth of it back for that
+// finish path.
+//
+// This does NOT make a stalled worker productive — nothing in the harness can.
+// It makes the harness stop betting time it does not have, which is the part
+// that is its own to get right.
+func (o *Orchestrator) roleTimeoutWithin(ctx context.Context, role string) time.Duration {
+	budget := o.roleTimeout(role)
+	if ctx == nil {
+		return budget
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		// No wall budget configured — nothing to clamp against.
+		return budget
+	}
+	runway := time.Until(deadline)
+	if runway <= 0 {
+		// Already past it; the call will fail immediately either way, and
+		// shortening it further buys nothing.
+		return budget
+	}
+	usable := runway - runway/runFinishReserveDivisor
+	if usable < budget {
+		return usable
+	}
+	return budget
+}
+
+// runFinishReserveDivisor keeps 1/N of the remaining runway for the finish path
+// — the QA gate, the board write and the result — so a run that runs out of
+// time still reports what it did instead of being killed mid-call.
+const runFinishReserveDivisor = 5
+
 // resolveExecRole maps an unregistered role (e.g. go-tester from a pipeline
 // preset whose agent blocks never materialized) to a known generic role so
 // the executor never fails with "subagent not found".
@@ -1473,7 +1525,7 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 	o.emitFull(execRole, stream.KindAgentStart, execRole, taskID, "started", scopeFromInput(input), "")
 	o.bumpLLMCalls(1)
 	start := time.Now()
-	timeout := o.roleTimeout(execRole)
+	timeout := o.roleTimeoutWithin(ctx, execRole)
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	results, err := o.executor.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
@@ -1575,7 +1627,7 @@ func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID
 	// Per-pass timeout is the single-shot budget; the whole cycle gets the
 	// pass budget times the worst-case number of calls, capped at the task
 	// timeout so a stuck planner cannot outlive the run.
-	pass := o.roleTimeout(execRole)
+	pass := o.roleTimeoutWithin(ctx, execRole)
 	budget := time.Duration(1+2*thinkRefinePasses(passes)) * pass
 	if full := o.cfg.TaskTimeout; full > 0 && budget > full {
 		budget = full

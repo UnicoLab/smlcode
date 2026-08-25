@@ -271,6 +271,17 @@ type Runner struct {
 	// of a corrective board — see RunCorrectiveBoard.
 	betweenWavesOff bool
 
+	// runReserve is the slice of wall-clock held back for the FINISH path — the
+	// QA gate, the board write, the summary. Computed once per run from the
+	// original runway and then held FIXED, which is the whole point: a reserve
+	// recomputed as a fraction of what is left is geometric and reserves
+	// nothing. Measured: with a 6s runway and a per-call 4/5 clamp, the calls
+	// came out at 4.8s, 0.96s, 0.19s … and summed straight back to 6s. Every
+	// call was individually affordable and together they ate the entire run.
+	runReserveMu sync.Mutex
+	runReserve   time.Duration
+	runReserveOK bool
+
 	// earlyStop* record a BetweenWaves stop: whether it happened, why, and how
 	// many planned tasks were never executed because of it. A stop is a
 	// deliberate abandonment of work, and the caller must be able to say so
@@ -322,6 +333,7 @@ func (r *Runner) WithFailureHandler(fh *EnhancedFailureHandler) *Runner {
 //     one-task board whose gate kept answering "retry" cost ~2,000 model calls
 //     before it said anything.
 func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
+	r.noteRunway(ctx)
 	guard := 0
 	idleRounds := 0
 	stallRounds := 0
@@ -340,6 +352,14 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 			_ = r.Store.MergeFromDisk()
 			snap := r.Store.Snapshot()
 			*board = snap
+		}
+
+		// Out of runway: stop scheduling agent work so the finish path — the QA
+		// gate, the board write, the summary — still has time to run. Clamping
+		// each call is not enough on its own; dispatch has to stop. Reported,
+		// never silent: whatever is left on the board is real abandoned work.
+		if r.runwaySpent(ctx) {
+			return r.stopOutOfRunway(board)
 		}
 
 		ready := scheduleReady(board.ReadyTasks())
@@ -483,6 +503,131 @@ func (r *Runner) RunCorrectiveBoard(ctx context.Context, board *plan.Board) (boo
 	r.betweenWavesOff = true
 	defer func() { r.betweenWavesOff = prev }()
 	return true, r.RunBoard(ctx, board)
+}
+
+// noteRunway fixes this run's finish-path reserve, once.
+//
+// It is computed from the ORIGINAL runway and then never recomputed. A reserve
+// taken as a fraction of the REMAINING time is geometric and therefore reserves
+// nothing: measured on a 6s runway, successive 4/5 clamps handed out 4.8s,
+// 0.96s, 0.19s … which sum back to the whole 6s. Every call looked affordable
+// and together they consumed the run, which is the bug this was supposed to fix.
+//
+// RunBoard is called more than once per run (every corrective board), so the
+// first call wins and later ones leave it alone.
+func (r *Runner) noteRunway(ctx context.Context) {
+	if r == nil || ctx == nil {
+		return
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return
+	}
+	r.runReserveMu.Lock()
+	defer r.runReserveMu.Unlock()
+	if r.runReserveOK {
+		return
+	}
+	total := time.Until(deadline)
+	if total <= 0 {
+		return
+	}
+	r.runReserve = total / loopFinishReserveDivisor
+	r.runReserveOK = true
+}
+
+// finishReserve is the wall-clock held back for the finish path, or 0 when the
+// run has no deadline to reason about.
+func (r *Runner) finishReserve() time.Duration {
+	if r == nil {
+		return 0
+	}
+	r.runReserveMu.Lock()
+	defer r.runReserveMu.Unlock()
+	return r.runReserve
+}
+
+// runwaySpent reports that the run has less than its finish reserve left, so no
+// further agent work may be scheduled.
+//
+// This is the half that actually protects the reserve. Clamping each call is
+// not enough on its own — see noteRunway. Dispatch has to STOP.
+func (r *Runner) runwaySpent(ctx context.Context) bool {
+	if r == nil || ctx == nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	reserve := r.finishReserve()
+	if reserve <= 0 {
+		return false
+	}
+	return time.Until(deadline) <= reserve
+}
+
+// callTimeout is r.Timeout clamped so a call cannot eat the finish reserve.
+//
+// MEASURED. Every fix-a-bug ceiling miss across v0.18.1, v0.18.2 and the
+// harvest build is the same event: a worker burns its full task timeout
+// producing nothing, and the harness then starts ANOTHER full-length attempt
+// with less wall-clock than that remaining. It cannot finish. The deadline
+// arrives mid-call and takes the finish path with it — no QA gate, no board
+// write, no summary — in runs that had already left a correct tree on disk.
+//
+// The orchestrator's own role calls learned this first (roleTimeoutWithin), and
+// it made no measurable difference, because the calls that burn the budget are
+// these: the loop dispatches workers, reviewers and correctors on a FLAT
+// r.Timeout that never looked at the clock.
+//
+// This cannot make a stalled model productive. It stops the harness betting
+// time it does not have, which is the part that belongs to the harness.
+func (r *Runner) callTimeout(ctx context.Context) time.Duration {
+	if r == nil {
+		return 0
+	}
+	budget := r.Timeout
+	if ctx == nil {
+		return budget
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return budget
+	}
+	runway := time.Until(deadline)
+	if runway <= 0 {
+		// Already past it: the call fails instantly either way, and a negative
+		// budget is worse than the real one.
+		return budget
+	}
+	usable := runway - r.finishReserve()
+	if usable <= 0 {
+		// runwaySpent should have stopped dispatch before here; if something
+		// still calls out, make it fail fast rather than eat the reserve.
+		return minCallTimeout
+	}
+	if usable < budget {
+		return usable
+	}
+	return budget
+}
+
+// loopFinishReserveDivisor keeps 1/N of the run's ORIGINAL runway for the
+// finish path, so a run that runs out of time reports what it did.
+const loopFinishReserveDivisor = 5
+
+// minCallTimeout is the floor for a dispatch that slipped past runwaySpent.
+const minCallTimeout = 250 * time.Millisecond
+
+// stopOutOfRunway ends the board because the run has only its finish reserve
+// left. It reuses the between-waves early-stop bookkeeping, so the abandoned
+// task count reaches Result.UnexecutedTasks and the summary exactly as a
+// green-objective stop does — a run that ran out of time must say so, not look
+// like one that finished.
+func (r *Runner) stopOutOfRunway(board *plan.Board) error {
+	return r.stopBetweenWaves(board,
+		"out of time — stopped scheduling new agent work so the run could finish and report")
 }
 
 // stopBetweenWaves ends the board because BetweenWaves said the run is already
@@ -975,7 +1120,7 @@ func (r *Runner) executeWave(ctx context.Context, board *plan.Board, ws *waveSta
 		req := ggagent.SubAgentRequest{
 			AgentID:    r.normalizeExecRole(t.Role),
 			Input:      r.taskInputFor(board, t),
-			Timeout:    r.Timeout,
+			Timeout:    r.callTimeout(ctx),
 			ShareState: true,
 			TaskID:     t.ID,
 		}
@@ -1196,7 +1341,7 @@ func (r *Runner) recoverWaveError(ctx context.Context, board *plan.Board, t *pla
 			r.logf("%s overflow compact: %v", t.ID, cerr)
 		} else {
 			retryReq := ggagent.SubAgentRequest{
-				AgentID: role, Input: r.taskInputFor(board, *t), Timeout: r.Timeout,
+				AgentID: role, Input: r.taskInputFor(board, *t), Timeout: r.callTimeout(ctx),
 				ShareState: true, TaskID: t.ID,
 			}
 			if r.applyResumeRequest(&retryReq, t.ID) {
@@ -1694,7 +1839,7 @@ func (r *Runner) plainReview(ctx context.Context, current plan.Task, g gateState
 		strings.Join(current.Files, ", "), "")
 	reviewIn := r.formatReviewPrompt(current)
 	res, ok := r.execOne(ctx, current.ID, "review", ggagent.SubAgentRequest{
-		AgentID: revRole, Input: reviewIn, Timeout: r.Timeout, ShareState: true, TaskID: current.ID,
+		AgentID: revRole, Input: reviewIn, Timeout: r.callTimeout(ctx), ShareState: true, TaskID: current.ID,
 	})
 	if !ok {
 		// Budget exhausted: approve on evidence or reject — never loop.
@@ -1739,7 +1884,7 @@ func (r *Runner) parseReviewOutput(ctx context.Context, current plan.Task, raw, 
 			Input: prompt + "\n\nYour previous answer was CUT OFF mid-JSON. " +
 				"Answer again with the SHORTEST valid JSON object: " +
 				`{"approved":<bool>,"score":<int>,"summary":"<one short line>","issues":[]}`,
-			Timeout: r.Timeout, ShareState: true, TaskID: current.ID,
+			Timeout: r.callTimeout(ctx), ShareState: true, TaskID: current.ID,
 		})
 		if ok {
 			if again := outputString(retry); strings.TrimSpace(again) != "" {
@@ -2105,7 +2250,7 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		corrIn := r.formatCorrectPrompt(current, review)
 		corr, ok := r.execOne(ctx, current.ID, "correction", ggagent.SubAgentRequest{
 			AgentID: r.correctorID(), Input: corrIn,
-			Timeout: r.Timeout, ShareState: true, TaskID: current.ID,
+			Timeout: r.callTimeout(ctx), ShareState: true, TaskID: current.ID,
 		})
 		if !ok {
 			return r.escalateTask(current, review, attempt, true)
@@ -2365,7 +2510,7 @@ func (r *Runner) recoverIncompleteFinalize(ctx context.Context, t *plan.Task, ba
 		})
 		corr, ok2 := r.execOne(ctx, t.ID, "finalize recovery", ggagent.SubAgentRequest{
 			AgentID: r.correctorID(), Input: corrIn,
-			Timeout: r.Timeout, ShareState: true, TaskID: t.ID,
+			Timeout: r.callTimeout(ctx), ShareState: true, TaskID: t.ID,
 		})
 		if !ok2 {
 			break

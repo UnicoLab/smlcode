@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.18.3 — 2026-08-25
+
+The harness stops betting time it does not have.
+
+v0.18.2 shipped with one measured defect open: `fix-a-bug` hit its 20-minute
+ceiling in one run of three, unchanged across two releases. Chasing it properly
+found that all three failures were the SAME event, and that the harness — not
+the model — was the part getting it wrong.
+
+**A worker burns its full task timeout producing nothing, and the harness then
+starts ANOTHER full-length attempt with less wall-clock left than that attempt
+is allowed to take.** It cannot finish. The deadline arrives mid-call and takes
+the finish path with it: no QA gate, no board write, no summary — in runs that
+had *already left a correct tree on disk*. The only failing assertion was the
+wall budget; everything the run actually did was right and was thrown away.
+
+**Measured, same fixtures, same 8m task timeout and 20m ceiling:**
+
+| | v0.18.1 | v0.18.2 | v0.18.3 |
+|---|---|---|---|
+| `fix-a-bug` pass rate (9B) | 2 of 3 | 2 of 3 | **3 of 3** |
+| `fix-a-bug` pass rate (Coder 30B) | — | — | **2 of 2** |
+| `implement-from-tests` | 3 of 3 | 3 of 3 | **1 of 1** |
+| individual checks | — | — | **30 of 30** |
+
+The run that demonstrates the mechanism rather than luck is the one that still
+reached the wall: it stopped ITSELF at 1199.1s with `run_err=<nil>` and all five
+checks green, where the equivalent v0.18.2 run was killed at 1200s with
+`context deadline exceeded`. It reports `engine_success=false` with six tasks
+planned and not all executed — which is the honest reading, not a regression.
+
+### Fixed
+
+- **A stalled worker can no longer outlive its run.** Every loop-side agent
+  dispatch — worker, reviewer, review retry, corrector, finalize recovery — ran
+  on a flat `r.Timeout` that never looked at the clock. They are now clamped to
+  the runway, with a fifth of the run's ORIGINAL budget held back for the finish
+  path, and dispatch STOPS once only that reserve remains.
+  Two things this took, both found by a deterministic reproduction and neither
+  visible in live runs:
+  - **The reserve must be absolute, not fractional.** A reserve taken as a
+    fraction of what REMAINS is geometric and reserves nothing: measured on a 6s
+    runway, successive 4/5 clamps handed out 4.8s, 0.96s, 0.19s … summing back to
+    the whole 6s. Every call individually affordable; together they ate the run.
+  - **Stopping new waves is not enough.** A worker that stalls to the reserve
+    boundary is still followed, inside the same wave, by a review and a
+    correction. The guard belongs in `execOne`, the one choke point every
+    loop-side dispatch passes through.
+  This cannot make a stalled model productive — nothing in the harness can. It
+  stops the harness spending time it does not have, which is its own to get right.
+- **The harness harvests the worker's own verification.** A worker checks its
+  work by running the project's test command through `ws_shell`, and that output
+  already flowed past the harness, which ignored it and later paid for a full
+  test run to learn the same thing. A clean exit of the EXACT objective command
+  is now free evidence for the next probe, and the model is told in the tool
+  result it is already reading that the criterion is met and the next call must
+  be its finish call. Matching is exact: a green `go test ./chunk` says nothing
+  about `go test ./...`, and the evidence is discarded the moment anything is
+  written after it, retracted by a later failure, and never accepted from a weak
+  gate or a `[no test files]` run.
+
+### Notes
+
+Measured on two SLMs. `Qwen3-Coder-30B-A3B-Instruct-MLX-4bit` — the project's
+configured default — does about 2.5x the work of the 9B (55 tool calls, ~254k
+tokens) in half the wall time, and does it consistently (513s/466s against the
+9B's 461s-1199s swing). The remaining ceiling risk is a 9B capability property,
+not a harness one.
+
 ## v0.18.2 — 2026-08-25
 
 Budgets that were spent by failure.

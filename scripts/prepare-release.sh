@@ -44,7 +44,8 @@ fi
 # shields.io/github/v/release, which resolves at render time, so there is
 # nothing in it to bump. The step that used to rewrite `label=vX.Y.Z` had been
 # a silent no-op ever since the badge changed.
-TOUCHED=(cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md)
+TOUCHED=(cmd/slmcode/version.go Makefile Formula/slmcode.rb docs/changelog.md
+         docs/install.md RELEASE.md)
 for f in "${TOUCHED[@]}"; do
   if ! git diff --quiet -- "$f"; then
     echo "error: $f has uncommitted changes — commit or stash first" >&2
@@ -85,6 +86,22 @@ perl -0pi -e 's/^VERSION \?= .*/VERSION ?= '"$VERSION"'/m' Makefile
 #    zeros say "not synced yet" and nothing else. See Formula/slmcode.rb.
 perl -0pi -e 's/^  version "[^"]*"/  version "'"$VERSION"'"/m' Formula/slmcode.rb
 perl -0pi -e 's/^(\s*sha256 ")[0-9a-f]{64}"/${1}'"$(printf '0%.0s' {1..64})"'"/mg' Formula/slmcode.rb
+
+# 3b. The docs that pin fully-numbered asset names and release-download URLs.
+#     scripts/check-version.sh treats a stale one as an ERROR, and rightly: these
+#     are copy-paste download instructions, so a stale version does not look
+#     wrong, it 404s. This step existed only in a human's head until v0.18.3,
+#     where the release failed the guard twice in a row for exactly this.
+for doc in docs/install.md RELEASE.md; do
+  [[ -f "$doc" ]] || continue
+  perl -0pi -e 's/\Qslmcode_\E\d+\.\d+\.\d+_/slmcode_'"$VERSION"'_/g' "$doc"
+  perl -0pi -e 's{releases/download/v\d+\.\d+\.\d+/}{releases/download/v'"$VERSION"'/}g' "$doc"
+  # PREV is a tag ("v0.18.2"); the docs also quote the bare number in prose.
+  prev_bare="${PREV#v}"
+  if [[ -n "$prev_bare" && "$prev_bare" != "0.0.0" ]]; then
+    perl -0pi -e 's/\Q'"$prev_bare"'\E/'"$VERSION"'/g' "$doc"
+  fi
+done
 
 # 4. Changelog entry from conventional commits since the previous tag — unless
 #    one was written by hand, which is the norm for anything but a patch.

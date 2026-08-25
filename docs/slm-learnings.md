@@ -281,7 +281,8 @@ the harness can tell it is done.
 ## 8. Context: capacity is not demand
 
 Every model here reports a 262,144-token window. The obvious move — size the
-context budget from the measured window — was measured, and it is wrong:
+context budget from the measured window — was measured, and cost more than it
+returned:
 
 All figures below are **Qwen3-Coder-30B**, so the comparison is within one
 model. Baselines are the median of two runs.
@@ -311,23 +312,60 @@ is still 3.6× baseline. And the standard defence of large budgets, that they
 prevent costly re-reads, is refuted: tool calls went **up** 33 → 116. The
 oversized context did not replace work, it flooded the run.
 
-!!! warning "A suspected second amplifier, deliberately not acted on"
-    `ws_read`'s line budget is 15% of the context window, so a 262K window
-    budgets ~4,369 lines for one read against ~546 at 32K — and read output
-    persists in the conversation. That makes it a plausible source of the
-    remaining 3.6×.
+### What the cost actually was
 
-    It has **not** been isolated. The measurement above moved the read budget,
-    the skill budget, the knowledge budget and `max_turns` together, so it
-    cannot attribute the cost to any one of them. Bounding the read budget was
-    tried and reverted: it contradicts the v0.18.4 fix that took a 262K model
-    from ~80 lines per read to a usable slice, and that fix has a stated
-    rationale and a test defending it. Overriding it needs an experiment that
-    varies the read budget alone.
+The 3.6× was attributed rather than guessed at, and the first hypothesis was
+wrong.
 
-    The default path is unaffected either way — with `calibrate_budgets` off,
-    `context_limit` never becomes the measured window, so reads are already
-    budgeted against the static profile.
+**The read budget was ruled out without a single GPU run.** `ws_read` allows 15%
+of the window, so a 262K model budgets ~4,369 lines per read against ~546 at
+32K — a plausible-looking culprit. But `respects-scope`'s entire fixture is
+**272 tokens across four files**, the largest 93 tokens. Both budgets return
+every file whole, every time. The read channel contributes exactly zero.
+
+Decomposing the measured run instead:
+
+| Factor | Contribution |
+|---|---:|
+| More LLM calls (11 → 26) | **2.36×** |
+| More tokens per call (11,841 → 16,742) | 1.41× |
+| Product | **3.34×** — the observed cost exactly |
+
+The injected skill and knowledge budgets — the obvious suspects — account for
+only 1,352 of the 4,901 extra tokens per call (28%). The rest is accumulated
+conversation history, which is a *consequence* of running longer, not a separate
+cause.
+
+**`max_turns` 20 → 36 was the dominant channel**, and it came from a rule that
+grew the turn ceiling by 4 per context doubling.
+
+!!! success "→ what the harness does"
+    Turns no longer scale with the window (`pkg/calibrate/derive.go`).
+
+    The old rationale was that "a wider window lets a model keep more of its own
+    reasoning in view, which is worth a few more turns". It sounds right and the
+    measurement refutes it: the extra turns did not finish the work better, they
+    timed out a task. The reading the data supports is the inverse — a wider
+    window means more held *per turn*, which argues for needing **fewer** turns on
+    the same task. How many turns a task needs is a property of the task. A turn
+    ceiling is a safety bound, and raising a safety bound because the model has
+    more memory only lets a run that is not converging go on longer.
+
+    **Predicted before measuring: ~184,000 tokens. Measured: 176,192 — 4% error.**
+
+| Coder-30B, sizing on | Turns grew | Turns fixed | Saved |
+|---|---:|---:|---:|
+| `respects-scope` | 435,296 | **176,192** | **60%** |
+| `implement-from-tests` | 164,504 | **153,349** | 7% |
+
+`implement-from-tests` is the control: it *passed* under sizing before the change
+(5/5 checks, engine success), so the requirement was that it not regress. It
+improved instead, and kept 5/5 and engine success.
+
+The gap between 60% and 7% is itself the finding. Extra turns cost most where a
+run has least to do — `respects-scope` starts green and needs one small edit, so
+a raised ceiling bought only room to keep looking. `implement-from-tests` has
+real work and finished in 9 calls either way.
 
 The resolution is to stop conflating two questions:
 
@@ -342,14 +380,14 @@ The resolution is to stop conflating two questions:
     Models at or below the bound are unaffected.
 
     Budget sizing from the measured window ships **opt-in and off**
-    (`slmcode config set calibrate_budgets true`) — not because the outcome is
-    uncertain, but because it was measured to cost on every scenario tried. It
-    exists so a 262K model is not stuck with 4K-era budgets when a user
-    deliberately wants the room.
+    (`slmcode config set calibrate_budgets true`). Its cost is now understood
+    rather than merely observed: removing the turn growth took it from 3.34× to
+    1.35× baseline, and the residual 1.35× is the injected budgets doing what
+    they were asked to do.
 
     Derived budgets are capped rather than pure shares — see
     `pkg/calibrate/derive.go`. The first uncapped version is the 631,160-token
-    row in the second table above.
+    row above.
 
 ---
 
@@ -416,6 +454,8 @@ Every item below exists because of a number on this page.
 | Knee is not guessable | measure it; report what config blocks | `pkg/calibrate/apply.go` |
 | Budgets sized for 4–16K models | derive from measured window, capped | `pkg/calibrate/derive.go` |
 | Packer fills any window given | bound pack sizing, not capacity | `pkg/context/tokens.go` |
+| Extra turns cost 2.36× and helped nothing | turns no longer scale with the window | `pkg/calibrate/derive.go` |
+| A wall-clock test budget measured the machine | assert allocations, not elapsed time | `pkg/evolve/improvement_test.go` |
 | Cold 42 GB model looks like a hang | staged progress in CLI and Studio | `pkg/calibrate/calibrate.go` |
 
 ---

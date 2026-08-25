@@ -59,9 +59,19 @@ func TestDeriveScalesBudgetsWithTheWindow(t *testing.T) {
 		t.Fatalf("262K max_tokens %d did not rise above the static %d",
 			huge.MaxTokens, base.MaxTokens)
 	}
-	if huge.MaxTurns <= base.MaxTurns {
-		t.Fatalf("262K max_turns %d did not rise above the static %d",
-			huge.MaxTurns, base.MaxTurns)
+	// TURNS MUST NOT GROW WITH THE WINDOW. They used to, +4 per doubling, and
+	// the measurement refuted the reasoning: on respects-scope the extra turns
+	// took the run from 11 LLM calls to 26 and 130,255 prompt tokens to 435,296,
+	// timed out a task, and finished no better. How many turns a task needs is a
+	// property of the task; a turn ceiling is a safety bound, and raising a
+	// safety bound because the model has more memory just lets a run that is not
+	// converging go on longer. See deriveTurns.
+	if huge.MaxTurns != base.MaxTurns {
+		t.Fatalf("262K max_turns %d differs from the static %d — turns must not "+
+			"scale with the window", huge.MaxTurns, base.MaxTurns)
+	}
+	if small.MaxTurns != base.MaxTurns {
+		t.Fatalf("32K max_turns %d differs from the static %d", small.MaxTurns, base.MaxTurns)
 	}
 	t.Logf("skills %d→%d→%d, knowledge %d→%d→%d, max_tokens %d→%d, turns %d→%d",
 		base.SkillTokenBudget, small.SkillTokenBudget, huge.SkillTokenBudget,

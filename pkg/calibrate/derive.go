@@ -77,13 +77,10 @@ const (
 	knowledgeCap    = 768
 	minTurns        = 12
 	maxTurnsCeiling = 48
-	// turnsPerContextDoubling is how many extra ReAct turns each doubling of
-	// the window buys. A bigger window does not make a model smarter, it makes
-	// it able to keep more of its own trail in view — so this grows slowly and
-	// stops well short of "loop forever".
-	turnsPerContextDoubling = 4
 	// turnsBaselineWindow is the window the static profiles were written
-	// against; growth is counted in doublings from here.
+	// against. Turns no longer grow from here (see deriveTurns for the
+	// measurement that removed the growth); it survives as the reference point
+	// the budget tests reason about.
 	turnsBaselineWindow = 16384
 )
 
@@ -118,21 +115,36 @@ func liftTo(base, want, cap int) int {
 	return maxInt(base, want)
 }
 
-// deriveTurns grows the ReAct turn ceiling with the window, in doublings.
+// deriveTurns floors the ReAct turn ceiling, and deliberately does NOT grow it
+// with the window.
 //
-// Turns are not free: each is a model call. The growth is deliberately slow and
-// bounded — a wider window lets a model keep more of its own reasoning in view,
-// which is worth a few more turns, and is not a license to iterate forever.
+// IT USED TO GROW, +4 per doubling, on the reasoning that "a wider window lets a
+// model keep more of its own reasoning in view, which is worth a few more
+// turns". That reasoning sounds right and the measurement contradicts it.
+//
+// MEASURED, Qwen3-Coder-30B on respects-scope, 262,144-token window. Growth took
+// max_turns 20 -> 36 (+80%), and the run went from 11 LLM calls to 26 (2.36x)
+// and 130,255 prompt tokens to 435,296 (3.34x). Decomposed: 2.36x from the extra
+// calls and 1.41x from each call carrying more accumulated history — 2.36 x 1.41
+// = 3.34, the whole of the observed cost. It did not finish better for the extra
+// turns; it timed out a task, and the run reported engine failure while every
+// acceptance check passed.
+//
+// The inverted reading is the one the data supports: a wider window means the
+// model can hold MORE PER TURN, which argues for needing fewer turns on the same
+// task, not more. How many turns a task needs is a property of the TASK. A turn
+// ceiling is a safety bound against looping, and raising a safety bound because
+// the model has more memory just lets a run that is not converging continue for
+// longer.
+//
+// The floor stays: a profile that pins fewer than minTurns is lifted, because
+// too few turns fails work that would otherwise succeed. Only the growth is
+// gone.
 func deriveTurns(base, window int) int {
+	_ = window // intentionally unused: see above — turns do not scale with it.
 	turns := base
 	if turns < minTurns {
 		turns = minTurns
-	}
-	for w := turnsBaselineWindow; w > 0 && w <= window/2; w *= 2 {
-		turns += turnsPerContextDoubling
-		if turns >= maxTurnsCeiling {
-			break
-		}
 	}
 	if turns > maxTurnsCeiling {
 		turns = maxTurnsCeiling

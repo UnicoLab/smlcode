@@ -351,23 +351,51 @@ func TestInjectedContextStaysBounded(t *testing.T) {
 }
 
 // The hot path must be cheap: a failure lookup happens on every tool error.
+//
+// MEASURED AS ALLOCATIONS, NOT WALL CLOCK. The previous version asserted a
+// 500-microsecond-per-call budget, which measures the MACHINE rather than the
+// code: on a loaded developer box it failed while the code was unchanged and
+// correct. A timing budget that flakes teaches people to re-run the suite until
+// it passes, which is how a real regression gets waved through.
+//
+// Allocations per call catch what actually matters here: Lookup walks every
+// rule on every tool error, so an accidental per-rule allocation or a re-parse
+// of the signal is the regression worth blocking.
+//
+// STILL SKIPPED UNDER -race, for a different reason than before. The old budget
+// was skipped because the detector dominates the clock. Allocations are not
+// clock-bound, but the detector allocates its own shadow state per access:
+// MEASURED 75 without it, and 114 then 117 with it — inflated AND variable
+// between runs. A ceiling that accommodated that would be too loose to catch
+// anything in the pass where the number is meaningful.
 func TestLookupIsCheap(t *testing.T) {
 	if raceEnabled {
-		t.Skip("the race detector's instrumentation makes wall-clock budgets meaningless")
+		t.Skip("the race detector adds its own per-access allocations (measured 114-117 vs 75), " +
+			"so an allocation budget cannot discriminate here")
 	}
 	r, _ := OpenRules(t.TempDir(), t.TempDir())
 	sig := Signal{Tool: "ws_edit", Language: "go", Model: "qwen2.5-coder:14b",
 		Message: "old_str not found in pkg/loop/runner.go.\nClosest text already in the file."}
-	start := time.Now()
-	const n = 2000
-	for i := 0; i < n; i++ {
-		r.Lookup(sig)
-	}
-	per := time.Since(start) / n
-	if per > 500*time.Microsecond {
-		t.Errorf("Lookup took %v per call; the hot-path budget is a few hundred microseconds", per)
+
+	// Warm any lazily-built state so this measures steady-state Lookup.
+	r.Lookup(sig)
+
+	avg := testing.AllocsPerRun(200, func() { r.Lookup(sig) })
+	if avg > maxLookupAllocs {
+		t.Errorf("Lookup allocates %.0f times per call; the hot-path budget is %d. "+
+			"A failure lookup runs on every tool error, so per-call allocation "+
+			"here is paid on every error of every run.", avg, maxLookupAllocs)
 	}
 }
+
+// maxLookupAllocs bounds the steady-state allocations of one Lookup.
+//
+// MEASURED at 75, identically on three consecutive runs — the load-independence
+// that motivated moving off a wall-clock budget. 96 gives ~28% headroom:
+// deliberately a ceiling rather than an exact count, so a harmless refactor does
+// not fail while a change that makes Lookup allocate per-rule (the store walks
+// every rule on every tool error) still does.
+const maxLookupAllocs = 96
 
 // The repair store must satisfy the offline replay harness's Repairer
 // interface, and replaying real fixtures through it must show a measurable

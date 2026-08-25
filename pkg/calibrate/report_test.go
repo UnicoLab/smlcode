@@ -50,8 +50,13 @@ func TestReportShowsEvidenceNotJustNumbers(t *testing.T) {
 }
 
 // TestReportShowsTheDerivedBudgetsAsADiff: the budgets are the part a user is
-// most likely to disagree with, so "260 → 4096" has to be visible rather than
+// most likely to disagree with, so "260 → 1024" has to be visible rather than
 // implied by a context number.
+//
+// max_turns is deliberately NOT in this list any more. The report shows budgets
+// that CHANGED, and turns no longer scale with the window — see deriveTurns for
+// the measurement that removed the growth. Asserting it here would re-require
+// the behavior that measurement removed.
 func TestReportShowsTheDerivedBudgetsAsADiff(t *testing.T) {
 	r := reportFixture()
 	out := r.Render()
@@ -59,8 +64,12 @@ func TestReportShowsTheDerivedBudgetsAsADiff(t *testing.T) {
 	if r.ChangedBudgets() == 0 {
 		t.Fatal("a 16K→262K derivation moved no budgets")
 	}
+	if strings.Contains(out, "max_turns") {
+		t.Errorf("the report lists max_turns as changed, but turns no longer "+
+			"scale with the window:\n%s", out)
+	}
 	for _, want := range []string{
-		"skill_token_budget", "knowledge_token_budget", "max_turns", "→",
+		"skill_token_budget", "knowledge_token_budget", "→",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the budget diff omits %q:\n%s", want, out)

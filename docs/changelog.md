@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.19.1 — 2026-08-26
+
+Two things that were left open in v0.19.0, closed with measurement.
+
+### Changed
+
+- **`max_turns` no longer scales with the context window.** It grew by 4 per
+  context doubling, on the reasoning that a wider window lets a model keep more
+  of its own trail in view. That sounds right and the measurement refutes it.
+
+  On `respects-scope` the growth took `max_turns` 20 → 36, and the run from 11
+  LLM calls to 26 and 130,255 prompt tokens to 435,296. Decomposed: **2.36× from
+  the extra calls, 1.41× from each call carrying more history — 2.36 × 1.41 =
+  3.34, the whole of the observed cost.** It did not finish better for the extra
+  turns; it timed out a task.
+
+  Removing the growth was predicted to land near 184,000 tokens and **measured
+  176,192 — a 4% error, and a 60% reduction**. The reading the data supports is
+  the inverse of the original: a wider window means more held *per turn*, which
+  argues for needing fewer turns on the same task. How many turns a task needs is
+  a property of the task; a turn ceiling is a safety bound, and raising it
+  because the model has more memory only lets a non-converging run go on longer.
+
+  The control confirms it is not a trade: `implement-from-tests`, which *passed*
+  under sizing before the change, improved from 164,504 to 153,349 tokens and kept
+  5/5 checks and engine success. The gap between 60% and 7% is the finding — extra
+  turns cost most where a run has least to do.
+
+  Only the growth is gone — the `min_turns` floor stays, because too few turns
+  fails work that would otherwise succeed.
+
+### Fixed
+
+- **`TestLookupIsCheap` measured the machine, not the code.** It asserted a
+  500 µs-per-call budget, which fails on a loaded developer box while the code is
+  unchanged and correct — and a test that flakes teaches people to re-run the
+  suite until it passes, which is how a real regression gets waved through.
+
+  It now bounds **allocations** per call: measured 75, 75, 75 on three
+  consecutive runs, ceiling 96. It still skips under `-race`, but for a checked
+  reason rather than an assumed one — the detector adds its own per-access
+  allocations, measured at 114–117 and varying between runs, so a ceiling wide
+  enough to cover it would catch nothing.
+
+### Documented
+
+- **The `respects-scope` cost is attributed, not merely observed.** The leading
+  suspect was `ws_read`'s line budget; it was ruled out without a GPU run, since
+  the scenario's whole fixture is 272 tokens across four files and both budgets
+  return every file whole. [SLM learnings](slm-learnings.md) now carries the
+  decomposition instead of an open hypothesis.
+
 ## v0.19.0 — 2026-08-25
 
 Verification you can trust, and a written record of why.

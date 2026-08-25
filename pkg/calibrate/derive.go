@@ -54,14 +54,27 @@ import (
 //     260 and 180 tokens on a 262K window is 0.2%, the same absolute allowance
 //     a 4K model gets. These are where the context actually goes to work.
 const (
-	maxTokensShare  = 24 // window / 24 — output is task-shaped, not window-shaped
-	thinkingShare   = 16 // window / 16
-	skillShare      = 64 // window / 64  ≈ 1.5%
-	knowledgeShare  = 96 // window / 96  ≈ 1%
-	maxTokensCap    = 8192
-	thinkingCap     = 8192
-	skillCap        = 4096
-	knowledgeCap    = 3072
+	maxTokensShare = 24 // window / 24 — output is task-shaped, not window-shaped
+	thinkingShare  = 16 // window / 16
+	skillShare     = 64 // window / 64  ≈ 1.5%
+	knowledgeShare = 96 // window / 96  ≈ 1%
+	maxTokensCap   = 8192
+	thinkingCap    = 8192
+	// MEASURED, and the reason these are far below what the window affords.
+	//
+	// The first version capped skills at 4096 and knowledge at 3072, reasoning
+	// that a 262K window can hold them. It can — but INJECTION IS PAID ON EVERY
+	// CALL, and the respects-scope scenario went from ~121k prompt tokens and
+	// 164s to 631k tokens and 1050s: 5.2x the tokens, 6.4x the wall, for the
+	// same work. "Fits in the window" is a statement about capacity; "is worth
+	// sending 35 times" is a statement about value, and only the second one
+	// should set a per-call budget.
+	//
+	// These still lift a 262K model well above the static 380/260 — roughly
+	// 2.7x — without turning every prompt into a reference manual. Anyone who
+	// wants more can pin an exact-model profile; see applyContext.
+	skillCap        = 1024
+	knowledgeCap    = 768
 	minTurns        = 12
 	maxTurnsCeiling = 48
 	// turnsPerContextDoubling is how many extra ReAct turns each doubling of

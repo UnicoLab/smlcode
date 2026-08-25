@@ -27,28 +27,37 @@ class Slmcode < Formula
   # one thing. scripts/check-version.sh enforces the shape and reports how many
   # are still placeholders.
   #
+  # Once synced, each value carries a trailing "# v<version>" label naming the
+  # release it was computed for, and that label must agree with the `version`
+  # line above. It is there because a rebase resolves line by line: in v0.18.4
+  # a release commit replayed onto the bot's v0.18.3 sync commit moved the
+  # version line while leaving v0.18.3's digests underneath it, and nothing
+  # noticed. A label on the digest's own line cannot be carried across a
+  # release without carrying the contradiction with it, and
+  # scripts/check-version.sh fails the build on exactly that.
+  #
   # If you hit a mismatch against a zeroed value: the release workflow has not
   # finished. Install with the curl one-liner, or wait for the
   # "chore: sync Homebrew formula checksums" commit on main.
   on_macos do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_arm64"
-      sha256 "cb8e62024648f06ad9b2ceadedfd398828bf514ff0a5fd0967cdd99c6f396aa4"
+      sha256 "cb8e62024648f06ad9b2ceadedfd398828bf514ff0a5fd0967cdd99c6f396aa4" # v0.18.4
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_darwin_amd64"
-      sha256 "c546d866c687b7a7aaa161587fa30a230d9eca887d2da18ee1d12dd109181252"
+      sha256 "c546d866c687b7a7aaa161587fa30a230d9eca887d2da18ee1d12dd109181252" # v0.18.4
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_arm64"
-      sha256 "68e4e4775b1bb558cbd8783e93bda85b5a76f80f62db5e86903f2f32fef9a6f1"
+      sha256 "68e4e4775b1bb558cbd8783e93bda85b5a76f80f62db5e86903f2f32fef9a6f1" # v0.18.4
     end
     on_intel do
       url "https://github.com/UnicoLab/smlcode/releases/download/v#{version}/slmcode_#{version}_linux_amd64"
-      sha256 "ff1401fdd89e0dc4a0b42b0a249579fd1a92ebf0af16ef5d0989418fabe817ed"
+      sha256 "ff1401fdd89e0dc4a0b42b0a249579fd1a92ebf0af16ef5d0989418fabe817ed" # v0.18.4
     end
   end
 

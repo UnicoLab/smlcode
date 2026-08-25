@@ -78,6 +78,7 @@ func TestExplicitMaxParallelAlwaysWinsOverCalibration(t *testing.T) {
 
 func TestApplyInstallsTheServerReportedContextWindow(t *testing.T) {
 	cfg := localCfg(t)
+	cfg.CalibrateBudgets = true // sizing is opt-in; this test is about the sizing
 	before := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
 	applied := Apply(cfg, measured())
 	prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
@@ -116,10 +117,26 @@ func TestApplyInstallsTheServerReportedContextWindow(t *testing.T) {
 	}
 }
 
-func TestExplicitModelProfilesWinOverTheReportedWindow(t *testing.T) {
+// TestAPinnedModelWinsOverTheReportedWindow pins the escape hatch, and the
+// distinction that replaced a far coarser rule.
+//
+// This used to test that ANY model_profiles content blocked the measured
+// window. That rule was wrong in practice: the shipped profiles are generic
+// buckets ("default", "7b", "32b", "qwen"), every config write serializes the
+// whole map into config.yaml, and so the mere presence of scaffolding disabled
+// calibration's sizing forever.
+//
+// MEASURED on the slmcode repository itself: the server reported a 262,144
+// token window, the config carried exactly the shipped bucket set, and the
+// harness ran at ctx=32768 with a 260-token knowledge budget — while reporting
+// that "the measurement agreed with the current configuration".
+//
+// An EXACT-MODEL key is the signal of intent, because nothing generates one.
+func TestAPinnedModelWinsOverTheReportedWindow(t *testing.T) {
 	cfg := localCfg(t)
+	cfg.CalibrateBudgets = true
 	if err := cfg.Set("model_profiles", map[string]config.ModelProfile{
-		"default": {ContextLimit: 8192, MaxTokens: 2048},
+		config.NormProfileKey(cfg.Model): {ContextLimit: 8192, MaxTokens: 2048},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +144,37 @@ func TestExplicitModelProfilesWinOverTheReportedWindow(t *testing.T) {
 	cfg.Normalize()
 	Apply(cfg, measured())
 	if got := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model).ContextLimit; got != 8192 {
-		t.Fatalf("context limit = %d, want the user's 8192", got)
+		t.Fatalf("context limit = %d, want the pinned 8192", got)
+	}
+}
+
+// TestGenericBucketsDoNotBlockSizing is the other half: scaffolding must not
+// veto a measurement. This is the case that was silently costing a 262K model
+// seven eighths of its context.
+func TestGenericBucketsDoNotBlockSizing(t *testing.T) {
+	cfg := localCfg(t)
+	cfg.CalibrateBudgets = true
+	if err := cfg.Set("model_profiles", config.DefaultModelProfiles()); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Provenance().Mark("model_profiles", config.LayerProject, "")
+	cfg.Normalize()
+
+	applied, blocked := ApplyWithBlocked(cfg, measured())
+	got := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+	if got.ContextLimit != 262144 {
+		t.Fatalf("context limit = %d, want the measured 262144 — shipped buckets "+
+			"are scaffolding, not a decision", got.ContextLimit)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("reported a block for generic buckets: %+v", blocked)
+	}
+	if !hasKey(applied, "context_limit") {
+		t.Fatalf("the change was not reported: %+v", applied)
+	}
+	// And the budgets that depend on the window came with it.
+	if got.SkillTokenBudget <= 300 {
+		t.Fatalf("skill budget %d did not scale to a 262K window", got.SkillTokenBudget)
 	}
 }
 
@@ -177,8 +224,12 @@ func TestAutoTaskTimeoutIsCapped(t *testing.T) {
 	// actually be IN FORCE, which is the derived one: applyContext runs before
 	// applyTaskTimeout precisely so the timeout reflects the budget the run will
 	// use rather than the static default it replaced.
-	prof := DeriveProfile(
-		config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model), crawling.ContextLimit)
+	// task_timeout follows whatever max_tokens is actually in force, and with
+	// sizing off that is the static profile's.
+	prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+	if cfg.CalibrateBudgets {
+		prof = DeriveProfile(prof, crawling.ContextLimit)
+	}
 	uncapped, ok := crawling.RecommendedTaskTimeout(prof.MaxTokens)
 	if !ok || uncapped <= MaxAutoTaskTimeout {
 		t.Fatalf("test setup: recommendation %s must exceed the %s cap", uncapped, MaxAutoTaskTimeout)

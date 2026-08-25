@@ -43,6 +43,7 @@ const KIND_ICONS: Record<string, string> = {
   plan: 'PLAN',
   explore: 'FIND',
   context: 'CTX',
+  calibration: 'CAL',
   clarify: 'ASK',
   split: 'SPLIT',
   polish: 'POLISH',

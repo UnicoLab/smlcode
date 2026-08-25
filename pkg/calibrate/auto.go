@@ -45,11 +45,16 @@ type Outcome struct {
 	// report can show the derived token budgets as a diff. Captured here rather
 	// than recomputed later: after Apply the "before" no longer exists anywhere.
 	BudgetsBefore, BudgetsAfter config.ModelProfile
+	// Blocked lists measurements an explicit setting refused. Without it,
+	// "nothing changed" reads as agreement when it may be a veto.
+	Blocked []Blocked
 }
 
 // Report renders this outcome as the full evidence report.
 func (o Outcome) Report() Report {
-	return NewReport(o.Profile, o.Applied, o.BudgetsBefore, o.BudgetsAfter)
+	r := NewReport(o.Profile, o.Applied, o.BudgetsBefore, o.BudgetsAfter)
+	r.Blocked = o.Blocked
+	return r
 }
 
 // AutoOptions configures EnsureCalibrated.
@@ -141,7 +146,8 @@ func EnsureCalibrated(ctx context.Context, cfg *config.Config, opt AutoOptions) 
 	}
 	if haveCurrent {
 		budgetsBefore := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
-		out := Outcome{Profile: cached, Cached: true, Applied: Apply(cfg, cached)}
+		applied, blocked := ApplyWithBlocked(cfg, cached)
+		out := Outcome{Profile: cached, Cached: true, Applied: applied, Blocked: blocked}
 		out.BudgetsBefore = budgetsBefore
 		out.BudgetsAfter = config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
 		if len(out.Applied) > 0 {
@@ -181,11 +187,12 @@ func EnsureCalibrated(ctx context.Context, cfg *config.Config, opt AutoOptions) 
 	// Bracket Apply: after it runs, the pre-derivation profile exists nowhere
 	// else, and the report's whole value is showing the change.
 	budgetsBefore := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
-	applied := Apply(cfg, prof)
+	applied, blocked := ApplyWithBlocked(cfg, prof)
 	return Outcome{
 		Profile:       prof,
 		Measured:      true,
 		Applied:       applied,
+		Blocked:       blocked,
 		Notice:        calibratedNotice(prof, pinned, pinnedValue),
 		Warning:       saveWarning,
 		BudgetsBefore: budgetsBefore,

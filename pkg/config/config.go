@@ -340,6 +340,32 @@ type Config struct {
 	// bounded, cached in the user scope, and falls back to the built-in
 	// defaults on any failure. See pkg/calibrate and docs/calibration.md.
 	Calibrate string `yaml:"calibrate" json:"calibrate"`
+	// CalibrateBudgets lets calibration size the MODEL PROFILE — context_limit and
+	// the token budgets derived from it — from the measured context window.
+	//
+	// OFF BY DEFAULT, on measured evidence rather than caution. Held to ONE model
+	// (Qwen3-Coder-30B, 262,144-token window), sizing cost on BOTH scenarios
+	// tried — baselines are the median of two runs:
+	//
+	//   implement-from-tests   119,340 -> 164,504 prompt tokens (+38%), 5/5 checks
+	//   respects-scope         130,255 -> 435,296 prompt tokens (+234%), and a
+	//                          task timed out
+	//
+	// An earlier version of this comment said sizing "helps a focused task and
+	// hurts an exploratory one". That compared a 9B run against a 30B one and was
+	// not a valid comparison; there is no scenario measured here where sizing to
+	// the window paid for itself.
+	//
+	// The packer fills the window it is given, so a bigger context_limit is a
+	// bigger prompt on every call — paid whether or not that call needed it.
+	// Bounding the pack (contextstore.MaxPackWindowTokens) recovered part of it,
+	// 631,160 -> 435,296 on respects-scope, and not all of it. The knob exists so
+	// a 262K model is not stuck with 4K-era budgets when a user deliberately
+	// wants the room; it is not a default to assume.
+	//
+	// Everything else calibration measures — the concurrency knee, task_timeout,
+	// role latency floors, the ws_read budget — is unaffected and stays on.
+	CalibrateBudgets bool `yaml:"calibrate_budgets" json:"calibrate_budgets"`
 
 	// EnabledModels optionally scopes the selectable catalog (empty = all).
 	EnabledModels []string `yaml:"enabled_models" json:"enabled_models"`

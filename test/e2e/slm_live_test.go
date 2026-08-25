@@ -975,6 +975,10 @@ func slmLiveConfig(t *testing.T, root, model, apiKey string, taskTimeout time.Du
 	// is otherwise swallowed on a passing run, and coupling engine verbosity to
 	// that would bury the report under the engine's own trace.
 	cfg.Verbose = os.Getenv("SLMCODE_E2E_VERBOSE") == "1"
+	// Budget sizing is opt-in (see config.CalibrateBudgets). The suite can turn
+	// it on so the two shapes of work — focused and exploratory — are measurable
+	// against each other rather than assumed.
+	cfg.CalibrateBudgets = os.Getenv("SLMCODE_E2E_CALIBRATE_BUDGETS") == "1"
 	cfg.DryRun = false
 	cfg.ThinkPasses = 1
 	cfg.MaxParallel = 2

@@ -605,6 +605,12 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	}
 	o.resetChangedFiles()
 	o.resetObjectiveProbes()
+	// Learn whether the objective command already passes, concurrently with the
+	// context/explore/plan phases that follow. This is the fact that decides
+	// whether a green result at the end is evidence or a coincidence, and it
+	// cannot be left to whether the model happens to run the tests first — see
+	// baseline.go.
+	o.startBaselineProbe(ctx)
 	o.refreshRepoMap()
 	if o.cfg != nil {
 		clearDynamicRunArtifacts(o.cfg.SlmDir())

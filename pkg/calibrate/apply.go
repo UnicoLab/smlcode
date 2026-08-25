@@ -30,14 +30,76 @@ func (a Applied) String() string {
 	return fmt.Sprintf("%s %s → %s (%s)", a.Key, a.From, a.To, a.Why)
 }
 
+// Blocked is a measurement calibration DID NOT apply because the user has set
+// that key explicitly.
+//
+// It exists because "nothing changed" has two very different causes and the
+// report said the wrong one. MEASURED, 2026-08-25: calibration read a 262,144
+// token window from the server, the project pinned model_profiles in its
+// config.yaml, calibration correctly declined to override it — and the report
+// said "the measurement agreed with the current configuration". It did not
+// agree; it never got a vote. The project then ran with ctx=32768 and a
+// 260-token knowledge budget against a 262K model, and nothing said why.
+//
+// Respecting explicit config is right. Doing it silently is not: a user who
+// asked for the harness to adapt has to be able to see what is stopping it.
+type Blocked struct {
+	Key      string
+	Measured string
+	Current  string
+	// How names the concrete way to let the measurement through.
+	How string
+}
+
 // Apply folds a profile into cfg, touching only what the user has not set.
 // It returns what it changed, in a stable order, and never mutates cfg on a
 // zero-valued or unusable profile.
 func Apply(cfg *config.Config, p Profile) []Applied {
+	out, _ := ApplyWithBlocked(cfg, p)
+	return out
+}
+
+// ApplyWithBlocked is Apply, also reporting what an explicit setting refused.
+func ApplyWithBlocked(cfg *config.Config, p Profile) ([]Applied, []Blocked) {
 	if cfg == nil || p.MaxParallel <= 0 {
-		return nil
+		return nil, nil
 	}
 	var out []Applied
+	var blocked []Blocked
+
+	if cfg.MaxParallelExplicit() && cfg.MaxParallel != p.MaxParallel {
+		blocked = append(blocked, Blocked{
+			Key: "max_parallel", Measured: itoa(p.MaxParallel), Current: itoa(cfg.MaxParallel),
+			How: "unset max_parallel in .slmcode/config.yaml to use the measured knee",
+		})
+	}
+	if p.ContextLimit > 0 && !cfg.CalibrateBudgets {
+		prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+		if prof.ContextLimit != p.ContextLimit {
+			blocked = append(blocked, Blocked{
+				Key: "model_profiles", Measured: itoa(p.ContextLimit) + " token window",
+				Current: itoa(prof.ContextLimit) + " token window",
+				How: "budget sizing is opt-in: `slmcode config set calibrate_budgets true`. " +
+					"Measured on Qwen3-Coder-30B it COST on both scenarios tried — " +
+					"implement-from-tests 119k -> 165k prompt tokens, respects-scope " +
+					"130k -> 435k — because the packer fills the window it is given " +
+					"and injected material is re-sent on every call",
+			})
+		}
+	}
+	if p.ContextLimit > 0 && cfg.CalibrateBudgets && modelIsPinned(cfg, config.NormProfileKey(cfg.Model)) {
+		prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+		if prof.ContextLimit != p.ContextLimit {
+			blocked = append(blocked, Blocked{
+				Key: "model_profiles", Measured: itoa(p.ContextLimit) + " token window",
+				Current: itoa(prof.ContextLimit) + " token window",
+				How: "a model_profiles entry for this exact model is pinned in your " +
+					"config, so the measured window and every budget derived from it " +
+					"(skills, knowledge, max_turns) are left alone — edit or remove that " +
+					"entry to let calibration size them",
+			})
+		}
+	}
 
 	if !cfg.MaxParallelExplicit() && cfg.MaxParallel != p.MaxParallel {
 		why := fmt.Sprintf("measured knee for %s", p.Key.String())
@@ -57,7 +119,8 @@ func Apply(cfg *config.Config, p Profile) []Applied {
 		out = append(out, a)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out
+	sort.SliceStable(blocked, func(i, j int) bool { return blocked[i].Key < blocked[j].Key })
+	return out, blocked
 }
 
 // applyContext installs the server-reported context window as this model's
@@ -68,8 +131,55 @@ func Apply(cfg *config.Config, p Profile) []Applied {
 // 32768). It is applied IN MEMORY only: the calibration store is the
 // persistence, and freezing a probed number into config.yaml would survive a
 // server reconfiguration that changed it.
+// modelIsPinned reports that the user pinned a profile for THIS EXACT MODEL.
+//
+// The old test was cfg.Explicit("model_profiles"), and it was far too coarse.
+// The shipped profiles are generic buckets — "default", "7b", "32b", "qwen" —
+// and any config write serializes the whole map into config.yaml. So the mere
+// presence of scaffolding permanently disabled calibration's sizing.
+//
+// MEASURED on this very repository: the server reported a 262,144 token window,
+// the config carried exactly the shipped bucket set, and slmcode ran the model
+// at ctx=32768 with a 260-token knowledge budget — while the report claimed
+// "the measurement agreed with the current configuration".
+//
+// An EXACT-MODEL key is different. Nothing generates one: it appears because
+// somebody wrote it, or because a previous calibration installed it (and a
+// later measurement of the same pair is entitled to update that). That is the
+// signal of intent worth deferring to, and it is also the key this function
+// writes — so pinning a value is exactly "run calibrate once, then edit the
+// entry it left in your config".
+func modelIsPinned(cfg *config.Config, key string) bool {
+	if cfg == nil || cfg.ModelProfiles == nil {
+		return false
+	}
+	if _, ok := cfg.ModelProfiles[cfg.Model]; ok {
+		return true
+	}
+	_, ok := cfg.ModelProfiles[key]
+	return ok
+}
+
 func applyContext(cfg *config.Config, p Profile) (Applied, bool) {
-	if p.ContextLimit <= 0 || cfg.Explicit("model_profiles") {
+	if p.ContextLimit <= 0 {
+		return Applied{}, false
+	}
+	// OFF BY DEFAULT — see config.CalibrateBudgets for the measurement. Held to
+	// ONE model (Qwen3-Coder-30B), sizing to the full window cost on BOTH
+	// scenarios tried: implement-from-tests 119,340 -> 164,504 prompt tokens,
+	// respects-scope 130,255 -> 435,296, with a task timing out. An earlier
+	// note here claimed a saving on the first; it compared a 9B run against a
+	// 30B one. The packer fills whatever window it is given and injected
+	// material is re-sent on every call, so this is a cost on every turn.
+	if !cfg.CalibrateBudgets {
+		return Applied{}, false
+	}
+	// Generic buckets do not block sizing; a pin for this exact model does.
+	//
+	// Note this can only ever RAISE a budget — DeriveProfile takes
+	// max(derived, base) on every field — so a bucket a user tightened
+	// deliberately keeps its floor even here.
+	if modelIsPinned(cfg, config.NormProfileKey(cfg.Model)) {
 		return Applied{}, false
 	}
 	prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)

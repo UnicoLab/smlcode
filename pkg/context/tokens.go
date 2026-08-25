@@ -94,11 +94,39 @@ func DefaultBudget(contextLimitTokens int) Budget {
 	}
 }
 
+// MaxPackWindowTokens bounds the window used to SIZE A PACK, independently of
+// how large the model's context actually is.
+//
+// CAPACITY IS NOT DEMAND. ContextLimitTokens answers "how much can this model
+// hold?" — it must be the model's real window, because overflow checks and
+// compaction thresholds are wrong otherwise. Available() answers a different
+// question: "how much should we SEND on this call?" Using the first as the
+// second means the packer fills whatever window it is given.
+//
+// MEASURED, Qwen3-Coder-30B — one model, so the rows compare. Sizing the
+// budgets to the measured 262,144-token window cost on BOTH scenarios tried:
+// respects-scope 130,255 -> 435,296 prompt tokens (a task timed out) and
+// implement-from-tests 119,340 -> 164,504. An earlier note here claimed a
+// saving on the second; it compared a 9B run against a 30B one.
+//
+// The packer fills whatever window it is given, so the pack is bounded and
+// the window is not. That recovered part of the cost — respects-scope went
+// 631,160 -> 435,296 — which is why sizing stays opt-in rather than shipping
+// on with a bound.
+//
+// 32768 because that is the window the pack budgeting was tuned and measured
+// against. Past it, more packed context has never been shown to help here and
+// has been measured to cost.
+const MaxPackWindowTokens = 32768
+
 // Available returns the tokens a pack may consume for a role.
 func (b Budget) Available(role string) int {
 	window := b.ContextLimitTokens
 	if window <= 0 {
 		window = TokensFromKB(DefaultMaxContextKB)
+	}
+	if window > MaxPackWindowTokens {
+		window = MaxPackWindowTokens
 	}
 	reserved := b.ReserveSystemTokens + b.ReserveToolTokens + b.ReserveResponseTokens
 	if reserved <= 0 {

@@ -18,6 +18,10 @@
 # one that can compare against the TAG — the one input that does not exist
 # until the release is being cut.
 #
+# It also gates the Homebrew formula's four sha256 values against the version
+# line above them — the one pair here that a *clean* rebase can silently pull
+# apart. See the long note at that check.
+#
 # Usage:
 #   scripts/check-version.sh                 # the three files must agree
 #   scripts/check-version.sh --tag v0.17.0   # …and match the tag being released
@@ -31,7 +35,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="${2:-}"; shift 2 ;;
     -h|--help)
-      sed -n '2,25p' "$0"
+      sed -n '2,28p' "$0"
       exit 0
       ;;
     *)
@@ -104,28 +108,106 @@ if [[ -n "$stale_urls" ]]; then
   echo "$stale_urls" >&2
 fi
 
-# --- the Homebrew formula's checksum state --------------------------------
-# Between a version bump and the post-release sync, the sha256 values in the
-# committed formula MUST be the all-zero placeholder: an old-but-real-looking
-# hash makes `brew install` fail with a mismatch that is indistinguishable
-# from a tampered download. See Formula/slmcode.rb and scripts/update-formula.sh.
-sha_count="$(grep -c '^ *sha256 "' Formula/slmcode.rb || true)"
+# --- the Homebrew formula's checksum provenance ---------------------------
+# A GATE, not a report. Exactly two sha256 states are legitimate; every other
+# one leaves `brew install` broken:
+#
+#   sha256 "0000…0"           unsynced. The binaries for this version do not
+#                             exist yet, so no real checksum can. Valid between
+#                             the version bump and the release workflow's
+#                             update-formula.sh step, and only then.
+#   sha256 "<hex>" # vX.Y.Z   synced — and X.Y.Z MUST be the version this
+#                             formula declares.
+#
+# That trailing "# vX.Y.Z" is written by scripts/update-formula.sh, and it
+# exists for exactly one reason: to make a checksum carry, ON ITS OWN LINE, the
+# version it was computed for.
+#
+# On 2026-08-25 the v0.18.4 release commit was rebased onto the release bot's
+# "sync Homebrew formula checksums for v0.18.3" commit. It did not conflict:
+# the release commit only moved the version line, because the placeholders it
+# writes were ALREADY placeholders in its parent, so the sha256 lines were not
+# in its diff at all. Git replayed the version bump straight onto v0.18.3's
+# real digests and produced `version "0.18.4"` carrying v0.18.3's hashes. The
+# shape checks below all passed. It was caught by counting placeholders by hand.
+#
+# The label defeats that because git resolves a merge or rebase line by line,
+# and a label on the same line as the digest cannot be separated from it: any
+# resolution that takes v0.18.3's checksum takes "# v0.18.3" with it, and this
+# check then has both halves in front of it. The two alternatives considered
+# both miss this case — a marker on its own line is just another hunk for the
+# merge to resolve independently, and inferring "a release is in flight" from
+# `git tag` is unavailable in CI, whose repo-refs job checks out at depth 1
+# with no tags, i.e. precisely where this must run on every push.
+sha_lines="$(grep -n '^[[:space:]]*sha256 ' Formula/slmcode.rb || true)"
+sha_count="$(grep -c '^[[:space:]]*sha256 ' Formula/slmcode.rb || true)"
 if [[ "$sha_count" -ne 4 ]]; then
   err "Formula/slmcode.rb has $sha_count sha256 lines, expected 4 (darwin arm64/amd64, linux arm64/amd64)"
 fi
-bad_sha="$(grep -nE '^ *sha256 "' Formula/slmcode.rb | grep -vE 'sha256 "([0-9a-f]{64})"' || true)"
-if [[ -n "$bad_sha" ]]; then
-  err "Formula/slmcode.rb has a sha256 that is not 64 lowercase hex characters:"
-  echo "$bad_sha" >&2
+
+sha_re='^[[:space:]]*sha256 "([0-9a-f]{64})"(.*)$'
+label_re='^[[:space:]]+#[[:space:]]+v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)[[:space:]]*$'
+PLACEHOLDER="$(printf '0%.0s' {1..64})"
+placeholders=0
+synced=0
+mismatched=""   # a real digest labelled for some OTHER release
+malformed=""    # neither shape: no label, a stray label, bad hex, a labelled placeholder
+while IFS=: read -r lineno text; do
+  [[ -n "$lineno" ]] || continue
+  if [[ ! "$text" =~ $sha_re ]]; then
+    malformed+="Formula/slmcode.rb:${lineno}:${text}"$'\n'
+    continue
+  fi
+  digest="${BASH_REMATCH[1]}"
+  rest="${BASH_REMATCH[2]}"
+  if [[ "$digest" == "$PLACEHOLDER" ]]; then
+    # A placeholder must be bare. Labelled zeros would otherwise read as
+    # "synced" below and this script would report a formula that installs
+    # nothing as fully in sync.
+    if [[ -n "${rest//[[:space:]]/}" ]]; then
+      malformed+="Formula/slmcode.rb:${lineno}: unsynced placeholder carrying a label —${rest}"$'\n'
+    else
+      placeholders=$((placeholders + 1))
+    fi
+  elif [[ "$rest" =~ $label_re ]]; then
+    if [[ "${BASH_REMATCH[1]}" == "$VERSION_GO" ]]; then
+      synced=$((synced + 1))
+    else
+      mismatched+="Formula/slmcode.rb:${lineno}: synced for v${BASH_REMATCH[1]}"$'\n'
+    fi
+  else
+    malformed+="Formula/slmcode.rb:${lineno}:${text}"$'\n'
+  fi
+done <<< "$sha_lines"
+
+if [[ -n "$mismatched" ]]; then
+  err "Formula/slmcode.rb declares version ${VERSION_GO}, but these sha256 values were computed for a different release:"
+  printf '%s' "$mismatched" | sed 's/^/  /' >&2
+  echo "       \`brew install\` would fetch the ${VERSION_GO} assets and check them against another release's" >&2
+  echo "       digests: a mismatch indistinguishable from a tampered download. A rebase or merge has mixed" >&2
+  echo "       two releases. Reset all four sha256 values to 64 zeros — scripts/prepare-release.sh does this —" >&2
+  echo "       and let the release workflow's update-formula.sh step re-sync them." >&2
+fi
+if [[ -n "$malformed" ]]; then
+  err "Formula/slmcode.rb has sha256 lines that are neither a bare unsynced placeholder (64 zeros)"
+  echo "       nor a synced checksum (64 lowercase hex followed by '# v${VERSION_GO}'):" >&2
+  printf '%s' "$malformed" | sed 's/^/  /' >&2
+fi
+
+# All four are written by one update-formula.sh run and zeroed by one
+# prepare-release.sh run, so a split is not a state either script can produce —
+# it means someone hand-edited a subset, and the platforms still on a
+# placeholder cannot install.
+if [[ "$placeholders" -gt 0 && "$synced" -gt 0 ]]; then
+  err "Formula/slmcode.rb mixes ${placeholders} unsynced placeholder(s) with ${synced} synced checksum(s) — all four move together or none do"
 fi
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-zeros="$(grep -c 'sha256 "0\{64\}"' Formula/slmcode.rb || true)"
 echo "check-version: OK — ${VERSION_GO} in cmd/slmcode/version.go, Makefile and Formula/slmcode.rb${TAG:+, matching tag ${TAG}}"
-if [[ "$zeros" -gt 0 ]]; then
-  echo "check-version: Formula/slmcode.rb carries ${zeros}/4 placeholder checksums —"
+if [[ "$placeholders" -gt 0 ]]; then
+  echo "check-version: Formula/slmcode.rb carries ${placeholders}/4 placeholder checksums —"
   echo "               the release workflow's update-formula.sh step fills them in."
 fi

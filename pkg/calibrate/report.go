@@ -37,6 +37,8 @@ type Report struct {
 	Before, After config.ModelProfile
 	// Adjustable names the config keys a user can pin to override any of this.
 	Adjustable []string
+	// Blocked lists measurements an explicit setting refused to accept.
+	Blocked []Blocked
 }
 
 // budgetRow is one derived budget, for rendering.
@@ -117,8 +119,11 @@ func (r Report) Render() string {
 
 	// ── applied ──
 	b.WriteString("\nApplied\n")
-	if len(r.Applied) == 0 && len(r.budgetRows()) == 0 {
+	if len(r.Applied) == 0 && len(r.budgetRows()) == 0 && len(r.Blocked) == 0 {
 		b.WriteString("  nothing — the measurement agreed with the current configuration\n")
+	}
+	if len(r.Applied) == 0 && len(r.budgetRows()) == 0 && len(r.Blocked) > 0 {
+		b.WriteString("  nothing — see \"Not applied\" below; this is NOT agreement\n")
 	}
 	for _, a := range r.Applied {
 		fmt.Fprintf(&b, "  %-22s %s → %s\n", a.Key, a.From, a.To)
@@ -126,10 +131,35 @@ func (r Report) Render() string {
 			fmt.Fprintf(&b, "  %-22s   because %s\n", "", a.Why)
 		}
 	}
+	// Applied already names context_limit — it is the measurement, not a budget
+	// derived from one — so listing it again below reads as two separate
+	// changes to the same key.
+	seen := map[string]bool{}
+	for _, a := range r.Applied {
+		seen[a.Key] = true
+	}
 	for _, row := range r.budgetRows() {
+		if seen[row.Key] {
+			continue
+		}
 		fmt.Fprintf(&b, "  %-22s %d → %d\n", row.Key, row.Before, row.After)
 		if row.Note != "" {
 			fmt.Fprintf(&b, "  %-22s   %s\n", "", row.Note)
+		}
+	}
+
+	// ── blocked ──
+	//
+	// Deliberately its own section, above the override advice: a user who
+	// pinned a value months ago and is now wondering why the harness ignores a
+	// 262K window needs this to be impossible to miss.
+	if len(r.Blocked) > 0 {
+		b.WriteString("\nNot applied — your configuration takes precedence\n")
+		for _, bl := range r.Blocked {
+			fmt.Fprintf(&b, "  %-22s measured %s, using %s\n", bl.Key, bl.Measured, bl.Current)
+			if bl.How != "" {
+				fmt.Fprintf(&b, "  %-22s   %s\n", "", bl.How)
+			}
 		}
 	}
 

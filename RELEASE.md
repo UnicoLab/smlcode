@@ -71,8 +71,9 @@ What it does, in order:
 
 1. Refuses if the tag exists or if any of the four release files are already dirty.
 2. Sets the version in `cmd/slmcode/version.go`, `Makefile` and `Formula/slmcode.rb`.
-3. Resets the four `sha256` values in the formula to the all-zero placeholder (CI fills
-   them in after the binaries exist — see step 3).
+3. Resets the four `sha256` values in the formula to the all-zero placeholder, dropping the
+   `# vX.Y.Z` label each one carried (CI fills both back in after the binaries exist — see
+   step 3). A zeroed value with a stale label is the one state `check-version.sh` rejects.
 4. Adds a changelog entry **only if** `docs/changelog.md` has no `## vX.Y.Z` heading yet.
 5. Runs `scripts/check-version.sh --tag vX.Y.Z`, `scripts/check-repo-refs.sh`, `make check`.
 6. Commits `chore: release vX.Y.Z` and creates the tag. **It does not push.**
@@ -109,7 +110,7 @@ reversible with `git tag -d` and `git reset`.
 | # | Step | Fails the release if |
 |---|---|---|
 | 1 | Validate the tag shape | the tag is not `vX.Y.Z` |
-| 2 | `scripts/check-version.sh --tag` | the tag disagrees with `version.go` / `Makefile` / the formula |
+| 2 | `scripts/check-version.sh --tag` | the tag disagrees with `version.go` / `Makefile` / the formula, or a formula `sha256` is labelled for a different release than the formula declares |
 | 3 | `scripts/check-repo-refs.sh` | a broken repo slug reached a download URL |
 | 4 | `make web-deps` | npm cannot install by either route |
 | 5 | Install golangci-lint `v2.13.1` (must be built with Go >= go.mod's toolchain) | — (without this, `scripts/lint.sh` *silently skips* linting) |
@@ -121,7 +122,7 @@ reversible with `git tag -d` and `git reset`.
 | 11 | `sha256sum` → `SHA256SUMS` | — |
 | 12 | Smoke-test `linux_amd64` | `version --json` reports the wrong version, an unstamped commit/build time, or a leaked `SourceRoot` |
 | 13 | Create the GitHub Release | the upload fails |
-| 14 | `scripts/update-formula.sh` in a fresh clone → push to `main` | a placeholder `sha256` survives, or the version line is wrong |
+| 14 | `scripts/update-formula.sh` in a fresh clone → push to `main` | a placeholder `sha256` survives, a checksum lands without its `# vX.Y.Z` label, or the version line is wrong |
 | 15 | Re-download every asset and `sha256sum -c` | what GitHub serves differs from what was built |
 
 Steps 6, 9 and 12 are the ones added because the old workflow could publish a binary that
@@ -209,6 +210,10 @@ slmcode version             # 0.18.4
 
 - Confirm `main` has the `chore: sync Homebrew formula checksums` commit and that
   `./scripts/check-version.sh` on a fresh pull no longer reports placeholder checksums.
+  The four `sha256` lines should now read `sha256 "<hex>" # vX.Y.Z` with X.Y.Z equal to the
+  release you just cut — that label is what `check-version.sh` gates on, and the reason a
+  rebase can no longer leave the previous release's digests under the new version line
+  (which is exactly what happened between v0.18.3 and v0.18.4).
 - Confirm the docs site rebuilt (`.github/workflows/docs.yml`) and that
   [Install](docs/install.md), [Migration notes](docs/migration.md) and
   [Changelog](docs/changelog.md) render.
@@ -263,7 +268,7 @@ different things is worse than a bad release.
 |---|---|
 | `cmd/slmcode/version.go` | the version compiled in when no `-ldflags` are given |
 | `Makefile` (`VERSION ?=`) | what local builds stamp |
-| `Formula/slmcode.rb` | Homebrew version + the four checksums CI syncs |
+| `Formula/slmcode.rb` | Homebrew version + the four checksums CI syncs, each labelled `# vX.Y.Z` with the release it was computed for |
 | `docs/changelog.md` | the release entry, with the breaking-changes table |
 | `docs/migration.md` | the per-change detail the changelog links to |
 | `scripts/prepare-release.sh` | bump + gate + commit + tag |

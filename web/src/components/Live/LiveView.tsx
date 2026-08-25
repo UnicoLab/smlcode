@@ -22,6 +22,7 @@ import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
 import LiveFileInspector from './LiveFileInspector';
 import LiveFeedback from './LiveFeedback';
+import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
@@ -838,6 +839,9 @@ export default function LiveView() {
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {/* Calibration runs before the first token of a run, so its
+                      progress sits above the stream that replaces it. */}
+                  <CalibrationBanner events={events} />
                   {/* Live token deltas render above the structural log. */}
                   <TokenStream text={ctx?.tokenStream ?? ''} running={running} />
                   <EventLog events={events} />

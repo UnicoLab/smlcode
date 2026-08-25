@@ -7,6 +7,12 @@
 # The formula's URLs use the "#{version}" Homebrew template (not a literal
 # version), so the sha256 lines are matched via that template + asset suffix.
 #
+# Each checksum is written with a trailing "# v<version>" label. That label is
+# what scripts/check-version.sh gates on: it puts the version a digest was
+# computed FOR on the same line as the digest, so a rebase or merge cannot
+# carry one release's checksums under another release's version line without
+# leaving the evidence right there. See the long note in check-version.sh.
+#
 # Usage:
 #   scripts/update-formula.sh <version> <dist-dir>
 #   scripts/update-formula.sh 0.13.1 dist
@@ -46,20 +52,24 @@ trap 'rm -f "$tmp"' EXIT
 # 1. Bump the version line.
 # 2. Replace each sha256 by matching the "#{version}" URL template that
 #    precedes it (e.g. slmcode_#{version}_darwin_arm64"). The match consumes
-#    the closing quote of the old value, so the replacement re-emits it.
+#    the closing quote of the old value AND the rest of that line, so the
+#    replacement re-emits the quote and writes a fresh "# v<version>" label
+#    over whatever label the previous release left behind.
 perl -0pe '
   s/^  version "[^"]*"/  version "'"$VERSION"'"/m;
-  s/(slmcode_#\{version\}_darwin_arm64"\n\s*sha256 ")[^"]*"/${1}'"$DARWIN_ARM64"'"/;
-  s/(slmcode_#\{version\}_darwin_amd64"\n\s*sha256 ")[^"]*"/${1}'"$DARWIN_AMD64"'"/;
-  s/(slmcode_#\{version\}_linux_arm64"\n\s*sha256 ")[^"]*"/${1}'"$LINUX_ARM64"'"/;
-  s/(slmcode_#\{version\}_linux_amd64"\n\s*sha256 ")[^"]*"/${1}'"$LINUX_AMD64"'"/;
+  s/(slmcode_#\{version\}_darwin_arm64"\n\s*sha256 ")[^"]*"[^\n]*/${1}'"$DARWIN_ARM64"'" # v'"$VERSION"'/;
+  s/(slmcode_#\{version\}_darwin_amd64"\n\s*sha256 ")[^"]*"[^\n]*/${1}'"$DARWIN_AMD64"'" # v'"$VERSION"'/;
+  s/(slmcode_#\{version\}_linux_arm64"\n\s*sha256 ")[^"]*"[^\n]*/${1}'"$LINUX_ARM64"'" # v'"$VERSION"'/;
+  s/(slmcode_#\{version\}_linux_amd64"\n\s*sha256 ")[^"]*"[^\n]*/${1}'"$LINUX_AMD64"'" # v'"$VERSION"'/;
 ' "$FORMULA" > "$tmp"
 
 # Sanity: every expected checksum must now appear in the output in its full
-# quoted form (sha256 "<hex>") — catches both missing replacements and
-# mangled quoting.
+# quoted-and-labelled form (sha256 "<hex>" # v<version>) — catches a missing
+# replacement, mangled quoting, and a label that did not get rewritten with it.
+# -F because $VERSION's dots would otherwise be regex wildcards.
 for want in "$DARWIN_ARM64" "$DARWIN_AMD64" "$LINUX_ARM64" "$LINUX_AMD64"; do
-  grep -q "sha256 \"$want\"" "$tmp" || { echo "error: checksum $want not written to formula" >&2; exit 1; }
+  grep -qF "sha256 \"$want\" # v$VERSION" "$tmp" || \
+    { echo "error: checksum $want not written to formula with its '# v$VERSION' label" >&2; exit 1; }
 done
 
 # No placeholder may survive. Between a version bump and this sync the formula

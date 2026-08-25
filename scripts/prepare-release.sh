@@ -84,8 +84,13 @@ perl -0pi -e 's/^VERSION \?= .*/VERSION ?= '"$VERSION"'/m' Makefile
 #    leaving the previous release's real-looking hashes behind produces a `brew
 #    install` failure indistinguishable from a tampered download. Sixty-four
 #    zeros say "not synced yet" and nothing else. See Formula/slmcode.rb.
+#
+#    The trailing "[^\n]*" is load-bearing: a synced checksum carries a
+#    "# v<version>" label (see scripts/check-version.sh), and the label has to
+#    die with the digest it described. Zeroing the value but keeping the old
+#    label would leave the formula in the one state check-version.sh rejects.
 perl -0pi -e 's/^  version "[^"]*"/  version "'"$VERSION"'"/m' Formula/slmcode.rb
-perl -0pi -e 's/^(\s*sha256 ")[0-9a-f]{64}"/${1}'"$(printf '0%.0s' {1..64})"'"/mg' Formula/slmcode.rb
+perl -0pi -e 's/^(\s*sha256 ")[0-9a-f]{64}"[^\n]*/${1}'"$(printf '0%.0s' {1..64})"'"/mg' Formula/slmcode.rb
 
 # 3b. The docs that pin fully-numbered asset names and release-download URLs.
 #     scripts/check-version.sh treats a stale one as an ERROR, and rightly: these

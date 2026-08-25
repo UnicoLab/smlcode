@@ -720,6 +720,28 @@ const (
 	OutcomeSuccessWithFailures = "success_with_failures"
 	// OutcomeFailure: the run did not meet its objective.
 	OutcomeFailure = "failure"
+	// OutcomeUnverified: the run made changes and the objective command is
+	// green — but it was ALREADY GREEN before the run wrote anything, so that
+	// command has verified nothing about the work.
+	//
+	// This exists because the other three cannot say it. "Success" claims the
+	// objective was met; "failure" claims it was not; the truth here is that
+	// nothing measured either way, and a harness that rounds that to success is
+	// fabricating completion.
+	//
+	// MEASURED: Qwen3-Coder-Next on the honest-failure scenario — a deliberately
+	// impossible task against a repo whose suite passes from the start — was
+	// reported as engine_success=true with failed_tasks=0. The model edited a
+	// file, the suite still passed (as it always had), and every signal the
+	// harness owns said "green".
+	//
+	// Success stays TRUE: the work completed and nothing failed. What is
+	// missing is EVIDENCE, not achievement, and a control run proved the
+	// difference matters — respects-scope changed exactly the right file, left
+	// every frozen file untouched, passed six of six checks, and would have
+	// been reported as a failure (and a non-zero exit code) by a rule that
+	// folded verification into Success.
+	OutcomeUnverified = "unverified"
 )
 
 // runOutcome names the verdict. FailedTasks stays authoritative for the count;
@@ -858,10 +880,34 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	if softSuccess {
 		success = true
 	}
+	// A GREEN THAT WAS GREEN BEFORE VERIFIES NOTHING — but that is a fact about
+	// the EVIDENCE, not a verdict on the work, and the two must not be confused.
+	//
+	// This first shipped as a downgrade of Success itself, and a control run
+	// showed why that is wrong. On respects-scope — a legitimate task against a
+	// green repo — the model changed exactly the right file, left every frozen
+	// file untouched, and the suite passed: six of six checks. Reporting
+	// Success=false for that is telling someone their correct change failed,
+	// and Success drives the exit code, so it would fail their CI too. Most real
+	// work runs against a repository whose tests already pass.
+	//
+	// So Outcome carries it and Success does not. The run says plainly that the
+	// project's own test command did not exercise this change — which is useful,
+	// actionable and true — without inventing a failure.
+	//
+	// What this does NOT do is decide that an impossible task failed. The
+	// harness cannot tell "the requirement was unachievable" from "the
+	// requirement is not covered by the tests"; both look identical from a
+	// command that is green either way. Claiming otherwise by way of this flag
+	// would be picking the answer that suits one scenario.
+	outcome := runOutcome(success, failed)
+	if success && o.objectiveUnverified() {
+		outcome = OutcomeUnverified
+	}
 	res := &Result{
 		ID: runID, Query: query, Board: *board,
 		Success: success, FailedTasks: failed,
-		Outcome:         runOutcome(success, failed),
+		Outcome:         outcome,
 		UnexecutedTasks: unexecuted,
 		Duration:        time.Since(start), Summary: summarize(board, board.Plan),
 		Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),

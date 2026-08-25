@@ -2,6 +2,12 @@
 
 slmcode measures your endpoint instead of guessing from its name.
 
+!!! tip "What the measurements showed"
+    [SLM learnings](slm-learnings.md) collects every figure these probes have
+    produced across 59 runs and 4 models — throughput vs architecture, the
+    concurrency knee, run-to-run dispersion — and names the mechanism each one
+    changed.
+
 A provider string like `omlx` or `openai` tells you nothing about how many
 requests the server runs at once, how fast it decodes, or how big its context
 window is. Those are properties of the machine in front of you, they change

@@ -7,6 +7,7 @@ import type {
   ConfigPatch,
   Health,
   ReadinessReport,
+  CalibrationView,
   ModelsResponse,
   Board,
   Column,
@@ -137,6 +138,13 @@ export async function getHealth(): Promise<Health> {
 export async function getReadiness(opts?: { probe?: boolean }): Promise<ReadinessReport> {
   const qs = opts?.probe === false ? '' : '?probe=1';
   return request<ReadinessReport>(`/readiness${qs}`);
+}
+
+// Read-only by construction: the endpoint never probes, so a polling UI cannot
+// spend a minute of GPU on a cold model. Measurement happens at studio startup
+// and before a run.
+export async function getCalibration(): Promise<CalibrationView> {
+  return request<CalibrationView>('/calibration');
 }
 
 // ── Config ──

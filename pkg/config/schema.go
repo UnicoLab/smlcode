@@ -76,6 +76,9 @@ var schemaFields = map[string]schemaMeta{
 		"model", []string{DecodingAuto, DecodingOff}, false, false, false, false},
 	"calibrate": {"Calibrate endpoint", "auto measures an unseen (model, endpoint) pair once — concurrency knee, latency baseline, context window — and uses it for values you have not set; off keeps the static defaults",
 		"model", []string{CalibrateAuto, CalibrateOff}, false, false, false, false},
+	"calibrate_budgets": {"Size budgets from the measured window",
+		"let calibration set context_limit and the token budgets derived from it (skills, knowledge, max_turns) from the model's measured context window; off keeps the static profile. Measured on Qwen3-Coder-30B, it cost on BOTH scenarios tried — implement-from-tests 119k -> 165k prompt tokens, respects-scope 130k -> 435k — because the packer fills whatever window it is given and injected material is re-sent every call",
+		"model", nil, false, false, false, false},
 
 	// ── pipeline ──
 	"mode":       {"Mode", "full runs the whole pipeline; specialist runs a single role", "pipeline", []string{ModeFull, ModeSpecialist}, false, false, false, false},

@@ -103,7 +103,13 @@ type Runner struct {
 	AfterWave      AfterWave
 	// BetweenWaves is the early-stop seam described above; nil disables it.
 	BetweenWaves BetweenWaves
-	OnEvent      AgentEvent
+	// OnProtect fires when a wave installs its protected paths, BEFORE any
+	// agent in that wave runs — the only moment those files are known to be
+	// untouched. The orchestrator uses it to snapshot them, so a later
+	// violation can be undone rather than merely reported. See
+	// pkg/workspace/selfheal.go.
+	OnProtect func(patterns []string)
+	OnEvent   AgentEvent
 	// OnEventFull is the structured event sink (carries Level + typed Data).
 	// OnEvent still receives everything; set this to get agent_end levels and
 	// token-by-token streaming.

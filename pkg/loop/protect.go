@@ -401,6 +401,14 @@ func (r *Runner) applyWaveProtections(wave []plan.Task) func() {
 	r.Focus.Protect(pats...)
 	if len(pats) > 0 {
 		r.logf("wave %d protected paths (from task text): %s", r.waveN, strings.Join(pats, ", "))
+		// Snapshot the protected files HERE — after the deny list exists and
+		// before any agent in the wave runs, which is the only moment they are
+		// known to be untouched. Without this the checkpointer holds no prior
+		// bytes, and a shell command that rewrites a protected file can only be
+		// reported, never undone.
+		if r.OnProtect != nil {
+			r.OnProtect(pats)
+		}
 	}
 	return func() { r.Focus.Protect() }
 }

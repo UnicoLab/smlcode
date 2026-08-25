@@ -274,6 +274,45 @@ export interface RunEvent {
   time: string;
 }
 
+// Mirrors pkg/server/calibration.go — GET /api/calibration.
+export interface CalibrationLevel {
+  concurrency: number;
+  efficiency: number;
+  throughput: number;
+}
+
+export interface CalibrationBudgets {
+  context_limit: number;
+  max_tokens: number;
+  thinking_budget_tokens: number;
+  skill_token_budget: number;
+  knowledge_token_budget: number;
+  max_turns: number;
+}
+
+export interface CalibrationView {
+  // present is false when this pair has never been measured, so the UI can show
+  // a "not calibrated yet" state instead of zeros that look like measurements.
+  present: boolean;
+  model: string;
+  provider: string;
+  endpoint: string;
+  context_limit?: number;
+  context_source?: string;
+  max_parallel?: number;
+  p50_ms?: number;
+  p95_ms?: number;
+  tokens_per_sec?: number;
+  queue_inflation?: number;
+  levels?: CalibrationLevel[];
+  partial?: boolean;
+  measured_at?: string;
+  age_seconds?: number;
+  current: boolean;
+  budgets: CalibrationBudgets;
+  report?: string;
+}
+
 export interface RunEventCount {
   name: string;
   count: number;

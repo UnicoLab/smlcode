@@ -311,6 +311,13 @@ e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 e2e-slm: ## Live-model e2e against a real SLM — NEEDS a running oMLX, costs real time (not in `make check`)
 	@./scripts/e2e-slm.sh $(ARGS)
 
+# docs/slm-learnings.md is evidence, so its tables are REGENERATED from the e2e
+# reports rather than hand-maintained. DIR defaults to the current directory;
+# point it at wherever SLMCODE_E2E_REPORT wrote them.
+.PHONY: slm-learnings
+slm-learnings: ## Recompute the docs/slm-learnings.md tables from e2e reports (DIR=path)
+	@python3 scripts/slm-learnings-stats.py $(or $(DIR),.)
+
 # The one gate: gofmt check + vet + golangci-lint (blocking) + unit tests
 # + race tests + web lint/build. This is exactly what CI's lint-test job and
 # .pre-commit-config.yaml both run, so local and CI cannot diverge — if you

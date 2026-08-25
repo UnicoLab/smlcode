@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.19.0 — 2026-08-25
+
+Verification you can trust, and a written record of why.
+
+The headline is not a feature: **2 of 7 runs on a deliberately impossible task
+reported success**, and every false success was a SHORT run. Against a repository
+whose suite was already green, the model edited a file, nothing turned red, and
+every signal the harness owned said done. Three outcomes could not express
+"nothing was measured either way".
+
+[SLM learnings](slm-learnings.md) is new, and collects all of it: 59 recorded
+runs across 4 local models, what each number showed, and the mechanism it
+produced. Its tables regenerate with `make slm-learnings`.
+
+### Fixed
+
+- **A run cannot claim success on evidence that predates it.** New
+  `unverified` outcome for "files changed, and the only acceptance evidence is a
+  suite that was green at baseline". It sets `Outcome` and deliberately **not**
+  `Success` — an earlier version set both, and the `respects-scope` control run
+  caught it failing a run that passed six of six checks. Missing evidence is not
+  missing achievement, and `Success` drives exit codes.
+- **The harness now establishes its own baseline.** A run-start probe executes
+  the acceptance command concurrently, so green means something. An earlier
+  opportunistic version waited for the model to run tests first; it passed ten
+  unit tests and never fired in production, because the real model made seven
+  tool calls straight to editing.
+- **Protected files are restored, not just reported.** A 30B run made 142 tool
+  calls and rewrote the `_test.go` file its task text forbade it to touch. Only
+  paths a task explicitly forbade, and only where exact prior bytes were
+  snapshotted — without a snapshot, "restoring" would be deletion.
+- **The snapshot hook was never called.** `Runner.OnProtect` was declared and
+  assigned, and nothing invoked it, so no backup ever existed and the self-heal
+  above could only ever report. Every unit test passed because they all call
+  `SnapshotProtected` directly.
+
+### Added
+
+- **Budget sizing from the measured window** — opt-in via
+  `slmcode config set calibrate_budgets true`, and **off by default because it
+  was measured to cost**. Held to one model (Qwen3-Coder-30B) it was worse on
+  both scenarios tried: `implement-from-tests` 119,340 → 164,504 prompt tokens,
+  `respects-scope` 130,255 → 435,296 with a task timing out. It ships as a knob
+  rather than a default so a 262K model is not stuck with 4K-era budgets when a
+  user wants the room.
+- **Calibration in Studio.** A panel showing the measured evidence, the
+  concurrency ladder with the chosen knee marked, the budgets in force and the
+  rendered report; plus a live progress banner, so a cold 42GB model no longer
+  looks like a hang. `GET /api/calibration`, with `ensureCalibrated` before every
+  run — a model switched in the UI is measured on its first run instead of
+  inheriting the previous model's knee and timeouts.
+- **`honest-verification` skill** — green is only evidence if it was red before;
+  report an impossible task rather than editing the test; stop when the
+  objective is already met.
+- **`make slm-learnings`** regenerates the evidence tables from e2e reports, so
+  the document cannot drift from the data.
+
+### Changed
+
+- **Capacity and demand are no longer the same number.** `MaxPackWindowTokens`
+  bounds the window used to *size a pack* at 32,768 while the declared context
+  limit stays the model's real window — overflow detection and compaction need
+  the truth, and the packer fills whatever window it is given. Models at or below
+  the bound are unaffected.
+
+  Measured on `respects-scope`, the bound took the opt-in sizing path from
+  631,160 prompt tokens to 435,296 — real, and not a fix: baseline is 121,337.
+  The pack is one amplifier among several, which is the evidence behind keeping
+  `calibrate_budgets` off by default rather than shipping it on with a bound.
+- **Refused measurements are reported.** When an explicit config blocks a
+  measured value, calibration now says so and names the edit that would let it
+  through. "Nothing changed" had two causes and the report claimed the wrong one.
+
 ## v0.18.4 — 2026-08-25
 
 Every limit follows the model.
@@ -52,7 +125,19 @@ the model was:
 - **Calibration measured the window and applied three knobs**, leaving every
   token budget static. A 262K model ran with a 260-token skill budget — 0.2% of
   its window, the same ABSOLUTE allowance a 4K model gets. Now derived:
-  skills **260 → 4,096**, knowledge **180 → 2,730**, turns **20 → 36**.
+  skills **260 → 1,024**, knowledge **180 → 768**, turns **20 → 36**.
+
+  The first cut of this derived 4,096 and 2,730 — a pure share of the window,
+  with no cap. MEASURED on a 262K model, that turned respects-scope from 121k
+  prompt tokens into 631k and 164s into 1050s: the injected reference material
+  is re-sent on EVERY call, so a share-of-window budget multiplies by turn
+  count. The caps are what make the share affordable, and sizing is opt-in
+  (`calibrate_budgets`, default off) for the same reason.
+
+  *Corrected in v0.19.0:* this entry originally said sizing "helps a focused
+  task and costs an exploratory one". That rested on comparing a Qwen3.5-9B run
+  against a Coder-30B one. Held to one model it costs on both — see
+  [SLM learnings](slm-learnings.md#8-context-capacity-is-not-demand).
 - **The search surface had fixed DOMAINS**, so the optimiser proposed
   small-model values forever and actively undid a good calibration one
   experiment at a time. Ranges now scale: `memory_tokens` **800 → 1,600 →

@@ -160,6 +160,29 @@ func (o *Orchestrator) objectiveShellEvidence() *quality.SmokeResult {
 	}
 }
 
+// objectiveUnverified reports that the objective command was ALREADY GREEN
+// before this run wrote anything, so its passing now proves nothing about the
+// work.
+//
+// Requires POSITIVE evidence — a pre-edit observation that actually happened.
+// An unobserved baseline returns false and the verdict is left alone, because
+// "we never looked" and "we looked and it was green" are different facts and
+// only the second one is grounds for withholding success.
+//
+// It also requires that the run CHANGED something. A run that wrote nothing has
+// its own outcome already, and calling that unverified would be noise.
+func (o *Orchestrator) objectiveUnverified() bool {
+	if o == nil {
+		return false
+	}
+	if len(o.changedFilesSnapshot()) == 0 {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.objective.baselineKnown && o.objective.baselineGreen
+}
+
 // sameShellCommand reports whether two command strings are the same command.
 //
 // Normalization is whitespace only, on purpose. Anything cleverer — dropping

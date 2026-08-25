@@ -64,6 +64,13 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.ReactCompact = o.cfg.ReactCompact
 	runner.ReactCompactAtPercent = o.cfg.ReactCompactAtPercent
 	runner.MaxContextKB = o.cfg.MaxContextKB
+	// Snapshot protected files as each wave declares them, so a shell write
+	// that slips past the write guard can be UNDONE rather than only reported.
+	// Measured: a model modified a frozen _test.go after 142 tool calls, the
+	// harness flagged it, and the edited file stayed on disk.
+	if o.workspace != nil {
+		runner.OnProtect = func(pats []string) { o.workspace.SnapshotProtected(pats) }
+	}
 	// qa_bootstrap reaches the inner loop's acceptance smoke. Unset it defaults
 	// to "" → NormalizeBootstrapPolicy → ask, which is the safe policy but not
 	// necessarily the CONFIGURED one: an operator who set qa_bootstrap: auto

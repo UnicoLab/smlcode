@@ -154,6 +154,7 @@ nav:
       - ⌨️ CLI: cli.md
       - ⚙️ Config: config.md
       - 📏 Calibration: calibration.md
+      - 📊 SLM learnings: slm-learnings.md
       - 🧰 Tools (ACI): tools.md
       - 🔒 Constrained decoding: decoding.md
       - 📐 Context engineering: context.md

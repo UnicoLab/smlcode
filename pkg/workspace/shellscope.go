@@ -448,7 +448,18 @@ func (w *Workspace) reportShellScope(ctx context.Context, command string, before
 		return ""
 	}
 	w.recordShellScope(events)
+	// UNDO a protected write rather than only reporting it. A task told not to
+	// write here has no legitimate change to lose, and the checkpointer holds
+	// the exact prior bytes — see selfheal.go for why this is narrower than
+	// reverting shell writes in general.
+	healed := w.healProtectedWrites(events)
 	notice := shellScopeNotice(ctx, shown, events)
+	if len(healed) > 0 {
+		notice += "\n\nHARNESS: restored " + strings.Join(healed, ", ") +
+			" to the state before this command. That path is protected for this " +
+			"task — the change has been undone, and doing it again will be undone " +
+			"again. Solve the task without writing there."
+	}
 	// A protected-path write is a violation, not a report: raise it the same
 	// way every other harness gate refusal is raised, so the TUI / Studio and
 	// the operator see it even if the model ignores the text.

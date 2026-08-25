@@ -5,6 +5,7 @@ import type { AuthStatus, ConfigPatch, MCPStatus } from '@/types';
 import StackSelector from './StackSelector';
 import PackSelector from './PackSelector';
 import ReadinessPanel from './ReadinessPanel';
+import CalibrationPanel from './CalibrationPanel';
 import {
   Cpu,
   Key,
@@ -108,6 +109,7 @@ export default function SettingsPanel() {
         </div>
 
         <ReadinessPanel refreshKey={`${config.provider}:${config.model}:${config.endpoint}:${(config.enabled_models || []).join(',')}:${config.active_stack || ''}:${config.active_pack || ''}:${config.active_pipeline || ''}`} />
+        <CalibrationPanel refreshKey={`${config.provider}:${config.model}:${config.endpoint}:${(config.enabled_models || []).join(',')}:${config.active_stack || ''}:${config.active_pack || ''}:${config.active_pipeline || ''}`}/>
 
         {/* Stack Selector (prominent) */}
         <section className="card p-6 space-y-4">

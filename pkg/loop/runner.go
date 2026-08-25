@@ -2032,8 +2032,15 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		if err != nil {
 			// The reviewer never produced a verdict. That is still an attempt
 			// that happened, and the next one must be able to see it.
+			//
+			// NoVerdict is set for the same reason parseReviewOutput sets it on
+			// an empty reply: without it this result is byte-identical to a
+			// considered `approved=false score=0` rejection, and a reviewer that
+			// TIMED OUT would be read as a reviewer that judged the work
+			// worthless. The distinction has to survive as far as the ledger,
+			// because that is what the next attempt reads.
 			lin.record(current, g, plan.ReviewResult{
-				Summary: err.Error(), Issues: []string{err.Error()},
+				Summary: err.Error(), Issues: []string{err.Error()}, NoVerdict: true,
 			}, plan.AttemptError, startedAt)
 			current.MoveTo(plan.ColBlocked)
 			current.Error = err.Error()

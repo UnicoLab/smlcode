@@ -67,7 +67,21 @@ func (r StopReason) Sentence() string {
 	case StopTokens:
 		return "token budget spent — the surface was NOT exhausted, so more remains untried"
 	case StopExhausted:
-		return "surface exhausted — every value of every knob was tried"
+		// "every knob" was not true and this is the one message in the package
+		// built to be trusted — every sibling above goes out of its way to say
+		// when the surface was NOT exhausted.
+		//
+		// StopExhausted is reached on ErrNoProposal from the DETERMINISTIC
+		// proposer, which enumerates values and therefore cannot touch a text
+		// knob at all (see surface.go: a text domain has no enumeration and
+		// returns nil). A text knob such as system_prompt is reachable only
+		// through the LLM proposer, which is asked on a fixed cadence and gives
+		// up its slot on a model error, an empty reply, or an unchanged
+		// rewrite — so a small local model can burn every chance and leave the
+		// knob untried while this line claimed it had been swept.
+		return "enumerable surface exhausted — every value of every enumerable knob " +
+			"was tried; text knobs, if the surface has any, are reachable only " +
+			"through the LLM proposer and may remain untried"
 	case StopCanceled:
 		return "canceled — the surface was restored to its pre-run state"
 	case StopEvalFailed:

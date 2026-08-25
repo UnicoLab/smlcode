@@ -1,5 +1,177 @@
 # Changelog
 
+## v0.18.2 — 2026-08-25
+
+Budgets that were spent by failure.
+
+v0.18.1 left one measured defect unsolved: `fix-a-bug` hit its 20-minute ceiling
+in one run of three with `failed_tasks == 0` — nothing wrong except that nobody
+asked whether the work was done. Chasing it found the cause, and the cause
+turned out to be a **pattern** rather than a bug. Six mechanisms in this
+codebase bounded themselves with a fixed count, charged that count for negative
+or failed attempts, and so switched themselves off precisely on the runs that
+needed them. Every one of them failed silently.
+
+**Measured, three runs per scenario, Qwen3.5-9B on oMLX, same fixtures and the
+same 20-minute ceiling as the v0.18.1 measurement:**
+
+| | v0.18.1 | v0.18.2 |
+|---|---|---|
+| `implement-from-tests` median prompt tokens | 123,652 | **75,535 (−39%)** |
+| `implement-from-tests` pass rate | 3 of 3 | 3 of 3 |
+| `fix-a-bug` median prompt tokens | ~178,000 | ~182,000 |
+| `fix-a-bug` pass rate | 2 of 3 | 2 of 3 |
+| runs terminating within budget | 5 of 6 | 5 of 6 |
+
+**Read that table honestly: one scenario improved substantially and the other
+did not move.** The probe-starvation defect was real, is fixed, and is confirmed
+firing in a live run — the run metrics record
+`"gates":[{"name":"qa_gate","passed":true},{"name":"objective_met_early","passed":true}]`,
+which is the between-waves probe ending a run the moment the objective went
+green, in 6 LLM calls and 375s. But it was **not** what `fix-a-bug` was failing
+on, and that scenario's 1-in-3 ceiling miss is unchanged.
+
+What that remaining miss actually is, measured: the same 9B needs 8 tool calls
+and 69k tokens for this three-line boundary fix on a good run and **32 tool
+calls and 192k tokens** on a bad one. In the run that hits the ceiling the
+harness still returns a CORRECT result — `engine_success=true`, the fixture
+tests green, the protected test file byte-identical, `failed_tasks=0`. The only
+failing assertion is the suite's own wall-clock budget. So this is model
+variance, not a harness that cannot tell it is done.
+
+The identified next step, with evidence behind it and deliberately NOT taken
+here: the probe fires only between waves, so when a worker fixes the bug at tool
+call 10 of 32, nothing notices until the task ends. That worker runs the
+objective command itself through `ws_shell` during those calls, and the harness
+already sees the output — a green result there is free evidence the probe could
+harvest without spending anything. It is a real design and an unproven one, and
+this release does not ship unproven changes.
+
+Wall-clock is deliberately absent from the table above. Across these runs the
+same suite showed FEWER tokens taking MORE seconds (75k/792s here against
+124k/608s for v0.18.1), i.e. throughput degraded over an hour of continuous
+local GPU load. Wall times are not comparable between sessions on this hardware;
+token counts do not depend on machine speed, so they are what is reported.
+
+### Fixed
+
+- **The objective probe no longer goes blind three waves into a run.**
+  `maxObjectiveProbes` was 2, and the budget was charged for RED answers.
+  Between-waves probing spends it on the earliest waves — the two moments in a
+  run when "not yet" is most certain and least worth paying to learn — so from
+  wave three nothing ever asked again. If the implementation landed at wave
+  five, the run burned its whole ceiling with the work already complete. The
+  budget is also **per run, not per board**: a run drives `RunBoard` once per
+  corrective round, so two probes was two for the entire run, and the post-drain
+  probe that corrective boards deliberately rely on (they run with early-stop
+  off) was starved by the same exhaustion.
+  A count also cannot be right for two projects at once — two probes is miserly
+  for a 200ms unit suite and profligate for a 6-minute integration suite. The
+  bound is now economic: the probe's cost is **measured** (`SmokeResult.Duration`,
+  timed where the command actually runs) and asking continues while
+  `runway >= 6 × cost`. A cheap gate is asked on every wave that wrote
+  something; an expensive one only while there is runway for the answer to pay
+  for itself. Neither number is guessed per project.
+- **A slow endpoint no longer loses structured decoding for seven days.**
+  One deadline covers up to six sequential capability probes. A cold local model
+  — the exact case the budget was widened for — could spend most of it loading
+  weights for the first, after which every later probe died on the shared
+  deadline. `attempt` returns false for a transport error exactly as for a 400,
+  so the negotiation could not tell "the server refused this field" from "we
+  never got to ask", and stamped `Source: "probe"` on a wholesale-false record.
+  `capCache` then persisted and honored it for `CapabilityTTL` — seven days in
+  which every structured role on that endpoint silently degraded to prompt-only
+  + repair, with no path back, because nothing re-probes a record that is still
+  fresh. A cut-short negotiation now falls back to the family preset and leaves
+  `Probed` zero, which keeps it out of the on-disk cache. Preferring the preset
+  over all-false is the recoverable direction: an over-claimed mechanism costs
+  one 400 and is then recorded by `demoteCapability`; an under-claimed one has
+  nothing that can ever notice it.
+- **Retrieval no longer goes blind when the corpus is most on-topic.**
+  The relative noise floor is documented as "the corpus's own median", but it
+  was measured over the value `Search` returns — already truncated to `TopK`.
+  With the default `TopK=5` the "median" was the **third-best hit**, so the
+  threshold became third-best + `NoiseMargin`: arithmetically at most two hits
+  could ever survive, and a tightly clustered top five — a set of uniformly
+  strong matches — cleared nothing at all and `RetrieveForQuery` returned `""`
+  with no error and no warning. It also made `MinChunksForNoiseFloor`
+  unreachable for its stated purpose, since it compared against `len(top-k)` and
+  never the corpus size. `Retriever.SearchAll` now supplies the whole scored
+  distribution for the floor, and the top-k truncation happens after.
+- **A cancelled QA gate no longer reports a red verdict.** `runQAGate` returns
+  "the gate failed", and every cancellation path returned **true**.
+  `finalizeAfterExecute` reads that as `QAFailed`, sets `TesterRejected`, and
+  feeds the board a synthesized tester verdict
+  (`{"passed":false,...,"qa_gate red"}`) through `applyTesterFeedback` — a
+  planner call. So Ctrl-C, or a scenario budget expiring, bought an extra LLM
+  round-trip during shutdown and annotated a done task with "QA gate still
+  failing" about a gate never allowed to finish. A cancelled gate now records
+  nothing: no verdict, no annotation.
+- **The QA gate stops re-running an unchanged tree.** `qaDiagnoseAndFix`
+  discarded both role outputs and never reported whether anything was written,
+  so a fix pass that produced nothing (budget exhausted, a refusal, a prose-only
+  answer) was followed by a byte-identical command run against a byte-identical
+  tree, at full price, for every remaining round. The objective probe has
+  refused exactly this since it was written; the gate never learned it. Measured
+  on a stalled gate: 4 command runs down to 1. Gate rounds also now price the
+  command for the probe budget, since they run the same one.
+- **A cold start no longer pins concurrency for a month.** The calibration probe
+  runs inside a fixed wall-clock budget in which every unit of work is a model
+  call — the thing being measured. On a slow server the warm-up and solo
+  baseline can exhaust it before any concurrency level is measured, leaving only
+  the synthetic single-level entry, from which `SelectKnee` returns 1.
+  `Profile.Current` checked ID, `MaxParallel`, version and age but **not
+  `Partial`**, so that degenerate verdict was served from cache for
+  `DefaultTTL`; `Apply` only checks `MaxParallel > 0`, and the "partial" marker
+  appears solely in `Summary()`, which the auto path never prints. So the
+  slowest models — the ones with the most to gain from a real measurement — were
+  silently capped at `max_parallel=1` for thirty days. Partial profiles now
+  expire after `PartialTTL` (1 hour): a cold start is transient, so the retry
+  should be too.
+- **The thrash detector no longer blinds itself on thrashing runs.** The
+  signature map **froze** at `MaxSignatures` — once full, a signature it had not
+  already seen was never admitted, so its later repeats were never counted. The
+  asymmetry is what makes it bite: the classic small-model edit failure is a
+  near-miss `ws_edit` retried with a slightly different `old_str` each time, and
+  every one of those is a *distinct* signature, so a thrashing run fills the map
+  faster than a healthy one and goes blind sooner. Measured: 5 identical calls
+  after 256 distinct ones counted **0** repeats instead of 4.
+  `RunReport.RedundantCalls` and the redundant-call-rate KPI under-reported with
+  nothing marking the count as capped, and evolve learned from the truncated
+  signal. It now evicts oldest-first, like every other bound in that file.
+- **A reviewer that timed out is no longer recorded as one that judged the work
+  worthless.** The synthesized error attempt carries `NoVerdict`, and
+  `Attempt.Score` documents that a 0 under an `error` verdict is an absence, not
+  a judgement.
+- **`autoresearch` no longer claims a surface was exhausted when it was not.**
+  `StopExhausted` is reached on `ErrNoProposal` from the *deterministic*
+  proposer, which cannot touch a text knob at all — yet its sentence read "every
+  value of every knob was tried", the one message in that package built to be
+  trusted, while every sibling carefully says when the surface was *not*
+  exhausted.
+
+### Known, reported rather than changed
+
+Three further findings are real and measured but are **behaviour changes whose
+benefit cannot be proven without a controlled study**, so they are documented
+instead of shipped unmeasured:
+
+- `reviewerStrictDelay` (20ms) means the default `max_parallel=4` issues **two
+  reviewer LLM requests per review**, and `strictOut` is used only when the
+  primary reply is empty — so the second is discarded almost always. The code is
+  honest about the cost (`noteExtraRequests` reports it), but on a local server
+  that runs inference serially this roughly doubles review latency. A delay
+  derived from measured reviewer p50 would keep the insurance and drop the cost.
+- `readBudgetLines` sizes `ws_read` from `MaxContextKB`, the legacy prompt-byte
+  budget, rather than the model's real `ContextLimit` — the exact conflation
+  `compact.WindowTokensFromKB` is already marked Deprecated for. On typical
+  source that caps a read around 80–120 lines whatever the model's real window
+  is. Fixing it would raise read sizes several-fold on a large-context model,
+  which needs measuring before it ships.
+- `agents.factory` charges loop-guard interventions against the ReAct iteration
+  budget (both escalation paths return a successful tool result), and a model
+  profile's `max_turns` can only *lower* the default 8, never raise it.
+
 ## v0.18.1 — 2026-08-25
 
 The harness stops when the work is done.

@@ -117,6 +117,9 @@ type objectiveGate struct {
 	// success, which has refused weak gates since the TestSLMs regression.
 	Weak   bool
 	Output string
+	// Dur is how long the command took, carried through from the SmokeResult so
+	// the probe budget can price the next ask against the runway that is left.
+	Dur time.Duration
 }
 
 // evalObjectiveGate runs the objective command once and classifies the result.
@@ -133,7 +136,8 @@ func (o *Orchestrator) evalObjectiveGate(ctx context.Context, cmd string) object
 // paying for a second identical run — which is what keeps the mid-run answer
 // and the finish-path answer from disagreeing.
 func classifySmoke(cmd string, sr quality.SmokeResult) objectiveGate {
-	g := objectiveGate{Cmd: cmd, Ran: sr.Ran, Output: sr.Output, Weak: quality.IsWeakQACommand(cmd)}
+	g := objectiveGate{Cmd: cmd, Ran: sr.Ran, Output: sr.Output, Dur: sr.Duration,
+		Weak: quality.IsWeakQACommand(cmd)}
 	switch {
 	case !sr.Ran:
 	case sr.OK:
@@ -144,21 +148,70 @@ func classifySmoke(cmd string, sr quality.SmokeResult) objectiveGate {
 	return g
 }
 
-// maxObjectiveProbes bounds how many times ONE run may spend the objective
-// command on the mid-run "are we already done?" question.
+// How often ONE run may spend the objective command on the mid-run "are we
+// already done?" question.
 //
-// Two: the first probe answers it after the execute board drains, the second
-// after the one corrective wave the tester is allowed to trigger. Past that the
-// finish path's own QA gate is imminent anyway, so a third probe would buy
-// nothing and cost a full test-suite run.
-const maxObjectiveProbes = 2
+// THIS USED TO BE A COUNT OF TWO, AND THE COUNT WAS THE BUG. The reasoning was
+// sound for the finish path it was written against — one probe after the board
+// drains, one after the corrective wave — but between-waves probing arrives
+// much earlier, and the budget is charged for RED answers. So both probes were
+// spent on the first two waves, which are the two moments in a run when "not
+// yet" is most certain and least worth paying to learn. From wave three the run
+// was blind: if the implementation landed at wave five, nothing would ever ask
+// again, and the run burned its whole ceiling with nothing actually wrong.
+// Measured: `fix-a-bug` hit its 20-minute ceiling in 1 run of 3 with
+// failed_tasks == 0.
+//
+// A count also cannot be right for two projects at once. Two probes is
+// miserly for a 200ms unit suite and profligate for a 6-minute integration
+// suite; the same number means opposite things.
+//
+// So the bound is economic instead. Asking costs a measured T; a green answer
+// saves the whole runway that is left. Ask while
+//
+//	runway >= probePayoffRatio * T
+//
+// which is the break-even of P(green) * (runway - T) > T at P ≈ 1/5, rounded to
+// a ratio that stays conservative when the estimate is off. The effect is that
+// a cheap gate is asked on every wave that wrote something, an expensive one
+// only while there is enough time left for the answer to pay for itself, and
+// neither number had to be guessed per project.
+const probePayoffRatio = 6
 
-// objectiveProbeState is the per-run bookkeeping behind maxObjectiveProbes.
+// maxProbesWithoutDeadline bounds probing when the run's context carries no
+// wall deadline — a library caller, a test, `--budget` unset. With no runway
+// there is no economics to do, so this falls back to a count. Eight rather than
+// two: the whole point of the change above is that the early probes are the
+// least informative ones, and that is just as true without a deadline.
+const maxProbesWithoutDeadline = 8
+
+// maxProbesAbsolute is a backstop against pathology — a gate that reports zero
+// duration forever, a clock that does not advance — not a budget anyone should
+// reach. The economic rule is what does the real work; if this ever binds, the
+// duration measurement is broken and that is the bug to fix.
+const maxProbesAbsolute = 64
+
+// objectiveProbeState is the per-run bookkeeping behind the probe budget.
+//
+// PER RUN, NOT PER BOARD, and that is the whole reason the old fixed ceiling of
+// two was so damaging: a single run drives RunBoard repeatedly — once per
+// corrective round the finish path schedules — so two probes was two for the
+// entire run, not two per board. A long run spent them both inside its first
+// board and never asked again.
 type objectiveProbeState struct {
 	// spent counts the probes this run has PAID FOR, i.e. the ones that ran the
 	// objective command. A probe handed an already-run result costs nothing and
 	// is not charged — see probeObjective.
 	spent int
+	// cost is the longest probe this run has observed, and the estimate the
+	// affordability rule prices the next ask against.
+	//
+	// The MAXIMUM rather than the mean, because the two are wrong in different
+	// directions and only one of them is safe. A test suite gets slower as the
+	// tree grows, and a mean over early cheap runs would keep saying "affordable"
+	// while the real cost climbed past the runway. Over-estimating costs a probe
+	// that would have fit; under-estimating costs the run its remaining budget.
+	cost time.Duration
 	// lastFiles fingerprints the write evidence the last probe judged. Asking
 	// the same question of the same tree cannot give a different answer, so a
 	// probe is only worth spending once something has been written since.
@@ -377,7 +430,8 @@ func (o *Orchestrator) testPhaseIsOperatorConfigured() bool {
 //     implementation that could already be correct;
 //  3. the write set must have changed since the last probe, because re-asking
 //     the same question of the same tree cannot give a different answer;
-//  4. at most maxObjectiveProbes probes per run, as a hard ceiling;
+//  4. asking must be affordable — the runway left has to be worth several times
+//     what the last ask measurably cost (probeAffordableLocked);
 //  5. `reuse` lets a caller that has JUST run the same command on the same tree
 //     (the deterministic pre-test) hand its result over, so the common case
 //     costs zero extra command runs.
@@ -458,13 +512,13 @@ func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbeP
 	reused := reuse != nil && reuse.Ran && strings.TrimSpace(reuse.Command) == strings.TrimSpace(cmd)
 
 	o.mu.Lock()
-	// The ceiling and the fingerprint both exist to stop the run PAYING for an
+	// Affordability and the fingerprint both exist to stop the run PAYING for an
 	// answer, and a reused result has already been paid for by someone else.
 	// Refusing it buys nothing and costs a whole verification phase — which is
 	// exactly what would happen now that between-waves probes can arrive at the
 	// finish line having spent the budget on a tree that has since changed.
 	if !reused {
-		if o.objective.spent >= maxObjectiveProbes || o.objective.lastFiles == fingerprint {
+		if o.objective.lastFiles == fingerprint || !o.probeAffordableLocked(ctx) {
 			o.mu.Unlock()
 			return g, false
 		}
@@ -478,6 +532,11 @@ func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbeP
 	} else {
 		g = o.evalObjectiveGate(ctx, cmd)
 	}
+	// Price the command from BOTH paths. A reused result was paid for by someone
+	// else, but it timed the same command on the same tree, so it is exactly as
+	// good a price — and taking it free is what lets a run that has already run
+	// its pre-test know the cost before it spends a probe of its own.
+	o.noteProbeCost(g.Dur)
 	// Green already excludes the "no test files" escape hatch: a toolchain that
 	// found nothing to run has verified nothing, so it cannot end a run early
 	// either. Weak is re-checked because qaCommand() is what was classified.
@@ -494,6 +553,70 @@ func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbeP
 		o.mu.Unlock()
 	}
 	return g, true
+}
+
+// probeAffordableLocked decides whether asking "are we done?" is worth what
+// asking costs. o.mu must be held.
+//
+// THE FIRST ASK IS ALWAYS AFFORDABLE. Nothing has priced this project's gate
+// yet, and the only way to learn what it costs is to run it once — refusing on
+// an unknown cost would make the budget unreachable rather than careful. Every
+// later ask is priced against the runway the run actually has left, so the rule
+// tightens by itself as the ceiling approaches and needs no per-project tuning.
+//
+// THE WORST CASE IS THEREFORE ONE OVERSPENT PROBE, and it is worth stating
+// plainly: a project whose objective command takes longer than runway/ratio
+// pays for exactly one full run of it before the measurement comes back and
+// every later ask is refused. That is a real cost on a slow suite, and it is
+// deliberately not defended against by capping the first probe's timeout — a
+// capped probe that gets killed reports a DURATION EQUAL TO ITS CAP, which
+// under-prices the command it just failed to finish, and under-pricing is the
+// one direction of error that lets the rule keep spending. One bounded
+// overspend beats a cheap-looking estimate that is wrong forever.
+//
+// It is also why noteProbeCost is fed by reused results: a run whose pre-test
+// already executed this command arrives here with the price already known and
+// never spends that first probe blind.
+func (o *Orchestrator) probeAffordableLocked(ctx context.Context) bool {
+	if o.objective.spent >= maxProbesAbsolute {
+		return false
+	}
+	est := o.objective.cost
+	if est <= 0 {
+		// Never priced: this ask is what prices it.
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		// No runway to reason about — fall back to a count.
+		return o.objective.spent < maxProbesWithoutDeadline
+	}
+	// Nothing to save and nothing to spend it with: past the deadline the run
+	// is over however green the tree is.
+	runway := time.Until(deadline)
+	return runway >= est*probePayoffRatio
+}
+
+// noteProbeCost records what the last probe cost, so the next one can be priced.
+//
+// A probe that ran but reported no duration is recorded at a 1ms floor rather
+// than left at zero. Zero would read as "never priced", which is the one state
+// that bypasses the economics entirely — a gate whose timing is broken would
+// get unlimited probes instead of the bounded ones a genuinely instant command
+// deserves. The floor keeps it in the priced-and-cheap case, where a real
+// instant command belongs anyway.
+func (o *Orchestrator) noteProbeCost(d time.Duration) {
+	if o == nil {
+		return
+	}
+	if d <= 0 {
+		d = time.Millisecond
+	}
+	o.mu.Lock()
+	if d > o.objective.cost {
+		o.objective.cost = d
+	}
+	o.mu.Unlock()
 }
 
 // objectiveMetBetweenWaves is loop.Runner's BetweenWaves hook: it asks the
@@ -539,9 +662,10 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 	o.runQABootstrap(ctx, cmd)
 
+	stalled := false
 	for round := 1; round <= max; round++ {
-		if err := ctx.Err(); err != nil {
-			return true
+		if ctx.Err() != nil {
+			return o.qaGateNoVerdict(cmd)
 		}
 		o.qaPreflight(ctx, round, cmd)
 
@@ -551,6 +675,10 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		// classifySmoke, not a second opinion: the finish path and the mid-run
 		// early-finish check must agree about what green means.
 		v := classifySmoke(cmd, sr)
+		// Price the command here too. This is the same command the objective
+		// probe spends, so a gate round is a free measurement of it, and the
+		// probe budget should not have to rediscover it.
+		o.noteProbeCost(v.Dur)
 
 		if v.NoTests && round == 1 {
 			o.emitWarn("test", "qa_gate: no test files found — skipping gate (code compiles)", "")
@@ -580,12 +708,29 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 		// The fix pass now runs on EVERY round, the last one included. It used
 		// to be skipped whenever round == max, which with max==1 meant always.
+		//
+		// Whether it WROTE anything is the difference between a repair loop and
+		// a treadmill: re-running the same command against a tree nothing
+		// touched cannot give a different answer, and on a slow suite that is
+		// minutes per round spent proving what the previous round proved. The
+		// objective probe has refused exactly this since it was written (see
+		// probeObjective's fingerprint rule); the gate never learned it.
+		before := o.changedFingerprint()
 		o.qaDiagnoseAndFix(ctx, query, cmd, failText)
+		if o.changedFingerprint() == before {
+			o.emitWarn("test", fmt.Sprintf(
+				"qa_gate: the fix pass wrote nothing in round %d/%d — stopping "+
+					"rather than re-running %s against an unchanged tree", round, max, cmd), "")
+			stalled = true
+			break
+		}
 	}
 
-	// One final verification of the last fix pass before declaring red.
-	if err := ctx.Err(); err == nil {
+	// One final verification of the last fix pass before declaring red — and
+	// only when a fix pass actually changed something to verify.
+	if ctx.Err() == nil && !stalled {
 		final := o.runSmoke(ctx, cmd)
+		o.noteProbeCost(final.Duration)
 		if classifySmoke(cmd, final).Green {
 			_ = o.store.Append(contextstore.DocScratch, "QA gate",
 				"GREEN after final fix pass\n\n"+truncate(final.Output, 2000))
@@ -597,6 +742,12 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		}
 	}
 
+	if ctx.Err() != nil {
+		// The gate ran out of RUN, not out of rounds. Everything below is a
+		// verdict — an event the operator reads, a recorded gate result, and a
+		// board annotation — and none of it is true of a canceled run.
+		return o.qaGateNoVerdict(cmd)
+	}
 	o.emitFullL("test", stream.KindAgentEnd, "qa", "",
 		fmt.Sprintf("qa_gate still red after %d rounds", max), "", "", stream.LevelError)
 	o.recordGate("qa_gate", false, cmd)
@@ -611,6 +762,31 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		o.persistBoard(board)
 	}
 	return true
+}
+
+// qaGateNoVerdict ends the gate because the RUN ended, and reports no verdict.
+//
+// It returns false — "the gate did not fail" — which is the only honest of the
+// two answers a bool allows, and the consequential one. `true` flows straight
+// into finalizeAfterExecute, which sets TesterRejected and feeds the board a
+// SYNTHESIZED tester verdict (`{"passed":false,...,"qa_gate red"}`) through
+// applyTesterFeedback — a planner call. So a user pressing Ctrl-C used to spend
+// model calls on the way out and leave "QA gate still failing" annotated on a
+// task, describing a gate that was never allowed to finish.
+//
+// Nothing is recorded: no recordGate, no board annotation. A canceled gate has
+// not established that the project is green either, and the absence of a
+// verdict is exactly what the ledger should show.
+func (o *Orchestrator) qaGateNoVerdict(cmd string) bool {
+	o.emitWarn("test", "qa_gate: run ended before the gate finished — no verdict recorded ("+cmd+")", "")
+	return false
+}
+
+// changedFingerprint identifies the set of files the run has written so far.
+// Two equal fingerprints mean no write happened in between, so any command that
+// was already run against the tree would answer the same way again.
+func (o *Orchestrator) changedFingerprint() string {
+	return strings.Join(o.changedFilesSnapshot(), "\n")
 }
 
 // qaCommand resolves the project's test/smoke command.

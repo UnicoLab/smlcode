@@ -21,6 +21,16 @@ type SmokeResult struct {
 	Command string
 	Output  string
 	Summary string
+	// Duration is how long the command took. Zero when nothing ran, and zero
+	// from any caller that fabricates a result rather than executing one.
+	//
+	// It is measured here rather than by callers because this is the only place
+	// that knows what actually executed: a caller timing RunSmoke would also be
+	// timing the empty-command and permission-refusal paths, which run nothing
+	// and would report a near-zero cost for a command that has never been
+	// priced. The orchestrator's probe budget reads it to decide whether asking
+	// "are we done?" is worth what asking costs.
+	Duration time.Duration
 }
 
 // Section markers embedded into task output for review gates live in
@@ -611,8 +621,9 @@ func RunSmoke(ctx context.Context, root, command string, timeout time.Duration) 
 	if command == "" {
 		return SmokeResult{OK: true, Ran: false, Summary: "empty command"}
 	}
+	started := time.Now()
 	out, err := runCommand(ctx, root, command, timeout)
-	res := SmokeResult{Ran: true, Command: command, Output: out}
+	res := SmokeResult{Ran: true, Command: command, Output: out, Duration: time.Since(started)}
 	if err != nil {
 		res.OK = false
 		res.Summary = fmt.Sprintf("%s: %s", SmokeFailedMarker, firstLine(err.Error()+" "+out))

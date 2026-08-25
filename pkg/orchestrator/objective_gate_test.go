@@ -20,6 +20,13 @@ import (
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
 
+// smokeGate is whatever can stand in for the objective command. It matches the
+// shape of Orchestrator.qaSmoke, so anything satisfying it can be wired into a
+// test orchestrator in place of a real toolchain.
+type smokeGate interface {
+	run(ctx context.Context, root, cmd string, timeout time.Duration) quality.SmokeResult
+}
+
 // fakeGate answers the objective command from a script and records every
 // invocation. No shell, no toolchain, no model — the whole point of the seam.
 type fakeGate struct {
@@ -103,8 +110,11 @@ const objectiveCmd = "go test ./..."
 //
 // exec is the SubAgentRunner interface rather than *countingExec so a test that
 // needs workers which really write to disk can supply one; every existing
-// caller passes a *countingExec unchanged.
-func objectiveOrch(t *testing.T, gate *fakeGate, exec loop.SubAgentRunner, tune func(*config.Config)) *Orchestrator {
+// caller passes a *countingExec unchanged. gate is an interface for the same
+// reason: fakeGate answers with one fixed verdict for its whole life, and a
+// test about work that becomes correct PART WAY THROUGH a run needs a gate that
+// can change its mind (see scriptedGate).
+func objectiveOrch(t *testing.T, gate smokeGate, exec loop.SubAgentRunner, tune func(*config.Config)) *Orchestrator {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default(dir)
@@ -294,8 +304,11 @@ func TestObjectiveGateNeverSkipsRequiredWork(t *testing.T) {
 }
 
 // TestObjectiveGateIsBounded pins the frequency rule: a probe is spent only when
-// something has been written since the last one, and never more than
-// maxObjectiveProbes times per run.
+// something has been written since the last one, and probing stays bounded.
+//
+// The context here carries NO deadline, which is the case the count fallback
+// exists for — see maxProbesWithoutDeadline. The economic rule that governs a
+// real run is pinned in TestProbeBudgetScalesWithTheCostOfAsking.
 func TestObjectiveGateIsBounded(t *testing.T) {
 	// Red gate, so no probe ever short-circuits the loop and every call gets as
 	// far as the frequency rule.
@@ -325,18 +338,22 @@ func TestObjectiveGateIsBounded(t *testing.T) {
 		t.Fatalf("probes spent = %d, want 1", n)
 	}
 
-	// New write evidence each time: the ceiling is what stops it.
-	for i := 0; i < 5; i++ {
+	// New write evidence each time: every one of these is a real question about
+	// a tree that really changed, so every one is asked — up to the fallback
+	// ceiling, which is what stops it.
+	for i := 0; i < 20; i++ {
 		o.noteChangedFiles("more" + string(rune('a'+i)) + ".go")
 		if _, done := o.objectiveAlreadyMet(ctx, board, false, nil); done {
 			t.Fatal("a red gate finished the run early")
 		}
 	}
-	if n := o.objectiveProbesSpent(); n != maxObjectiveProbes {
-		t.Fatalf("probes spent = %d, want the ceiling %d", n, maxObjectiveProbes)
+	if n := o.objectiveProbesSpent(); n != maxProbesWithoutDeadline {
+		t.Fatalf("probes spent = %d, want the no-deadline ceiling %d",
+			n, maxProbesWithoutDeadline)
 	}
-	if n := gate.count(objectiveCmd); n != maxObjectiveProbes {
-		t.Fatalf("objective command ran %d time(s), want at most %d", n, maxObjectiveProbes)
+	if n := gate.count(objectiveCmd); n != maxProbesWithoutDeadline {
+		t.Fatalf("objective command ran %d time(s), want at most %d",
+			n, maxProbesWithoutDeadline)
 	}
 }
 
@@ -677,8 +694,11 @@ func TestBoardWithoutAGreenObjectiveRunsToItsNormalBound(t *testing.T) {
 	if stopped, _, left := r.EarlyStop(); stopped || left != 0 {
 		t.Fatalf("EarlyStop reported stopped=%v left=%d on a red gate", stopped, left)
 	}
-	if n := gate.count(objectiveCmd); n > maxObjectiveProbes {
-		t.Fatalf("probed %d time(s) across the board, ceiling is %d", n, maxObjectiveProbes)
+	// One probe per wave that wrote something is the most this board can ask
+	// for; beyond that the unchanged-tree rule would have stopped holding.
+	if n := gate.count(objectiveCmd); n > r.Waves() {
+		t.Fatalf("probed %d time(s) across %d wave(s) — the unchanged-tree rule "+
+			"stopped holding", n, r.Waves())
 	}
 }
 
@@ -760,14 +780,19 @@ func TestBetweenWavesProbeRejectsNoTests(t *testing.T) {
 }
 
 // TestBetweenWavesProbeBudgetIsBounded: the probe can now be asked after EVERY
-// wave, so its cost is what has to be bounded. It runs the command only when
-// something has been written since the last one, and never more than
-// maxObjectiveProbes times per run however many waves there are.
+// wave, so its cost is what has to be bounded. Two separate rules do it — the
+// command runs only when something has been written since the last ask, and
+// only while asking is affordable — and this pins the first one, which no
+// amount of runway relaxes.
+//
+// Ten of these twenty waves wrote nothing. Those ten must cost nothing, because
+// re-asking the same question of the same tree cannot give a different answer.
 func TestBetweenWavesProbeBudgetIsBounded(t *testing.T) {
 	gate := &fakeGate{ok: false, out: "--- FAIL: TestStats\nFAIL\n"}
 	o := objectiveOrch(t, gate, &countingExec{}, nil)
 	board := midBoard()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
 
 	// Twenty waves, half of which wrote nothing new.
 	for i := 0; i < 20; i++ {
@@ -778,31 +803,34 @@ func TestBetweenWavesProbeBudgetIsBounded(t *testing.T) {
 			t.Fatal("a red gate stopped the board")
 		}
 	}
-	if n := gate.count(objectiveCmd); n != maxObjectiveProbes {
-		t.Fatalf("objective command ran %d time(s) across 20 waves, ceiling is %d",
-			n, maxObjectiveProbes)
+	// The fake is instant, so a 20-minute runway affords every ask that has a
+	// changed tree behind it — and exactly those.
+	if n := gate.count(objectiveCmd); n != 10 {
+		t.Fatalf("objective command ran %d time(s) across 20 waves of which 10 "+
+			"wrote, want exactly those 10", n)
 	}
-	if n := o.objectiveProbesSpent(); n != maxObjectiveProbes {
-		t.Fatalf("probes spent = %d, want the ceiling %d", n, maxObjectiveProbes)
+	if n := o.objectiveProbesSpent(); n != 10 {
+		t.Fatalf("probes spent = %d, want 10", n)
 	}
 }
 
 // TestSpentBudgetStillLetsTheFinishPathReuseAFreeAnswer: between-waves probes
-// can now arrive at the finish line having spent the whole budget. The ceiling
-// counts command RUNS, and a result the pre-test already produced costs none —
-// refusing it would buy nothing and cost a full verification phase.
+// can now arrive at the finish line having spent the whole budget. The budget
+// bounds what the run PAYS FOR, and a result the pre-test already produced
+// costs nothing — refusing it would buy nothing and cost a full verification
+// phase.
 func TestSpentBudgetStillLetsTheFinishPathReuseAFreeAnswer(t *testing.T) {
 	gate := &fakeGate{ok: false, out: "--- FAIL: TestStats\nFAIL\n"}
 	o := objectiveOrch(t, gate, &countingExec{}, nil)
-	ctx := context.Background()
+	ctx := context.Background() // no deadline: the count fallback, fully spendable
 
-	for i := 0; i < maxObjectiveProbes; i++ {
+	for i := 0; i < maxProbesWithoutDeadline; i++ {
 		o.noteChangedFiles(fmt.Sprintf("wave%d.go", i))
 		if stop, _ := o.objectiveMetBetweenWaves(ctx, midBoard()); stop {
 			t.Fatal("a red gate stopped the board")
 		}
 	}
-	if n := o.objectiveProbesSpent(); n != maxObjectiveProbes {
+	if n := o.objectiveProbesSpent(); n != maxProbesWithoutDeadline {
 		t.Fatalf("probes spent = %d, want the budget fully spent", n)
 	}
 
@@ -1179,8 +1207,10 @@ func TestRedObjectiveGateWithAnEscalatedTaskIsUnchanged(t *testing.T) {
 	if o.finishedOnObjectiveGate() {
 		t.Fatal("a red gate recorded an objective-gate finish")
 	}
-	if n := gate.count(objectiveCmd); n > maxObjectiveProbes {
-		t.Fatalf("probed %d time(s) across the board, ceiling is %d", n, maxObjectiveProbes)
+	// One probe per wave that wrote something, and no more.
+	if n := gate.count(objectiveCmd); n > r.Waves() {
+		t.Fatalf("probed %d time(s) across %d wave(s) — the unchanged-tree rule "+
+			"stopped holding", n, r.Waves())
 	}
 }
 

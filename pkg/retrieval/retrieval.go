@@ -102,6 +102,12 @@ func MinScoreFor(mode string) float64 {
 
 // NoiseFloor is the measured per-corpus baseline: the median score plus
 // NoiseMargin. It returns 0 for corpora too small to estimate a baseline from.
+//
+// PASS THE WHOLE SCORED CORPUS, never a top-k. A median taken over hits that
+// were already selected for being the best is not a baseline — it sits among
+// the very scores it is supposed to be separating from the noise, and the
+// threshold it yields rejects most of them. Retriever.SearchAll exists to
+// supply this; Retriever.Search does not.
 func NoiseFloor(hits []Scored) float64 {
 	if len(hits) < MinChunksForNoiseFloor {
 		return 0
@@ -169,17 +175,47 @@ func NewLexical() *Retriever {
 }
 
 // Search ranks chunks for query and returns the top-k.
+//
+// CAUTION: the result is TRUNCATED, so it is not a sample of the corpus and
+// must never be used to estimate one. Passing it to NoiseFloor is the specific
+// mistake — see SearchAll and the note on NoiseFloor.
 func (r *Retriever) Search(ctx context.Context, query string, chunks []Chunk) ([]Scored, error) {
+	// The nil guard has to be HERE as well as in SearchAll: SearchAll rebinds
+	// its own local r, which does nothing for this frame, so reading r.TopK
+	// below would dereference the nil this method is documented to tolerate.
+	if r == nil {
+		r = NewLexical()
+	}
+	scored, err := r.SearchAll(ctx, query, chunks)
+	if err != nil {
+		return nil, err
+	}
+	return topK(scored, r.TopK), nil
+}
+
+// topK truncates a ranked list to k, defaulting k to 5.
+func topK(scored []Scored, k int) []Scored {
+	if k <= 0 {
+		k = 5
+	}
+	if len(scored) > k {
+		return scored[:k]
+	}
+	return scored
+}
+
+// SearchAll ranks EVERY chunk and returns them sorted, untruncated.
+//
+// The distribution it returns is the corpus, which is what a relative noise
+// floor has to be measured against. Search's top-k is a biased sample of
+// exactly the hits that would clear any sane floor.
+func (r *Retriever) SearchAll(ctx context.Context, query string, chunks []Chunk) ([]Scored, error) {
 	if r == nil {
 		r = NewLexical()
 	}
 	query = strings.TrimSpace(query)
 	if query == "" || len(chunks) == 0 {
 		return nil, nil
-	}
-	k := r.TopK
-	if k <= 0 {
-		k = 5
 	}
 	texts := make([]string, 0, len(chunks)+1)
 	texts = append(texts, query)
@@ -218,9 +254,6 @@ func (r *Retriever) Search(ctx context.Context, query string, chunks []Chunk) ([
 		scored = append(scored, Scored{Chunk: c, Score: s})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
-	if len(scored) > k {
-		scored = scored[:k]
-	}
 	return scored, nil
 }
 
@@ -379,13 +412,25 @@ func RetrieveForQuery(ctx context.Context, slmDir, query string, cfg Config) (st
 	if r.TopK <= 0 {
 		r.TopK = 5
 	}
-	hits, err := r.Search(ctx, query, chunks)
+	// SearchAll, not Search: the noise floor below is a statistic ABOUT THE
+	// CORPUS, and handing it the top-k made it a statistic about the winners.
+	// With TopK=5 the "median" was the third-best hit, so the threshold became
+	// third-best + NoiseMargin — arithmetically capping the result at two hits
+	// however good the corpus was, and returning NOTHING at all whenever the
+	// top five sat within NoiseMargin of each other. That is a tightly clustered
+	// set of strong matches: retrieval went blind exactly when the corpus was
+	// most on-topic, silently, with no error and no warning.
+	//
+	// It also made MinChunksForNoiseFloor unreachable for its stated purpose —
+	// it was comparing against len(top-k), never the corpus size.
+	all, err := r.SearchAll(ctx, query, chunks)
 	if err != nil {
 		return "", mode, err
 	}
 	_ = cached.Flush()
 
-	threshold := CalibratedThreshold(mode, hits, cfg.MinScore)
+	threshold := CalibratedThreshold(mode, all, cfg.MinScore)
+	hits := topK(all, r.TopK)
 	var kept []Scored
 	for _, h := range hits {
 		if h.Score >= threshold {

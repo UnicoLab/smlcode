@@ -352,6 +352,10 @@ func runProbe(ctx context.Context, provider, endpoint, model, apiKey string) Cap
 		"stream":     false,
 	}
 	reachable := false
+	// cutShort records that the SHARED negotiation deadline expired part way
+	// through. Without it a timeout is indistinguishable from "the server
+	// rejected this field" — see the note above the return.
+	cutShort := false
 	attempt := func(extra map[string]any) bool {
 		body := make(map[string]any, len(base)+len(extra))
 		for k, v := range base {
@@ -362,6 +366,9 @@ func runProbe(ctx context.Context, provider, endpoint, model, apiKey string) Cap
 		}
 		status, err := probeOnce(pctx, client, url, apiKey, body)
 		if err != nil {
+			if pctx.Err() != nil {
+				cutShort = true
+			}
 			return false
 		}
 		reachable = true
@@ -414,6 +421,29 @@ func runProbe(ctx context.Context, provider, endpoint, model, apiKey string) Cap
 	}
 	if !reachable {
 		return Capabilities{Source: "unreachable"}
+	}
+	if cutShort {
+		// ONE deadline covers up to six sequential requests, and a cold local
+		// model — the exact case this budget was widened for — can spend most of
+		// it loading weights for the first. When it expires part way through,
+		// every field not yet asked about is false because it was NEVER ASKED,
+		// not because the server refused it. Stamping that as `Source: "probe"`
+		// used to publish an all-false record and, because Probed was set, cache
+		// it for CapabilityTTL — seven days in which every structured role on
+		// this endpoint silently degraded to prompt-only + repair, with no path
+		// back: nothing re-probes a record that is still fresh.
+		//
+		// So fall back to the family preset and leave Probed ZERO, which is what
+		// keeps this out of the on-disk cache (capCache.put skips zero-Probed
+		// records) so the next process negotiates again from scratch.
+		//
+		// Preferring the preset over all-false is deliberate, and the asymmetry
+		// is the argument: an over-claimed mechanism costs ONE 400 on first use
+		// and is then recorded by demoteCapability, while an under-claimed one
+		// costs a week of degraded decoding that nothing can detect. Guessing in
+		// the recoverable direction is the whole point.
+		prior.Source = "prior-probe-timeout"
+		return prior
 	}
 	out.Probed = time.Now()
 	out.Source = "probe"

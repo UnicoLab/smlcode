@@ -44,6 +44,12 @@ const (
 	// month-old measurement is not evidence about today's setup. It matches
 	// backends.ThroughputTTL for the same reason.
 	DefaultTTL = 30 * 24 * time.Hour
+	// PartialTTL is how long a profile that did not finish measuring is
+	// honored. Short on purpose: a partial profile is usually the fingerprint
+	// of a cold server, which is a condition that clears itself in minutes,
+	// and its verdict is almost always the degenerate max_parallel=1. See
+	// Profile.Current.
+	PartialTTL = time.Hour
 )
 
 type storeFile struct {

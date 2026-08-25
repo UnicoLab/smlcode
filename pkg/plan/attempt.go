@@ -116,9 +116,14 @@ type Attempt struct {
 	// GateSignals names the harness gates that fired on this attempt.
 	GateSignals []string `json:"gate_signals,omitempty"`
 	// Verdict is approved | rejected | escalated | error.
-	Verdict string   `json:"verdict,omitempty"`
-	Score   float64  `json:"score,omitempty"`
-	Issues  []string `json:"issues,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
+	// Score is the reviewer's number, and it is ONLY meaningful when Verdict is
+	// AttemptApproved or AttemptRejected. On AttemptError there was no reviewer
+	// reply to score, so the 0 stored here is an ABSENCE, not a judgement of
+	// worthlessness — read Verdict first. Nothing ranks attempts by Score today;
+	// anything that starts to must exclude non-judged verdicts explicitly.
+	Score  float64  `json:"score,omitempty"`
+	Issues []string `json:"issues,omitempty"`
 	// FailureClass is the evolve fingerprint class, when one was derivable.
 	FailureClass string    `json:"failure_class,omitempty"`
 	At           time.Time `json:"at"`

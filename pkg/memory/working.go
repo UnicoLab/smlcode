@@ -102,6 +102,9 @@ type Working struct {
 	decisions   []string
 
 	signatures map[string]int
+	// sigOrder is signatures' insertion order, so the map can evict its OLDEST
+	// entry when full instead of refusing new ones. See recordCall.
+	sigOrder   []string
 	toolCalls  int
 	toolErrors int
 	redundant  int
@@ -226,14 +229,32 @@ func (w *Working) RecordTool(e ToolEvent) {
 	w.toolCalls++
 	w.events = appendBounded(w.events, e, MaxToolEvents)
 
+	// The repeat detector EVICTS THE OLDEST signature when full; it used to
+	// freeze instead, refusing to admit any signature it had not already seen.
+	//
+	// That froze it against the exact runs it exists to catch. The classic SLM
+	// edit failure is a near-miss ws_edit retried with a slightly different
+	// old_str each time — every attempt a DISTINCT signature. So a thrashing run
+	// mints new signatures faster than a healthy one and reaches the cap sooner,
+	// after which its later repeats were invisible: RunReport.RedundantCalls and
+	// the redundant-call-rate KPI under-reported with nothing marking the count
+	// as capped, and evolve learned from the truncated signal.
+	//
+	// Oldest-first is also the right eviction order for the phenomenon: thrash
+	// is temporally local, so the signatures that matter are the recent ones.
+	// Every other bound in this file (MaxToolEvents, MaxWorkingFiles,
+	// MaxDecisions) already evicts rather than freezes.
 	sig := e.Tool + "\x00" + e.Path + "\x00" + e.Args + "\x00" + e.Command
-	if len(w.signatures) < MaxSignatures {
-		w.signatures[sig]++
-		if w.signatures[sig] > 1 {
-			w.redundant++
+	if _, seen := w.signatures[sig]; !seen {
+		for len(w.sigOrder) >= MaxSignatures {
+			oldest := w.sigOrder[0]
+			w.sigOrder = w.sigOrder[1:]
+			delete(w.signatures, oldest)
 		}
-	} else if w.signatures[sig] > 0 {
-		w.signatures[sig]++
+		w.sigOrder = append(w.sigOrder, sig)
+	}
+	w.signatures[sig]++
+	if w.signatures[sig] > 1 {
 		w.redundant++
 	}
 
@@ -459,6 +480,7 @@ func (w *Working) Reset() {
 	w.focus, w.events, w.filesRead, w.filesEdited = nil, nil, nil, nil
 	w.commands, w.open, w.resolved, w.decisions = nil, nil, nil, nil
 	w.signatures = make(map[string]int, 32)
+	w.sigOrder = nil
 	w.toolCalls, w.toolErrors, w.redundant = 0, 0, 0
 	w.startedAt = w.now()
 }

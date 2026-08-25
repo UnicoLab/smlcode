@@ -144,6 +144,27 @@ func (p Profile) Current(now time.Time, ttl time.Duration) bool {
 	if p.Version < CalibratorVersion {
 		return false
 	}
+	// A PARTIAL profile expires fast, and the reason is what it usually means.
+	//
+	// The measurement runs inside a fixed wall-clock budget whose every unit of
+	// work is a model call — the thing being measured. On a cold local server
+	// the warm-up and the solo baseline can eat the whole budget before any
+	// concurrency level is measured, leaving only the synthetic
+	// {Concurrency:1, Efficiency:1} entry, from which SelectKnee returns 1.
+	//
+	// That verdict was then honored for the full DefaultTTL, because this
+	// function checked ID, MaxParallel, Version and age but never Partial. So
+	// the SLOWEST models — the ones the measurement exists to serve — were
+	// silently pinned to max_parallel=1 for a month on the strength of one cold
+	// start, with nothing to notice: Apply only checks MaxParallel > 0, and the
+	// "partial" marker appears solely in Summary(), which the auto path never
+	// prints.
+	//
+	// A cold start is transient, so the retry should be too: an hour later the
+	// weights are resident and the same probe measures a real knee.
+	if p.Partial && p.Age(now) > PartialTTL {
+		return false
+	}
 	if ttl > 0 && p.Age(now) > ttl {
 		return false
 	}

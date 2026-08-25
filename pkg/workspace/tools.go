@@ -78,7 +78,11 @@ type ToolOpts struct {
 	DisableSyntaxCheck     bool         // skip post-edit syntax check + revert
 	Reads                  *ReadTracker // optional shared tracker; created if nil
 	ReadHeadLines          int          // auto-trim head lines (default 80)
-	MaxContextKB           int          // for read-guard budget (default 32)
+	MaxContextKB           int          // LEGACY prompt-byte budget; see ContextLimitTokens
+	// ContextLimitTokens is the model's REAL context window, in tokens, as
+	// resolved from the model profile (and measured by pkg/calibrate). When it
+	// is known it supersedes MaxContextKB entirely for read sizing.
+	ContextLimitTokens int
 	// ReadWindowLines is the default ws_read window (0 = DefaultReadWindow).
 	ReadWindowLines int
 	// MaxToolChars caps every tool result (0 = DefaultMaxToolChars).
@@ -174,24 +178,25 @@ func NewWorkspace(root string, opts ToolOpts) (*Workspace, *CallTracker, error) 
 		ShellPermission: permissions.NormalizeShell(opts.ShellPermission),
 		SlmDir:          opts.SlmDir, OnFileChange: opts.OnFileChange, Focus: opts.Focus,
 		ShellAskTimeout: opts.ShellAskTimeout, OnShellAsk: opts.OnShellAsk,
-		AutoApprove:     opts.AutoApprove,
-		WriteGuard:      !opts.DisableWriteGuard,
-		ReadBeforeEdit:  !opts.DisableReadBeforeEdit,
-		ShellWriteGuard: !opts.DisableShellWriteGuard,
-		OverEditGuard:   !opts.DisableOverEditGuard,
-		SyntaxCheck:     !opts.DisableSyntaxCheck,
-		Reads:           reads,
-		ReadHeadLines:   opts.ReadHeadLines,
-		ReadWindow:      opts.ReadWindowLines,
-		MaxContextKB:    opts.MaxContextKB,
-		MaxToolChars:    opts.MaxToolChars,
-		ShellTimeout:    opts.ShellTimeout,
-		ShellWhitelist:  opts.ShellWhitelist,
-		ShellAllow:      opts.ShellAllow,
-		OnIntervention:  opts.OnIntervention,
-		OnShellResult:   opts.OnShellResult,
-		observer:        opts.OnToolCall,
-		retrySink:       opts.OnToolRetry,
+		AutoApprove:        opts.AutoApprove,
+		WriteGuard:         !opts.DisableWriteGuard,
+		ReadBeforeEdit:     !opts.DisableReadBeforeEdit,
+		ShellWriteGuard:    !opts.DisableShellWriteGuard,
+		OverEditGuard:      !opts.DisableOverEditGuard,
+		SyntaxCheck:        !opts.DisableSyntaxCheck,
+		Reads:              reads,
+		ReadHeadLines:      opts.ReadHeadLines,
+		ReadWindow:         opts.ReadWindowLines,
+		MaxContextKB:       opts.MaxContextKB,
+		ContextLimitTokens: opts.ContextLimitTokens,
+		MaxToolChars:       opts.MaxToolChars,
+		ShellTimeout:       opts.ShellTimeout,
+		ShellWhitelist:     opts.ShellWhitelist,
+		ShellAllow:         opts.ShellAllow,
+		OnIntervention:     opts.OnIntervention,
+		OnShellResult:      opts.OnShellResult,
+		observer:           opts.OnToolCall,
+		retrySink:          opts.OnToolRetry,
 	}
 	if opts.Checkpoints && opts.SlmDir != "" {
 		ws.Checkpointer = NewFileCheckpointer(opts.SlmDir, root, opts.CheckpointSession)
@@ -447,6 +452,9 @@ type Workspace struct {
 	ReadHeadLines int
 	// ReadWindow is the default ws_read line window (0 = DefaultReadWindow).
 	ReadWindow int
+	// ContextLimitTokens is the model's real context window in tokens. Set it
+	// and read sizing follows the MODEL rather than the legacy byte budget.
+	ContextLimitTokens int
 	// MaxContextKB informs read-guard trim decisions (0 = 32).
 	MaxContextKB int
 	// MaxToolChars caps every tool result (0 = DefaultMaxToolChars).
@@ -740,15 +748,33 @@ func (w *Workspace) readFile(_ context.Context, args map[string]interface{}) (in
 }
 
 // readBudgetLines returns a line cap derived from the context budget, or 0.
+//
+// IT SIZES FROM THE MODEL'S REAL WINDOW when one is known. It used to size from
+// MaxContextKB — a PROMPT BYTE budget, defaulting to 16 — which is the same
+// conflation compact.WindowTokensFromKB is marked Deprecated for, and which the
+// packer was migrated off with the note that it "silently capped a 32K model at
+// ~3.2K tokens ... the single biggest context regression in the harness". The
+// read guard was never migrated, so `ws_read` stayed pinned near 80-120 lines
+// on typical source no matter what the model could actually hold.
+//
+// That is information thrown away, and it scales with how good the model is: on
+// a 262,144-token Qwen3-Coder-Next the legacy budget discards over 99% of the
+// available window, so the better the model, the more the harness wasted.
+//
+// MaxContextKB remains the fallback for a run with no profile — a wrong-but-
+// small read is safe, where a wrong-but-large one overflows the prompt.
 func (w *Workspace) readBudgetLines(text string, total int) int {
 	if total <= 0 {
 		return 0
 	}
-	ctxKB := w.MaxContextKB
-	if ctxKB <= 0 {
-		ctxKB = 32
+	windowTok := w.ContextLimitTokens
+	if windowTok <= 0 {
+		ctxKB := w.MaxContextKB
+		if ctxKB <= 0 {
+			ctxKB = 32
+		}
+		windowTok = (ctxKB * 1024) / 4
 	}
-	windowTok := (ctxKB * 1024) / 4
 	budgetTok := windowTok * 15 / 100
 	if budgetTok < 256 {
 		budgetTok = 256

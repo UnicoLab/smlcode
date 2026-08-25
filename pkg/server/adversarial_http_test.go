@@ -78,6 +78,10 @@ func TestAdvTokenBattery(t *testing.T) {
 		"/api/health", "/api/status", "/api/config", "/api/board", "/api/events",
 		"/api/review/pending", "/api/workspace/tree", "/api/workspace/file?path=go.mod",
 		"/api/queries", "/api/archives", "/api/blocks", "/api/readiness",
+		// /api/calibration reports the measured endpoint, the model's context
+		// window and the budgets in force — an inventory of the local model
+		// setup, and no more public than the config it derives from.
+		"/api/calibration",
 	}
 	for _, p := range paths {
 		rec := httptest.NewRecorder()

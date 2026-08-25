@@ -85,8 +85,13 @@ func applyContext(cfg *config.Config, p Profile) (Applied, bool) {
 	// size-bucket refinement, so a partial entry would silently drop the
 	// max_tokens / max_turns the buckets contribute.
 	from := prof.ContextLimit
-	entry := prof
-	entry.ContextLimit = p.ContextLimit
+	// DERIVE THE REST OF THE BUDGETS FROM THE MEASURED WINDOW, not just the
+	// window itself. Writing context_limit alone left every other budget on a
+	// profile sized for a 4-16K model: a 262K model ran with a 380-token skill
+	// budget and a 260-token knowledge budget — 0.2% of its window, the same
+	// absolute allowance a 4K model gets. See derive.go for why each share is
+	// what it is, and why none of them may shrink the static floor.
+	entry := DeriveProfile(prof, p.ContextLimit)
 	cfg.ModelProfiles[key] = entry
 	return Applied{
 		Key: "context_limit", From: itoa(from), To: itoa(p.ContextLimit),

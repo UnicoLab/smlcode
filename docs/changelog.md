@@ -1,5 +1,94 @@
 # Changelog
 
+## v0.18.4 — 2026-08-25
+
+Every limit follows the model.
+
+Two defects here were found only by widening the test matrix — a DENSE 27B
+alongside the sparse mixture-of-experts models, and a scenario whose test suite
+is green before the run starts. Neither is reachable with a fast model on a
+red-to-green fixture, which is all the previous releases measured.
+
+**Measured across four models, 21 scenario runs, full five-scenario suite:**
+
+| model | scenarios | checks |
+|---|---|---|
+| `Qwen3-Coder-30B-A3B` (two samples) | 9 of 10 | 57 of 58 |
+| `Qwen3-Coder-Next` (262K context) | 4 of 5 | 28 of 29 |
+| `Qwen3.8-27B` (dense) | 3 of 5 | 25 of 29 |
+
+### Fixed
+
+- **The QA gate no longer spends the finish reserve.** v0.18.3 stopped the BOARD
+  while time remained, and the gate then consumed that reserve on its own
+  rounds — each one a command run plus a model call, minutes apiece on a dense
+  model. Measured: the 27B finished `honest-failure` at 2401s against a 2400s
+  budget, and the Coder-30B at exactly 1200s of 1200s, both with `run_err=nil`.
+  A run that did everything else right, missing by a second. The gate is the
+  LAST thing a run does, so overrunning there costs the report itself — the
+  summary, the board write and the verdict all come after it. Validated: two
+  runs at **329s and 1143s** against the same 1200s budget.
+- **A green that was green before the run no longer ends it.** On a project
+  whose suite already passes, green afterwards is the SAME green — evidence
+  about the suite, not about the run. Measured on `Qwen3-Coder-Next`: the model
+  edited a file, ran `go test` itself, saw the pre-existing pass, and the
+  harness read it as the objective being met. The baseline is now captured for
+  free from the worker's own first pre-edit test run, and a green matching it
+  cannot finish a run early. Red-then-green — `implement-from-tests`,
+  `fix-a-bug` — is untouched, and an UNOBSERVED baseline keeps the old
+  behaviour: not knowing must not become a refusal.
+
+### Added — every limit follows the model
+
+The same defect existed at three layers, each discarding more context the better
+the model was:
+
+- **`ws_read` sized from a 16KB PROMPT-BYTE budget**, capping reads near 80
+  lines whatever the model could hold — the conflation
+  `compact.WindowTokensFromKB` is already marked Deprecated for, and which the
+  packer was migrated off with the note that it "silently capped a 32K model at
+  ~3.2K tokens". The read guard was never migrated. Now: **80 → 546 → 4,369**
+  lines for legacy / 32K / 262K.
+- **Calibration measured the window and applied three knobs**, leaving every
+  token budget static. A 262K model ran with a 260-token skill budget — 0.2% of
+  its window, the same ABSOLUTE allowance a 4K model gets. Now derived:
+  skills **260 → 4,096**, knowledge **180 → 2,730**, turns **20 → 36**.
+- **The search surface had fixed DOMAINS**, so the optimiser proposed
+  small-model values forever and actively undid a good calibration one
+  experiment at a time. Ranges now scale: `memory_tokens` **800 → 1,600 →
+  3,200**.
+
+Output budgets scale WEAKLY and injection budgets STRONGLY, and the asymmetry is
+the design: response length is a property of the task, while how much reference
+material fits is a property of the window. Lifting `max_tokens` to window/8
+turned a slow model's recommended `task_timeout` into eight hours — measured,
+and the reason the shares differ.
+
+- **Calibration narrates itself.** Four staged callbacks — warm-up, latency
+  baseline, each concurrency level, the context-window read. A cold 42GB model
+  is minutes of silence otherwise, at exactly the moment the harness is
+  measuring the numbers that make its later timeouts correct.
+- **`slmcode calibrate` prints the evidence**: what was measured, what changed
+  because of it, and how to override any of it. Numbers that arrive without
+  their evidence are numbers nobody can argue with.
+- **Studio calibrates on the run path**, not just at startup — Studio is where
+  models get switched, and a switch between launch and the first run was
+  previously governed by the PREVIOUS model's profile. Progress reaches the
+  event stream. `GET /api/calibration` serves the evidence, and is behind the
+  session token like every other API route.
+
+### Known
+
+`honest-failure` reports success when the model gives up early rather than
+engaging. Measured across two runs of the same code and model: one worked
+through 168 tool calls, could not do it, and reported honestly; the other
+asserted completion after 38, and the harness believed it because the suite was
+green — as it had been from the start. When the objective command is green
+before AND after, nothing has been verified about the actual requirement, and
+the outcome model has only "success" and "failure" to say. The fix is a third
+outcome, not a stricter rule: refusing success whenever the baseline was green
+would fail most legitimate work, which runs against green repositories.
+
 ## v0.18.3 — 2026-08-25
 
 The harness stops betting time it does not have.

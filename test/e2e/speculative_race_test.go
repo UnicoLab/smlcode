@@ -144,7 +144,26 @@ func runSpeculativeRace(t *testing.T) (*orchestrator.Result, []stream.Event, map
 	}
 	defer func() { _ = h.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// FIVE MINUTES, AND IT IS A HANG DETECTOR, NOT A PERFORMANCE BUDGET.
+	//
+	// Everything this test asserts is about BEHAVIOR — that a racer the harness
+	// itself canceled is never reported as a user interrupt, and that the
+	// winner's verdict survives. None of it is about speed: the model here is a
+	// fake, so wall-clock measures the machine, not the code.
+	//
+	// It was 90s, and 90s is under the wire. `make check` runs every package in
+	// parallel with coverage instrumentation, and each of these tests drives six
+	// full pipeline runs; on 2026-08-25 both failed the gate with "context
+	// deadline exceeded" while passing in isolation (110s) and under coverage
+	// alone (137s). That is a red gate caused by load, on a change that touched
+	// none of this — and a gate that goes red for unrelated reasons teaches
+	// everyone to re-run it until it goes green, which is how a real regression
+	// gets waved through.
+	//
+	// Raising a bound that only exists to catch a hang does not weaken any
+	// assertion here. If the pipeline ever genuinely hangs, five minutes still
+	// catches it; the surrounding `go test -timeout` catches it regardless.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	res, err := h.Run(ctx, "Create "+targetFile+" with a Hello function")
 	mu.Lock()

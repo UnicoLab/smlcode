@@ -88,12 +88,31 @@ func TestApplyInstallsTheServerReportedContextWindow(t *testing.T) {
 		t.Fatalf("the change must be reported: %+v", applied)
 	}
 	// Installing an exact-model key short-circuits the family/size-bucket
-	// refinement, so everything else the resolver used to produce must survive.
-	if prof.MaxTokens != before.MaxTokens || prof.MaxTurns != before.MaxTurns ||
-		prof.ThinkingBudgetTokens != before.ThinkingBudgetTokens ||
-		prof.SkillTokenBudget != before.SkillTokenBudget ||
-		prof.KnowledgeTokenBudget != before.KnowledgeTokenBudget {
-		t.Fatalf("the rest of the profile was lost:\n got %+v\nwant %+v", prof, before)
+	// refinement, so everything else the resolver used to produce must SURVIVE.
+	//
+	// "Survive" now means preserved-or-RAISED, not preserved-exactly: applying a
+	// measured window also derives the budgets that depend on it (see
+	// derive.go), because leaving them static is what gave a 262K model the same
+	// 260-token skill budget as a 4K one. The invariant that matters is
+	// unchanged — no field may be LOST or shrunk.
+	for _, f := range []struct {
+		name        string
+		got, wasMin int
+	}{
+		{"max_tokens", prof.MaxTokens, before.MaxTokens},
+		{"max_turns", prof.MaxTurns, before.MaxTurns},
+		{"thinking_budget_tokens", prof.ThinkingBudgetTokens, before.ThinkingBudgetTokens},
+		{"skill_token_budget", prof.SkillTokenBudget, before.SkillTokenBudget},
+		{"knowledge_token_budget", prof.KnowledgeTokenBudget, before.KnowledgeTokenBudget},
+	} {
+		if f.got < f.wasMin {
+			t.Fatalf("%s was lost or shrunk: %d → %d\n got %+v\nwas %+v",
+				f.name, f.wasMin, f.got, prof, before)
+		}
+	}
+	if prof.Temperature != before.Temperature {
+		t.Fatalf("temperature was changed by a context measurement: %v → %v",
+			before.Temperature, prof.Temperature)
 	}
 }
 
@@ -154,7 +173,12 @@ func TestAutoTaskTimeoutIsCapped(t *testing.T) {
 	cfg := localCfg(t)
 	crawling := measured()
 	crawling.TokensPerSec = 1.5 // ~45 minutes of pure decode for 4096 tokens
-	prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+	// The recommendation must be computed against the max_tokens that will
+	// actually be IN FORCE, which is the derived one: applyContext runs before
+	// applyTaskTimeout precisely so the timeout reflects the budget the run will
+	// use rather than the static default it replaced.
+	prof := DeriveProfile(
+		config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model), crawling.ContextLimit)
 	uncapped, ok := crawling.RecommendedTaskTimeout(prof.MaxTokens)
 	if !ok || uncapped <= MaxAutoTaskTimeout {
 		t.Fatalf("test setup: recommendation %s must exceed the %s cap", uncapped, MaxAutoTaskTimeout)

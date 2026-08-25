@@ -73,6 +73,31 @@ func (o *Orchestrator) noteShellObjectiveRun(command string, ok bool, output str
 	if quality.IsWeakQACommand(qa) {
 		return ""
 	}
+	// THE BASELINE. A worker that runs the project's test command before it has
+	// written anything has just told the harness, for free, what that command
+	// answered at the START of the run. That single fact decides whether a
+	// later green means anything: on a project whose suite already passed,
+	// green after the run is the same green as before, and reading it as
+	// completion is how a harness reports success for work it never did.
+	//
+	// Recorded once, from the first such observation, and never revised — a
+	// later run of the command is no longer a baseline, it is a result.
+	if len(o.changedFilesSnapshot()) == 0 {
+		o.mu.Lock()
+		if !o.objective.baselineKnown {
+			o.objective.baselineKnown = true
+			o.objective.baselineGreen = ok && !qaLooksLikeNoTests(output)
+		}
+		green := o.objective.baselineGreen
+		o.mu.Unlock()
+		if green {
+			o.emitFull("execute", stream.KindIntervention, "harness", "",
+				"the project's test command was ALREADY green before any edit — "+
+					"a green result cannot prove this run accomplished anything",
+				quality.InterventionReview, "objective_green_at_baseline")
+		}
+	}
+
 	if !ok {
 		// The objective command just FAILED. Any earlier green observation
 		// described a tree that has since regressed; drop it rather than let a

@@ -149,7 +149,40 @@ type Prober interface {
 }
 
 // Options configures one calibration.
+// Progress is one calibration stage, reported as it happens.
+//
+// Calibration measures a live endpoint and is hard-capped at Budget, but on a
+// cold local model most of that can go into loading weights for the FIRST call
+// — a 42GB model is minutes of silence before anything is measurable. Without
+// staged progress the harness looks hung at exactly the moment it is doing the
+// thing that makes every later timeout correct.
+type Progress struct {
+	// Stage is a short human phrase: "reading model metadata", "warming up",
+	// "latency baseline", "concurrency 4".
+	Stage string
+	// Step and Total describe position, when known (Total 0 = indeterminate).
+	Step, Total int
+	// Detail is an optional measured value to show alongside, e.g. "312ms".
+	Detail string
+}
+
+// String renders a progress line for a terminal.
+func (p Progress) String() string {
+	out := p.Stage
+	if p.Total > 0 {
+		out = fmt.Sprintf("%s (%d/%d)", out, p.Step, p.Total)
+	}
+	if p.Detail != "" {
+		out += " — " + p.Detail
+	}
+	return out
+}
+
 type Options struct {
+	// OnProgress, when set, is called as each stage begins and completes. It
+	// must not block: calibration is on the startup path.
+	OnProgress func(Progress)
+
 	// Levels are the concurrency levels to try, ascending, starting at 1.
 	// Empty uses DefaultLevels.
 	Levels []int
@@ -161,6 +194,14 @@ type Options struct {
 	Budget time.Duration
 	// Now is injectable for deterministic tests. Defaults to time.Now.
 	Now func() time.Time
+}
+
+// note reports a stage, safely when no observer is installed.
+func (o Options) note(stage string, step, total int, detail string) {
+	if o.OnProgress == nil {
+		return
+	}
+	o.OnProgress(Progress{Stage: stage, Step: step, Total: total, Detail: detail})
 }
 
 func (o Options) withDefaults() Options {
@@ -203,6 +244,7 @@ func Calibrate(ctx context.Context, p Prober, key Key, opt Options) (Profile, er
 
 	// Warm-up. Its duration is deliberately discarded: on a cold local server
 	// it is dominated by loading weights, which is not what a role call pays.
+	opt.note("warming up the model", 0, 0, "first call loads weights; this is the slow one")
 	if _, err := p.Complete(ctx); err != nil {
 		return Profile{}, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
@@ -227,6 +269,7 @@ func Calibrate(ctx context.Context, p Prober, key Key, opt Options) (Profile, er
 			prof.Partial = true
 			break
 		}
+		opt.note("latency baseline", i+1, opt.SoloSamples, "")
 		s, err := p.Complete(ctx)
 		if err != nil {
 			if len(solo) == 0 {
@@ -275,6 +318,7 @@ func Calibrate(ctx context.Context, p Prober, key Key, opt Options) (Profile, er
 			prof.Partial = true
 			break
 		}
+		opt.note(fmt.Sprintf("concurrency %d", n), 0, 0, "")
 		lvl, err := measureLevel(ctx, p, n, base)
 		if err != nil {
 			prof.Partial = true
@@ -285,6 +329,7 @@ func Calibrate(ctx context.Context, p Prober, key Key, opt Options) (Profile, er
 
 	prof.MaxParallel = SelectKnee(prof.Levels, opt.EfficiencyFloor)
 	prof.QueueInflation = inflationAt(prof.Levels, prof.MaxParallel)
+	opt.note("reading the model's context window", 0, 0, "")
 	if md, err := p.Metadata(ctx); err == nil && md.ContextLimit > 0 {
 		prof.ContextLimit = md.ContextLimit
 		prof.ContextSource = md.Source

@@ -41,6 +41,15 @@ type Outcome struct {
 	Notice string
 	// Warning is the single failure line to print, or "".
 	Warning string
+	// BudgetsBefore / BudgetsAfter bracket the model profile across Apply, so a
+	// report can show the derived token budgets as a diff. Captured here rather
+	// than recomputed later: after Apply the "before" no longer exists anywhere.
+	BudgetsBefore, BudgetsAfter config.ModelProfile
+}
+
+// Report renders this outcome as the full evidence report.
+func (o Outcome) Report() Report {
+	return NewReport(o.Profile, o.Applied, o.BudgetsBefore, o.BudgetsAfter)
 }
 
 // AutoOptions configures EnsureCalibrated.
@@ -131,7 +140,10 @@ func EnsureCalibrated(ctx context.Context, cfg *config.Config, opt AutoOptions) 
 		}
 	}
 	if haveCurrent {
+		budgetsBefore := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
 		out := Outcome{Profile: cached, Cached: true, Applied: Apply(cfg, cached)}
+		out.BudgetsBefore = budgetsBefore
+		out.BudgetsAfter = config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
 		if len(out.Applied) > 0 {
 			out.Notice = fmt.Sprintf("calibration (cached, %s ago) for %s: %s",
 				roundAge(cached.Age(now())), key.String(), describeApplied(out.Applied))
@@ -166,12 +178,18 @@ func EnsureCalibrated(ctx context.Context, cfg *config.Config, opt AutoOptions) 
 			saveWarning = "calibration not saved: " + ferr.Error()
 		}
 	}
+	// Bracket Apply: after it runs, the pre-derivation profile exists nowhere
+	// else, and the report's whole value is showing the change.
+	budgetsBefore := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model)
+	applied := Apply(cfg, prof)
 	return Outcome{
-		Profile:  prof,
-		Measured: true,
-		Applied:  Apply(cfg, prof),
-		Notice:   calibratedNotice(prof, pinned, pinnedValue),
-		Warning:  saveWarning,
+		Profile:       prof,
+		Measured:      true,
+		Applied:       applied,
+		Notice:        calibratedNotice(prof, pinned, pinnedValue),
+		Warning:       saveWarning,
+		BudgetsBefore: budgetsBefore,
+		BudgetsAfter:  config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model),
 	}
 }
 

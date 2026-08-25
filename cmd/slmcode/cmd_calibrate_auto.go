@@ -58,7 +58,21 @@ func autoCalibrate(ctx context.Context, h *harness.Harness) {
 	store := openCalibrationStore()
 	defer func() { _ = store.Close() }()
 
-	out := calibrate.EnsureCalibrated(ctx, h.Config, calibrate.AutoOptions{Store: store})
+	// Live progress. Calibration only runs for an UNSEEN (model, endpoint)
+	// pair, but when it does it is the first thing a user sees after asking for
+	// work, and on a cold local model the warm-up call alone can be minutes of
+	// silence. A harness that looks hung while it measures the very numbers
+	// that make its later timeouts correct is its own worst advertisement.
+	first := true
+	opts := calibrate.AutoOptions{Store: store}
+	opts.Options.OnProgress = func(pr calibrate.Progress) {
+		if first {
+			fmt.Println(cli.Info("calibrating " + h.Config.Model + " — measuring this endpoint once, then cached"))
+			first = false
+		}
+		fmt.Println(cli.Dim("  · " + pr.String()))
+	}
+	out := calibrate.EnsureCalibrated(ctx, h.Config, opts)
 	for _, w := range store.Warnings() {
 		fmt.Println(cli.Warn(w))
 	}
@@ -67,6 +81,12 @@ func autoCalibrate(ctx context.Context, h *harness.Harness) {
 	}
 	if out.Notice != "" {
 		fmt.Println(cli.Info(out.Notice))
+	}
+	// A run gets the COMPACT form. The full report is a page, and a page
+	// printed before every run is a page nobody reads; `slmcode calibrate`
+	// prints it on demand, and this line says whether there is anything to see.
+	if rep := out.Report(); rep.ChangedBudgets() > 0 {
+		fmt.Println(cli.Dim("  " + rep.OneLine() + " — `slmcode calibrate` for the evidence"))
 	}
 	if out.Profile.MaxParallel <= 0 {
 		return

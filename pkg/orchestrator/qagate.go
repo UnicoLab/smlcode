@@ -203,6 +203,20 @@ type objectiveProbeState struct {
 	// objective command. A probe handed an already-run result costs nothing and
 	// is not charged — see probeObjective.
 	spent int
+	// baselineKnown / baselineGreen record what the objective command answered
+	// BEFORE this run wrote anything.
+	//
+	// A green command only proves the run accomplished something if it was not
+	// ALREADY green. On a project whose suite passes at the start — the common
+	// case for "add a feature" or "make X do Y" — green after the run is the
+	// same green as before, and treating it as completion is how a harness
+	// reports success for work it never did.
+	//
+	// MEASURED: the honest-failure scenario (impossible task, suite green from
+	// the start) had the harness report engine_success=true with
+	// failed_tasks=0. The model edited a file, ran `go test` itself, saw the
+	// pre-existing green, and the harness read that as the objective being met.
+	baselineKnown, baselineGreen bool
 	// cost is the longest probe this run has observed, and the estimate the
 	// affordability rule prices the next ask against.
 	//
@@ -513,6 +527,15 @@ func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbeP
 	if len(changed) == 0 {
 		return g, false
 	}
+	// A command that was ALREADY green before this run wrote anything cannot
+	// prove the run did something. Refuse to end on it — the ordinary finish
+	// path still applies, and the tester and reviewer still get their say.
+	o.mu.Lock()
+	uninformative := o.objective.baselineKnown && o.objective.baselineGreen
+	o.mu.Unlock()
+	if uninformative {
+		return g, false
+	}
 	fingerprint := strings.Join(changed, "\n")
 	reused := reuse != nil && reuse.Ran && strings.TrimSpace(reuse.Command) == strings.TrimSpace(cmd)
 
@@ -678,6 +701,21 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		if ctx.Err() != nil {
 			return o.qaGateNoVerdict(cmd)
 		}
+		// Stop while there is still time to REPORT. Each round is a command run
+		// plus a model call, and on a slow model that is minutes.
+		//
+		// MEASURED: a dense 27B on the honest-failure scenario stopped its board
+		// correctly with the full finish reserve intact — run_err was nil, the
+		// clamp worked — and then the gate spent the entire reserve on its own
+		// rounds and the run landed ONE SECOND past its budget. The loop
+		// respected the runway and the gate did not, so the run still missed,
+		// having done everything else right.
+		if !o.gateRoundAffordable(ctx, round) {
+			o.emitWarn("test", fmt.Sprintf(
+				"qa_gate: stopping after round %d/%d — not enough time left to run %s "+
+					"again and still report", round-1, max, cmd), "")
+			break
+		}
 		o.qaPreflight(ctx, round, cmd)
 
 		o.emitFull("test", stream.KindAgentStart, "qa", "",
@@ -773,6 +811,37 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		o.persistBoard(board)
 	}
 	return true
+}
+
+// gateRoundAffordable reports whether another gate round fits in what is left.
+//
+// The gate is the LAST thing a run does, so overrunning here costs the report
+// itself: the summary, the board write and the verdict all live after it. A
+// round costs one objective-command run plus a diagnose/fix model call, and the
+// command has been priced already (noteProbeCost). Round 1 is always allowed —
+// a gate that never runs is not a gate — and every round after it must fit.
+//
+// With no deadline there is nothing to reason about and every round is allowed,
+// which is the pre-existing behavior for a run with no wall budget.
+func (o *Orchestrator) gateRoundAffordable(ctx context.Context, round int) bool {
+	if round <= 1 || ctx == nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	o.mu.Lock()
+	cost := o.objective.cost
+	o.mu.Unlock()
+	if cost <= 0 {
+		return true
+	}
+	// The command, plus the model call that follows it, plus room to write the
+	// result. Three times the measured command cost is deliberately coarse: the
+	// fix pass is a model call whose duration is not measured here, and
+	// under-estimating it is what produced the overrun this guards against.
+	return time.Until(deadline) >= cost*3
 }
 
 // qaGateNoVerdict ends the gate because the RUN ended, and reports no verdict.

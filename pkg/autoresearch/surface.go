@@ -225,6 +225,18 @@ var ErrNotMutable = errors.New("autoresearch: knob is not on the mutable surface
 // fields in AgentFields() order, config keys in ConfigWhitelist() order. No map
 // is ranged anywhere on this path, because the order this produces IS the
 // experiment order.
+// contextWindowFor resolves the model's context window for domain scaling, or
+// 0 when nothing is known. An unmeasured model keeps the conservative
+// small-model ranges, which is the safe direction.
+func contextWindowFor(root string) int {
+	cfg, err := config.Load(root)
+	if err != nil || cfg == nil {
+		// No readable project config: keep the conservative small-model ranges.
+		return 0
+	}
+	return config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model).ContextLimit
+}
+
 func Reflect(opts Options) (*Surface, error) {
 	if strings.TrimSpace(opts.Root) == "" {
 		return nil, errors.New("autoresearch: Reflect needs a project root")
@@ -329,6 +341,7 @@ func (s *Surface) reflectConfig(path, root string) error {
 	}
 	m := doc.root()
 	defaults := config.Default(root)
+	window := contextWindowFor(root)
 	for _, ck := range configWhitelist {
 		// Defense in depth: the surface is built from the allow-list, and the
 		// allow-list is re-checked on the way in. A knob that reaches this
@@ -336,6 +349,10 @@ func (s *Surface) reflectConfig(path, root string) error {
 		if !IsWhitelisted(ck.Key) {
 			continue
 		}
+		// The RANGE follows the model too, not just the value: a domain written
+		// for a 16K model actively pulls a 262K one back toward small-model
+		// settings. See scale.go.
+		ck.Domain = scaleDomain(ck.Key, ck.Domain, window)
 		value, inFile := scalarString(m, ck.Key)
 		if !inFile {
 			d, ok := defaults.Get(ck.Key)

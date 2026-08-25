@@ -147,7 +147,16 @@ func runCalibration(ctx context.Context, cfg *config.Config, store *calibrate.St
 	// consult `calibrate: off` or SLMCODE_NO_CALIBRATE, which exist to keep the
 	// RUN path inert rather than to refuse an explicit command.
 	start := time.Now()
-	out := calibrate.EnsureCalibrated(ctx, cfg, calibrate.AutoOptions{Store: store, Force: force})
+	opts := calibrate.AutoOptions{Store: store, Force: force}
+	opts.Options.OnProgress = func(pr calibrate.Progress) {
+		fmt.Println(cli.Dim("  · " + pr.String()))
+	}
+	out := calibrate.EnsureCalibrated(ctx, cfg, opts)
+	// The full evidence report: every measurement, everything it changed, and
+	// how to disagree with any of it. `slmcode calibrate` is the command whose
+	// entire job is to explain these numbers, so it prints the long form.
+	fmt.Println()
+	fmt.Print(out.Report().Render())
 	if out.Profile.MaxParallel == 0 {
 		// Nothing was measured and nothing was cached. Report the reason when
 		// there is one rather than rendering an all-zero profile.

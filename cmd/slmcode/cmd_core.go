@@ -168,6 +168,15 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Calibrate before serving. Studio is a full run surface — it starts
+			// runs, and it is where a user most often SWITCHES MODEL, which is
+			// exactly the moment a stale or missing profile matters. Leaving it
+			// to `run` meant a model picked in Studio was governed by defaults
+			// written for a different one.
+			//
+			// Cached per (model, endpoint), so this is a no-op on every launch
+			// after the first for a given pair.
+			autoCalibrate(cmd.Context(), h)
 			defer closeHarness(h)
 			_ = h.EnsureInitialized()
 			query := strings.Join(args, " ")

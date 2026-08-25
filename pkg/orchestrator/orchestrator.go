@@ -254,10 +254,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		DisableOverEditGuard:   !cfg.OverEditGuard,
 		ReadHeadLines:          cfg.ReadHeadLines,
 		MaxContextKB:           cfg.MaxContextKB,
-		QualityMonitor:         cfg.QualityMonitor,
-		ShellWhitelist:         cfg.ShellWhitelist,
-		ShellAllow:             cfg.ShellAllow,
-		Checkpoints:            cfg.FileCheckpoints,
+		// The model's REAL window, already resolved above for the packer. Without
+		// it the read guard sizes from the legacy byte budget and caps ws_read
+		// near 80-120 lines however much context the model actually has.
+		ContextLimitTokens: contextLimit,
+		QualityMonitor:     cfg.QualityMonitor,
+		ShellWhitelist:     cfg.ShellWhitelist,
+		ShellAllow:         cfg.ShellAllow,
+		Checkpoints:        cfg.FileCheckpoints,
 		OnIntervention: func(reason, message string) {
 			if o != nil {
 				code := quality.ClassifyIntervention(reason)

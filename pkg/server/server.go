@@ -366,6 +366,7 @@ func (s *Server) permissionMode() string {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/calibration", s.handleCalibration)
 	s.mux.HandleFunc("GET /api/readiness", s.handleReadiness)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("PUT /api/config", s.handlePutConfig)
@@ -859,6 +860,17 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		defer s.runWG.Done()
 		defer s.restoreRunOptions(saved)
 		ctx := s.runContext()
+		// Calibrate FIRST, because the model may have changed since the server
+		// started. Studio is where models get switched, and a switch that lands
+		// between launch and the first run would otherwise be governed by the
+		// PREVIOUS model's profile — the concurrency knee, the timeouts and
+		// every token budget belonging to something else entirely.
+		//
+		// It is inside the goroutine, not the handler, for a reason: POST
+		// /api/runs must return immediately so the UI can start streaming. A
+		// cold model can take a minute to measure, and that minute belongs in
+		// the event stream where the user can watch it, not in a hung request.
+		s.ensureCalibrated(ctx)
 		res, err := s.h.Run(ctx, query)
 		s.mu.Lock()
 		s.running = false

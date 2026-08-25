@@ -63,8 +63,8 @@ generated commit-subject dump is a fallback for patch releases, not a substitute
 ## 1. Bump, gate, commit and tag
 
 ```bash
-scripts/prepare-release.sh 0.18.4 --dry-run     # look at the diff; nothing is committed
-scripts/prepare-release.sh 0.18.4               # for real
+scripts/prepare-release.sh 0.19.0 --dry-run     # look at the diff; nothing is committed
+scripts/prepare-release.sh 0.19.0               # for real
 ```
 
 What it does, in order:
@@ -78,7 +78,7 @@ What it does, in order:
 5. Runs `scripts/check-version.sh --tag vX.Y.Z`, `scripts/check-repo-refs.sh`, `make check`.
 6. Commits `chore: release vX.Y.Z` and creates the tag. **It does not push.**
 
-For **v0.18.4 specifically**, the version and the changelog entry are already in the tree,
+For **v0.19.0 specifically**, the version and the changelog entry are already in the tree,
 so the script reports *"No file changes needed — proceeding as a tag-only release"*, runs
 the gate, and creates the tag with no release commit. That is correct.
 
@@ -86,7 +86,7 @@ Review before pushing:
 
 ```bash
 git show --stat HEAD
-git tag -v v0.18.4 2>/dev/null || git show v0.18.4 --stat | head
+git tag -v v0.19.0 2>/dev/null || git show v0.19.0 --stat | head
 ```
 
 ---
@@ -95,7 +95,7 @@ git tag -v v0.18.4 2>/dev/null || git show v0.18.4 --stat | head
 
 ```bash
 git push origin main
-git push origin v0.18.4          # this is what starts the release
+git push origin v0.19.0          # this is what starts the release
 ```
 
 Pushing the tag is the point of no return for the automation. Everything before it is
@@ -131,10 +131,10 @@ served "Studio not built" to every user without failing.
 Published artifacts:
 
 ```
-slmcode_0.18.4_darwin_arm64      slmcode_0.18.4_windows_amd64.exe
-slmcode_0.18.4_darwin_amd64      slmcode_0.18.4_windows_arm64.exe
-slmcode_0.18.4_linux_arm64       install.sh  install.ps1  install.cmd
-slmcode_0.18.4_linux_amd64       SHA256SUMS
+slmcode_0.19.0_darwin_arm64      slmcode_0.19.0_windows_amd64.exe
+slmcode_0.19.0_darwin_amd64      slmcode_0.19.0_windows_arm64.exe
+slmcode_0.19.0_linux_arm64       install.sh  install.ps1  install.cmd
+slmcode_0.19.0_linux_amd64       SHA256SUMS
 ```
 
 ---
@@ -147,18 +147,18 @@ CI verifies the bytes. These are the things only a human on a real machine can c
 
 ```bash
 cd "$(mktemp -d)"
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.18.4/SHA256SUMS
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.18.4/slmcode_0.18.4_darwin_arm64
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.19.0/SHA256SUMS
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.19.0/slmcode_0.19.0_darwin_arm64
 shasum -a 256 -c SHA256SUMS --ignore-missing        # must say OK
-chmod +x slmcode_0.18.4_darwin_arm64
-./slmcode_0.18.4_darwin_arm64 version --json        # version 0.18.4, real commit, real built
+chmod +x slmcode_0.19.0_darwin_arm64
+./slmcode_0.19.0_darwin_arm64 version --json        # version 0.19.0, real commit, real built
 ```
 
 **The install one-liner, on a machine that has never had slmcode:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/UnicoLab/smlcode/main/scripts/install-remote.sh | bash
-slmcode version                                     # 0.18.4
+slmcode version                                     # 0.19.0
 slmcode doctor
 ```
 
@@ -174,7 +174,7 @@ cd "$(mktemp -d)" && slmcode init && slmcode studio
 # "Studio not built" means CI shipped a placeholder: pull the release (step 6 below).
 ```
 
-**Homebrew** — only after the `chore: sync Homebrew formula checksums for v0.18.4`
+**Homebrew** — only after the `chore: sync Homebrew formula checksums for v0.19.0`
 commit has landed on `main` (CI step 14). Before that, the formula carries all-zero
 placeholder checksums and `brew install` will refuse; that is expected, not a break-in.
 
@@ -193,15 +193,15 @@ slmcode version
 ```
 
 Confirm `-> Checksum OK (sha256 …)` appears. This path had no checksum verification at all
-before 0.18.4, so it is worth watching once.
+before 0.19.0, so it is worth watching once.
 
 **Self-update from the previous release:**
 
 ```bash
 # on a machine still running 0.16.0
-slmcode update --check      # must report v0.18.4 is available
+slmcode update --check      # must report v0.19.0 is available
 slmcode update --yes
-slmcode version             # 0.18.4
+slmcode version             # 0.19.0
 ```
 
 ---
@@ -213,11 +213,11 @@ slmcode version             # 0.18.4
   The four `sha256` lines should now read `sha256 "<hex>" # vX.Y.Z` with X.Y.Z equal to the
   release you just cut — that label is what `check-version.sh` gates on, and the reason a
   rebase can no longer leave the previous release's digests under the new version line
-  (which is exactly what happened between v0.18.3 and v0.18.4).
+  (which is exactly what happened between v0.18.3 and v0.19.0).
 - Confirm the docs site rebuilt (`.github/workflows/docs.yml`) and that
   [Install](docs/install.md), [Migration notes](docs/migration.md) and
   [Changelog](docs/changelog.md) render.
-- Announce the **breaking behaviour changes**, not the feature list. For 0.18.4 those are:
+- Announce the **breaking behaviour changes**, not the feature list. For 0.19.0 those are:
   hooks fail closed, project `mcp_servers` ignored, the tiered shell allowlist,
   `slmcode apply` interactive, HITL gates blocking when attended, the Studio session token,
   and the new `.slmcode/memory` + `.slmcode/evolve` directories.
@@ -229,15 +229,15 @@ slmcode version             # 0.18.4
 **Before the tag is pushed** — nothing has happened:
 
 ```bash
-git tag -d v0.18.4
+git tag -d v0.19.0
 git reset --hard origin/main
 ```
 
 **After the tag is pushed but CI failed** — no release exists, so just fix and re-tag:
 
 ```bash
-git push --delete origin v0.18.4
-git tag -d v0.18.4
+git push --delete origin v0.19.0
+git tag -d v0.19.0
 # fix, commit, then repeat from step 1
 ```
 

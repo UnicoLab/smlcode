@@ -64,7 +64,7 @@ reading it — it is one file, `scripts/install-offline.sh`.
 ./scripts/install-offline.sh --system        # → Homebrew prefix or /usr/local/bin
 ./scripts/install-offline.sh --prefix ~/tools/slmcode
 ./scripts/install-offline.sh --arch amd64    # force the Intel build (Rosetta 2)
-./scripts/install-offline.sh --binary ./slmcode_0.19.1_darwin_arm64
+./scripts/install-offline.sh --binary ./slmcode_<version>_darwin_arm64
 ./scripts/install-offline.sh --uninstall
 ```
 
@@ -95,11 +95,13 @@ brings the new binary with it.
 USB stick, an internal artifact store, a colleague's machine:
 
 ```bash
-# On a machine that CAN reach GitHub:
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/latest/download/slmcode_0.19.1_darwin_arm64
+# On a machine that CAN reach GitHub — resolve the newest tag, then fetch its asset:
+VER=$(curl -fsSL https://api.github.com/repos/UnicoLab/smlcode/releases/latest \
+      | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fsSLO "https://github.com/UnicoLab/smlcode/releases/download/v${VER}/slmcode_${VER}_darwin_arm64"
 
 # On the locked-down Mac, after copying the file across:
-./scripts/install-offline.sh --binary ~/Downloads/slmcode_0.19.1_darwin_arm64
+./scripts/install-offline.sh --binary ~/Downloads/slmcode_${VER}_darwin_arm64
 ```
 
 A file that arrives via a browser download **is** quarantined by macOS; the

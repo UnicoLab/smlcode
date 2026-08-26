@@ -18,7 +18,7 @@
 #   ./scripts/install-offline.sh --add-to-path   # …and add that dir to your shell rc
 #   ./scripts/install-offline.sh --system        # → Homebrew prefix or /usr/local/bin
 #   ./scripts/install-offline.sh --prefix /opt/slmcode
-#   ./scripts/install-offline.sh --binary ./slmcode_0.19.1_darwin_arm64
+#   ./scripts/install-offline.sh --binary ./slmcode_<version>_darwin_arm64
 #   ./scripts/install-offline.sh --list
 #   ./scripts/install-offline.sh --uninstall [--system]
 set -euo pipefail
@@ -216,7 +216,7 @@ list_candidates() {
   shopt -u nullglob
 }
 
-# slmcode_0.19.1_darwin_arm64.gz → 0.19.1
+# slmcode_<version>_darwin_arm64.gz → <version>
 asset_version() {
   local name="${1#"${BIN_NAME}_"}"
   name="${name%.gz}"

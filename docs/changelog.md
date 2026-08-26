@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.20.0 — 2026-08-26
+
+An install path for machines where every existing one is blocked.
+
+On a locked-down corporate workstation all three installers fail, each with a
+`403` that reads like a bug rather than a policy: `brew` has to update itself
+first, `scripts/install.sh` needs a Go toolchain and the module proxy, and
+`scripts/install-remote.sh` needs `api.github.com` plus a release-asset fetch
+from `objects.githubusercontent.com`. `git clone` typically survives that
+filtering, because the git endpoint is allowlisted for work that has to get
+done. So the clone becomes the delivery mechanism.
+
+### Added
+
+- **`prebuilt/` — the macOS binaries live in the repository.** `darwin/arm64`
+  and `darwin/amd64`, gzipped, one version at a time. `prebuilt/SHA256SUMS`
+  holds digests of the *uncompressed* binaries under their release asset names,
+  so its lines are byte-identical to the published release `SHA256SUMS` and can
+  be diffed against them from any unfiltered machine.
+- **`scripts/install-offline.sh`** — installs one of those binaries with **no
+  network call of any kind**. It detects OS/arch, decompresses, verifies the
+  SHA-256 (a mismatch aborts), clears `com.apple.quarantine` on its own staged
+  copy so Gatekeeper does not block it, smoke-tests the binary *before*
+  installing it, then does the same atomic install, `install.json` and
+  completions the other installers do. `--system` calls `brew --prefix` only to
+  locate a directory — it never runs `brew update`, which is the command that
+  403s. Also `--list`, `--add-to-path`, `--arch amd64` for Rosetta, `--binary`
+  for sneakernet, `--uninstall`.
+- **[Offline install guide](install-offline.md)**, including why each of the
+  other three paths fails and how to verify what you got.
+- **`make prebuilt`** cross-compiles and rewrites `prebuilt/`. It refuses to run
+  when the Studio SPA is not embedded, so a contributor without Node cannot
+  commit binaries that serve the placeholder page — the one failure mode of this
+  channel nobody would notice until they ran `slmcode studio`.
+
+### Changed
+
+- **The release workflow keeps `prebuilt/` current.** `scripts/update-prebuilt.sh`
+  runs against the just-published `dist/` in the same commit that syncs the
+  Homebrew formula, so the committed binaries *are* the release binaries, not a
+  rebuild.
+- **Release notes no longer republish v0.19.0's breaking changes as their own.**
+  That block was hardcoded into `release.yml`, so every release after v0.19.0
+  would have announced "five defaults changed in this release" about changes
+  that were not in it. It is now a standing upgrade pointer; what is
+  per-release is generated from the commits and written here.
+- `make clean` removes `dist/` and no longer describes `prebuilt/` as something
+  it would delete — that directory is tracked source, not build output.
+
+### Notes
+
+`slmcode update` downloads a release asset, which is exactly what a blocking
+proxy refuses. On such a machine the supported refresh is
+`git pull && ./scripts/install-offline.sh`; the installer says so on every run.
+
+This channel costs ~20 MiB of permanent git history per release. It is bounded
+on purpose — macOS only by default (Linux and Windows users are not the ones
+being blocked), one version at a time, and every documented clone uses
+`--depth 1` so the user's download stays ~20 MiB regardless of history depth.
+`prebuilt/README.md` records the trade-off and the migration to an orphan branch
+if it stops being worth it.
+
+### Breaking behaviour changes
+
+None. Existing installs, workspaces and config are untouched; this release only
+adds a path for machines that could not install at all.
+
 ## v0.19.1 — 2026-08-26
 
 Two things that were left open in v0.19.0, closed with measurement.

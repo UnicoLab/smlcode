@@ -263,32 +263,18 @@ jobs:
             slmcode update
             ```
 
-            ## ⚠️ Breaking behaviour changes in this release
+            ## ⚠️ Upgrading
 
-            Existing workspaces keep working, but five defaults changed. Full detail and
-            the opt-back-in for each is in the
+            Per-release detail is in the
+            [changelog](https://github.com/UnicoLab/smlcode/blob/main/docs/changelog.md);
+            behaviour changes and the opt-back-in for each are in the
             [migration notes](https://github.com/UnicoLab/smlcode/blob/main/docs/migration.md).
 
-            - **Repository hooks fail closed.** `.slmcode/hooks.json` no longer runs on
-              clone. `hooks_enabled` defaults to `false`, and the file's contents must be
-              approved per user: `slmcode hooks list` → `slmcode hooks trust`.
-              CI escape hatch: `SLMCODE_TRUST_HOOKS=1`.
-            - **`mcp_servers` is read from the user config layer only.** A project file can
-              no longer add or replace MCP servers. Opt back in with
-              `SLMCODE_TRUST_PROJECT_MCP=1`.
-            - **The shell allowlist is tiered.** Interpreters (`python`, `node`, `bash`,
-              `make`, …) and file mutators (`sed`, `rm`, `cp`, …) are refused unless listed
-              in `shell_allow`. Command substitution and a bare `&` are never allowlistable.
-            - **`slmcode apply` is interactive by default**, and exits 2 without a TTY.
-              Scripts must pass `--all` to keep applying without a prompt (`--list`
-              and `--json` are the read-only forms).
-            - **HITL gates block instead of auto-approving** when a human is attached to
-              the session. Unattended runs are unchanged.
-            - **Studio requires a session token.** `slmcode studio` prints the URL with
-              `?t=…`; there is no unauthenticated HTML shell any more.
-            - **New state directories** `.slmcode/memory/` and `.slmcode/evolve/`. Run
-              `slmcode init` once to refresh `.slmcode/.gitignore` before your next
-              `slmcode commit`.
+            **Coming from v0.18.x or earlier?** v0.19.0 changed several defaults —
+            repository hooks fail closed, `mcp_servers` is read from the user config
+            layer only, the shell allowlist is tiered, `slmcode apply` is interactive,
+            HITL gates block when a human is attached, and Studio requires a session
+            token. Read the migration notes before upgrading.
 
             ## Verify what you downloaded
 

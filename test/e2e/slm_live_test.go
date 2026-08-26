@@ -729,8 +729,18 @@ type slmLiveScenarioReport struct {
 	EngineSuccess bool    `json:"engine_success"`
 	Tasks         int     `json:"tasks"`
 	FailedTasks   int     `json:"failed_tasks"`
-	LLMCalls      int     `json:"llm_calls"`
-	ToolCalls     int     `json:"tool_calls"`
+	// UnexecutedTasks is how many planned tasks the run never reached. It is
+	// the only signal in this report that the objective gate stopped a board
+	// EARLY — the "stop when the work is already done" path. Without it a run
+	// that finished in 11 calls is indistinguishable from one that stopped
+	// after 11, and the mechanism could only ever be verified from unit tests.
+	//
+	// A proxy, not proof: tasks can also go unexecuted for other reasons, and
+	// the stop REASON lives on the loop runner rather than on Result. Reading
+	// it here at least makes a live early stop visible.
+	UnexecutedTasks int `json:"unexecuted_tasks"`
+	LLMCalls        int `json:"llm_calls"`
+	ToolCalls       int `json:"tool_calls"`
 	// MetricsRow records whether the engine got far enough to write its
 	// metrics row. False means LLMCalls/ToolCalls are "unknown", not "zero".
 	MetricsRow    bool             `json:"metrics_row"`
@@ -911,6 +921,7 @@ func slmLiveRunScenario(t *testing.T, rep *slmLiveScenarioReport, sc slmLiveScen
 		rep.EngineSuccess = res.Success
 		rep.Tasks = len(res.Board.Tasks)
 		rep.FailedTasks = res.FailedTasks
+		rep.UnexecutedTasks = res.UnexecutedTasks
 		rep.RoleLatencyMs = res.LatencyMs
 		if res.Usage != nil {
 			rep.TokensIn = res.Usage.PromptTokens

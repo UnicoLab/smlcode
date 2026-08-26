@@ -505,6 +505,16 @@ Every item below exists because of a number on this page.
   the model fixed. An earlier version of §8 compared a Qwen3.5-9B run against a
   Coder-30B one and reported a saving that does not exist.
 
+!!! note "A known limitation of this dataset"
+    The reports record `unexecuted_tasks`, which makes an early stop *visible*,
+    but not the stop REASON — that lives on the loop runner and does not reach
+    `Result`. So "the harness stopped because the objective was already met" is
+    proven by deterministic tests (`TestBetweenWavesStopsTheBoardAndReportsWhat`
+    `ItAbandoned`, with `TestBoardWithoutAnEarlyStopRunsToItsNormalBound` as the
+    negative control) and is **not** directly confirmable from the live runs
+    here. A run that finishes in 11 calls and one that stops after 11 look the
+    same in this data.
+
 !!! note "Keeping this page honest"
     This page is evidence, so it must not drift from the code or the data.
 

@@ -93,6 +93,9 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
   const attemptsRef = useRef(0);
   const mountedRef = useRef(true);
   const runningRef = useRef(opts.initialRunning ?? false);
+  const frameRef = useRef<number | null>(null);
+  const eventsDirtyRef = useRef(false);
+  const tokenDirtyRef = useRef(false);
   const onEventsRef = useRef(opts.onEvents);
   const onRunningRef = useRef(opts.onRunning);
   onEventsRef.current = opts.onEvents;
@@ -107,14 +110,58 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
   const [tokenStream, setTokenStream] = useState('');
   const [latest, setLatest] = useState<LatestRunResponse | null>(null);
 
-  /** Publish the ref-held log to React with a fresh array identity. */
-  const publish = useCallback(() => {
-    if (!mountedRef.current) return;
-    const next = eventsRef.current;
-    setEvents(next.slice());
-    setLastSeq(lastSeqRef.current);
-    onEventsRef.current?.(next);
+  /**
+   * Flush whatever changed to React — at most once per animation frame.
+   *
+   * Both the event log and the token buffer go through ONE scheduler on
+   * purpose. Two independent rAF callbacks racing for the same slot meant
+   * whichever queued first won and the other's flag was dropped: a token frame
+   * queued just before an event arrived published the tokens and returned,
+   * leaving the event invisible until something else happened to schedule
+   * another frame.
+   *
+   * Why coalesce at all: this used to run synchronously per event, and token
+   * deltas arrive one per generated token — tens per second. Every one of them
+   * re-rendered every AppContext consumer in the app, re-ran EventLog's filters
+   * and summarisers, and re-serialised 200 events to sessionStorage. The
+   * browser could not keep up, and that is what the page's flickering was.
+   *
+   * Nothing is lost by batching: a display cannot show more than one frame's
+   * worth anyway, and every event still lands in `eventsRef` the moment it
+   * arrives — only the React notification waits.
+   */
+  const scheduleFlush = useCallback(() => {
+    if (!mountedRef.current || frameRef.current !== null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      if (!mountedRef.current) return;
+      if (eventsDirtyRef.current) {
+        eventsDirtyRef.current = false;
+        const next = eventsRef.current;
+        // A fresh identity is what tells React the log changed; producing one
+        // for a token-only frame would re-render EventLog for nothing.
+        setEvents(next.slice());
+        onEventsRef.current?.(next);
+      }
+      if (tokenDirtyRef.current) {
+        tokenDirtyRef.current = false;
+        setTokenStream(tokenRef.current);
+      }
+      setLastSeq(lastSeqRef.current);
+    });
   }, []);
+
+  /** Publish the ref-held log to React. */
+  const publish = useCallback(() => {
+    eventsDirtyRef.current = true;
+    scheduleFlush();
+  }, [scheduleFlush]);
+
+  /** Publish accumulated token deltas to React. */
+  const publishTokens = useCallback(() => {
+    tokenDirtyRef.current = true;
+    scheduleFlush();
+  }, [scheduleFlush]);
 
   const setRunning = useCallback((next: boolean) => {
     runningRef.current = next;
@@ -137,6 +184,14 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
   const reset = useCallback(() => {
     eventsRef.current = [];
     tokenRef.current = '';
+    eventsDirtyRef.current = false;
+    tokenDirtyRef.current = false;
+    // A frame queued by the previous run would repaint its log over the empty
+    // one, one frame after the reset — a visible flash of the old run.
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
     // Sequence numbers stay monotonic across runs, so `seen` must NOT be
     // cleared here — clearing it would let a replayed event re-appear.
     if (mountedRef.current) {
@@ -220,10 +275,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
           if (seq > lastSeqRef.current) lastSeqRef.current = seq;
         }
         tokenRef.current = (tokenRef.current + tokenText(data)).slice(-20_000);
-        if (mountedRef.current) {
-          setTokenStream(tokenRef.current);
-          setLastSeq(lastSeqRef.current);
-        }
+        publishTokens();
         return;
       }
       if (data.kind === 'agent_start' || data.kind === 'agent_end') {
@@ -265,7 +317,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
         if (esRef.current === es) connect();
       }, delay);
     };
-  }, [append, enabled, publish, reset, setRunning]);
+  }, [append, enabled, publish, publishTokens, reset, setRunning]);
 
   const reconnect = useCallback(() => {
     attemptsRef.current = 0;
@@ -310,6 +362,11 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
     return () => {
       mountedRef.current = false;
       if (retryRef.current !== null) window.clearTimeout(retryRef.current);
+      // A queued frame would call setState on an unmounted tree.
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
       const es = esRef.current;
       esRef.current = null;
       es?.close();

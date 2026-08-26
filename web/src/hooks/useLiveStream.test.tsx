@@ -35,6 +35,15 @@ async function mountStream() {
   return hook;
 }
 
+// Publishes to React are coalesced into one animation frame (see the scheduler
+// in useLiveStream), so an assertion made in the same tick as the dispatch
+// races the flush. `waitFor` is the honest way to express that: it still fails
+// if the value never arrives, it just does not demand it synchronously.
+//
+// Note this weakens nothing. Every assertion below states the FULL expected
+// contents, so an extra, duplicated or missing event fails it just as before.
+const eventually = waitFor;
+
 describe('useLiveStream — event accumulation', () => {
   beforeEach(() => {
     MockEventSource.reset();
@@ -56,9 +65,10 @@ describe('useLiveStream — event accumulation', () => {
       MockEventSource.last.emitMessage(ev('third'), 3);
     });
 
-    expect(result.current.events).toHaveLength(3);
-    expect(result.current.events.map((e) => e.message)).toEqual(['first', 'second', 'third']);
-    expect(result.current.lastSeq).toBe(3);
+    await eventually(() => {
+      expect(result.current.events.map((e) => e.message)).toEqual(['first', 'second', 'third']);
+      expect(result.current.lastSeq).toBe(3);
+    });
   });
 
   it('keeps accumulating across many messages delivered in one tick', async () => {
@@ -68,7 +78,7 @@ describe('useLiveStream — event accumulation', () => {
         MockEventSource.last.emitMessage(ev(`e${i}`), i);
       }
     });
-    expect(result.current.events).toHaveLength(25);
+    await eventually(() => expect(result.current.events).toHaveLength(25));
     expect(result.current.events[0].message).toBe('e1');
     expect(result.current.events[24].message).toBe('e25');
   });
@@ -81,7 +91,8 @@ describe('useLiveStream — event accumulation', () => {
       MockEventSource.last.emitMessage(ev('a'), 1); // replayed
       MockEventSource.last.emitMessage(ev('b'), 2);
     });
-    expect(result.current.events.map((e) => e.message)).toEqual(['a', 'b']);
+    // Exactly two, in order: the replayed 1 and 2 were dropped.
+    await eventually(() => expect(result.current.events.map((e) => e.message)).toEqual(['a', 'b']));
   });
 
   it('clears the log when the server announces a new run', async () => {
@@ -89,12 +100,12 @@ describe('useLiveStream — event accumulation', () => {
     await act(async () => {
       MockEventSource.last.emitMessage(ev('old run'), 1);
     });
-    expect(result.current.events).toHaveLength(1);
+    await eventually(() => expect(result.current.events).toHaveLength(1));
 
     await act(async () => {
       MockEventSource.last.emitMessage(ev('run started', { kind: 'run_start', phase: 'init' }), 2);
     });
-    expect(result.current.events.map((e) => e.message)).toEqual(['run started']);
+    await eventually(() => expect(result.current.events.map((e) => e.message)).toEqual(['run started']));
     expect(result.current.running).toBe(true);
   });
 
@@ -104,7 +115,7 @@ describe('useLiveStream — event accumulation', () => {
     await act(async () => {
       MockEventSource.last.emitMessage(ev('needs input', { kind: 'ask', phase: 'clarify' }), 1);
     });
-    expect(result.current.askSignal).toBe(1);
+    await eventually(() => expect(result.current.askSignal).toBe(1));
   });
 
   it('accumulates token deltas into a buffer instead of log rows', async () => {
@@ -114,7 +125,7 @@ describe('useLiveStream — event accumulation', () => {
       MockEventSource.last.emitMessage(ev('lo ', { kind: 'token', output: 'lo ' }), 2);
       MockEventSource.last.emitMessage(ev('world', { kind: 'token', output: 'world' }), 3);
     });
-    expect(result.current.tokenStream).toBe('Hello world');
+    await eventually(() => expect(result.current.tokenStream).toBe('Hello world'));
     // Token deltas must not flood the structural log.
     expect(result.current.events).toHaveLength(0);
   });
@@ -123,9 +134,45 @@ describe('useLiveStream — event accumulation', () => {
     const { result } = await mountStream();
     await act(async () => {
       MockEventSource.last.emitMessage(ev('abc', { kind: 'token', output: 'abc' }), 1);
+    });
+    // Prove the buffer actually filled, or the assertion below passes on a
+    // buffer that was never written to.
+    await eventually(() => expect(result.current.tokenStream).toBe('abc'));
+
+    await act(async () => {
       MockEventSource.last.emitMessage(ev('worker done', { kind: 'agent_end' }), 2);
     });
-    expect(result.current.tokenStream).toBe('');
+    await eventually(() => expect(result.current.tokenStream).toBe(''));
+  });
+
+  // The regression test for the work behind the page flicker.
+  //
+  // `onEvents` is the persistence hook, and it used to fire once per arriving
+  // event — each call a JSON.stringify of up to 200 events, on the main thread,
+  // inside the same frame as every other event in the burst. That is the cost
+  // the rAF scheduler exists to remove, and unlike a render count it is
+  // directly observable: React 18 batches state updates inside one task, so
+  // counting renders here would pass with or without the fix and prove nothing.
+  it('does the per-flush work once for a burst, not once per event', async () => {
+    const onEvents = vi.fn();
+    renderHook(() => useLiveStream({ onEvents }));
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    await act(async () => {
+      MockEventSource.last.open();
+    });
+    onEvents.mockClear();
+
+    await act(async () => {
+      for (let i = 1; i <= 60; i++) {
+        MockEventSource.last.emitMessage(ev(`burst-${i}`), i);
+      }
+    });
+    await waitFor(() => expect(onEvents).toHaveBeenCalled());
+
+    // Once for the frame, not sixty times for the messages.
+    expect(onEvents.mock.calls.length).toBeLessThanOrEqual(2);
+    // …and the flush that did happen carried the whole burst.
+    expect(onEvents.mock.calls[onEvents.mock.calls.length - 1][0]).toHaveLength(60);
   });
 
   it('surfaces a gap frame reported by the server', async () => {
@@ -160,6 +207,7 @@ describe('useLiveStream — connection state', () => {
     await act(async () => {
       MockEventSource.last.emitMessage(ev('x'), 7);
     });
+    await eventually(() => expect(result.current.lastSeq).toBe(7));
 
     for (let i = 0; i < 3; i++) {
       await act(async () => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { RunEvent, RunEventSummary } from '@/types';
 import clsx from 'clsx';
 
@@ -92,7 +92,7 @@ type EventView = {
   chips: { label: string; tone?: 'phase' | 'agent' | 'task' | 'file' | 'kind' }[];
 };
 
-export default function EventLog({ events, summary }: EventLogProps) {
+function EventLog({ events, summary }: EventLogProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const insightSummary = useMemo(() => summary || summarizeEvents(events), [events, summary]);
@@ -983,3 +983,9 @@ function truncate(value: string, limit: number): string {
   const s = value.trim();
   return s.length <= limit ? s : `${s.slice(0, limit)}...`;
 }
+
+// Memoised on props. The Live page re-renders on every stream flush — including
+// token-only frames, where `events` keeps its identity and nothing here can
+// have changed. Without this, each one re-ran summarizeEvents, the filters and
+// compactAdjacentEvents over the whole log.
+export default memo(EventLog);

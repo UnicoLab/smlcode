@@ -14,10 +14,13 @@ import {
   Zap,
   Layers,
   Cpu,
+  PanelRightClose,
+  PanelRightOpen,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { startRun, stopRun, getAgents, getPipeline, getComposition, previewComposition, getInterruptedRuns, resumeRun } from '@/api/client';
-import type { RunEvent, AgentSpec, PipelineView, DynamicComposition, InterruptedRun } from '@/types';
+import type { AgentSpec, PipelineView, DynamicComposition, InterruptedRun } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
 import LiveFileInspector from './LiveFileInspector';
@@ -26,7 +29,33 @@ import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
+import CollapsibleSection from '@/components/ui/CollapsibleSection';
+import ResizeHandle from '@/components/ui/ResizeHandle';
+import { usePersistentState, useMediaQuery, useStickToBottom } from '@/hooks/useUiState';
 import clsx from 'clsx';
+
+// ── Layout constants ──
+//
+// The side panel used to be a hard `lg:w-[27rem]`. At 1280px that is a third of
+// the window spent on a panel the user may not be reading, with no way to give
+// the space back. It is now a persisted, draggable width clamped to these.
+const PANEL_MIN_PX = 280;
+const PANEL_MAX_PX = 900;
+const PANEL_DEFAULT_PX = 420;
+
+// Below this height the detail sections start closed. A 13" laptop shows about
+// 700px of viewport; the header alone used to fill it and the event log — the
+// thing this page exists to show — was clipped to nothing.
+const SHORT_VIEWPORT = '(max-height: 860px)';
+const WIDE_VIEWPORT = '(min-width: 1024px)';
+
+// Auto-fit grids, not breakpoint steps. `repeat(auto-fit, minmax(X, 1fr))` asks
+// the browser to fit as many columns as the ACTUAL container allows, so the
+// same markup is correct on a 900px window and a 3840px ultrawide without a
+// single media query — and nothing overflows on the way between them.
+const METRIC_GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr))]';
+const PHASE_GRID = 'grid gap-1.5 [grid-template-columns:repeat(auto-fill,minmax(6.5rem,1fr))]';
+const FACT_GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]';
 
 // ── Pipeline group definitions ──
 interface PhaseGroup {
@@ -97,14 +126,35 @@ export default function LiveView() {
   const [compositionPreviewFit, setCompositionPreviewFit] = useState<string[]>([]);
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [logExpanded, setLogExpanded] = useState(true);
-  const logEnd = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLInputElement>(null);
 
-  // Scroll to bottom on new events
-  useEffect(() => {
-    logEnd.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [events]);
+  // ── Layout state ──
+  //
+  // All of it persisted: a layout the user arranged has to survive a reload, or
+  // they rearrange it every time they open Studio.
+  const isShort = useMediaQuery(SHORT_VIEWPORT);
+  const isWide = useMediaQuery(WIDE_VIEWPORT);
+
+  // `isShort` is read once, as the first-mount default only. A laptop that
+  // later docks to a big monitor must not have panels silently re-open — and a
+  // panel the user closed must stay closed when they undock.
+  const [detailsOpen, setDetailsOpen] = usePersistentState('live.details', !isShort);
+  const [openPipeline, setOpenPipeline] = usePersistentState('live.sec.pipeline', true);
+  const [openStage, setOpenStage] = usePersistentState('live.sec.stage', !isShort);
+  const [openAgents, setOpenAgents] = usePersistentState('live.sec.agents', !isShort);
+  const [openFeedback, setOpenFeedback] = usePersistentState('live.sec.feedback', false);
+  const [openComposition, setOpenComposition] = usePersistentState('live.sec.composition', false);
+  const [logExpanded, setLogExpanded] = usePersistentState('live.log.open', true);
+  const [panelOpen, setPanelOpen] = usePersistentState('live.panel.open', true);
+  const [panelWidth, setPanelWidth] = usePersistentState('live.panel.width', PANEL_DEFAULT_PX);
+
+  const openSectionCount =
+    Number(openPipeline) + Number(openStage) + Number(openAgents) + Number(openFeedback) + Number(openComposition);
+
+  // Pin the log to its bottom as events arrive — but only while the user is
+  // already there, so scrolling up to read something is not undone by the next
+  // event. See useStickToBottom for why `scrollIntoView` was wrong here.
+  const logBodyRef = useStickToBottom<HTMLDivElement>(events, logExpanded);
 
   // `/` focuses the prompt from anywhere in the app.
   useEffect(() => {
@@ -385,10 +435,12 @@ export default function LiveView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
-      {/* ── Command Center ── */}
-      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-4 shadow-sm dark:border-gray-800 dark:bg-gray-950">
-        <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+      {/* ═══ Command bar — pinned, never collapses ═══
+          Everything needed to start or stop a run lives here and nowhere else,
+          so the one control the page exists for is always on screen no matter
+          how small the window or how much detail is expanded below. */}
+      <div className="shrink-0 border-b border-gray-200 bg-white px-3 py-2.5 shadow-sm dark:border-gray-800 dark:bg-gray-950 sm:px-4">
+        <div className="mx-auto flex w-full max-w-[1800px] flex-col gap-2.5">
             <div className="min-w-0 flex-1">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <span className={clsx(
@@ -496,107 +548,54 @@ export default function LiveView() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:w-[31rem]">
-              <LiveMetric label="Phases" value={`${stats.phasesCompleted}/${stats.totalPhases}`} icon={<Target size={15} />} tone="sky" />
-              <LiveMetric label="Tasks" value={String(stats.tasksSeen ?? 0)} icon={<Zap size={15} />} tone="amber" />
-              <LiveMetric label="Events" value={String(stats.eventsCount)} icon={<Activity size={15} />} tone="emerald" />
-              <LiveMetric label="Agent" value={activeAgentId ? (activeAgentSpec?.title || activeAgentId) : 'idle'} icon={<Bot size={15} />} tone="violet" />
-            </div>
+          {/* Metrics reflow by available width, not by breakpoint — see
+              METRIC_GRID. The old `xl:w-[31rem]` reserved a fixed 496px strip
+              that squeezed the prompt on a 1280px window and left a gap on an
+              ultrawide. */}
+          <div className={METRIC_GRID}>
+            <LiveMetric label="Phases" value={`${stats.phasesCompleted}/${stats.totalPhases}`} icon={<Target size={15} />} tone="sky" />
+            <LiveMetric label="Tasks" value={String(stats.tasksSeen ?? 0)} icon={<Zap size={15} />} tone="amber" />
+            <LiveMetric label="Events" value={String(stats.eventsCount)} icon={<Activity size={15} />} tone="emerald" />
+            <LiveMetric label="Agent" value={activeAgentId ? (activeAgentSpec?.title || activeAgentId) : 'idle'} icon={<Bot size={15} />} tone="violet" />
           </div>
 
-          <div className="grid gap-3 xl:grid-cols-[1fr_24rem]">
-            <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-800 dark:bg-gray-900/60">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                    Pipeline Progress
-                  </span>
-                  {activePhase && <span className="badge-neutral text-[10px]">phase {activePhase}</span>}
-                  {activeExecute && (
-                    <span
-                      className="hidden min-w-0 truncate text-[10px] text-gray-400 sm:inline"
-                      title={`worker ${activeExecute.default_role || 'worker'}; reviewer ${activeExecute.reviewer || 'reviewer'}`}
-                    >
-                      worker {activeExecute.default_role || 'worker'} · reviewer {activeExecute.reviewer || 'reviewer'}
-                    </span>
-                  )}
-                </div>
-                <span className="font-mono text-xs font-semibold text-gray-500 dark:text-gray-400">{progressPct}%</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
-                <div
-                  className="h-full rounded-full bg-brand-500 transition-all duration-700"
-                  style={{ width: `${progressPct}%` }}
-                />
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8 xl:grid-cols-10">
-                {allPhases.map((phase) => {
-                  const state = phaseStateMap[phase] || 'pending';
-                  return (
-                    <span
-                      key={phase}
-                      className={clsx(
-                        'flex min-w-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold',
-                        state === 'active' && 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300',
-                        state === 'completed' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300',
-                        state === 'pending' && 'border-gray-200 bg-white text-gray-400 dark:border-gray-800 dark:bg-gray-950',
-                      )}
-                      title={`${phase}: ${state}`}
-                    >
-                      <span className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', PHASE_DOT_COLORS[phase] || 'bg-gray-400')} />
-                      <span className="min-w-0 truncate">{phase}</span>
-                    </span>
-                  );
-                })}
-              </div>
+          {/* Progress stays visible even with every detail section closed —
+              it is the one thing you want while a run is going. */}
+          <div className="flex items-center gap-3">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+              <div
+                className="h-full rounded-full bg-brand-500 transition-[width] duration-700"
+                style={{ width: `${progressPct}%` }}
+              />
             </div>
-
-            <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
-              <LiveFeedback />
-            </div>
+            <span className="shrink-0 font-mono text-[11px] font-semibold text-gray-500 dark:text-gray-400">{progressPct}%</span>
+            <button
+              type="button"
+              onClick={() => setDetailsOpen(!detailsOpen)}
+              aria-expanded={detailsOpen}
+              className="btn-ghost focus-ring h-7 shrink-0 gap-1.5 px-2 text-[11px]"
+              title={detailsOpen ? 'Hide the detail panels and give the room to the log' : 'Show pipeline, stage and composition detail'}
+            >
+              <SlidersHorizontal size={13} aria-hidden="true" />
+              <span className="hidden sm:inline">Details</span>
+              <span className="badge-neutral text-[10px]">{openSectionCount}</span>
+              {detailsOpen ? <ChevronUp size={13} aria-hidden="true" /> : <ChevronDown size={13} aria-hidden="true" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPanelOpen(!panelOpen)}
+              aria-expanded={panelOpen}
+              className="btn-ghost focus-ring h-7 shrink-0 gap-1.5 px-2 text-[11px]"
+              title={panelOpen ? 'Hide the side panel' : 'Show tasks, result and files'}
+            >
+              {panelOpen ? <PanelRightClose size={14} aria-hidden="true" /> : <PanelRightOpen size={14} aria-hidden="true" />}
+              <span className="sr-only">{panelOpen ? 'Hide side panel' : 'Show side panel'}</span>
+            </button>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,28rem)]">
-            <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-gray-800 dark:text-gray-100">Current Stage</span>
-                {activePhase ? (
-                  <span className="badge-brand text-[10px]">{activePhase}</span>
-                ) : (
-                  <span className="badge-neutral text-[10px]">idle</span>
-                )}
-                {nextPhase && <span className="badge-neutral text-[10px]">next {nextPhase}</span>}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <StageFact label="Last event" value={lastEvent?.kind || 'none'} detail={lastEvent?.message || 'No events in this run yet'} />
-                <StageFact label="Phase" value={activePhase || 'waiting'} detail={currentPhaseIndex >= 0 ? `${currentPhaseIndex + 1} of ${allPhases.length}` : `${allPhases.length} configured`} />
-                <StageFact label="Loop" value={activeExecute?.default_role || 'worker'} detail={`review ${activeExecute?.reviewer || 'reviewer'} / fix ${activeExecute?.corrector || 'corrector'}`} />
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-gray-800 dark:text-gray-100">Agent Activity</span>
-                <span className="text-[10px] text-gray-400">{recentAgents.length ? `${recentAgents.length} recent` : 'idle'}</span>
-              </div>
-              {recentAgents.length ? (
-                <div className="space-y-1.5">
-                  {recentAgents.map((agent) => (
-                    <div key={agent.id} className="flex min-w-0 items-center gap-2 rounded-md bg-gray-50 px-2 py-1.5 dark:bg-gray-800/60" title={`${agent.title}${agent.model ? ` / ${agent.model}` : ''}`}>
-                      <Bot size={13} className="shrink-0 text-violet-500" />
-                      <span className="min-w-0 flex-1 text-xs font-semibold text-gray-700 line-clamp-2 dark:text-gray-200">{agent.title}</span>
-                      {agent.model && <span className="hidden max-w-28 truncate font-mono text-[10px] text-gray-400 sm:block">{agent.model}</span>}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-md border border-dashed border-gray-200 px-3 py-4 text-center text-xs text-gray-400 dark:border-gray-800">
-                  No agent has run in this session yet.
-                </div>
-              )}
-            </div>
-          </div>
-
+          {/* Interrupted runs stay OUT of the collapsible region: it is an
+              action, not a detail, and a user who collapsed the panels would
+              never discover a run they can resume. */}
           {!running && interrupted.length > 0 && (
             <div className="flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
@@ -622,6 +621,124 @@ export default function LiveView() {
         </div>
       </div>
 
+      {/* ═══ Detail region — capped height, scrolls itself ═══
+
+          THE fix for "everything gets cut off". Previously each of these panels
+          was `shrink-0` in the page's flex column, so on a laptop viewport they
+          consumed the entire screen and the event log below them was crushed to
+          a few pixels with no way to get the space back.
+
+          Two rules make that impossible now:
+            • the region never exceeds ~38vh, so the log always keeps most of
+              the page whatever is expanded;
+            • anything that does not fit scrolls HERE, inside the region, rather
+              than pushing the log off the bottom of the window.
+          `overscroll-contain` stops a scroll that reaches the end of this box
+          from continuing into the log behind it. */}
+      {detailsOpen && (
+        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-950/60
+                        max-h-[clamp(7rem,38vh,34rem)]">
+          <div className="mx-auto grid w-full max-w-[1800px] gap-2 p-3 [grid-template-columns:repeat(auto-fit,minmax(20rem,1fr))]">
+            <CollapsibleSection
+              title="Pipeline"
+              open={openPipeline}
+              onToggle={() => setOpenPipeline(!openPipeline)}
+              meta={
+                <>
+                  {activePhase ? (
+                    <span className="badge-brand text-[10px]">{activePhase}</span>
+                  ) : (
+                    <span className="badge-neutral text-[10px]">idle</span>
+                  )}
+                  <span className="truncate text-[10px] text-gray-400">
+                    {stats.phasesCompleted}/{stats.totalPhases} phases
+                  </span>
+                </>
+              }
+            >
+              {activeExecute && (
+                <p className="mb-2 truncate text-[10px] text-gray-400" title={`worker ${activeExecute.default_role || 'worker'}; reviewer ${activeExecute.reviewer || 'reviewer'}`}>
+                  worker {activeExecute.default_role || 'worker'} · reviewer {activeExecute.reviewer || 'reviewer'}
+                </p>
+              )}
+              <div className={PHASE_GRID}>
+                {allPhases.map((phase) => {
+                  const state = phaseStateMap[phase] || 'pending';
+                  return (
+                    <span
+                      key={phase}
+                      className={clsx(
+                        'flex min-w-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold',
+                        state === 'active' && 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300',
+                        state === 'completed' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300',
+                        state === 'pending' && 'border-gray-200 bg-white text-gray-400 dark:border-gray-800 dark:bg-gray-950',
+                      )}
+                      title={`${phase}: ${state}`}
+                    >
+                      <span className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', PHASE_DOT_COLORS[phase] || 'bg-gray-400')} />
+                      <span className="min-w-0 truncate">{phase}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Current stage"
+              open={openStage}
+              onToggle={() => setOpenStage(!openStage)}
+              meta={
+                <>
+                  {activePhase ? (
+                    <span className="badge-brand text-[10px]">{activePhase}</span>
+                  ) : (
+                    <span className="badge-neutral text-[10px]">idle</span>
+                  )}
+                  {nextPhase && <span className="badge-neutral text-[10px]">next {nextPhase}</span>}
+                </>
+              }
+            >
+              <div className={FACT_GRID}>
+                <StageFact label="Last event" value={lastEvent?.kind || 'none'} detail={lastEvent?.message || 'No events in this run yet'} />
+                <StageFact label="Phase" value={activePhase || 'waiting'} detail={currentPhaseIndex >= 0 ? `${currentPhaseIndex + 1} of ${allPhases.length}` : `${allPhases.length} configured`} />
+                <StageFact label="Loop" value={activeExecute?.default_role || 'worker'} detail={`review ${activeExecute?.reviewer || 'reviewer'} / fix ${activeExecute?.corrector || 'corrector'}`} />
+              </div>
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Agents"
+              open={openAgents}
+              onToggle={() => setOpenAgents(!openAgents)}
+              meta={<span className="text-[10px] text-gray-400">{recentAgents.length ? `${recentAgents.length} recent` : 'idle'}</span>}
+            >
+              {recentAgents.length ? (
+                <div className="space-y-1.5">
+                  {recentAgents.map((agent) => (
+                    <div key={agent.id} className="flex min-w-0 items-center gap-2 rounded-md bg-gray-50 px-2 py-1.5 dark:bg-gray-800/60" title={`${agent.title}${agent.model ? ` / ${agent.model}` : ''}`}>
+                      <Bot size={13} className="shrink-0 text-violet-500" />
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-gray-700 dark:text-gray-200">{agent.title}</span>
+                      {agent.model && <span className="hidden max-w-32 shrink-0 truncate font-mono text-[10px] text-gray-400 sm:block">{agent.model}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-gray-200 px-3 py-4 text-center text-xs text-gray-400 dark:border-gray-800">
+                  No agent has run in this session yet.
+                </div>
+              )}
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Feedback"
+              open={openFeedback}
+              onToggle={() => setOpenFeedback(!openFeedback)}
+            >
+              <LiveFeedback />
+            </CollapsibleSection>
+          </div>
+        </div>
+      )}
+
       {previewLoading && !shownComposition && !running && (
         <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-teal-50/30 px-4 py-2 text-xs text-teal-700 dark:border-gray-800 dark:bg-teal-950/10 dark:text-teal-300">
           <Loader2 size={13} className="animate-spin" />
@@ -637,21 +754,34 @@ export default function LiveView() {
       )}
 
       {shownComposition && (
-        <div className="shrink-0 border-b border-gray-200 bg-teal-50/45 px-4 py-3 dark:border-gray-800 dark:bg-teal-950/20">
+        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-teal-50/45 px-3 py-2.5 dark:border-gray-800 dark:bg-teal-950/20 sm:px-4
+                        max-h-[clamp(6rem,26vh,22rem)]">
           <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/50 flex items-center justify-center shrink-0">
               <Layers size={16} className="text-teal-700 dark:text-teal-300" />
             </div>
             <div className="min-w-0 flex-1 space-y-2">
-              <div className="flex items-center gap-2 flex-wrap">
+              {/* The header is a toggle: a rich composition renders dozens of
+                  phase, team and slot chips, which is a lot of screen for
+                  something you usually read once. The summary line stays
+                  visible when collapsed. */}
+              <button
+                type="button"
+                onClick={() => setOpenComposition(!openComposition)}
+                aria-expanded={openComposition}
+                className="focus-ring flex w-full items-center gap-2 flex-wrap rounded text-left"
+              >
+                {openComposition ? <ChevronUp size={13} className="shrink-0 text-teal-600" aria-hidden="true" /> : <ChevronDown size={13} className="shrink-0 text-teal-600" aria-hidden="true" />}
                 <span className="text-sm font-bold text-teal-800 dark:text-teal-200">
                   {shownCompositionMode === 'preview' ? 'Preview Composition' : 'Dynamic Composition'}
                 </span>
                 {shownCompositionMode === 'preview' && <span className="badge-neutral text-[10px]">deterministic</span>}
-                <span className="max-w-4xl text-xs text-gray-600 line-clamp-2 dark:text-gray-300" title={shownComposition.summary}>
+                <span className="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-300" title={shownComposition.summary}>
                   {shownComposition.summary}
                 </span>
-              </div>
+              </button>
+              {openComposition && (
+              <>
 
               {shownComposition.handoff && shownComposition.handoff.length > 0 && (
                 <div className="flex items-start gap-2 text-[11px] text-gray-700 dark:text-gray-300">
@@ -743,6 +873,8 @@ export default function LiveView() {
                   </div>
                 </div>
               )}
+              </>
+              )}
             </div>
           </div>
         </div>
@@ -752,7 +884,8 @@ export default function LiveView() {
       {/* Active Agent Panel */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       {running && activeAgentId && (
-        <div className="shrink-0 border-b border-gray-200 bg-violet-50/40 px-4 py-2.5 dark:border-gray-800 dark:bg-violet-950/20">
+        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-violet-50/40 px-3 py-2 dark:border-gray-800 dark:bg-violet-950/20 sm:px-4
+                        max-h-[clamp(4rem,18vh,14rem)]">
           <div className="flex items-center gap-3">
             {/* Pulsing agent icon */}
             <div className="relative shrink-0">
@@ -821,7 +954,7 @@ export default function LiveView() {
 
           {/* Log body */}
           {logExpanded && (
-            <div className="min-h-0 flex-1 overflow-auto p-4">
+            <div ref={logBodyRef} className="min-h-0 flex-1 overflow-auto overscroll-contain p-3 sm:p-4">
               {events.length === 0 && !result ? (
                 <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
                   <div className="w-16 h-16 rounded-2xl bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center">
@@ -847,19 +980,41 @@ export default function LiveView() {
                   <EventLog events={events} />
                 </div>
               )}
-              <div ref={logEnd} />
             </div>
           )}
         </div>
 
-        {/* Right sidebar: Tasks + Results tabs */}
-        <div className="flex min-h-0 w-full shrink-0 flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:w-[27rem] lg:border-l lg:border-t-0">
+        {/* The divider only exists on a wide viewport: below `lg` the panel is
+            stacked under the log, where a horizontal drag means nothing. */}
+        {panelOpen && isWide && (
+          <ResizeHandle
+            size={panelWidth}
+            onResize={setPanelWidth}
+            min={PANEL_MIN_PX}
+            max={PANEL_MAX_PX}
+            invert
+            label="Resize the side panel"
+          />
+        )}
+
+        {/* Side panel: Tasks / Result / Files.
+            Width is the user's, persisted, and clamped by CSS as well as by the
+            handle — `maxWidth: 60%` means a window narrowed after the fact can
+            never leave the log with no room, even with a stored width wider
+            than the window itself. Below `lg` it stacks and the inline width is
+            dropped entirely. */}
+        {panelOpen && (
+        <div
+          style={isWide ? { width: panelWidth, maxWidth: '60%', minWidth: PANEL_MIN_PX } : undefined}
+          className="flex min-h-0 w-full shrink-0 flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:h-auto lg:border-l lg:border-t-0
+                     max-lg:max-h-[45%] max-lg:flex-1"
+        >
           {/* Tab bar */}
           <div className="flex border-b border-gray-200 dark:border-gray-700 shrink-0">
             <button
               onClick={() => setSidebarTab('tasks')}
               className={clsx(
-                'flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
+                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
                 sidebarTab === 'tasks'
                   ? 'border-brand-500 text-brand-600 dark:text-brand-400'
                   : 'border-transparent text-gray-400 hover:text-gray-600',
@@ -870,7 +1025,7 @@ export default function LiveView() {
             <button
               onClick={() => setSidebarTab('result')}
               className={clsx(
-                'flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
+                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
                 sidebarTab === 'result'
                   ? 'border-brand-500 text-brand-600 dark:text-brand-400'
                   : 'border-transparent text-gray-400 hover:text-gray-600',
@@ -881,7 +1036,7 @@ export default function LiveView() {
             <button
               onClick={() => setSidebarTab('files')}
               className={clsx(
-                'flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
+                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
                 sidebarTab === 'files'
                   ? 'border-brand-500 text-brand-600 dark:text-brand-400'
                   : 'border-transparent text-gray-400 hover:text-gray-600',
@@ -927,6 +1082,7 @@ export default function LiveView() {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

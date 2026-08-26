@@ -2,7 +2,8 @@
 
 ## v0.20.0 — 2026-08-26
 
-An install path for machines where every existing one is blocked.
+An install path for machines where every existing one is blocked, and a Live
+page that fits the screen it is on.
 
 On a locked-down corporate workstation all three installers fail, each with a
 `403` that reads like a bug rather than a policy: `brew` has to update itself
@@ -34,6 +35,46 @@ done. So the clone becomes the delivery mechanism.
   when the Studio SPA is not embedded, so a contributor without Node cannot
   commit binaries that serve the placeholder page — the one failure mode of this
   channel nobody would notice until they ran `slmcode studio`.
+
+### Studio — the Live page
+
+- **The layout adapts to the window instead of assuming one.** Every panel above
+  the event log used to be `shrink-0` in a fixed flex column, so on a laptop
+  viewport the header consumed the screen and the log — the thing the page
+  exists to show — was clipped to a few pixels with no way to get the room back.
+  Now:
+    - **Pipeline, Current stage, Agents, Feedback and Composition are
+      collapsible**, individually and all at once, and each choice is
+      remembered across reloads. Collapsing the detail region roughly doubles
+      the log (measured: 272px → 605px at 1440×900).
+    - **The detail region is capped at ~38vh and scrolls itself**, so no
+      combination of expanded panels can starve the log.
+    - **Metrics, phase chips and stage facts use `auto-fit` grids**, so they
+      reflow to the space actually available rather than stepping at fixed
+      breakpoints. Verified with no horizontal overflow from 900px to 2560px.
+    - **The side panel is draggable and can be hidden.** It was a hard
+      `lg:w-[27rem]` — a third of a 1280px window, with no way to give it back.
+      Width is persisted and clamped so a window narrowed later can never leave
+      the log with no room.
+    - The composition, active-agent and token-stream panels are height-capped
+      and scroll internally instead of pushing the log off the bottom.
+
+- **The page no longer flickers during a run.** Four independent causes, all
+  fixed:
+    - The `AppContext` value was rebuilt on every render, so every consumer in
+      the app re-rendered whenever anything changed. It is memoised.
+    - Events and token deltas published to React synchronously, once per
+      message — tens of full-app renders a second. They are now coalesced into
+      one flush per animation frame, through a single scheduler.
+    - The log auto-scrolled with `scrollIntoView({ behavior: 'smooth' })`, which
+      scrolls every ancestor — including the page's `<main>` — and restarts its
+      animation on each call. Events arrived faster than the animation finished,
+      so the scroll never settled. It now writes the log element's own
+      `scrollTop`, and only while the user is already at the bottom, so
+      scrolling up to read something is no longer undone by the next event.
+    - The log was re-serialised to `sessionStorage` on every event. That write
+      is debounced, and flushed on `pagehide`/`visibilitychange` so nothing is
+      lost.
 
 ### Changed
 

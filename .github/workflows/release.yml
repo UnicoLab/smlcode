@@ -250,6 +250,14 @@ jobs:
             brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/Formula/slmcode.rb
             ```
 
+            **Locked-down machine** (brew, Go and release downloads all 403)
+            ```bash
+            git clone --depth 1 https://github.com/UnicoLab/smlcode.git
+            cd smlcode && ./scripts/install-offline.sh
+            ```
+            The macOS binaries ship inside the repository (`prebuilt/`), so the
+            clone is the download. No Homebrew, no Go toolchain, no asset fetch.
+
             **Already installed**
             ```bash
             slmcode update
@@ -312,7 +320,7 @@ jobs:
       # `git checkout -B main origin/main` in-place was one upstream edit away
       # from aborting on "local changes would be overwritten" — after the
       # binaries had already been built and with no way to resume.
-      - name: Sync Homebrew formula checksums onto main
+      - name: Sync Homebrew formula + prebuilt binaries onto main
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -322,17 +330,25 @@ jobs:
           git clone --depth 1 --branch main \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$work"
           cp scripts/update-formula.sh "$work/scripts/update-formula.sh"
+          cp scripts/update-prebuilt.sh "$work/scripts/update-prebuilt.sh"
           (
             cd "$work"
             bash scripts/update-formula.sh "$VERSION" "${GITHUB_WORKSPACE}/dist"
-            if git diff --quiet -- Formula/slmcode.rb; then
-              echo "Formula unchanged — nothing to commit"
+            # prebuilt/ is the offline install channel: the macOS binaries live
+            # in the repository so a `git clone` delivers them on machines where
+            # brew, go.dev and objects.githubusercontent.com are all blocked.
+            # Refreshed from the SAME dist/ that was just published, so the
+            # committed binaries are the release binaries — not a rebuild.
+            bash scripts/update-prebuilt.sh "$VERSION" "${GITHUB_WORKSPACE}/dist"
+            if git diff --quiet -- Formula/slmcode.rb prebuilt \
+               && [ -z "$(git status --porcelain -- prebuilt)" ]; then
+              echo "Formula and prebuilt/ unchanged — nothing to commit"
               exit 0
             fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Formula/slmcode.rb
-            git commit -m "chore: sync Homebrew formula checksums for v${VERSION} [skip ci]"
+            git add Formula/slmcode.rb prebuilt
+            git commit -m "chore: sync Homebrew formula + prebuilt binaries for v${VERSION} [skip ci]"
             git push origin main
           )
           rm -rf "$work"

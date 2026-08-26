@@ -70,6 +70,16 @@ brew install --formula https://raw.githubusercontent.com/UnicoLab/smlcode/main/F
 
 Full matrix (CMD, pinned versions, uninstall): **[docs/install.md](docs/install.md)**
 
+**Locked-down work machine?** If `brew`, `go` and release downloads all 403 on you, clone and
+install from the binaries carried in the repo — no Homebrew, no Go, no downloads:
+
+```bash
+git clone --depth 1 https://github.com/UnicoLab/smlcode.git
+cd smlcode && ./scripts/install-offline.sh --add-to-path
+```
+
+Details: **[docs/install-offline.md](docs/install-offline.md)**
+
 ### Or from a fresh clone
 
 ```bash

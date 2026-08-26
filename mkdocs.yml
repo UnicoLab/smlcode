@@ -137,6 +137,7 @@ nav:
   - 🏠 Home: index.md
   - 🚀 Getting started:
       - 📦 Install: install.md
+      - 🔒 Offline install: install-offline.md
       - ⏱️ Quick start: quickstart.md
       - 🧠 Concepts: concepts.md
       - 🔌 Providers: providers.md

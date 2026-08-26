@@ -6,6 +6,12 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.SourceRoot=$(CURDIR) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)
 
+# Cross-compile targets for `make release-binaries`. PREBUILT_PLATFORMS is the
+# subset that gets committed to prebuilt/ — macOS only by default, because each
+# platform costs ~10 MiB of permanent git history per release.
+PLATFORMS ?= darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
+PREBUILT_PLATFORMS ?= darwin/arm64 darwin/amd64
+
 # Optional local GoLangGraph checkout for hacking (use: go mod edit -replace ...).
 GOLANGGRAPH ?= $(CURDIR)/../GoLangGraph-Project/GoLangGraph
 
@@ -19,7 +25,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck
+.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck release-binaries prebuilt install-offline
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -274,6 +280,53 @@ uninstall: ## Uninstall user-wide
 uninstall-system: ## Uninstall system-wide
 	./scripts/install.sh --uninstall --system
 
+# ── Offline / locked-down distribution ──
+#
+# For machines where Homebrew, the Go toolchain and GitHub release downloads all
+# come back 403 but `git clone` works. `prebuilt` puts macOS binaries INSIDE the
+# repository; `install-offline` installs one without touching the network.
+# See prebuilt/README.md for the size trade-off this makes.
+
+# Cross-compiled the way the release workflow does it: SourceRoot stamped EMPTY,
+# so the binary never points `slmcode update` at a checkout that does not exist
+# on the machine it lands on.
+release-binaries: ui-check ## Cross-compile release binaries into dist/ (PLATFORMS=...)
+	@mkdir -p dist
+	@for platform in $(PLATFORMS); do \
+		goos=$${platform%%/*}; goarch=$${platform##*/}; \
+		ext=""; if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
+		out="dist/$(BIN)_$(VERSION)_$${goos}_$${goarch}$${ext}"; \
+		echo "Building $$out"; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath \
+			-ldflags "-s -w -X main.Version=$(VERSION) -X main.SourceRoot= -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)" \
+			-o "$$out" ./cmd/slmcode || exit 1; \
+		chmod +x "$$out"; \
+	done
+	@ls -lh dist
+
+# Rebuilds the binaries first: committing a stale prebuilt/ is the one failure
+# mode of this channel that nobody notices until a user installs last month's
+# build and reports a bug that was fixed weeks ago.
+#
+# The Studio assertion is the release workflow's, repeated here because this
+# target COMMITS what it builds. `ui-check` deliberately accepts "no build
+# output at all" so contributors without Node can still `make build` — the
+# binary then serves the pkg/server placeholder. Publishing that to every
+# offline user is not a downgrade anyone would notice until they ran
+# `slmcode studio`.
+prebuilt: release-binaries ## Refresh prebuilt/ (the binaries committed to the repo)
+	@if [ -z "$(PREBUILT_ALLOW_PLACEHOLDER)" ] && \
+	   { [ ! -f cmd/slmcode/ui/index.html ] || [ ! -d cmd/slmcode/ui/assets ]; }; then \
+		echo "ERROR: the Studio SPA is not embedded — these binaries would ship the placeholder page." >&2; \
+		echo "       Run 'make bootstrap' (needs Node 18+), then 'make prebuilt' again." >&2; \
+		echo "       Override only if you know why: PREBUILT_ALLOW_PLACEHOLDER=1 make prebuilt" >&2; \
+		exit 1; \
+	fi
+	@PREBUILT_PLATFORMS="$(PREBUILT_PLATFORMS)" ./scripts/update-prebuilt.sh "$(VERSION)" dist
+
+install-offline: ## Install from prebuilt/ without network, Go or Homebrew
+	./scripts/install-offline.sh --prefix "$(PREFIX)"
+
 test: ## Run unit tests
 	go test ./...
 
@@ -372,5 +425,5 @@ docs-serve: docs-venv ## Serve docs locally (live-reload)
 
 docs: docs-build ## Build docs (alias)
 
-clean: ## Remove build artifacts
-	rm -rf bin site
+clean: ## Remove build artifacts (never prebuilt/ — that is tracked, not built here)
+	rm -rf bin dist site

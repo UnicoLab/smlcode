@@ -12,6 +12,11 @@ repos:
         exclude: ^(mkdocs\.yml|stacks/.*)$
       - id: check-added-large-files
         args: [--maxkb=1024]
+        # prebuilt/ carries ~10 MiB release binaries on purpose — that IS the
+        # offline install channel for machines where brew, Go and release
+        # downloads are all blocked (see prebuilt/README.md). Everything else
+        # stays under the 1 MiB guard.
+        exclude: ^prebuilt/
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]

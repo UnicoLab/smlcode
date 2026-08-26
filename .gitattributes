@@ -1,0 +1,4 @@
+# The offline distribution channel (see prebuilt/README.md). These are gzipped
+# Mach-O executables: a single byte of eol translation or a text-mode checkout
+# corrupts them, and `git diff` on 10 MiB of compressed binary helps nobody.
+prebuilt/*.gz binary

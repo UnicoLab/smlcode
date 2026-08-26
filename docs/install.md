@@ -50,6 +50,18 @@ One-liners fetch a shiny GitHub Release. Keep the compiler for contributing (or 
 
     For people who install everything with brew, including existential dread.
 
+-   :material-lock: **🔒 Locked-down machine**
+
+    ---
+
+    ```bash
+    git clone --depth 1 https://github.com/UnicoLab/smlcode.git
+    cd smlcode && ./scripts/install-offline.sh
+    ```
+
+    Everything above 403s at work? The binaries ship inside the repo.
+    [Full guide →](install-offline.md)
+
 </div>
 
 ---

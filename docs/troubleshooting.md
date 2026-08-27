@@ -383,7 +383,7 @@ The binary embeds no SPA, so the server is serving the placeholder page compiled
 the CLI, the TUI and the whole Studio API are working. Build it:
 
 ```bash
-make bootstrap      # installs web/ npm deps (needs Node 18+), then builds the UI
+make bootstrap      # installs web/ npm deps (needs Node 22+), then builds the UI
 make build
 ```
 

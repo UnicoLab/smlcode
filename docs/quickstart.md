@@ -118,7 +118,7 @@ Pick your fighter. Both talk to the same harness. 🥊
     saying the UI has not been built, and prints the same on startup. Fix:
 
     ```bash
-    make bootstrap      # installs web/ npm deps (needs Node 18+), then builds the UI
+    make bootstrap      # installs web/ npm deps (needs Node 22+), then builds the UI
     make build
     ```
 

@@ -11,7 +11,7 @@ make bootstrap        # installs web/ npm deps and builds the Studio UI → cmd/
 make build            # → ./bin/slmcode
 ```
 
-Needs Go 1.23+. `make bootstrap` additionally needs Node.js 18+ on your PATH — nothing else
+Needs Go 1.23+. `make bootstrap` additionally needs Node.js 22+ on your PATH — nothing else
 in SLMCode does; it fails with an actionable message if `npm` is missing. `make install-user`
 puts the binary in `~/.local/bin`; `make install-system` installs system-wide.
 

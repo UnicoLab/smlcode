@@ -40,7 +40,7 @@ Released binaries ship it already built; a binary you built yourself does not ha
 run:
 
 ```bash
-make bootstrap      # installs web/'s npm dependencies (Node 18+), then builds the UI
+make bootstrap      # installs web/'s npm dependencies (Node 22+), then builds the UI
 make build
 ```
 

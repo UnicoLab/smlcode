@@ -84,7 +84,7 @@ Details: **[docs/install-offline.md](docs/install-offline.md)**
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap          # needs Node 18+: installs web/ deps and builds the Studio UI in
+make bootstrap          # needs Node 22+: installs web/ deps and builds the Studio UI in
 make install-user       # → ~/.local/bin/slmcode
 ```
 

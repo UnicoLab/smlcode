@@ -56,7 +56,8 @@ jobs:
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v5
+        # Pinned to the v3+v4 PAIR on purpose — see the deploy step below.
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
@@ -71,4 +72,14 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        # v4, NOT v5. The bump to upload-pages-artifact@v5 + deploy-pages@v5 in
+        # ff347b2 broke this deploy twice in a row: the artifact uploads and
+        # "Build MkDocs" passes, then v5 polls the Pages API, sees
+        # `updating_pages` for about a minute, reads one empty status and aborts
+        # with "Timeout reached". The same commit's CI and Vulnerability scan
+        # were green, and the identical workflow on v3+v4 succeeded on the
+        # commit immediately before (a217c63), so the pair is the variable.
+        #
+        # Re-open the bump when v5 has a fix; nothing else about the Actions
+        # sweep is reverted.
+        uses: actions/deploy-pages@v4

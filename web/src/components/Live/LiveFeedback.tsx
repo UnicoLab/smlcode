@@ -135,7 +135,7 @@ export default function LiveFeedback({ onChanged, compact = false }: LiveFeedbac
           }}
           placeholder={
             compact
-              ? 'Steer the agents…  (⌘↵ to send)' 
+              ? 'Steer the agents…  (⌘↵ to send)'
               : "Steer the agents… e.g. 'focus on tests' or 'stop refactoring, ship it'"
           }
           aria-label="Live feedback for the running agents"

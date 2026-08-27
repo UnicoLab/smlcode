@@ -1,5 +1,86 @@
 # Changelog
 
+## v0.21.0 — 2026-08-27
+
+Adapts the structural ideas from [zeroshot](https://github.com/the-open-engine/zeroshot)'s
+executor–verifier orchestration, rewritten for this harness's thesis: small
+local models, a fixed runway, gates that fail closed. Its central claim — an
+independent LLM verifier — is deliberately not adopted, because our gates ask
+the filesystem, which is stronger evidence than a second opinion from the same
+weak model. What was missing was everything around that verifier.
+
+**Carries v0.20.0 as well.** That version was prepared but never tagged, so its
+offline-install channel and Live-page work ship here for the first time; its
+entry below still describes them.
+
+### Added
+
+- **Executable acceptance criteria.** `Task.Criteria` splits acceptance into
+  individually checkable conditions, each with the exact command that proves it,
+  run through the same whitelist every auto-run command already passes. The
+  reviewer gets three verdicts, never two: `PASSED`, `FAILED`, and
+  **`UNVERIFIED`** — nothing ran. That third state is the point. A prose
+  acceptance blob is scanned by regex, and a condition it finds no command for
+  is invisible, so "the harness did not check" silently becomes "the harness
+  says it is fine". `UNVERIFIED` never blocks, but it denies the reviewer fast
+  path: disk evidence proves the worker *changed* something, never that the
+  stated condition is now true.
+- **Budget classes.** The composer now decides what a request is *worth*, not
+  just what shape it has: complexity (`trivial`/`simple`/`standard`/`critical`)
+  × kind (`inquiry`/`task`/`debug`) picks the optional phase breadth, wave
+  budget, think passes and gate depth. A deterministic classifier answers the
+  easy majority for free, and `trivial`/`inquiry` skip the composer LLM
+  entirely. Reviewer *count* is deliberately never scaled — our reviewers are
+  LLM calls and our gates are not, so a higher class buys more determinism, not
+  more voices. See `slmcode compose "…"`.
+- **Per-role model routing and a failure ladder.** `model_roles` pins roles to
+  models by name; `model_escalation` steps a repeatedly-failing task up to a
+  bigger model, using the attempt ledger the board was already keeping and
+  nothing read back. A rung is a separately registered agent, so a task that
+  never escalates pays nothing.
+- **Worktree isolation** (`slmcode run --isolate worktree`). Runs against a
+  throwaway `git worktree`; your checkout is never written to mid-run, and an
+  abandoned run is deleted in one operation rather than restored file by file.
+  Harness state stays in your checkout's `.slmcode/`, so memory and learned
+  policy keep accumulating. Opt-in; in-place remains the default.
+- **Issue intake and pull-request delivery.** `--issue <url|owner/repo#N|N>`
+  takes the query from a GitHub issue; `--deliver pr` opens a pull request when
+  the run succeeds, always asking first and showing the exact file list. Issue
+  bodies are untrusted text: framed as a report rather than pasted as
+  instructions, with harness markers defused so they cannot forge gate evidence.
+
+### Fixed
+
+- **The composer could contradict itself about language.** A query mentioning
+  Python in a Go repository assembled `python-worker` and `python-tester` while
+  the same handoff contract said "Detected project language: Go" and "verify
+  with `go test`". The repository now wins unless the workspace inventory
+  actually corroborates the query — which preserves the legitimate case, the
+  `web/` tree inside a Go project.
+- **A start-then-configure race in the CLI hotkey test**, which failed under
+  `-race` on loaded runners.
+
+### Studio
+
+- The Live page is rebuilt around the stream it exists to show: four fixed
+  zones, a single phase rail replacing four header panels, and the run setup
+  behind a disclosure that is closed while running. The pipeline shown while you
+  type is now labelled a **guess** — it is assembled from the query text alone,
+  and the composer decides the real one when the run starts.
+- The navigation rail collapses to icons below `lg`, where it was taking 60% of
+  a phone screen.
+
+### Dependencies
+
+- React 19, Vite 8, Vitest 4, and the GitHub Actions majors. **CI now needs
+  Node 22** — Vitest 4 pulls a jsdom whose undici requires it.
+- TypeScript 7 and ESLint 10 are *not* adopted: `typescript-eslint` caps
+  TypeScript below 6.1, and `eslint-plugin-jsx-a11y` has no ESLint 10 support.
+  Taking either would mean shipping a tree whose linting is silently broken.
+- `eslint-plugin-react-hooks` v7's new React Compiler rules are off for now.
+  They flag 42 existing patterns — not regressions — and adopting them is a
+  refactor that deserves its own review.
+
 ## v0.20.0 — 2026-08-26
 
 An install path for machines where every existing one is blocked, and a Live

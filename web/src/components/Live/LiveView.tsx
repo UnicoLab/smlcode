@@ -40,9 +40,10 @@ import TokenStream from './TokenStream';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
 import RunSetup from './RunSetup';
+import ResizeHandle from '@/components/ui/ResizeHandle';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
-import { useIsDesktop } from '@/hooks/useMediaQuery';
+import { usePersistentState, useMediaQuery, useStickToBottom } from '@/hooks/useUiState';
 import clsx from 'clsx';
 
 /**
@@ -77,6 +78,14 @@ const PIPELINE_GROUPS: RailGroup[] = [
 
 type RailTab = 'tasks' | 'files' | 'result';
 
+/** Where the side rail becomes a column instead of an overlay. */
+const WIDE_VIEWPORT = '(min-width: 1024px)';
+
+/** Side-rail width bounds, in px. The user's choice is persisted between them. */
+const RAIL_DEFAULT_PX = 384;
+const RAIL_MIN_PX = 280;
+const RAIL_MAX_PX = 720;
+
 export default function LiveView() {
   const ctx = useContext(AppContext);
   const toast = useToast();
@@ -93,18 +102,21 @@ export default function LiveView() {
   const setResult = ctx?.setLiveResult || (() => {});
 
   const [query, setQuery] = useState('');
-  const [railTab, setRailTab] = useState<RailTab>('tasks');
-  // The rail is a column on desktop and a full-height OVERLAY below it, so its
-  // default cannot be the same on both: opening it by default on a phone means
-  // the first thing a user sees is the task drawer covering the console they
-  // came for. Seeded from the breakpoint, then owned by the user — and reset
-  // when the viewport actually crosses it, so a window dragged narrow does not
-  // strand an overlay the user never asked to open.
-  const isDesktop = useIsDesktop();
-  const [railOpen, setRailOpen] = useState(isDesktop);
+  // Persisted: a layout the user arranged has to survive a reload.
+  const [railTab, setRailTab] = usePersistentState<RailTab>('live.rail.tab', 'tasks');
+  const [railWidth, setRailWidth] = usePersistentState('live.rail.width', RAIL_DEFAULT_PX);
+  // The rail is a column on a wide viewport and a full-height OVERLAY below it,
+  // so its default cannot be the same on both: opening it by default on a phone
+  // means the first thing a user sees is the task drawer covering the console
+  // they came for. Seeded from the breakpoint, then owned by the user — and
+  // reset when the viewport actually CROSSES it, so a window dragged narrow does
+  // not strand an overlay nobody asked to open. Not persisted for that reason:
+  // a stored `true` restored on a phone is the same trap.
+  const isWide = useMediaQuery(WIDE_VIEWPORT);
+  const [railOpen, setRailOpen] = useState(isWide);
   useEffect(() => {
-    setRailOpen(isDesktop);
-  }, [isDesktop]);
+    setRailOpen(isWide);
+  }, [isWide]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
   const [pipelineView, setPipelineView] = useState<PipelineView | null>(null);
@@ -114,12 +126,11 @@ export default function LiveView() {
   const [compositionPreviewFit, setCompositionPreviewFit] = useState<string[]>([]);
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const logEnd = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    logEnd.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [events]);
+  // Follows the stream only while the user is already AT the bottom. An
+  // unconditional scroll yanked the log back down every flush, which made
+  // reading anything mid-run impossible.
+  const logRef = useStickToBottom<HTMLDivElement>(events, true);
 
   // `/` focuses the prompt from anywhere in the app.
   useEffect(() => {
@@ -540,7 +551,7 @@ export default function LiveView() {
       {/* ── 4. Stream + rail ───────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4">
+          <div ref={logRef} className="min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4">
             {events.length === 0 ? (
               // Keyed on EVENTS alone, not on `result`. A finished run leaves a
               // result behind, so the old `!result` clause meant that reopening
@@ -558,7 +569,6 @@ export default function LiveView() {
                 <EventLog events={events} />
               </div>
             )}
-            <div ref={logEnd} />
           </div>
 
           {/* Feedback docks to the bottom of the stream, where a reply belongs —
@@ -580,11 +590,29 @@ export default function LiveView() {
               onClick={() => setRailOpen(false)}
               className="fixed inset-0 z-30 bg-black/30 lg:hidden"
             />
+            {/* The divider exists only on a wide viewport: as an overlay the
+                rail has no neighbour to steal width from, so a horizontal drag
+                would mean nothing. */}
+            {isWide && (
+              <ResizeHandle
+                size={railWidth}
+                onResize={setRailWidth}
+                min={RAIL_MIN_PX}
+                max={RAIL_MAX_PX}
+                invert
+                label="Resize the side panel"
+              />
+            )}
             <aside
+              // maxWidth is a second clamp, in CSS rather than in the handle: a
+              // window narrowed AFTER the width was stored must never leave the
+              // stream with no room, even when the stored value is wider than
+              // the window itself.
+              style={isWide ? { width: railWidth, maxWidth: '60%', minWidth: RAIL_MIN_PX } : undefined}
               className={clsx(
                 'z-40 flex min-h-0 flex-col border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950',
                 'fixed inset-y-0 right-0 w-[min(26rem,90vw)] border-l shadow-2xl',
-                'lg:static lg:w-[24rem] lg:shadow-none xl:w-[26rem]',
+                'lg:static lg:shadow-none',
               )}
             >
               <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-800">

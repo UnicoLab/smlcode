@@ -19,7 +19,7 @@ import {
   FileDiff,
 } from 'lucide-react';
 import { AppContext } from '@/App';
-import { useIsDesktop } from '@/hooks/useMediaQuery';
+import { useMediaQuery } from '@/hooks/useUiState';
 import { getHealth } from '@/api/client';
 import type { Health } from '@/types';
 import clsx from 'clsx';
@@ -55,7 +55,7 @@ export default function Sidebar() {
   const ctx = useContext(AppContext);
   const [liveHealth, setLiveHealth] = useState<Health | null>(null);
 
-  const isDesktop = useIsDesktop();
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
 
   const [isCollapsed, setIsCollapsed] = useState(() => {
     try {

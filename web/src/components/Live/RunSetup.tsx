@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronRight, Bot, Layers, AlertTriangle, Cpu } from 'lucide-react';
 import type { AgentSpec, DynamicComposition } from '@/types';
+import { usePersistentState } from '@/hooks/useUiState';
 import clsx from 'clsx';
 
 /**
@@ -81,7 +81,9 @@ export default function RunSetup({
   //                      reading.
   //
   // The user can override either way and their choice sticks for the session.
-  const [open, setOpen] = useState(mode === 'runtime' && !running);
+  // Persisted, so a reader who opened this panel does not have to reopen it
+  // after every reload. The mode-derived value is only the FIRST-mount default.
+  const [open, setOpen] = usePersistentState('live.setup.open', mode === 'runtime' && !running);
 
   if (!composition && !compositionError) return null;
 

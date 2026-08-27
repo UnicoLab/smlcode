@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RunSetup from './RunSetup';
@@ -40,6 +40,12 @@ function setup(props: Partial<React.ComponentProps<typeof RunSetup>> = {}) {
 }
 
 describe('RunSetup', () => {
+  // The disclosure state is persisted, and jsdom shares localStorage across
+  // tests in a file — so without this the tests that CLICK the toggle leak an
+  // expanded panel into every test after them, and the suite passes or fails on
+  // declaration order.
+  beforeEach(() => localStorage.clear());
+
   it('renders nothing without a composition or an error', () => {
     const { container } = setup({ composition: null });
     expect(container).toBeEmptyDOMElement();

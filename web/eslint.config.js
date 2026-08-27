@@ -38,6 +38,29 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error',
 
+      // ── React Compiler rules, deliberately off for now ──
+      //
+      // eslint-plugin-react-hooks v7 turns on a new family of rules derived
+      // from the React Compiler. They flag 42 EXISTING patterns across Studio —
+      // not regressions, not new defects, just constructs the compiler cannot
+      // prove safe to memoize (setState inside an effect being by far the most
+      // common).
+      //
+      // They are off rather than downgraded to warnings because a warning
+      // nobody can act on 42 times is noise that trains people to ignore the
+      // whole report. Adopting them is a real refactor of state flow across the
+      // app, and it is its own piece of work — doing it inside a dependency
+      // bump would put an unreviewed rewrite of every effect in the same commit
+      // as a version number.
+      //
+      // The two rules above — the ones that caught real shipped bugs — stay
+      // errors, so this upgrade does not weaken the gate by one rule.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/immutability': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+
       // A bare `catch {}` (or `catch (e) {}` with an empty body) is how 37 API
       // failures became invisible. Empty blocks must carry a comment saying
       // why swallowing is correct.

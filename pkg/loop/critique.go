@@ -82,8 +82,16 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 		}
 	}
 
-	// Whitelisted acceptance commands (pytest / go test / python main.py …).
-	if acceptanceSmokeRole(role) && strings.TrimSpace(t.Acceptance) != "" {
+	// Structured acceptance criteria supersede the prose scan.
+	//
+	// The two never both run for one task. Task.Normalize synthesizes
+	// Acceptance FROM Criteria, so a structured task's prose contains the very
+	// same commands — running both would execute the project's test suite
+	// twice per correction round, which on a local model is wall-clock the run
+	// does not have to spare.
+	if acceptanceSmokeRole(role) && len(t.Criteria) > 0 {
+		r.runCriteriaGate(ctx, t, role, scope, opt.verbose)
+	} else if acceptanceSmokeRole(role) && strings.TrimSpace(t.Acceptance) != "" {
 		started := time.Now()
 		ar := quality.RunAcceptanceSmokeWithPolicy(ctx, r.Root, t.Acceptance, r.Timeout,
 			quality.NormalizeBootstrapPolicy(r.BootstrapDeps))
@@ -184,6 +192,7 @@ func (r *Runner) knowledgeConflictSection(t plan.Task) string {
 
 // acceptanceSmokeRole reports whether a role's output should be acceptance-smoked.
 func acceptanceSmokeRole(role string) bool {
+	role = baseRole(role)
 	return role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector
 }
 
@@ -201,6 +210,13 @@ func (r *Runner) outputWeak(t plan.Task, baseline map[string]string, incomplete 
 		quality.StaticFailedInOutput(t.Output) ||
 		quality.ClaimsFailedInOutput(t.Output) ||
 		quality.AcceptanceFailedInOutput(t.Output) ||
+		// A blocked must-criterion is caught here, one turn BEFORE the review
+		// gate would catch it. Same verdict either way; this path fixes it
+		// inside the current turn instead of spending a full
+		// review → reject → correct round on a failure the harness can already
+		// name exactly. Only CriteriaBlockedInOutput — an UNVERIFIED row is
+		// not a defect the worker can act on.
+		quality.CriteriaBlockedInOutput(t.Output) ||
 		(!hasToolWriteEvidence(t.Output) && looksLikeEditTask(t) &&
 			!r.hasRealWriteEvidence(t, baseline) && !alreadySatisfied(r.Root, t, baseline)) ||
 		(r.ThinkPasses >= 2 && incomplete)
@@ -227,6 +243,13 @@ func critiqueIssues(t plan.Task, thinkPasses int, incomplete bool) []string {
 	if quality.AcceptanceFailedInOutput(t.Output) {
 		issues = append(issues, "Fix failures shown in "+quality.AcceptanceSectionHeader+
 			" — make acceptance commands exit 0")
+	}
+	if quality.CriteriaBlockedInOutput(t.Output) {
+		// Naming the exact criterion is the whole point of the structured
+		// form: "acceptance failed" tells a small model to re-read a blob,
+		// while "AC2's command failed" tells it which condition to fix.
+		issues = append(issues, "Fix the "+quality.CriterionFailed+" row(s) in "+
+			quality.CriteriaSectionHeader+" — a must-criterion's verify command must exit 0")
 	}
 	return issues
 }
@@ -422,6 +445,65 @@ Use ws_edit/ws_write on real files, then finish with STRICT JSON:
 // recordSmokeTool folds a harness-run shell command into working memory. The
 // loop runs these commands itself, so they are tool calls like any other and
 // belong in the same episodic record as the model's own.
+// runCriteriaGate verifies every structured criterion on a task and appends
+// the per-criterion evidence section.
+//
+// It always appends the section when there are criteria at all — including the
+// case where nothing could be run. An all-UNVERIFIED section is the single
+// most useful thing this gate produces: it tells the reviewer that every
+// stated condition is still an open question, which is the exact state the
+// prose scan used to render as silence.
+func (r *Runner) runCriteriaGate(ctx context.Context, t *plan.Task, role, scope string, verbose bool) {
+	started := time.Now()
+	rep := quality.VerifyCriteria(ctx, r.Root, *t, r.Timeout,
+		quality.NormalizeBootstrapPolicy(r.BootstrapDeps))
+	if sec := quality.FormatCriteriaSection(rep); sec != "" {
+		t.Output = appendHarnessSection(t.Output, sec)
+	}
+	passed, failed, unverified, blocked := rep.Counts()
+
+	// One aggregate tool event, not one per criterion: identical commands were
+	// already deduplicated by VerifyCriteria, and the memory layer counts
+	// COMMANDS that work in this project, not criteria that named them.
+	if rep.Ran {
+		agg := quality.SmokeResult{Ran: true, OK: blocked == 0}
+		if o, ok := rep.FirstBlocking(); ok {
+			agg.Command, agg.Output = o.Command, o.Output
+		} else {
+			for _, o := range rep.Outcomes {
+				if o.Command != "" {
+					agg.Command = o.Command
+					break
+				}
+			}
+		}
+		r.recordSmokeTool(agg, started)
+	}
+
+	if blocked > 0 {
+		o, _ := rep.FirstBlocking()
+		// The command's stdout is the project's own suite talking — defuse it
+		// before it joins a string the gates scan.
+		t.Output += "\nObservation: exit error: acceptance criterion " + o.Criterion.ID + " failed\n" +
+			quality.DefuseHarnessMarkers(truncate(o.Output, 1500))
+		if verbose {
+			r.logf("%s acceptance criteria FAILED: %s (%s)", t.ID, o.Criterion.ID, o.Command)
+			r.fireLevel(stream.KindAgentEnd, "qa", t.ID,
+				"acceptance criterion "+o.Criterion.ID+" failed",
+				scope, truncate(o.Output, 800), stream.LevelProblem)
+		}
+		r.noteFailure(evolve.Signal{
+			Tool: "ws_shell", Message: o.Output, Command: o.Command, ExitCode: 1,
+			Language: detectSignalLanguage(r.Root), Phase: "acceptance", Role: role,
+		}, "")
+		return
+	}
+	if verbose {
+		r.logf("%s acceptance criteria: %d passed, %d failed, %d unverified",
+			t.ID, passed, failed, unverified)
+	}
+}
+
 func (r *Runner) recordSmokeTool(sr quality.SmokeResult, started time.Time) {
 	if r == nil || r.Evolve == nil || !sr.Ran {
 		return

@@ -19,6 +19,7 @@ import {
   FileDiff,
 } from 'lucide-react';
 import { AppContext } from '@/App';
+import { useMediaQuery } from '@/hooks/useUiState';
 import { getHealth } from '@/api/client';
 import type { Health } from '@/types';
 import clsx from 'clsx';
@@ -54,6 +55,8 @@ export default function Sidebar() {
   const ctx = useContext(AppContext);
   const [liveHealth, setLiveHealth] = useState<Health | null>(null);
 
+  const isDesktop = useMediaQuery('(min-width: 1024px)');
+
   const [isCollapsed, setIsCollapsed] = useState(() => {
     try {
       return localStorage.getItem('slmcode-sidebar-collapsed') === 'true';
@@ -61,6 +64,13 @@ export default function Sidebar() {
       return false;
     }
   });
+
+  // Below `lg` the rail is always icons. At 224px wide the expanded nav took
+  // 60% of a 375px screen, leaving the page it navigates to to fight for the
+  // rest — so the breakpoint forces the compact form and hides the toggle that
+  // would undo it. The user's own preference is preserved, not overwritten: it
+  // applies again the moment there is room for it.
+  const compact = isCollapsed || !isDesktop;
 
   const toggleCollapsed = () => {
     setIsCollapsed((prev) => {
@@ -108,7 +118,7 @@ export default function Sidebar() {
       isActive
         ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300'
         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100',
-      isCollapsed && 'justify-center px-0 w-10 h-10 mx-auto',
+      compact && 'justify-center px-0 w-10 h-10 mx-auto',
     );
 
   const docLinkClass = ({ isActive }: { isActive: boolean }) =>
@@ -117,28 +127,31 @@ export default function Sidebar() {
       isActive
         ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400'
         : 'text-gray-500 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800',
-      isCollapsed && 'justify-center px-0 w-8 h-8 mx-auto',
+      compact && 'justify-center px-0 w-8 h-8 mx-auto',
     );
 
   return (
     <div
       className={clsx(
         'h-full flex flex-col py-3 px-2 transition-all duration-300 overflow-hidden',
-        isCollapsed ? 'w-14' : 'w-56',
+        compact ? 'w-14' : 'w-56',
       )}
     >
-      {/* Toggle button */}
-      <div className={clsx('mb-2', isCollapsed ? 'flex justify-center' : 'flex justify-end')}>
-        <button
-          onClick={toggleCollapsed}
-          className="btn-ghost focus-ring p-1.5 rounded-lg"
-          title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-expanded={!isCollapsed}
-        >
-          {isCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
-        </button>
-      </div>
+      {/* Toggle button — hidden below `lg`, where the compact form is forced
+          and a control that cannot change anything is worse than no control. */}
+      {isDesktop && (
+        <div className={clsx('mb-2', compact ? 'flex justify-center' : 'flex justify-end')}>
+          <button
+            onClick={toggleCollapsed}
+            className="btn-ghost focus-ring p-1.5 rounded-lg"
+            title={compact ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={compact ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!compact}
+          >
+            {compact ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
+        </div>
+      )}
 
       {/* Navigation */}
       <nav className="space-y-1" aria-label="Primary">
@@ -150,10 +163,10 @@ export default function Sidebar() {
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) => clsx(linkClass({ isActive }), 'focus-ring')}
-              title={isCollapsed ? item.label : undefined}
+              title={compact ? item.label : undefined}
             >
               {item.icon}
-              {!isCollapsed && <span className="flex-1">{item.label}</span>}
+              {!compact && <span className="flex-1">{item.label}</span>}
               {count > 0 && (
                 <span
                   className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white"
@@ -171,7 +184,7 @@ export default function Sidebar() {
 
       {/* Docs */}
       <div className="space-y-1">
-        {!isCollapsed && (
+        {!compact && (
           <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
             Docs
           </div>
@@ -181,10 +194,10 @@ export default function Sidebar() {
             key={item.to}
             to={item.to}
             className={docLinkClass}
-            title={isCollapsed ? item.label : undefined}
+            title={compact ? item.label : undefined}
           >
             {item.icon}
-            {!isCollapsed && <span className="truncate">{item.label}</span>}
+            {!compact && <span className="truncate">{item.label}</span>}
           </NavLink>
         ))}
       </div>
@@ -195,7 +208,7 @@ export default function Sidebar() {
       <div className="flex-1" />
 
       {/* Status footer */}
-      {!isCollapsed ? (
+      {!compact ? (
         <div className="px-3 py-2 space-y-2">
           {/* Connection status */}
           <div className="flex items-center gap-2 text-xs">

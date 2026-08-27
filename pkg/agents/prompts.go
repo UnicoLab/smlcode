@@ -115,10 +115,17 @@ const PromptTaskSplitter = `Split the query into atomic tasks, each sized for ON
   JS/TS "npm test passes" · static site "index.html opens in a browser and its asset refs resolve".
 - description carries enough PRD detail that the worker never has to guess.
 
+- criteria splits acceptance into 2-4 conditions checked one by one.
+  priority "must" blocks the task; "should" only informs the reviewer.
+  verify is the proving command; ONLY these run: go test · pytest ·
+  python -m pytest · python -m py_compile · npm test · cargo test · make test.
+  No real command for a condition? Leave verify "" and the reviewer judges it.
+  Never invent a command this project does not have.
+
 A static-web request always gets an index.html (or the named .html) entrypoint task.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"tasks":[{"id":"T1","title":"add Sum to calc.go","description":"exact instructions plus locked constraints","role":"worker","files":["calc.go"],"acceptance":"go test ./... passes","depends_on":[]}]}
+{"tasks":[{"id":"T1","title":"add Sum to calc.go","description":"exact instructions plus locked constraints","role":"worker","files":["calc.go"],"acceptance":"go test ./... passes","criteria":[{"text":"Sum returns a+b for the table cases","priority":"must","verify":"go test ./..."},{"text":"exported Sum has a doc comment","priority":"should","verify":""}],"depends_on":[]}]}
 role is one of: worker, tester, explorer, context.`
 
 const PromptClarifier = `Interviewer for underspecified coding requests. Exploration context is provided.
@@ -176,16 +183,21 @@ phase list, the specialist roster, and the available skills.
   python/django/flask/fastapi/langgraph → python-*. No match: generic worker + tester.
 - Copy phase ids, agent ids, and skill names exactly from the lists; 0–4 skills per specialist.
 - handoff carries 2–6 bullets: target files, non-goals, verification commands, sequencing.
+- complexity: "critical" ONLY if the code itself changes auth, payment math,
+  secrets, destructive data ops or prod deploys — code that merely mentions them
+  is "standard". Unsure? "standard". "trivial" = mechanical one-file edit.
+- kind: "inquiry" (read-only) · "task" (implement) · "debug" (cause unknown).
 
 OUTPUT — reply with this JSON object and nothing else:
-{"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"handoff":["target only the listed files","verify with go test ./..."],"slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
+{"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"complexity":"standard","handoff":["target only the listed files","verify with go test ./..."],"kind":"task","slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
 
 // ---------------------------------------------------------------------------
 // Review roles (no tools, pure JSON)
 // ---------------------------------------------------------------------------
 
 const PromptReviewer = `Review ONE task from the evidence sections you were given:
-worker JSON, "## Disk evidence", "## Deterministic smoke", "## Static quality gate", "## Claimed files gate".
+worker JSON, "## Disk evidence", "## Deterministic smoke", "## Acceptance criteria",
+"## Static quality gate", "## Claimed files gate".
 
 APPROVE when the evidence shows a real write to a focus file and the smoke and
 gate sections are clean — status=done is not required, but status=blocked is
@@ -196,6 +208,14 @@ REJECT when any of these appear:
 - stub implementations (pass, ..., NotImplemented, bare TODO, fake constant returns);
 - files_changed paths that the disk evidence does not confirm, or writes outside focus;
 - "the file exists" offered as acceptance for a task that asked for real logic.
+
+"## Acceptance criteria" rows are your checklist, one row per condition:
+- PASSED — a command ran here and exited 0. Settled; do not re-argue it.
+- FAILED — settled the other way. Reject.
+- UNVERIFIED — nothing ran. This is YOUR call, and it is the reason you were
+  asked. Judge that one condition against the disk evidence and say so in
+  summary. Never read UNVERIFIED as passed, and never approve a must-criterion
+  you cannot see satisfied in the evidence.
 
 Judge only what the evidence shows.
 
@@ -208,6 +228,8 @@ Your job is to catch what a lenient reviewer waves through. Approve only when
 ALL of these hold:
 - the disk evidence shows real content in every file the task listed as focus;
 - the acceptance criterion is demonstrably met, not merely plausible;
+- every UNVERIFIED row in "## Acceptance criteria" is satisfied by something
+  you can point at in the evidence — an unchecked condition is not a met one;
 - the smoke, static quality, and claimed-files gates all passed;
 - no stub, placeholder, or fake constant return survives anywhere in the diff.
 

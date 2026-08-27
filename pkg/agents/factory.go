@@ -109,6 +109,7 @@ func NormalizeDecoding(s *RoleSpec) {
 // genericRole maps a language-specialised id (go-worker, python-tester) back to
 // its generic role so schema/decoding defaults apply to block-defined agents.
 func genericRole(id string) string {
+	id, _ = BaseRoleID(id)
 	for _, suffix := range []string{
 		"worker", "tester", "reviewer", "corrector", "explorer",
 		"planner", "splitter", "architect", "editor", "describer",
@@ -368,8 +369,15 @@ type Factory struct {
 	// be a per-RUN choice over the entire light set. With one, the arm can be
 	// pulled per role.
 	preferFast map[string]bool
-	// mu guards preferFast only. Everything else on Factory is written once at
-	// construction; the per-role overrides are written between waves.
+	// roleModels pins specific roles to specific models by name, generalizing
+	// the FastModel binary to as many models as an operator configures.
+	// See escalate.go.
+	roleModels map[string]string
+	// escalation is the failure ladder: the models a repeatedly-failing task
+	// escalates TO, rung 1 first. See escalate.go.
+	escalation []string
+	// mu guards preferFast, roleModels and escalation. Everything else on
+	// Factory is written once at construction; these are written between waves.
 	mu sync.RWMutex
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
@@ -394,6 +402,14 @@ func (f *Factory) EffectiveModel(spec RoleSpec) string {
 	}
 	if f == nil {
 		return ""
+	}
+	// An explicit role→model pin outranks both the bandit's fast preference and
+	// the light/heavy classification: those two choose BETWEEN two models, and
+	// this one names a third. It stays below spec.Model, which is the operator
+	// editing that agent's own definition file — the most specific statement
+	// of intent available.
+	if m, ok := f.RoleModel(spec.ID); ok {
+		return m
 	}
 	if fast, ok := f.PreferFast(spec.ID); ok {
 		// An explicit per-role decision wins over the class heuristic in BOTH
@@ -478,7 +494,12 @@ var lightAgents = map[string]bool{
 	"composer": true,
 }
 
-func isLightAgent(id string) bool { return lightAgents[strings.ToLower(id)] }
+// isLightAgent classifies by BASE role, so an escalation rung is classified as
+// the agent it stands in for rather than as an unknown id.
+func isLightAgent(id string) bool {
+	base, _ := BaseRoleID(id)
+	return lightAgents[strings.ToLower(base)]
+}
 
 // EffectiveProvider returns the friendly provider name (not registry key).
 func (f *Factory) EffectiveProvider(spec RoleSpec) string {
@@ -522,7 +543,10 @@ func (f *Factory) AllSpecs() []RoleSpec {
 	for i := range out {
 		NormalizeDecoding(&out[i])
 	}
-	return out
+	// Escalation rungs are derived LAST, from already-normalized specs, so each
+	// variant inherits its base's decoding contract verbatim instead of trying
+	// to derive one from a variant id that names no schema role.
+	return append(out, f.escalatedSpecs(out)...)
 }
 
 // IsKnownRole reports whether id names a built-in specialist. Wire-up code that
@@ -690,8 +714,12 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	return def
 }
 
+// isCodingRole classifies by BASE role. An escalated worker that stopped
+// matching here would silently lose its model_profile caps — same agent, wrong
+// token budget, and nothing in the output to say so.
 func isCodingRole(id string) bool {
-	switch id {
+	base, _ := BaseRoleID(id)
+	switch base {
 	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleTester,
 		plan.RolePlaceholder, plan.RoleExplorer, "docs":
 		return true

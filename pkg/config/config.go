@@ -279,6 +279,10 @@ type Config struct {
 	// machines or checkouts, and Load would honor the stale value.
 	Root string `yaml:"-" json:"root"`
 
+	// StateDir pins the harness state directory when it must not follow Root.
+	// See SlmDir. Not persisted, for the same portability reason as Root.
+	StateDir string `yaml:"-" json:"state_dir,omitempty"`
+
 	// ConfigVersion is the schema generation this file was written by. Load
 	// migrates older files forward (see migrate.go).
 	ConfigVersion int `yaml:"config_version,omitempty" json:"config_version,omitempty"`
@@ -310,6 +314,28 @@ type Config struct {
 	// (reviewer, coordinator, splitter, planner, context, architect, clarifier).
 	// Empty = use the main Model for all agents.
 	FastModel string `yaml:"fast_model" json:"fast_model"`
+	// ModelRoles pins specific roles to specific models by name, generalizing
+	// the FastModel binary to as many models as an operator names:
+	//
+	//	model_roles:
+	//	  reviewer: qwen2.5-3b
+	//	  worker:   qwen3-coder-30b
+	//
+	// It outranks fast_model and the built-in light/heavy classification, and
+	// is outranked only by a per-agent `model:` in that agent's own definition.
+	ModelRoles map[string]string `yaml:"model_roles,omitempty" json:"model_roles,omitempty"`
+	// ModelEscalation is the failure ladder: the models a task escalates TO
+	// after repeated failures, cheapest rung first.
+	//
+	//	model_escalation: [qwen3-coder-30b]
+	//
+	// Empty (the default) disables escalation entirely. See
+	// pkg/agents/escalate.go for why a rung is a separate registered agent
+	// rather than a mutation of an existing one.
+	ModelEscalation []string `yaml:"model_escalation,omitempty" json:"model_escalation,omitempty"`
+	// EscalateAfter is how many recorded failures a task takes before stepping
+	// up a rung. Zero uses loop.DefaultEscalateAfter (2).
+	EscalateAfter int `yaml:"escalate_after,omitempty" json:"escalate_after,omitempty"`
 
 	Backend string `yaml:"backend" json:"backend"` // slmcode | claude-code
 
@@ -720,7 +746,24 @@ func Default(root string) *Config {
 	}
 }
 
-func (c *Config) SlmDir() string     { return filepath.Join(c.Root, DirName) }
+// SlmDir is where the harness keeps its state: memory, the board, evolve
+// policy, checkpoints, sessions.
+//
+// It is normally `<root>/.slmcode`, and StateDir exists for the one case where
+// that is wrong. Under worktree isolation the run's Root is a throwaway
+// checkout, so a state directory derived from it would be thrown away too —
+// taking the four memory layers, the repair-rule store and the bandit's
+// accumulated policy with it, and quietly turning "it gets better at your
+// repo" into "it starts from zero every run". StateDir keeps state in the
+// ORIGIN checkout while the work happens in the worktree.
+//
+// Empty (the default) is the pre-existing behavior exactly.
+func (c *Config) SlmDir() string {
+	if s := strings.TrimSpace(c.StateDir); s != "" {
+		return s
+	}
+	return filepath.Join(c.Root, DirName)
+}
 func (c *Config) ConfigPath() string { return filepath.Join(c.SlmDir(), "config.yaml") }
 func (c *Config) SkillsDir() string  { return filepath.Join(c.SlmDir(), "skills") }
 func (c *Config) AgentsDir() string  { return filepath.Join(c.SlmDir(), "agents") }
@@ -959,6 +1002,13 @@ func (c *Config) clone() *Config {
 			out.ContextRoleBudget[k] = v
 		}
 	}
+	if c.ModelRoles != nil {
+		out.ModelRoles = make(map[string]string, len(c.ModelRoles))
+		for k, v := range c.ModelRoles {
+			out.ModelRoles[k] = v
+		}
+	}
+	out.ModelEscalation = append([]string(nil), c.ModelEscalation...)
 	out.PinnedSkills = append([]string(nil), c.PinnedSkills...)
 	out.EnabledModels = append([]string(nil), c.EnabledModels...)
 	out.SkillsDirs = append([]string(nil), c.SkillsDirs...)

@@ -161,8 +161,13 @@ func runCmd() *cobra.Command {
   slmcode run --agent explorer "where is the retry logic?"
   slmcode run --dynamic "refactor the parser"
   slmcode run "…"                             # no TTY: gates auto-approve, logged
-  slmcode run --on-gate-timeout=stop "…"      # no TTY: refuse up front instead`,
-		Args: cobra.MinimumNArgs(1),
+  slmcode run --on-gate-timeout=stop "…"      # no TTY: refuse up front instead
+  slmcode run --issue 42                      # take the query from a GitHub issue
+  slmcode run --issue 42 --deliver pr --draft # …and open a draft PR when it passes
+  slmcode run --isolate worktree "…"          # work in a throwaway git worktree`,
+		// MinimumNArgs(0): --issue supplies the query, and requiring a
+		// positional alongside it would force `slmcode run --issue 42 ""`.
+		Args: cobra.MinimumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			h, err := openHarness()
 			if err != nil {
@@ -179,7 +184,34 @@ func runCmd() *cobra.Command {
 			autoCalibrate(cmd.Context(), h)
 			defer closeHarness(h)
 			_ = h.EnsureInitialized()
-			query := strings.Join(args, " ")
+
+			// Worktree isolation, before anything reads Root. Every ws_* tool
+			// resolves against Config.Root, so redirecting it here isolates
+			// the whole tool layer without the tool layer knowing.
+			iso, err := beginIsolation(cmd.Context(), cmd, h)
+			if err != nil {
+				return err
+			}
+			// DEFERRED, not called inline at the end: between here and the
+			// result there are half a dozen `return failf(...)` paths — a dead
+			// endpoint, a refused gate, a Ctrl-C — and every one of them used
+			// to leave the worktree and its branch behind for the operator to
+			// find and clean up by hand. The zero value of both flags is the
+			// safe reading of an early return: not a success, and nothing
+			// delivered, so the sandbox is discarded.
+			var runOK, prSent bool
+			defer func() { iso.finish(context.WithoutCancel(cmd.Context()), runOK, prSent) }()
+
+			// Issue intake, before anything else reads the query: a bad
+			// reference or a missing `gh` should fail at t=0, not after the
+			// endpoint probe and the calibration pass have already run.
+			query, issue, err := resolveIssueQuery(cmd.Context(), cmd, h.Config.Root, args)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(query) == "" {
+				return fmt.Errorf("nothing to run — give a query or --issue")
+			}
 
 			mode, _ := cmd.Flags().GetString("mode")
 			agent, _ := cmd.Flags().GetString("agent")
@@ -314,6 +346,15 @@ func runCmd() *cobra.Command {
 				success:   res.Success,
 				overrides: gates.overrides,
 			})
+			// Delivery LAST, after the outcome is on screen: the operator
+			// confirming a pull request should already have read what the run
+			// did. Never fatal — a run that succeeded and could not be
+			// delivered still succeeded.
+			// The deferred teardown above reads these, so a pull request is
+			// opened from the worktree that still holds the work and the
+			// sandbox is adopted rather than discarded.
+			runOK = res.Success
+			prSent = maybeDeliverPR(cmd.Context(), cmd, h.Config.Root, &res.Board, issue, res.Success)
 			if !res.Success {
 				fmt.Println()
 				if gates.interrupted {
@@ -335,6 +376,8 @@ func runCmd() *cobra.Command {
 	cmd.Flags().Bool("dynamic", false, "run the composer specialist to assemble a task-specific pipeline (default: on)")
 	cmd.Flags().Bool("no-dynamic", false, "disable the dynamic pipeline (use the static pipeline)")
 	cmd.Flags().StringSlice("skill", nil, "pin/load skill by name (repeatable); also accepts @skill:name in query")
+	registerDeliveryFlags(cmd)
+	registerIsolationFlags(cmd)
 	return cmd
 }
 

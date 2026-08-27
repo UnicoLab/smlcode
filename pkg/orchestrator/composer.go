@@ -11,6 +11,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/session"
@@ -33,6 +34,32 @@ func clearDynamicRunArtifacts(slmDir string) {
 // so a weak local SLM still gets an adaptive run instead of a static fallback.
 func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string, inventory []string, exploreOut, archOut string) {
 	if o == nil || o.cfg == nil || o.factory == nil || o.skills == nil {
+		return
+	}
+
+	// ── Cheap tier ───────────────────────────────────────────────────────
+	//
+	// The saving a two-tier conductor actually buys is not a cheaper
+	// classification — it is a classification that costs nothing at all, and
+	// then a composer call that never happens.
+	//
+	// It is spent only where the pipeline SHAPE is genuinely obvious:
+	//
+	//	trivial  a mechanical one-file edit. There is no team to assemble.
+	//	inquiry  read-only. There is nothing to build, so nothing to design.
+	//
+	// Standard and critical still pay for the composer, and critical
+	// especially: "confidently classified" is not the same as "easy", and a
+	// change to auth or billing is exactly where a model's judgment about
+	// specialists and skills is worth its tokens. Skipping the composer
+	// because the classifier was SURE the work was dangerous would be the
+	// precise inversion of the point.
+	if cls := composer.Classify(query); cls.Confident &&
+		(cls.Complexity == composer.ComplexityTrivial || cls.Kind == composer.KindInquiry) {
+		o.emitAgent("compose", composer.RoleID, "",
+			fmt.Sprintf("budget class %s:%s — composing deterministically (%s)",
+				cls.Complexity, cls.Kind, cls.Why), "", "")
+		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
 		return
 	}
 
@@ -165,6 +192,57 @@ func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, qu
 		_ = o.store.Append(contextstore.DocScratch, "Dynamic pipeline", compositionMarkdown(*comp))
 	}
 	return nil
+}
+
+// budgetProfile returns the active composition's budget class, and whether a
+// composition is active at all.
+//
+// With no dynamic composition there is no class, and the caller must leave
+// every knob exactly as configured — a static pipeline is the operator saying
+// "run what I configured", and silently re-budgeting it would be the harness
+// overruling them.
+func (o *Orchestrator) budgetProfile() (composer.Profile, bool) {
+	if o == nil {
+		return composer.Profile{}, false
+	}
+	o.mu.Lock()
+	comp := o.dynamicComposition
+	o.mu.Unlock()
+	if comp == nil {
+		return composer.Profile{}, false
+	}
+	return comp.Profile(), true
+}
+
+// applyBudgetProfile re-budgets a loop runner for the active class.
+//
+// The two directions are deliberately asymmetric, and the asymmetry is the
+// whole safety argument:
+//
+//   - BOOLEAN GATES are config-ceilinged. A class may switch a gate off, never
+//     on. Off is needed exactly once — an inquiry writes nothing, so demanding
+//     a smoke PASS before approval is a gate the task cannot satisfy, i.e. a
+//     deadlock rather than a safeguard. On is never needed, because a gate the
+//     operator disabled is a decision the harness has no business reversing.
+//
+//   - DEPTH BUDGETS (think passes, QA rounds) take the maximum of config and
+//     class. These are not feature switches; they are how many times the
+//     harness is willing to look again. Letting a critical class deepen them
+//     is the one thing that makes "critical" mean anything, and the cost is
+//     bounded and one-off — a pass or two more on a single run, not a
+//     capability the operator turned off coming back to life.
+func applyBudgetProfile(runner *loop.Runner, cfg *config.Config, prof composer.Profile) {
+	if runner == nil || cfg == nil {
+		return
+	}
+	runner.RequireSmoke = cfg.RequireSmoke && prof.RequireSmoke
+	runner.StaticQuality = cfg.StaticQuality && prof.StaticQuality
+	if prof.ThinkPasses > runner.ThinkPasses {
+		runner.ThinkPasses = prof.ThinkPasses
+	}
+	if prof.MaxWaves > 0 && runner.MaxWaves <= 0 {
+		runner.MaxWaves = prof.MaxWaves
+	}
 }
 
 func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, query string, inventory []string) []string {
@@ -561,16 +639,10 @@ func ensureCriticalPhases(cfg *pipeline.Config) []string {
 }
 
 func heuristicComposition(query string, inventory []string, lang, exploreOut, archOut string) composer.Composition {
-	worker, tester := queryLanguageSpecialists(query)
-	if worker == "" {
-		worker, tester = projectLanguageSpecialists(lang)
-	}
-	if worker == "" {
-		worker = "worker"
-	}
-	if tester == "" {
-		tester = "tester"
-	}
+	// The repository beats a word in the query — unless the inventory
+	// corroborates the query. See langpick.go for why that asymmetry is the
+	// difference between a suboptimal team and a self-contradictory one.
+	worker, tester := pickSpecialists(query, lang, inventory)
 
 	targets := heuristicTargetFiles(query, inventory, 5)
 	q := strings.ToLower(query)
@@ -629,9 +701,59 @@ func heuristicComposition(query string, inventory []string, lang, exploreOut, ar
 			MaxWaves:    2,
 		},
 	}
+	applyBudgetClass(&comp, query)
 	comp.Normalize()
 	orderCompositionPhases(&comp)
 	return comp
+}
+
+// applyBudgetClass narrows (or widens) a deterministic composition to what the
+// request is actually worth.
+//
+// Only a CONFIDENT classification is allowed to change the shape. An
+// unconfident one records the class for inspection and leaves the phase set
+// exactly as the heuristics built it — which is the pre-existing behavior, and
+// the right default: the classifier's own admission that it cannot tell a
+// one-file addition from a subsystem is not a license to trim that subsystem's
+// pipeline. Under-provisioning is how a budget class turns into a correctness
+// regression, so the ambiguous case pays full price.
+func applyBudgetClass(comp *composer.Composition, query string) {
+	if comp == nil {
+		return
+	}
+	cls := composer.Classify(query)
+	comp.Complexity, comp.Kind = cls.Complexity, cls.Kind
+	if !cls.Confident {
+		return
+	}
+	prof := cls.Profile()
+	allowed := prof.PhaseSet()
+
+	kept := make([]composer.PhaseChoice, 0, len(comp.Phases))
+	for _, p := range comp.Phases {
+		if allowed[p.ID] {
+			kept = append(kept, p)
+		}
+	}
+	// Anything the profile wants that the heuristics did not produce. This is
+	// what makes a critical class WIDEN rather than only trim.
+	have := map[string]bool{}
+	for _, p := range kept {
+		have[p.ID] = true
+	}
+	def := pipeline.Default()
+	for _, id := range prof.Phases {
+		if have[id] {
+			continue
+		}
+		kept = append(kept, composer.PhaseChoice{
+			ID: id, Agent: def.Phases[id].Agent, Enabled: true, When: pipeline.WhenAuto,
+		})
+	}
+	comp.Phases = kept
+	comp.Execute.MaxWaves = prof.MaxWaves
+	comp.Strategy = fmt.Sprintf("%s — budget class %s:%s (%s)",
+		comp.Strategy, prof.Complexity, prof.Kind, cls.Why)
 }
 
 func heuristicTargetFiles(query string, inventory []string, max int) []string {

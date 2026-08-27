@@ -353,6 +353,16 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		factory.ProfileTemp = prof.Temperature
 	}
 	// Use fast model for lightweight agents when configured
+	// Explicit role→model pins and the failure ladder. Both are set BEFORE the
+	// registry is built: agents resolve their model once, at construction, and
+	// the ladder's rungs are extra registered agents rather than mutations of
+	// existing ones.
+	if len(cfg.ModelRoles) > 0 {
+		factory.SetRoleModels(cfg.ModelRoles)
+	}
+	if len(cfg.ModelEscalation) > 0 {
+		factory.SetEscalation(cfg.ModelEscalation)
+	}
 	if cfg.FastModel != "" {
 		factory.SetFastModel(cfg.FastModel)
 	}

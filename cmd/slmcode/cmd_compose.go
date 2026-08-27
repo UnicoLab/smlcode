@@ -80,6 +80,29 @@ func readLatestComposition(slmDir string) (composer.Composition, error) {
 	return comp, nil
 }
 
+// plural renders "1 wave" / "3 waves". Words ending in "s" take "es".
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+	if strings.HasSuffix(word, "s") {
+		return fmt.Sprintf("%d %ses", n, word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
+// strictReviewNote appends the strict-reviewer marker to a budget line.
+//
+// It is called out separately because it is the one budget knob that costs an
+// extra LLM call rather than an extra subprocess, and an operator reading this
+// preview to explain a slow run should see it named.
+func strictReviewNote(on bool) string {
+	if on {
+		return " · strict reviewer"
+	}
+	return ""
+}
+
 func formatCompositionCLI(resp compositionCLIResponse) string {
 	c := resp.Composition
 	var b strings.Builder
@@ -97,6 +120,15 @@ func formatCompositionCLI(resp compositionCLIResponse) string {
 	writeCLIKeyVal(&b, "model_profile", fmt.Sprintf("ctx=%d max_tokens=%d think=%d skills=%d",
 		resp.ModelProfile.ContextLimit, resp.ModelProfile.MaxTokens,
 		resp.ModelProfile.ThinkingBudgetTokens, resp.ModelProfile.SkillTokenBudget))
+	// The budget class, and what it bought. Printed above the summary because
+	// it is the decision every other line in this preview follows from: how
+	// many phases run, how many waves, how deep the gates go.
+	prof := c.Profile()
+	writeCLIKeyVal(&b, "budget_class", fmt.Sprintf("%s:%s — %s", prof.Complexity, prof.Kind, prof.Why))
+	writeCLIKeyVal(&b, "budget", fmt.Sprintf("%s · %s · %s · %s%s",
+		plural(len(prof.Phases), "phase"), plural(prof.MaxWaves, "wave"),
+		plural(prof.ThinkPasses, "think pass"), plural(prof.QAGateRounds, "QA round"),
+		strictReviewNote(prof.StrictReview)))
 	if strings.TrimSpace(c.Summary) != "" {
 		writeCLIKeyVal(&b, "summary", c.Summary)
 	}

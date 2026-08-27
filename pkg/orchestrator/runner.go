@@ -59,6 +59,12 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	if runner.ThinkingBudgetTokens <= 0 {
 		runner.ThinkingBudgetTokens = o.cfg.ThinkingBudgetTokens
 	}
+	// Budget class: re-budget the loop for what this request is actually worth.
+	// Runs LAST of the knob assignments so it sees the configured values it is
+	// allowed to lower, and it is a no-op without a dynamic composition.
+	if prof, ok := o.budgetProfile(); ok {
+		applyBudgetProfile(runner, o.cfg, prof)
+	}
 	runner.AutoTextTools = o.cfg.AutoTextTools
 	runner.FinalizeWarn = o.cfg.FinalizeWarn
 	runner.ReactCompact = o.cfg.ReactCompact
@@ -76,6 +82,20 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	// necessarily the CONFIGURED one: an operator who set qa_bootstrap: auto
 	// got nothing installed and a red acceptance run they could not explain.
 	runner.BootstrapDeps = o.QABootstrapMode()
+	// Failure escalation. HasRole is what makes this safe to leave on: it is
+	// consulted before every escalated dispatch, so a role with no registered
+	// ladder simply retries on its base agent exactly as before.
+	if o.factory != nil && o.factory.EscalationRungs() > 0 {
+		// Ask the bandit whether the ladder is worth it for this model family
+		// and language. The arm is only pulled when a ladder EXISTS, so an
+		// install with one model never spends an exploration pull on a choice
+		// it cannot act on.
+		if o.choose(evolve.DecEscalateModel, "on", "off") == "on" {
+			runner.EscalationRungs = o.factory.EscalationRungs()
+			runner.HasRole = o.factory.HasRole
+		}
+	}
+	runner.EscalateAfter = o.cfg.EscalateAfter
 
 	runner.Log = func(format string, args ...interface{}) {
 		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")

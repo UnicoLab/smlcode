@@ -53,20 +53,27 @@ const (
 
 // Task is an atomic, SLM-sized unit of work.
 type Task struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Role        string          `json:"role"`
-	Assignee    string          `json:"assignee,omitempty"`
-	Column      string          `json:"column"`
-	Status      string          `json:"status"`
-	Priority    int             `json:"priority,omitempty"`
-	DependsOn   []string        `json:"depends_on,omitempty"`
-	Files       []string        `json:"files,omitempty"`
-	Acceptance  string          `json:"acceptance,omitempty"`
-	Checklist   []ChecklistItem `json:"checklist,omitempty"`
-	Output      string          `json:"output,omitempty"`
-	Review      string          `json:"review,omitempty"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Role        string   `json:"role"`
+	Assignee    string   `json:"assignee,omitempty"`
+	Column      string   `json:"column"`
+	Status      string   `json:"status"`
+	Priority    int      `json:"priority,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
+	Files       []string `json:"files,omitempty"`
+	Acceptance  string   `json:"acceptance,omitempty"`
+	// Criteria is the structured form of Acceptance: individually addressable,
+	// individually verifiable conditions. See criteria.go.
+	//
+	// Acceptance stays the compatibility surface — Normalize synthesizes it
+	// from Criteria when only the structured form was supplied, so every
+	// consumer that predates this field keeps working unchanged.
+	Criteria  []Criterion     `json:"criteria,omitempty"`
+	Checklist []ChecklistItem `json:"checklist,omitempty"`
+	Output    string          `json:"output,omitempty"`
+	Review    string          `json:"review,omitempty"`
 	// Retries counts correction rounds WITHIN one review ladder. It restarts
 	// at zero every time the task is dispatched to a wave, so it is not — and
 	// never was — a bound on how many times a task may be attempted overall.

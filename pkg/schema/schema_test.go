@@ -188,7 +188,10 @@ func TestStrictSchemaMakesEverythingRequired(t *testing.T) {
 	if item["additionalProperties"] != false {
 		t.Error("nested object not made strict")
 	}
-	if len(RequiredNames(item)) != 7 {
+	// 8 = id, title, description, role, depends_on, files, acceptance, criteria.
+	// Strict decoding requires every property at every level, so a model on a
+	// json_schema backend must emit `criteria` — as `[]` when it has none.
+	if len(RequiredNames(item)) != 8 {
 		t.Errorf("nested required = %v", RequiredNames(item))
 	}
 }

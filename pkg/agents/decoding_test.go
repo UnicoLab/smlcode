@@ -83,6 +83,11 @@ func TestPromptsStayShortEnoughForA32KWindow(t *testing.T) {
 	limits := map[string]int{
 		plan.RoleWorker: 2600, "deep": 2600, plan.RoleCorrector: 2600,
 		plan.RolePlaceholder: 2800, RoleEditor: 2600,
+		// The composer carries the whole language-specialist roster, and it is
+		// the one prompt whose cost is paid ONCE PER RUN rather than once per
+		// turn. The budget above exists because prompts compete with the CODE
+		// for the window; at compose time there is no code in the pack yet.
+		"composer": 2100,
 	}
 	for _, spec := range Specs() {
 		limit, ok := limits[spec.ID]

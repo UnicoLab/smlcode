@@ -167,9 +167,27 @@ func TestInputPumpEscapeAndInterrupt(t *testing.T) {
 
 func TestInputPumpHotkeyFilter(t *testing.T) {
 	ed := NewLineEditor(nil)
-	p := StartInputPump(strings.NewReader("y"), ed)
+
+	// A PIPE, not strings.NewReader: StartInputPump launches its read loop
+	// immediately, and SetHotkeys installs the filter afterwards. With input
+	// already buffered, the pump can read and classify 'y' before the filter
+	// lands, and the test then sees a plain rune event instead of a hotkey.
+	// That is a race in the TEST's setup, not in the pump — the filter itself
+	// is mutex-guarded — and it failed exactly this way on a loaded CI runner:
+	//
+	//	--- FAIL: TestInputPumpHotkeyFilter
+	//	    keys_test.go:177: got {Kind:1 Line: Key:y}
+	//
+	// Writing only after SetHotkeys returns makes the ordering the test means
+	// to assert the one it actually gets.
+	pr, pw := io.Pipe()
+	p := StartInputPump(pr, ed)
 	defer p.Stop()
 	p.SetHotkeys(func(k Key) bool { return k.Type == KeyRune && k.Rune == 'y' })
+	go func() {
+		_, _ = pw.Write([]byte("y"))
+		_ = pw.Close()
+	}()
 
 	select {
 	case ev := <-p.Events():

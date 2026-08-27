@@ -8,6 +8,12 @@ import { useConfirm } from '@/components/ui/Modal';
 interface LiveFeedbackProps {
   /** Called with the newly active feedback text (or '') after set/clear. */
   onChanged?: (text: string) => void;
+  /**
+   * Strip the card chrome and the header for the docked strip at the bottom of
+   * the live stream, where both are redundant: the dock already has its own
+   * border, and the placeholder already says what the box does.
+   */
+  compact?: boolean;
 }
 
 interface Notice {
@@ -19,7 +25,7 @@ interface Notice {
 // Compact card for steering running agents in real time. The text is injected
 // into the next agent prompt ("LIVE FEEDBACK FROM USER") by the backend, and
 // set/cleared events also surface in the SSE event log as kind "intervention".
-export default function LiveFeedback({ onChanged }: LiveFeedbackProps) {
+export default function LiveFeedback({ onChanged, compact = false }: LiveFeedbackProps) {
   const confirm = useConfirm();
   const [text, setText] = useState('');
   const [current, setCurrent] = useState('');
@@ -93,17 +99,19 @@ export default function LiveFeedback({ onChanged }: LiveFeedbackProps) {
   };
 
   return (
-    <div className="card p-3 flex flex-col gap-2">
+    <div className={clsx('flex flex-col gap-2', !compact && 'card p-3')}>
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <MessageSquareText size={14} className="text-brand-500 shrink-0" />
-        <span className="text-[11px] font-bold text-gray-700 dark:text-gray-200 uppercase tracking-wider">
-          Live Feedback
-        </span>
-        <span className="text-[10px] text-gray-400 hidden sm:inline">
-          steers the next agent call
-        </span>
-      </div>
+      {!compact && (
+        <div className="flex items-center gap-2">
+          <MessageSquareText size={14} className="shrink-0 text-brand-500" />
+          <span className="text-[11px] font-bold uppercase tracking-wider text-gray-700 dark:text-gray-200">
+            Live Feedback
+          </span>
+          <span className="hidden text-[10px] text-gray-400 sm:inline">
+            steers the next agent call
+          </span>
+        </div>
+      )}
 
       {/* Active feedback */}
       {current && (
@@ -118,18 +126,23 @@ export default function LiveFeedback({ onChanged }: LiveFeedbackProps) {
       )}
 
       {/* Composer */}
-      <div className="flex gap-2 items-end">
+      <div className="flex items-end gap-2">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') handleSend();
           }}
-          placeholder="Steer the agents… e.g. 'focus on tests' or 'stop refactoring, ship it'"
-          rows={2}
-          className="input flex-1 resize-none"
+          placeholder={
+            compact
+              ? 'Steer the agents…  (⌘↵ to send)' 
+              : "Steer the agents… e.g. 'focus on tests' or 'stop refactoring, ship it'"
+          }
+          aria-label="Live feedback for the running agents"
+          rows={compact ? 1 : 2}
+          className="input min-w-0 flex-1 resize-none text-sm"
         />
-        <div className="flex flex-col gap-1.5 shrink-0">
+        <div className={clsx('shrink-0 gap-1.5', compact ? 'flex' : 'flex flex-col')}>
           <button
             onClick={handleSend}
             disabled={!text.trim() || sending}

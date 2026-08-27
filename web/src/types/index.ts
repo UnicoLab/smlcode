@@ -381,6 +381,11 @@ export interface DynamicTeamMember {
 export interface DynamicComposition {
   summary: string;
   strategy?: string;
+  // Budget class — how much of the run's budget this request is worth, and
+  // what sort of work it is. Mirrors pkg/composer.Composition; see
+  // pkg/composer/profiles.go for what each class buys.
+  complexity?: 'trivial' | 'simple' | 'standard' | 'critical';
+  kind?: 'inquiry' | 'task' | 'debug';
   handoff?: string[];
   slm_fit?: string[];
   phases?: DynamicPhaseChoice[] | null;

@@ -1,105 +1,81 @@
 import { useState, useEffect, useRef, useContext, useMemo } from 'react';
-import type { ReactNode } from 'react';
 import {
   Play,
   Square,
-  ChevronDown,
-  ChevronUp,
   AlertTriangle,
   Bot,
   Loader2,
   Circle,
-  Activity,
-  Target,
-  Zap,
-  Layers,
-  Cpu,
   PanelRightClose,
   PanelRightOpen,
-  SlidersHorizontal,
+  ListTodo,
+  FolderTree,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import { AppContext } from '@/App';
-import { startRun, stopRun, getAgents, getPipeline, getComposition, previewComposition, getInterruptedRuns, resumeRun } from '@/api/client';
-import type { AgentSpec, PipelineView, DynamicComposition, InterruptedRun } from '@/types';
+import {
+  startRun,
+  stopRun,
+  getAgents,
+  getPipeline,
+  getComposition,
+  previewComposition,
+  getInterruptedRuns,
+  resumeRun,
+} from '@/api/client';
+import type {
+  AgentSpec,
+  PipelineView,
+  DynamicComposition,
+  InterruptedRun,
+  LatestRunResponse,
+} from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
 import LiveFileInspector from './LiveFileInspector';
 import LiveFeedback from './LiveFeedback';
 import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
+import PhaseRail from './PhaseRail';
+import type { PhaseState, RailGroup } from './PhaseRail';
+import RunSetup from './RunSetup';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
-import CollapsibleSection from '@/components/ui/CollapsibleSection';
-import ResizeHandle from '@/components/ui/ResizeHandle';
-import { usePersistentState, useMediaQuery, useStickToBottom } from '@/hooks/useUiState';
+import { useIsDesktop } from '@/hooks/useMediaQuery';
 import clsx from 'clsx';
 
-// ── Layout constants ──
-//
-// The side panel used to be a hard `lg:w-[27rem]`. At 1280px that is a third of
-// the window spent on a panel the user may not be reading, with no way to give
-// the space back. It is now a persisted, draggable width clamped to these.
-const PANEL_MIN_PX = 280;
-const PANEL_MAX_PX = 900;
-const PANEL_DEFAULT_PX = 420;
+/**
+ * The live run console.
+ *
+ * The layout is four fixed zones, in priority order, and the ordering is the
+ * whole design:
+ *
+ *   1. Command bar   — what you type and the button you press. Always one row
+ *                      on desktop; wraps on narrow screens. Never scrolls away.
+ *   2. Phase rail    — where the run is, in ~44px. See PhaseRail.
+ *   3. Run setup     — how the run is configured, behind a disclosure that is
+ *                      open while idle and closed while running. See RunSetup.
+ *   4. Stream + rail — everything left over, which is most of the screen.
+ *
+ * What changed and why: the previous version stacked six always-expanded
+ * panels above the log — a metrics grid, a progress card, a stage card, an
+ * agent-activity card, a composition panel and an active-agent panel. Each was
+ * individually reasonable and together they pushed the event stream, the one
+ * thing a page called "Live" exists to show, off a 900px viewport entirely.
+ * Every one of them survives here; they just had to stop competing with the
+ * stream for the same pixels at the same moment.
+ */
 
-// Below this height the detail sections start closed. A 13" laptop shows about
-// 700px of viewport; the header alone used to fill it and the event log — the
-// thing this page exists to show — was clipped to nothing.
-const SHORT_VIEWPORT = '(max-height: 860px)';
-const WIDE_VIEWPORT = '(min-width: 1024px)';
-
-// Auto-fit grids, not breakpoint steps. `repeat(auto-fit, minmax(X, 1fr))` asks
-// the browser to fit as many columns as the ACTUAL container allows, so the
-// same markup is correct on a 900px window and a 3840px ultrawide without a
-// single media query — and nothing overflows on the way between them.
-const METRIC_GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr))]';
-const PHASE_GRID = 'grid gap-1.5 [grid-template-columns:repeat(auto-fill,minmax(6.5rem,1fr))]';
-const FACT_GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]';
-
-// ── Pipeline group definitions ──
-interface PhaseGroup {
-  id: string;
-  label: string;
-  phases: string[];
-  color: string;
-}
-
-const PIPELINE_GROUPS: PhaseGroup[] = [
-  { id: 'prepare', label: 'Prepare', phases: ['init', 'skills', 'context', 'explore', 'docs'], color: 'sky' },
-  { id: 'design', label: 'Design', phases: ['architect', 'clarify', 'plan', 'split'], color: 'violet' },
-  { id: 'build', label: 'Build', phases: ['coord', 'execute', 'learn'], color: 'amber' },
-  { id: 'verify', label: 'Verify', phases: ['polish', 'test'], color: 'emerald' },
-  { id: 'finish', label: 'Finish', phases: ['memory', 'done'], color: 'gray' },
+const PIPELINE_GROUPS: RailGroup[] = [
+  { id: 'prepare', label: 'Prepare', phases: ['init', 'skills', 'context', 'explore', 'docs'] },
+  { id: 'design', label: 'Design', phases: ['architect', 'clarify', 'plan', 'split'] },
+  { id: 'build', label: 'Build', phases: ['coord', 'execute', 'learn'] },
+  { id: 'verify', label: 'Verify', phases: ['polish', 'test'] },
+  { id: 'finish', label: 'Finish', phases: ['memory', 'done'] },
 ];
 
-// ── Phase → dot color mapping ──
-const PHASE_DOT_COLORS: Record<string, string> = {
-  // blue shades
-  init: 'bg-blue-400 dark:bg-blue-500',
-  skills: 'bg-blue-500 dark:bg-blue-400',
-  context: 'bg-cyan-500 dark:bg-cyan-400',
-  explore: 'bg-sky-500 dark:bg-sky-400',
-  docs: 'bg-indigo-500 dark:bg-indigo-400',
-  // purple shades
-  architect: 'bg-violet-500 dark:bg-violet-400',
-  clarify: 'bg-purple-500 dark:bg-purple-400',
-  plan: 'bg-fuchsia-500 dark:bg-fuchsia-400',
-  split: 'bg-pink-500 dark:bg-pink-400',
-  // orange/amber shades
-  coord: 'bg-orange-500 dark:bg-orange-400',
-  execute: 'bg-amber-500 dark:bg-amber-400',
-  learn: 'bg-yellow-600 dark:bg-yellow-400',
-  // green shades
-  polish: 'bg-lime-500 dark:bg-lime-400',
-  test: 'bg-emerald-500 dark:bg-emerald-400',
-  // teal/green shades
-  memory: 'bg-teal-500 dark:bg-teal-400',
-  done: 'bg-green-500 dark:bg-green-400',
-};
-
-// ── Phase state enum ──
-type PhaseState = 'pending' | 'active' | 'completed';
+type RailTab = 'tasks' | 'files' | 'result';
 
 export default function LiveView() {
   const ctx = useContext(AppContext);
@@ -115,8 +91,20 @@ export default function LiveView() {
   const resetEvents = ctx?.resetLiveEvents ?? (() => {});
   const result = ctx?.liveResult || null;
   const setResult = ctx?.setLiveResult || (() => {});
+
   const [query, setQuery] = useState('');
-  const [sidebarTab, setSidebarTab] = useState<'tasks' | 'result' | 'files'>('tasks');
+  const [railTab, setRailTab] = useState<RailTab>('tasks');
+  // The rail is a column on desktop and a full-height OVERLAY below it, so its
+  // default cannot be the same on both: opening it by default on a phone means
+  // the first thing a user sees is the task drawer covering the console they
+  // came for. Seeded from the breakpoint, then owned by the user — and reset
+  // when the viewport actually crosses it, so a window dragged narrow does not
+  // strand an overlay the user never asked to open.
+  const isDesktop = useIsDesktop();
+  const [railOpen, setRailOpen] = useState(isDesktop);
+  useEffect(() => {
+    setRailOpen(isDesktop);
+  }, [isDesktop]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
   const [pipelineView, setPipelineView] = useState<PipelineView | null>(null);
@@ -126,35 +114,12 @@ export default function LiveView() {
   const [compositionPreviewFit, setCompositionPreviewFit] = useState<string[]>([]);
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const logEnd = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLInputElement>(null);
 
-  // ── Layout state ──
-  //
-  // All of it persisted: a layout the user arranged has to survive a reload, or
-  // they rearrange it every time they open Studio.
-  const isShort = useMediaQuery(SHORT_VIEWPORT);
-  const isWide = useMediaQuery(WIDE_VIEWPORT);
-
-  // `isShort` is read once, as the first-mount default only. A laptop that
-  // later docks to a big monitor must not have panels silently re-open — and a
-  // panel the user closed must stay closed when they undock.
-  const [detailsOpen, setDetailsOpen] = usePersistentState('live.details', !isShort);
-  const [openPipeline, setOpenPipeline] = usePersistentState('live.sec.pipeline', true);
-  const [openStage, setOpenStage] = usePersistentState('live.sec.stage', !isShort);
-  const [openAgents, setOpenAgents] = usePersistentState('live.sec.agents', !isShort);
-  const [openFeedback, setOpenFeedback] = usePersistentState('live.sec.feedback', false);
-  const [openComposition, setOpenComposition] = usePersistentState('live.sec.composition', false);
-  const [logExpanded, setLogExpanded] = usePersistentState('live.log.open', true);
-  const [panelOpen, setPanelOpen] = usePersistentState('live.panel.open', true);
-  const [panelWidth, setPanelWidth] = usePersistentState('live.panel.width', PANEL_DEFAULT_PX);
-
-  const openSectionCount =
-    Number(openPipeline) + Number(openStage) + Number(openAgents) + Number(openFeedback) + Number(openComposition);
-
-  // Pin the log to its bottom as events arrive — but only while the user is
-  // already there, so scrolling up to read something is not undone by the next
-  // event. See useStickToBottom for why `scrollIntoView` was wrong here.
-  const logBodyRef = useStickToBottom<HTMLDivElement>(events, logExpanded);
+  useEffect(() => {
+    logEnd.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [events]);
 
   // `/` focuses the prompt from anywhere in the app.
   useEffect(() => {
@@ -183,12 +148,10 @@ export default function LiveView() {
     }
   }, [lastRunStart]);
 
-  // Load agents for specialist picker
   useEffect(() => {
     getAgents().then(setAgents).catch(() => {});
   }, []);
 
-  // Load pipeline config
   useEffect(() => {
     getPipeline().then(setPipelineView).catch(() => {});
     getComposition()
@@ -198,7 +161,9 @@ export default function LiveView() {
       })
       .catch((e) => {
         setPersistedComposition(null);
-        setPersistedCompositionError(e instanceof Error ? e.message : 'Unable to load saved composition');
+        setPersistedCompositionError(
+          e instanceof Error ? e.message : 'Unable to load saved composition',
+        );
       });
   }, []);
 
@@ -236,15 +201,19 @@ export default function LiveView() {
     };
   }, [query, running, specialist, ctx?.config?.dynamic_pipeline]);
 
-  const handleRun = async () => {
-    const q = query.trim();
-    if (!q || running) return;
-    resetEvents();
+  const clearRunPanels = () => {
     setResult(null);
     setPersistedComposition(null);
     setPersistedCompositionError('');
     setCompositionPreview(null);
     setCompositionPreviewFit([]);
+  };
+
+  const handleRun = async () => {
+    const q = query.trim();
+    if (!q || running) return;
+    resetEvents();
+    clearRunPanels();
     setRunning(true);
     try {
       await startRun({
@@ -262,11 +231,7 @@ export default function LiveView() {
   const handleResume = async (id?: string) => {
     if (running) return;
     resetEvents();
-    setResult(null);
-    setPersistedComposition(null);
-    setPersistedCompositionError('');
-    setCompositionPreview(null);
-    setCompositionPreviewFit([]);
+    clearRunPanels();
     setRunning(true);
     try {
       await resumeRun(id);
@@ -287,7 +252,7 @@ export default function LiveView() {
     setRunning(false);
   };
 
-  // ── Memoized computations ──
+  // ── Derived run state ──
 
   const dynamicComposition = useMemo<DynamicComposition | null>(() => {
     for (let i = events.length - 1; i >= 0; i--) {
@@ -298,10 +263,14 @@ export default function LiveView() {
   }, [events, persistedComposition, running]);
 
   const shownComposition = dynamicComposition || (!running ? compositionPreview : null);
-  const shownCompositionMode = dynamicComposition ? 'runtime' : compositionPreview ? 'preview' : '';
-  const shownCompositionFit = shownComposition?.slm_fit || (shownCompositionMode === 'preview' ? compositionPreviewFit : []);
+  const shownCompositionMode: '' | 'runtime' | 'preview' = dynamicComposition
+    ? 'runtime'
+    : compositionPreview
+      ? 'preview'
+      : '';
+  const shownCompositionFit =
+    shownComposition?.slm_fit || (shownCompositionMode === 'preview' ? compositionPreviewFit : []);
   const shownCompositionPhases = useMemo(() => shownComposition?.phases || [], [shownComposition]);
-  const activeExecute = dynamicComposition?.execute || pipelineView?.config?.execute;
 
   const dynamicPhaseOrder = useMemo(() => {
     if (!shownCompositionPhases.length) return null;
@@ -311,8 +280,7 @@ export default function LiveView() {
       .filter(Boolean);
   }, [shownCompositionPhases]);
 
-  // Resolve pipeline groups (use config if available, otherwise built-in defaults)
-  const groups = useMemo<PhaseGroup[]>(() => {
+  const groups = useMemo<RailGroup[]>(() => {
     const keep = dynamicPhaseOrder ? new Set(dynamicPhaseOrder) : null;
     if (pipelineView?.config?.groups?.length) {
       return pipelineView.config.groups
@@ -320,19 +288,23 @@ export default function LiveView() {
           id: g.id,
           label: g.label,
           phases: keep ? g.steps.filter((p) => keep.has(p)) : g.steps,
-          color: PIPELINE_GROUPS.find((pg) => pg.id === g.id)?.color || 'gray',
         }))
         .filter((g) => g.phases.length > 0);
     }
-    if (keep) return PIPELINE_GROUPS.map((g) => ({ ...g, phases: g.phases.filter((p) => keep.has(p)) })).filter((g) => g.phases.length > 0);
+    if (keep) {
+      return PIPELINE_GROUPS.map((g) => ({
+        ...g,
+        phases: g.phases.filter((p) => keep.has(p)),
+      })).filter((g) => g.phases.length > 0);
+    }
     return PIPELINE_GROUPS;
   }, [pipelineView, dynamicPhaseOrder]);
 
-  // All phases in order
-  const allPhases = useMemo(() => dynamicPhaseOrder || groups.flatMap((g) => g.phases), [groups, dynamicPhaseOrder]);
-  const totalPhases = allPhases.length;
+  const allPhases = useMemo(
+    () => dynamicPhaseOrder || groups.flatMap((g) => g.phases),
+    [groups, dynamicPhaseOrder],
+  );
 
-  // Unique phases that have appeared in events
   const seenPhases = useMemo(() => {
     const set = new Set<string>();
     for (const e of events) {
@@ -341,7 +313,6 @@ export default function LiveView() {
     return set;
   }, [events]);
 
-  // Active phase = most recent event's phase
   const activePhase = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       if (events[i].phase) return events[i].phase;
@@ -349,7 +320,6 @@ export default function LiveView() {
     return null;
   }, [events]);
 
-  // Compute phase state map: pending | active | completed
   const phaseStateMap = useMemo<Record<string, PhaseState>>(() => {
     const map: Record<string, PhaseState> = {};
     let activeFound = false;
@@ -363,14 +333,12 @@ export default function LiveView() {
         map[phase] = 'pending';
       }
     }
-    // If active phase is not in the pipeline order, still mark as active
     if (activePhase && !allPhases.includes(activePhase)) {
       map[activePhase] = 'active';
     }
     return map;
   }, [allPhases, activePhase, seenPhases]);
 
-  // Active agent = most recent event with agent field set
   const activeAgentId = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       if (events[i].agent) return events[i].agent;
@@ -378,767 +346,393 @@ export default function LiveView() {
     return null;
   }, [events]);
 
-  const activeAgentSpec = useMemo(() => {
-    if (!activeAgentId) return null;
-    return agents.find((a) => a.id === activeAgentId) || null;
-  }, [activeAgentId, agents]);
+  const activeAgentSpec = useMemo(
+    () => (activeAgentId ? agents.find((a) => a.id === activeAgentId) || null : null),
+    [activeAgentId, agents],
+  );
 
-  const selectedAgentSpec = useMemo(() => {
-    if (!specialist) return null;
-    return agents.find((a) => a.id === specialist) || null;
-  }, [agents, specialist]);
+  const selectedAgentSpec = useMemo(
+    () => (specialist ? agents.find((a) => a.id === specialist) || null : null),
+    [agents, specialist],
+  );
 
-  const recentAgents = useMemo(() => {
-    const seen = new Set<string>();
-    const list: Array<{ id: string; title: string; model?: string }> = [];
-    for (let i = events.length - 1; i >= 0 && list.length < 5; i--) {
-      const id = events[i].agent;
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      const spec = agents.find((a) => a.id === id);
-      list.push({ id, title: spec?.title || id, model: spec?.effective_model || spec?.model });
-    }
-    return list;
-  }, [agents, events]);
-
-  const lastEvent = events.length > 0 ? events[events.length - 1] : null;
-  const currentPhaseIndex = activePhase ? allPhases.indexOf(activePhase) : -1;
-  const nextPhase = currentPhaseIndex >= 0 ? allPhases[currentPhaseIndex + 1] : allPhases[0];
-
-  // Recent agent events (last 3 with agent field)
-  const recentAgentEvents = useMemo(() => {
-    const withAgent = events.filter((e) => e.agent);
-    return withAgent.slice(-3).reverse();
-  }, [events]);
-
-  // Stats
-  const stats = useMemo(() => {
-    const completed = Object.values(phaseStateMap).filter((s) => s === 'completed').length;
-
-    // Tasks: count unique task_ids from ALL events (more reliable than kind-matching)
-    const taskIds = new Set<string>();
+  const taskCount = useMemo(() => {
+    const ids = new Set<string>();
     for (const e of events) {
-      if (e.task_id) taskIds.add(e.task_id);
+      if (e.task_id) ids.add(e.task_id);
     }
-    const tasksSeen = taskIds.size;
-
-    return {
-      phasesCompleted: completed,
-      totalPhases,
-      activeAgent: activeAgentId,
-      tasksSeen,
-      eventsCount: events.length,
-    };
-  }, [phaseStateMap, totalPhases, activeAgentId, events]);
-
-  const progressPct = totalPhases > 0 ? Math.round((stats.phasesCompleted / totalPhases) * 100) : 0;
+    return ids.size;
+  }, [events]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
-      {/* ═══ Command bar — pinned, never collapses ═══
-          Everything needed to start or stop a run lives here and nowhere else,
-          so the one control the page exists for is always on screen no matter
-          how small the window or how much detail is expanded below. */}
-      <div className="shrink-0 border-b border-gray-200 bg-white px-3 py-2.5 shadow-sm dark:border-gray-800 dark:bg-gray-950 sm:px-4">
-        <div className="mx-auto flex w-full max-w-[1800px] flex-col gap-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className={clsx(
-                  'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold',
-                  running
-                    ? 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300'
-                    : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300',
-                )}>
-                  {running ? <Loader2 size={13} className="animate-spin" /> : <Circle size={12} />}
-                  {running ? 'Running' : 'Ready'}
-                </span>
-                {ctx?.config?.dynamic_pipeline !== undefined && (
-                  <span className={ctx.config.dynamic_pipeline ? 'badge-brand text-[10px]' : 'badge-neutral text-[10px]'}>
-                    {ctx.config.dynamic_pipeline ? 'dynamic' : 'static'}
-                  </span>
-                )}
-                {ctx?.config?.active_pack && <span className="badge-neutral text-[10px]">pack {ctx.config.active_pack}</span>}
-                {ctx?.config?.active_pipeline && <span className="badge-neutral text-[10px]">pipeline {ctx.config.active_pipeline}</span>}
-                {ctx?.config?.active_stack && <span className="badge-neutral text-[10px]">stack {ctx.config.active_stack}</span>}
-                {ctx?.config?.model && (
-                  <span
-                    className="min-w-0 truncate rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400"
-                    title={ctx.config.model}
-                  >
-                    {ctx.config.model}
-                  </span>
-                )}
-              </div>
+      {/* ── 1. Command bar ─────────────────────────────────────────── */}
+      <div className="shrink-0 border-b border-gray-200 bg-white px-3 py-2.5 dark:border-gray-800 dark:bg-gray-950 sm:px-4">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <span
+            className={clsx(
+              'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold',
+              running
+                ? 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-950/50 dark:text-brand-300'
+                : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400',
+            )}
+          >
+            {running ? <Loader2 size={13} className="animate-spin" /> : <Circle size={11} />}
+            {running ? 'Running' : 'Ready'}
+          </span>
 
-              <div className="flex flex-col gap-2 lg:flex-row">
-                <input
-                  ref={promptRef}
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleRun()}
-                  placeholder="Ask the harness to plan, code, test, or inspect a change  ( / to focus )"
-                  aria-label="Run prompt"
-                  className="input focus-ring h-12 flex-1 text-sm shadow-sm"
-                  disabled={running}
-                />
-                <div className="flex gap-2">
-                  {agents.length > 0 && (
-                    <select
-                      value={specialist}
-                      onChange={(e) => setSpecialist(e.target.value)}
-                      className="input h-12 min-w-0 flex-1 text-sm lg:w-56"
-                      disabled={running}
-                    >
-                      <option value="">Any agent</option>
-                      {agents.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.title || a.id}
-                          {a.effective_model ? ` · ${a.effective_model}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {running ? (
-                    <button onClick={handleStop} className="btn-danger h-12 shrink-0 px-4 gap-2">
-                      <Square size={16} fill="currentColor" />
-                      Stop
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleRun}
-                      disabled={!query.trim()}
-                      className="btn-primary h-12 shrink-0 px-5 gap-2"
-                    >
-                      <Play size={16} fill="currentColor" />
-                      Run
-                    </button>
-                  )}
-                </div>
-              </div>
+          <input
+            ref={promptRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleRun()}
+            placeholder="Plan, code, test, or inspect a change   ( / to focus )"
+            aria-label="Run prompt"
+            className="input focus-ring h-9 min-w-0 flex-1 text-sm"
+            disabled={running}
+          />
 
-              {selectedAgentSpec && (
-                <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2 dark:border-violet-900/70 dark:bg-violet-950/25">
-                  <div className="flex flex-wrap items-start gap-2">
-                    <span className="badge-brand shrink-0 text-[10px]">specialist</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-bold text-violet-800 line-clamp-2 dark:text-violet-200" title={selectedAgentSpec.title || selectedAgentSpec.id}>
-                          {selectedAgentSpec.title || selectedAgentSpec.id}
-                        </span>
-                        <span className="font-mono text-[10px] text-violet-500" title={selectedAgentSpec.id}>{selectedAgentSpec.id}</span>
-                      </div>
-                      {selectedAgentSpec.description && (
-                        <p className="mt-1 text-xs text-violet-700 line-clamp-2 dark:text-violet-300" title={selectedAgentSpec.description}>
-                          {selectedAgentSpec.description}
-                        </p>
-                      )}
-                    </div>
-                    <span
-                      className="inline-flex max-w-full items-center gap-1 rounded-md bg-white/80 px-2 py-1 text-[10px] text-violet-700 dark:bg-gray-900/70 dark:text-violet-300"
-                      title={`${selectedAgentSpec.effective_provider || selectedAgentSpec.provider || 'stack'}/${selectedAgentSpec.effective_model || selectedAgentSpec.model || 'inherit'}`}
-                    >
-                      <Cpu size={11} className="shrink-0" />
-                      <span className="min-w-0 break-all">
-                        {selectedAgentSpec.effective_model || selectedAgentSpec.model || 'inherit'}
-                      </span>
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-          {/* Metrics reflow by available width, not by breakpoint — see
-              METRIC_GRID. The old `xl:w-[31rem]` reserved a fixed 496px strip
-              that squeezed the prompt on a 1280px window and left a gap on an
-              ultrawide. */}
-          <div className={METRIC_GRID}>
-            <LiveMetric label="Phases" value={`${stats.phasesCompleted}/${stats.totalPhases}`} icon={<Target size={15} />} tone="sky" />
-            <LiveMetric label="Tasks" value={String(stats.tasksSeen ?? 0)} icon={<Zap size={15} />} tone="amber" />
-            <LiveMetric label="Events" value={String(stats.eventsCount)} icon={<Activity size={15} />} tone="emerald" />
-            <LiveMetric label="Agent" value={activeAgentId ? (activeAgentSpec?.title || activeAgentId) : 'idle'} icon={<Bot size={15} />} tone="violet" />
-          </div>
-
-          {/* Progress stays visible even with every detail section closed —
-              it is the one thing you want while a run is going. */}
-          <div className="flex items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
-              <div
-                className="h-full rounded-full bg-brand-500 transition-[width] duration-700"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <span className="shrink-0 font-mono text-[11px] font-semibold text-gray-500 dark:text-gray-400">{progressPct}%</span>
-            <button
-              type="button"
-              onClick={() => setDetailsOpen(!detailsOpen)}
-              aria-expanded={detailsOpen}
-              className="btn-ghost focus-ring h-7 shrink-0 gap-1.5 px-2 text-[11px]"
-              title={detailsOpen ? 'Hide the detail panels and give the room to the log' : 'Show pipeline, stage and composition detail'}
-            >
-              <SlidersHorizontal size={13} aria-hidden="true" />
-              <span className="hidden sm:inline">Details</span>
-              <span className="badge-neutral text-[10px]">{openSectionCount}</span>
-              {detailsOpen ? <ChevronUp size={13} aria-hidden="true" /> : <ChevronDown size={13} aria-hidden="true" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => setPanelOpen(!panelOpen)}
-              aria-expanded={panelOpen}
-              className="btn-ghost focus-ring h-7 shrink-0 gap-1.5 px-2 text-[11px]"
-              title={panelOpen ? 'Hide the side panel' : 'Show tasks, result and files'}
-            >
-              {panelOpen ? <PanelRightClose size={14} aria-hidden="true" /> : <PanelRightOpen size={14} aria-hidden="true" />}
-              <span className="sr-only">{panelOpen ? 'Hide side panel' : 'Show side panel'}</span>
-            </button>
-          </div>
-
-          {/* Interrupted runs stay OUT of the collapsible region: it is an
-              action, not a detail, and a user who collapsed the panels would
-              never discover a run they can resume. */}
-          {!running && interrupted.length > 0 && (
-            <div className="flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold">Interrupted run</span>
-                  <span className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[11px] dark:bg-black/20">{interrupted[0].id}</span>
-                  {interrupted[0].react_resume && <span className="badge-neutral text-[10px]">ReAct</span>}
-                  {interrupted[0].phase && <span className="text-xs opacity-75">{interrupted[0].phase}</span>}
-                </div>
-                <p className="text-xs opacity-80 line-clamp-2" title={interrupted[0].query}>
-                  {interrupted[0].done}/{interrupted[0].tasks} done, {interrupted[0].blocked} blocked · {interrupted[0].query}
-                </p>
-              </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {agents.length > 0 && (
+              <select
+                value={specialist}
+                onChange={(e) => setSpecialist(e.target.value)}
+                className="input h-9 min-w-0 flex-1 text-xs sm:w-44 lg:w-52"
+                disabled={running}
+                aria-label="Agent"
+              >
+                <option value="">Any agent</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.title || a.id}
+                    {a.effective_model ? ` · ${a.effective_model}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            {running ? (
+              <button onClick={handleStop} className="btn-danger h-9 shrink-0 gap-1.5 px-4 text-sm">
+                <Square size={14} fill="currentColor" />
+                Stop
+              </button>
+            ) : (
               <button
-                onClick={() => handleResume(interrupted[0].id)}
-                className="btn-primary h-9 shrink-0 gap-2 text-xs"
+                onClick={handleRun}
+                disabled={!query.trim()}
+                className="btn-primary h-9 shrink-0 gap-1.5 px-5 text-sm"
               >
                 <Play size={14} fill="currentColor" />
-                Resume
+                Run
               </button>
-            </div>
+            )}
+            <button
+              onClick={() => setRailOpen((v) => !v)}
+              className="focus-ring flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+              aria-label={railOpen ? 'Hide side panel' : 'Show side panel'}
+              title={railOpen ? 'Hide side panel' : 'Show side panel'}
+            >
+              {railOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Environment facts + the active agent share one quiet strip. On a
+            narrow screen the environment tags drop away first: mid-run, which
+            agent is talking matters more than which stack is configured. */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+          {running && activeAgentId && (
+            <span
+              className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-brand-50 px-2 py-1 font-semibold text-brand-700 dark:bg-brand-950/50 dark:text-brand-300"
+              title={activeAgentSpec?.description || activeAgentId}
+            >
+              <Bot size={11} className="shrink-0 animate-pulse" />
+              <span className="truncate">{activeAgentSpec?.title || activeAgentId}</span>
+            </span>
           )}
-        </div>
-      </div>
-
-      {/* ═══ Detail region — capped height, scrolls itself ═══
-
-          THE fix for "everything gets cut off". Previously each of these panels
-          was `shrink-0` in the page's flex column, so on a laptop viewport they
-          consumed the entire screen and the event log below them was crushed to
-          a few pixels with no way to get the space back.
-
-          Two rules make that impossible now:
-            • the region never exceeds ~38vh, so the log always keeps most of
-              the page whatever is expanded;
-            • anything that does not fit scrolls HERE, inside the region, rather
-              than pushing the log off the bottom of the window.
-          `overscroll-contain` stops a scroll that reaches the end of this box
-          from continuing into the log behind it. */}
-      {detailsOpen && (
-        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-950/60
-                        max-h-[clamp(7rem,38vh,34rem)]">
-          <div className="mx-auto grid w-full max-w-[1800px] gap-2 p-3 [grid-template-columns:repeat(auto-fit,minmax(20rem,1fr))]">
-            <CollapsibleSection
-              title="Pipeline"
-              open={openPipeline}
-              onToggle={() => setOpenPipeline(!openPipeline)}
-              meta={
-                <>
-                  {activePhase ? (
-                    <span className="badge-brand text-[10px]">{activePhase}</span>
-                  ) : (
-                    <span className="badge-neutral text-[10px]">idle</span>
-                  )}
-                  <span className="truncate text-[10px] text-gray-400">
-                    {stats.phasesCompleted}/{stats.totalPhases} phases
-                  </span>
-                </>
-              }
-            >
-              {activeExecute && (
-                <p className="mb-2 truncate text-[10px] text-gray-400" title={`worker ${activeExecute.default_role || 'worker'}; reviewer ${activeExecute.reviewer || 'reviewer'}`}>
-                  worker {activeExecute.default_role || 'worker'} · reviewer {activeExecute.reviewer || 'reviewer'}
-                </p>
-              )}
-              <div className={PHASE_GRID}>
-                {allPhases.map((phase) => {
-                  const state = phaseStateMap[phase] || 'pending';
-                  return (
-                    <span
-                      key={phase}
-                      className={clsx(
-                        'flex min-w-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold',
-                        state === 'active' && 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300',
-                        state === 'completed' && 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300',
-                        state === 'pending' && 'border-gray-200 bg-white text-gray-400 dark:border-gray-800 dark:bg-gray-950',
-                      )}
-                      title={`${phase}: ${state}`}
-                    >
-                      <span className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', PHASE_DOT_COLORS[phase] || 'bg-gray-400')} />
-                      <span className="min-w-0 truncate">{phase}</span>
-                    </span>
-                  );
-                })}
-              </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Current stage"
-              open={openStage}
-              onToggle={() => setOpenStage(!openStage)}
-              meta={
-                <>
-                  {activePhase ? (
-                    <span className="badge-brand text-[10px]">{activePhase}</span>
-                  ) : (
-                    <span className="badge-neutral text-[10px]">idle</span>
-                  )}
-                  {nextPhase && <span className="badge-neutral text-[10px]">next {nextPhase}</span>}
-                </>
-              }
-            >
-              <div className={FACT_GRID}>
-                <StageFact label="Last event" value={lastEvent?.kind || 'none'} detail={lastEvent?.message || 'No events in this run yet'} />
-                <StageFact label="Phase" value={activePhase || 'waiting'} detail={currentPhaseIndex >= 0 ? `${currentPhaseIndex + 1} of ${allPhases.length}` : `${allPhases.length} configured`} />
-                <StageFact label="Loop" value={activeExecute?.default_role || 'worker'} detail={`review ${activeExecute?.reviewer || 'reviewer'} / fix ${activeExecute?.corrector || 'corrector'}`} />
-              </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Agents"
-              open={openAgents}
-              onToggle={() => setOpenAgents(!openAgents)}
-              meta={<span className="text-[10px] text-gray-400">{recentAgents.length ? `${recentAgents.length} recent` : 'idle'}</span>}
-            >
-              {recentAgents.length ? (
-                <div className="space-y-1.5">
-                  {recentAgents.map((agent) => (
-                    <div key={agent.id} className="flex min-w-0 items-center gap-2 rounded-md bg-gray-50 px-2 py-1.5 dark:bg-gray-800/60" title={`${agent.title}${agent.model ? ` / ${agent.model}` : ''}`}>
-                      <Bot size={13} className="shrink-0 text-violet-500" />
-                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-gray-700 dark:text-gray-200">{agent.title}</span>
-                      {agent.model && <span className="hidden max-w-32 shrink-0 truncate font-mono text-[10px] text-gray-400 sm:block">{agent.model}</span>}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-md border border-dashed border-gray-200 px-3 py-4 text-center text-xs text-gray-400 dark:border-gray-800">
-                  No agent has run in this session yet.
-                </div>
-              )}
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Feedback"
-              open={openFeedback}
-              onToggle={() => setOpenFeedback(!openFeedback)}
-            >
-              <LiveFeedback />
-            </CollapsibleSection>
-          </div>
-        </div>
-      )}
-
-      {previewLoading && !shownComposition && !running && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-gray-200 bg-teal-50/30 px-4 py-2 text-xs text-teal-700 dark:border-gray-800 dark:bg-teal-950/10 dark:text-teal-300">
-          <Loader2 size={13} className="animate-spin" />
-          Previewing dynamic pipeline
-        </div>
-      )}
-
-      {!running && persistedCompositionError && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">Saved dynamic composition could not be read: {persistedCompositionError}</span>
-        </div>
-      )}
-
-      {shownComposition && (
-        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-teal-50/45 px-3 py-2.5 dark:border-gray-800 dark:bg-teal-950/20 sm:px-4
-                        max-h-[clamp(6rem,26vh,22rem)]">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/50 flex items-center justify-center shrink-0">
-              <Layers size={16} className="text-teal-700 dark:text-teal-300" />
-            </div>
-            <div className="min-w-0 flex-1 space-y-2">
-              {/* The header is a toggle: a rich composition renders dozens of
-                  phase, team and slot chips, which is a lot of screen for
-                  something you usually read once. The summary line stays
-                  visible when collapsed. */}
-              <button
-                type="button"
-                onClick={() => setOpenComposition(!openComposition)}
-                aria-expanded={openComposition}
-                className="focus-ring flex w-full items-center gap-2 flex-wrap rounded text-left"
-              >
-                {openComposition ? <ChevronUp size={13} className="shrink-0 text-teal-600" aria-hidden="true" /> : <ChevronDown size={13} className="shrink-0 text-teal-600" aria-hidden="true" />}
-                <span className="text-sm font-bold text-teal-800 dark:text-teal-200">
-                  {shownCompositionMode === 'preview' ? 'Preview Composition' : 'Dynamic Composition'}
-                </span>
-                {shownCompositionMode === 'preview' && <span className="badge-neutral text-[10px]">deterministic</span>}
-                <span className="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-300" title={shownComposition.summary}>
-                  {shownComposition.summary}
-                </span>
-              </button>
-              {openComposition && (
-              <>
-
-              {shownComposition.handoff && shownComposition.handoff.length > 0 && (
-                <div className="flex items-start gap-2 text-[11px] text-gray-700 dark:text-gray-300">
-                  <span className="shrink-0 font-semibold text-teal-700 dark:text-teal-300">Handoff</span>
-                  <div className="flex flex-wrap gap-1.5 min-w-0">
-                    {shownComposition.handoff.slice(0, 6).map((h, i) => (
-                      <span key={`${h}-${i}`} className="px-2 py-1 rounded-md bg-white/80 dark:bg-gray-900/60 border border-teal-100 dark:border-teal-800/70 break-words">
-                        {h}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {shownCompositionFit.length > 0 && (
-                <div className="flex items-start gap-2 text-[11px] text-amber-900 dark:text-amber-100">
-                  <span className="shrink-0 font-semibold text-amber-700 dark:text-amber-300">SLM Fit</span>
-                  <div className="flex flex-wrap gap-1.5 min-w-0">
-                    {shownCompositionFit.slice(0, 4).map((hint, i) => (
-                      <span key={`${hint}-${i}`} className="px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/70 break-words">
-                        {hint}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-1.5">
-                {shownCompositionPhases
-                  .filter((p) => p.enabled && p.when !== 'never')
-                  .map((p, i) => (
-                    <span
-                      key={`${p.id}-${i}`}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[11px] dark:border-gray-700 dark:bg-gray-900/60"
-                      title={`${p.id}${p.agent ? ` @${p.agent}` : ''}${p.when ? ` (${p.when})` : ''}`}
-                    >
-                      <span className={clsx('w-1.5 h-1.5 rounded-full', PHASE_DOT_COLORS[p.id] || 'bg-teal-500')} />
-                      <span className="font-semibold text-gray-700 dark:text-gray-200">{p.id}</span>
-                      {p.agent && <span className="text-gray-400">@{p.agent}</span>}
-                    </span>
-                  ))}
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap text-[11px]">
-                <span className="font-semibold text-teal-700 dark:text-teal-300">Loop</span>
-                <span className="badge-neutral">worker: {shownComposition.execute?.default_role || 'worker'}</span>
-                <span className="badge-neutral">reviewer: {shownComposition.execute?.reviewer || 'reviewer'}</span>
-                <span className="badge-neutral">corrector: {shownComposition.execute?.corrector || 'corrector'}</span>
-                {shownComposition.execute?.max_waves ? (
-                  <span className="badge-neutral">waves: {shownComposition.execute.max_waves}</span>
-                ) : null}
-              </div>
-
-              {shownComposition.team && shownComposition.team.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {shownComposition.team.map((member) => {
-                    const spec = agents.find((a) => a.id === member.role);
-                    return (
-                      <span
-                        key={member.role}
-                        className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-teal-100/80 px-2 py-1 text-[11px] text-teal-900 dark:bg-teal-900/40 dark:text-teal-100"
-                        title={`${spec?.title || member.role}${member.skills?.length ? `; skills: ${member.skills.join(', ')}` : ''}`}
-                      >
-                        <Bot size={12} />
-                        <span className="font-semibold line-clamp-2">{spec?.title || member.role}</span>
-                        {member.skills && member.skills.length > 0 && (
-                          <span className="min-w-0 text-teal-700 line-clamp-2 dark:text-teal-300">{member.skills.join(', ')}</span>
-                        )}
-                      </span>
-                    );
-                  })}
-                </div>
-              )}
-
-              {shownComposition.slots && shownComposition.slots.length > 0 && (
-                <div className="flex items-start gap-2 text-[11px] text-gray-700 dark:text-gray-300">
-                  <span className="shrink-0 font-semibold text-teal-700 dark:text-teal-300">Slots</span>
-                  <div className="flex flex-wrap gap-1.5 min-w-0">
-                    {shownComposition.slots.slice(0, 8).map((slot) => (
-                      <span key={slot.id} className="px-2 py-1 rounded-md bg-white/80 dark:bg-gray-900/60 border border-teal-100 dark:border-teal-800/70">
-                        <span className="font-semibold">{slot.id}</span>
-                        {slot.agent ? ` @${slot.agent}` : ''}
-                        <span className="text-gray-400">
-                          {' '}
-                          {slot.before ? `before ${slot.before}` : slot.after ? `after ${slot.after}` : slot.replace ? `replace ${slot.replace}` : 'slot'}
-                        </span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* Active Agent Panel */}
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      {running && activeAgentId && (
-        <div className="shrink-0 overflow-y-auto overscroll-contain border-b border-gray-200 bg-violet-50/40 px-3 py-2 dark:border-gray-800 dark:bg-violet-950/20 sm:px-4
-                        max-h-[clamp(4rem,18vh,14rem)]">
-          <div className="flex items-center gap-3">
-            {/* Pulsing agent icon */}
-            <div className="relative shrink-0">
-              <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/50 flex items-center justify-center">
-                <Bot size={16} className="text-violet-600 dark:text-violet-400 animate-pulse" />
-              </div>
-            </div>
-
-            {/* Agent info */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-violet-700 line-clamp-2 dark:text-violet-300" title={activeAgentSpec?.title || activeAgentId}>
-                  {activeAgentSpec?.title || activeAgentId}
-                </span>
-                <span className="badge text-[10px] bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-400">
-                  Active
-                </span>
-              </div>
-              {activeAgentSpec?.description && (
-                <p className="mt-0.5 text-[11px] text-gray-500 line-clamp-2 dark:text-gray-400" title={activeAgentSpec.description}>
-                  {activeAgentSpec.description}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Recent agent events */}
-          {recentAgentEvents.length > 0 && (
-            <div className="mt-2 ml-11 space-y-0.5">
-              {recentAgentEvents.map((ev, i) => (
-                <div
-                  key={`${ev.time}-${i}`}
-                  className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
-                  <span className="text-violet-600 dark:text-violet-400 font-medium">
-                    {ev.kind}
-                  </span>
-                  <span className="min-w-0 line-clamp-2" title={ev.message}>{ev.message}</span>
-                </div>
-              ))}
-            </div>
+          {previewLoading && (
+            <span className="inline-flex items-center gap-1.5 text-gray-400">
+              <Loader2 size={11} className="animate-spin" />
+              previewing pipeline
+            </span>
           )}
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      {/* ── Content area: event log + result sidebar ── */}
-      {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-        {/* Event log */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {/* Collapsible header */}
-          <button
-            onClick={() => setLogExpanded((v) => !v)}
-            className="flex items-center gap-2 px-4 py-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors shrink-0"
-          >
-            {logExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            Event Log
-            {events.length > 0 && (
-              <span className="text-[10px] text-gray-400 font-normal normal-case ml-1">
-                ({events.length} events)
+          <span className="hidden items-center gap-1.5 sm:inline-flex">
+            {ctx?.config?.dynamic_pipeline !== undefined && (
+              <span className={ctx.config.dynamic_pipeline ? 'badge-brand' : 'badge-neutral'}>
+                {ctx.config.dynamic_pipeline ? 'dynamic' : 'static'}
               </span>
             )}
-          </button>
-
-          {/* Log body */}
-          {logExpanded && (
-            <div ref={logBodyRef} className="min-h-0 flex-1 overflow-auto overscroll-contain p-3 sm:p-4">
-              {events.length === 0 && !result ? (
-                <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
-                  <div className="w-16 h-16 rounded-2xl bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center">
-                    <Play size={28} className="text-brand-500" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-300">
-                      SLMCode Studio
-                    </h2>
-                    <p className="text-sm text-gray-400 mt-1 max-w-sm">
-                      Enter a query above to start the agent pipeline. Watch live
-                      progress via SSE streaming.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {/* Calibration runs before the first token of a run, so its
-                      progress sits above the stream that replaces it. */}
-                  <CalibrationBanner events={events} />
-                  {/* Live token deltas render above the structural log. */}
-                  <TokenStream text={ctx?.tokenStream ?? ''} running={running} />
-                  <EventLog events={events} />
-                </div>
-              )}
-            </div>
-          )}
+            {ctx?.config?.active_stack && (
+              <span className="badge-neutral">{ctx.config.active_stack}</span>
+            )}
+            {ctx?.config?.model && (
+              <span
+                className="max-w-[16rem] truncate rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400"
+                title={ctx.config.model}
+              >
+                {ctx.config.model}
+              </span>
+            )}
+          </span>
+          <span className="ml-auto shrink-0 font-mono tabular-nums text-gray-400">
+            {events.length} events · {taskCount} tasks
+          </span>
         </div>
 
-        {/* The divider only exists on a wide viewport: below `lg` the panel is
-            stacked under the log, where a horizontal drag means nothing. */}
-        {panelOpen && isWide && (
-          <ResizeHandle
-            size={panelWidth}
-            onResize={setPanelWidth}
-            min={PANEL_MIN_PX}
-            max={PANEL_MAX_PX}
-            invert
-            label="Resize the side panel"
-          />
-        )}
-
-        {/* Side panel: Tasks / Result / Files.
-            Width is the user's, persisted, and clamped by CSS as well as by the
-            handle — `maxWidth: 60%` means a window narrowed after the fact can
-            never leave the log with no room, even with a stored width wider
-            than the window itself. Below `lg` it stacks and the inline width is
-            dropped entirely. */}
-        {panelOpen && (
-        <div
-          style={isWide ? { width: panelWidth, maxWidth: '60%', minWidth: PANEL_MIN_PX } : undefined}
-          className="flex min-h-0 w-full shrink-0 flex-col border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 lg:h-auto lg:border-l lg:border-t-0
-                     max-lg:max-h-[45%] max-lg:flex-1"
-        >
-          {/* Tab bar */}
-          <div className="flex border-b border-gray-200 dark:border-gray-700 shrink-0">
-            <button
-              onClick={() => setSidebarTab('tasks')}
-              className={clsx(
-                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
-                sidebarTab === 'tasks'
-                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-600',
-              )}
-            >
-              📋 Tasks
-            </button>
-            <button
-              onClick={() => setSidebarTab('result')}
-              className={clsx(
-                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
-                sidebarTab === 'result'
-                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-600',
-              )}
-            >
-              📊 Result{result?.result ? ' ✓' : ''}
-            </button>
-            <button
-              onClick={() => setSidebarTab('files')}
-              className={clsx(
-                'min-w-0 flex-1 truncate px-1 py-2.5 text-xs font-semibold transition-colors border-b-2',
-                sidebarTab === 'files'
-                  ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-                  : 'border-transparent text-gray-400 hover:text-gray-600',
-              )}
-            >
-              📁 Files
-            </button>
+        {selectedAgentSpec && (
+          <div
+            className="mt-2 flex items-center gap-2 rounded-md border border-brand-200 bg-brand-50/60 px-2.5 py-1.5 text-[11px] dark:border-brand-900/70 dark:bg-brand-950/25"
+            title={selectedAgentSpec.description}
+          >
+            <span className="badge-brand shrink-0 text-[10px]">specialist</span>
+            <span className="truncate font-semibold text-brand-800 dark:text-brand-200">
+              {selectedAgentSpec.title || selectedAgentSpec.id}
+            </span>
+            <span className="ml-auto shrink-0 truncate font-mono text-brand-500">
+              {selectedAgentSpec.effective_model || selectedAgentSpec.model || 'inherit'}
+            </span>
           </div>
+        )}
+      </div>
 
-          {/* Tab content */}
-          <div className="min-h-0 flex-1 overflow-hidden">
-            {sidebarTab === 'tasks' && <LiveTaskPanel />}
-            {sidebarTab === 'result' && (
-              <div className="h-full overflow-auto p-4">
-                {result && result.result ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-bold">Result</h3>
-                      <span className={clsx('badge text-[10px]', result.result.success ? 'badge-success' : 'badge-error')}>
-                        {result.result.success ? 'Success' : 'Failed'}
-                      </span>
-                    </div>
-                    {result.result.summary && (
-                      <div><div className="label">Summary</div><p className="text-sm text-gray-600 dark:text-gray-400">{result.result.summary}</p></div>
-                    )}
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="card p-2"><div className="text-[10px] text-gray-400">Failed tasks</div><div className={clsx('text-lg font-bold', result.result.failed_tasks > 0 && 'text-red-500')}>{result.result.failed_tasks}</div></div>
-                      <div className="card p-2"><div className="text-[10px] text-gray-400">Duration</div><div className="text-sm font-mono font-medium">{result.result.duration > 1e9 ? (result.result.duration / 1e9).toFixed(1) + 's' : (result.result.duration / 1e6).toFixed(0) + 'ms'}</div></div>
-                    </div>
-                    <div className="card p-2"><div className="text-[10px] text-gray-400">Events</div><div className="text-lg font-bold">{result.events?.length || 0}</div></div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 gap-3">
-                    <Target size={32} className="opacity-50" />
-                    <p className="text-sm">No run results yet.</p>
-                    <p className="text-xs">Results appear here when a pipeline run completes.</p>
-                  </div>
-                )}
+      {/* ── Resumable run ──────────────────────────────────────────── */}
+      {!running && interrupted.length > 0 && (
+        <div className="flex shrink-0 flex-col gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100 sm:flex-row sm:items-center sm:px-4">
+          <AlertTriangle size={14} className="shrink-0" />
+          <div className="min-w-0 flex-1">
+            <span className="font-semibold">Interrupted run</span>{' '}
+            <span className="font-mono opacity-70">{interrupted[0].id}</span>
+            <span className="ml-2 opacity-80">
+              {interrupted[0].done}/{interrupted[0].tasks} done · {interrupted[0].blocked} blocked
+            </span>
+            <p className="truncate opacity-70" title={interrupted[0].query}>
+              {interrupted[0].query}
+            </p>
+          </div>
+          <button
+            onClick={() => handleResume(interrupted[0].id)}
+            className="btn-primary h-8 shrink-0 gap-1.5 text-xs"
+          >
+            <Play size={13} fill="currentColor" />
+            Resume
+          </button>
+        </div>
+      )}
+
+      {/* ── 2. Phase rail ──────────────────────────────────────────── */}
+      <PhaseRail
+        groups={groups}
+        phaseState={phaseStateMap}
+        activePhase={activePhase ?? null}
+        running={running}
+      />
+
+      {/* ── 3. Run setup (disclosure) ──────────────────────────────── */}
+      <RunSetup
+        composition={shownComposition}
+        mode={shownCompositionMode}
+        fit={shownCompositionFit}
+        agents={agents}
+        running={running}
+        compositionError={running ? '' : persistedCompositionError}
+      />
+
+      {/* ── 4. Stream + rail ───────────────────────────────────────── */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4">
+            {events.length === 0 ? (
+              // Keyed on EVENTS alone, not on `result`. A finished run leaves a
+              // result behind, so the old `!result` clause meant that reopening
+              // Studio after any previous run showed a bare "waiting for
+              // events" line instead of the empty state — on exactly the visit
+              // where a first-time reader most needs to be told what to do.
+              // The result itself is one tab away in the rail.
+              <EmptyState hasPreviousRun={!!result?.result} />
+            ) : (
+              <div className="mx-auto max-w-[110ch] space-y-3">
+                {/* Calibration runs before the first token of a run, so its
+                    progress sits above the stream that replaces it. */}
+                <CalibrationBanner events={events} />
+                <TokenStream text={ctx?.tokenStream ?? ''} running={running} />
+                <EventLog events={events} />
               </div>
             )}
-            {sidebarTab === 'files' && (
-              <LiveFileInspector events={events} running={running} />
-            )}
+            <div ref={logEnd} />
           </div>
-        </div>
+
+          {/* Feedback docks to the bottom of the stream, where a reply belongs —
+              next to what you are replying to, not in a header card above it. */}
+          <div className="shrink-0 border-t border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950 sm:px-4">
+            <LiveFeedback compact />
+          </div>
+        </main>
+
+        {/* The rail is a column at ≥1024px and a full-height overlay below it.
+            An overlay rather than a stacked block: on a phone the stream and the
+            task list both want the whole screen, and splitting it gives neither
+            enough to be readable. */}
+        {railOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close side panel"
+              onClick={() => setRailOpen(false)}
+              className="fixed inset-0 z-30 bg-black/30 lg:hidden"
+            />
+            <aside
+              className={clsx(
+                'z-40 flex min-h-0 flex-col border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950',
+                'fixed inset-y-0 right-0 w-[min(26rem,90vw)] border-l shadow-2xl',
+                'lg:static lg:w-[24rem] lg:shadow-none xl:w-[26rem]',
+              )}
+            >
+              <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-800">
+                <RailTabButton
+                  active={railTab === 'tasks'}
+                  onClick={() => setRailTab('tasks')}
+                  icon={<ListTodo size={14} />}
+                  label="Tasks"
+                />
+                <RailTabButton
+                  active={railTab === 'files'}
+                  onClick={() => setRailTab('files')}
+                  icon={<FolderTree size={14} />}
+                  label="Files"
+                />
+                <RailTabButton
+                  active={railTab === 'result'}
+                  onClick={() => setRailTab('result')}
+                  icon={
+                    result?.result ? (
+                      result.result.success ? (
+                        <CheckCircle2 size={14} className="text-emerald-500" />
+                      ) : (
+                        <XCircle size={14} className="text-rose-500" />
+                      )
+                    ) : (
+                      <CheckCircle2 size={14} />
+                    )
+                  }
+                  label="Result"
+                />
+                <button
+                  onClick={() => setRailOpen(false)}
+                  className="focus-ring shrink-0 px-3 text-gray-400 hover:text-gray-600 lg:hidden"
+                  aria-label="Close side panel"
+                >
+                  <PanelRightClose size={16} />
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {railTab === 'tasks' && <LiveTaskPanel />}
+                {railTab === 'files' && <LiveFileInspector events={events} running={running} />}
+                {railTab === 'result' && <ResultPanel result={result} />}
+              </div>
+            </aside>
+          </>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+function RailTabButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-current={active ? 'page' : undefined}
+      className={clsx(
+        'focus-ring flex flex-1 items-center justify-center gap-1.5 border-b-2 py-2.5 text-xs font-semibold transition-colors',
+        active
+          ? 'border-brand-500 text-brand-600 dark:text-brand-400'
+          : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function EmptyState({ hasPreviousRun }: { hasPreviousRun: boolean }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 dark:bg-brand-950/40">
+        <Play size={24} className="text-brand-500" />
+      </div>
+      <div className="max-w-sm">
+        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-200">
+          Nothing running yet
+        </h2>
+        <p className="mt-1 text-sm text-gray-400">
+          Describe a change above and press Run. Phases, agent activity and file
+          writes stream here as they happen.
+        </p>
+        {hasPreviousRun && (
+          <p className="mt-2 text-xs text-gray-400">
+            The previous run&rsquo;s summary is under <span className="font-semibold">Result</span>.
+          </p>
         )}
       </div>
     </div>
   );
 }
 
-function LiveMetric({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: string;
-  icon: ReactNode;
-  tone: 'sky' | 'amber' | 'emerald' | 'violet';
-}) {
-  const toneClass: Record<typeof tone, { box: string; icon: string }> = {
-    sky: {
-      box: 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/35 dark:text-sky-300',
-      icon: 'bg-sky-100 text-sky-600 dark:bg-sky-900/50 dark:text-sky-300',
-    },
-    amber: {
-      box: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/35 dark:text-amber-200',
-      icon: 'bg-amber-100 text-amber-600 dark:bg-amber-900/50 dark:text-amber-300',
-    },
-    emerald: {
-      box: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/35 dark:text-emerald-300',
-      icon: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/50 dark:text-emerald-300',
-    },
-    violet: {
-      box: 'border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900 dark:bg-violet-950/35 dark:text-violet-300',
-      icon: 'bg-violet-100 text-violet-600 dark:bg-violet-900/50 dark:text-violet-300',
-    },
-  };
-  const cls = toneClass[tone];
+function ResultPanel({ result }: { result: LatestRunResponse | null }) {
+  if (!result?.result) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-gray-400">
+        <CheckCircle2 size={28} className="opacity-40" />
+        <p className="text-sm">No result yet</p>
+        <p className="text-xs">A summary appears here when the run finishes.</p>
+      </div>
+    );
+  }
+  const r = result.result;
+  const seconds = r.duration > 1e9 ? `${(r.duration / 1e9).toFixed(1)}s` : `${(r.duration / 1e6).toFixed(0)}ms`;
   return (
-    <div className={clsx('flex min-h-[3.5rem] min-w-0 items-center gap-2 rounded-lg border px-3 py-2', cls.box)} title={`${label}: ${value}`}>
-      <span className={clsx('flex h-7 w-7 shrink-0 items-center justify-center rounded-md', cls.icon)}>
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-[10px] font-semibold uppercase leading-none opacity-70">{label}</span>
-        <span className="mt-1 block break-words text-sm font-bold leading-tight line-clamp-2">
-          {value}
+    <div className="h-full space-y-3 overflow-auto p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Result</h3>
+        <span className={clsx('badge text-[10px]', r.success ? 'badge-success' : 'badge-error')}>
+          {r.success ? 'Success' : 'Failed'}
         </span>
-      </span>
+      </div>
+      {r.summary && <p className="text-sm text-gray-600 dark:text-gray-300">{r.summary}</p>}
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Failed" value={String(r.failed_tasks)} bad={r.failed_tasks > 0} />
+        <Stat label="Duration" value={seconds} />
+        <Stat label="Events" value={String(result.events?.length ?? 0)} />
+      </div>
     </div>
   );
 }
 
-function StageFact({ label, value, detail }: { label: string; value: string; detail: string }) {
+function Stat({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
   return (
-    <div className="min-w-0 rounded-md bg-gray-50 px-3 py-2 dark:bg-gray-800/60" title={`${label}: ${value}${detail ? ` - ${detail}` : ''}`}>
-      <div className="text-[10px] font-semibold uppercase text-gray-400">{label}</div>
-      <div className="mt-1 text-sm font-bold text-gray-800 line-clamp-2 dark:text-gray-100">{value}</div>
-      {detail && <div className="mt-0.5 text-[11px] text-gray-500 line-clamp-2 dark:text-gray-400">{detail}</div>}
+    <div className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">{label}</div>
+      <div
+        className={clsx(
+          'mt-0.5 font-mono text-sm font-bold tabular-nums',
+          bad ? 'text-rose-500' : 'text-gray-800 dark:text-gray-100',
+        )}
+      >
+        {value}
+      </div>
     </div>
   );
 }

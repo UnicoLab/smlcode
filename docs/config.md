@@ -48,6 +48,9 @@ never persisted for exactly that last reason. Older files are migrated forward o
 | `model` | `Qwen3-Coder-30B-A3B-Instruct-MLX-4bit` | Any id your provider serves |
 | `api_key` | — | Prefer `.slmcode/auth.json` or env |
 | `fast_model` | — | Smaller/faster model for light agents (reviewer, coordinator, splitter, planner, context, architect, clarifier). Empty = use `model` everywhere. |
+| `model_roles` | — | Pin roles to models by name, e.g. `{reviewer: qwen2.5-3b, worker: qwen3-coder-30b}`. Outranks `fast_model` and the light/heavy classification. |
+| `model_escalation` | — | Failure ladder: models a repeatedly-failing task escalates **to**, cheapest first, e.g. `[qwen3-coder-30b]`. Empty disables escalation. |
+| `escalate_after` | `2` | Recorded failures before a task steps up a `model_escalation` rung. |
 | `backend` | `slmcode` | `slmcode` or `claude-code` |
 | `claude_code_bin` | `claude` | Binary for the `claude-code` backend |
 | `enabled_models` | — | Scope the selectable catalog (empty = all) |

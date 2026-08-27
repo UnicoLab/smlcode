@@ -163,6 +163,9 @@ slmcode run --no-dynamic "tiny typo fix"      # force the static pipeline
 slmcode run --think-passes 2 --parallel 2 --retries 2 "…"
 slmcode run "…"                               # headless: gates auto-approve, logged
 slmcode run --on-gate-timeout=stop "…"        # headless: refuse up front instead
+slmcode run --issue 42                        # take the query from a GitHub issue
+slmcode run --isolate worktree "…"            # work in a throwaway git worktree
+slmcode run --issue 42 --deliver pr --draft   # …and open a draft PR when it passes
 ```
 
 | Flag | Meaning |
@@ -173,7 +176,79 @@ slmcode run --on-gate-timeout=stop "…"        # headless: refuse up front inst
 | `--dynamic` / `--no-dynamic` | override `dynamic_pipeline` for this run |
 
 `dynamic_pipeline` defaults on: the composer selects a task-specific subset of phases, agents,
-slots and execute-loop roles before workers run.
+slots and execute-loop roles before workers run. It also assigns a **budget class** — see
+[Budget classes](#budget-classes) below.
+
+While you type, Studio shows a **provisional pipeline**: a deterministic guess assembled from the
+query text alone, without reading the repository. The composer agent decides the real one when the
+run starts, so expect it to change. The guess picks language specialists from the repository's
+detected language, and only lets a language named in the query override that when the workspace
+actually contains files of that language — otherwise a Go project could be handed Python workers
+because the sentence happened to mention Python.
+
+### Working from an issue
+
+`--issue` takes the query from a GitHub issue instead of the command line. It accepts an issue
+URL, `owner/repo#123`, or a bare number, and needs the [`gh` CLI](https://cli.github.com)
+authenticated. Extra words on the command line refine the issue rather than replacing it:
+
+```bash
+slmcode run --issue 42 "focus on the parser only"
+```
+
+The issue body is untrusted text. It is framed as a report rather than pasted as instructions,
+harness markers inside it are defused so it cannot forge gate evidence, and it is truncated so a
+long issue cannot evict the repo map and file excerpts from the context pack.
+
+### Isolation
+
+`--isolate worktree` runs against a throwaway `git worktree` instead of your checkout. Your
+working tree is never written to while the run is in flight; on success the branch is merged back,
+on failure the whole worktree is deleted in one operation.
+
+| Flag | Meaning |
+|---|---|
+| `--isolate` | `worktree` \| `none` (default: `none`, in-place) |
+| `--branch` | branch to work on (default: generated) |
+| `--keep-worktree` | keep the branch when an isolated run fails, to inspect it |
+
+Harness state stays in your checkout's `.slmcode/` while the work happens in the worktree, so
+memory, the board and the learned policy keep accumulating where they belong. Isolation needs a
+git repository with at least one commit; it refuses up front, before the run starts, when it
+cannot be used.
+
+### Delivering a pull request
+
+`--deliver pr` opens a pull request when the run succeeds. It **always asks first**, printing the
+branch, title and the exact file list — with no TTY it refuses unless `--yes` is given.
+
+| Flag | Meaning |
+|---|---|
+| `--deliver` | `pr` opens a pull request (asks first) |
+| `--base` | pull request base branch |
+| `--draft` | open the pull request as a draft |
+| `--yes` | skip the confirmation (required with no TTY) |
+
+Only the files the run's completed tasks named are staged — never `git add -A` — so unrelated work
+in your tree is left alone. The PR body carries the task list and the acceptance criteria that were
+verified. With `--isolate worktree`, a delivered PR is the delivery: the branch is left for review
+rather than also being merged locally.
+
+### Budget classes
+
+The composer classifies each request on two axes — complexity (`trivial`, `simple`, `standard`,
+`critical`) and kind (`inquiry`, `task`, `debug`) — and the pair decides how much of the run's
+budget it is worth: which optional phases run, how many corrective waves, how many think passes and
+QA rounds, and whether the strict reviewer engages.
+
+```bash
+slmcode compose "fix the typo in README.md"      # → trivial:task · 5 phases · 1 wave
+slmcode compose "rotate the production API key"  # → critical:task · 12 phases · 4 waves
+```
+
+A class may lower cost below your configuration but never re-enables a gate you switched off. The
+only gate a class turns off is the smoke requirement for a read-only `inquiry`, which writes
+nothing and so could never satisfy it.
 
 ### What a run prints at the end
 

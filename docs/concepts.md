@@ -154,6 +154,37 @@ Reviewers can be flaky on SLMs. Heuristics prefer:
 !!! tip "📜 Disk beats vibes"
     Always. If the file says hello and the model says goodbye — trust the file.
 
+### Acceptance criteria: a contract, not a paragraph
+
+Asking a 7B model "is this implementation correct?" is asking it to do the thing it is worst at.
+So a task's acceptance is split into individually checkable conditions, each with the exact
+command that proves it:
+
+```json
+{
+  "criteria": [
+    {"text": "Sum returns a+b for the table cases", "priority": "must", "verify": "go test ./..."},
+    {"text": "exported Sum has a doc comment", "priority": "should", "verify": ""}
+  ]
+}
+```
+
+The harness runs each `verify` — through the same whitelist every auto-run command passes, so a
+criterion can never widen shell scope — and hands the reviewer a table with three verdicts, never
+two:
+
+| Verdict | Meaning |
+|---|---|
+| `PASSED` | a command ran here and exited 0. Settled. |
+| `FAILED` | it ran and did not. A failed `must` fails the task. |
+| `UNVERIFIED` | **nothing ran.** The reviewer judges this one. |
+
+That third state is the point. A prose acceptance blob is scanned by regex for runnable commands,
+and a condition it finds none for is simply invisible — so "the harness did not check" silently
+becomes "the harness says it is fine". An `UNVERIFIED` row says so out loud, and it denies the
+reviewer fast path: disk evidence proves the worker *changed* something, never that the condition
+it was given is now true.
+
 ---
 
 ## <span class="slm-kicker">06</span> Knowledge flywheel 🦋

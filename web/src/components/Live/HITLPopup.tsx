@@ -1167,7 +1167,7 @@ function ClarifyActions({
   answering: boolean;
   notes: string;
   onNotesChange: (notes: string) => void;
-  firstActionRef: RefObject<HTMLButtonElement>;
+  firstActionRef: RefObject<HTMLButtonElement | null>;
   onAnswer: (action: string) => void;
 }) {
   return (
@@ -1227,7 +1227,7 @@ function PlanActions({
   notes: string;
   validationOK?: boolean;
   onNotesChange: (notes: string) => void;
-  firstActionRef: RefObject<HTMLButtonElement>;
+  firstActionRef: RefObject<HTMLButtonElement | null>;
   onAnswer: (action: string) => void;
 }) {
   const preferReplan = validationOK === false;
@@ -1290,7 +1290,7 @@ function ContinueActions({
   answering: boolean;
   notes: string;
   onNotesChange: (notes: string) => void;
-  firstActionRef: RefObject<HTMLButtonElement>;
+  firstActionRef: RefObject<HTMLButtonElement | null>;
   onAnswer: (action: string) => void;
 }) {
   return (
@@ -1362,7 +1362,7 @@ function EscalateActions({
   answering: boolean;
   notes: string;
   onNotesChange: (notes: string) => void;
-  firstActionRef: RefObject<HTMLButtonElement>;
+  firstActionRef: RefObject<HTMLButtonElement | null>;
   onAnswer: (action: string) => void;
 }) {
   return (
@@ -1440,7 +1440,7 @@ function ShellActions({
 }: {
   color: string;
   answering: boolean;
-  firstActionRef: RefObject<HTMLButtonElement>;
+  firstActionRef: RefObject<HTMLButtonElement | null>;
   onAnswer: (action: string) => void;
 }) {
   return (

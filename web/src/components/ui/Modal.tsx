@@ -19,7 +19,9 @@ export interface ModalProps {
   /** Applied to the dialog panel — use for wide content such as diffs. */
   className?: string;
   /** Element focused when the dialog opens. Falls back to the first control. */
-  initialFocusRef?: React.RefObject<HTMLElement>;
+  // React 19: a ref is genuinely null until its element mounts, and the types
+  // now say so. The nullable form is what `useRef<T>(null)` produces.
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
 const FOCUSABLE =

@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
   server: {
@@ -30,10 +30,19 @@ export default defineConfig({
       output: {
         // Split the vendor bundle so a Studio code change does not invalidate
         // React/router/dnd for every user on every release.
-        manualChunks: {
-          react: ['react', 'react-dom', 'react-router-dom'],
-          dnd: ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
-          icons: ['lucide-react'],
+        //
+        // A FUNCTION, not the object form: Vite 8 builds on rolldown, which
+        // accepts only the callback signature and fails the build outright on
+        // the object one ("manualChunks is not a function"). Same three chunks,
+        // matched on the module id instead of declared as a map.
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) {
+            return 'react';
+          }
+          if (id.includes('node_modules/@dnd-kit/')) return 'dnd';
+          if (id.includes('node_modules/lucide-react/')) return 'icons';
+          return undefined;
         },
       },
     },

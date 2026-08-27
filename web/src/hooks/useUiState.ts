@@ -100,9 +100,11 @@ export function useStickToBottom<T extends HTMLElement>(
   dep: unknown,
   enabled = true,
   thresholdPx = 72,
-): RefObject<T> {
-  // `useRef<T>(null)`, not `useRef<T | null>(null)`: only the former resolves to
-  // the RefObject<T> overload that a JSX `ref=` attribute accepts.
+): RefObject<T | null> {
+  // React 19's types changed here: `useRef<T>(null)` now yields
+  // `RefObject<T | null>` rather than `RefObject<T>`, because the ref genuinely
+  // IS null until the element mounts. The nullable type is the honest one, and
+  // a JSX `ref=` attribute accepts it.
   const ref = useRef<T>(null);
   const stuckRef = useRef(true);
 

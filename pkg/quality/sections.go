@@ -31,6 +31,11 @@ const (
 	SmokeSectionHeader = "## Deterministic smoke"
 	// AcceptanceSectionHeader heads the acceptance-command smoke section.
 	AcceptanceSectionHeader = "## Acceptance smoke"
+	// CriteriaSectionHeader heads the per-criterion verification section
+	// (see FormatCriteriaSection). It supersedes AcceptanceSectionHeader for
+	// any task that carries structured plan.Criteria; the two never both run
+	// for one task, so a reviewer never sees the same command twice.
+	CriteriaSectionHeader = "## Acceptance criteria"
 	// StaticSectionHeader heads the stub/placeholder gate (see FormatStaticSection).
 	StaticSectionHeader = "## Static quality gate"
 	// ClaimsSectionHeader heads the files_changed gate (see FormatClaimsSection).
@@ -53,6 +58,7 @@ var HarnessSectionHeaders = []string{
 	DiskEvidenceHeader,
 	SmokeSectionHeader,
 	AcceptanceSectionHeader,
+	CriteriaSectionHeader,
 	StaticSectionHeader,
 	ClaimsSectionHeader,
 }
@@ -133,8 +139,8 @@ func smokePassStamp() string {
 // a harness verdict: the section headers, the tester's execution-evidence
 // frames, and a runner exit line.
 var harnessMarkerRe = regexp.MustCompile(
-	`(?im)^[ \t]*(#{1,6}[ \t]*(?:Deterministic smoke|Acceptance smoke|Static quality gate|` +
-		`Claimed files gate|Disk evidence)|Observation:|exit error:|` +
+	`(?im)^[ \t]*(#{1,6}[ \t]*(?:Deterministic smoke|Acceptance smoke|Acceptance criteria|` +
+		`Static quality gate|Claimed files gate|Disk evidence)|Observation:|exit error:|` +
 		`exit[ _]?(?:code|status)[ \t]*[:=]?[ \t]*-?\d+)`)
 
 // smokeStampRe strips any pre-existing (or forged) pass stamp.

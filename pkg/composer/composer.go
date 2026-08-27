@@ -94,6 +94,11 @@ type Composition struct {
 	Summary string `json:"summary"`
 	// Strategy is the composer's reasoning (kept short for SLMs).
 	Strategy string `json:"strategy,omitempty"`
+	// Complexity and Kind are the budget class: how much of the run's finite
+	// budget this request is worth, and what sort of work it is. See
+	// profiles.go. Empty values normalize to standard/task.
+	Complexity string `json:"complexity,omitempty"`
+	Kind       string `json:"kind,omitempty"`
 	// Handoff is a compact shared contract every later specialist should see:
 	// target files, non-goals, verification commands, and any sequencing notes.
 	Handoff []string `json:"handoff,omitempty"`
@@ -116,6 +121,8 @@ func (c *Composition) Normalize() {
 	c.Summary = strings.TrimSpace(c.Summary)
 	c.Strategy = strings.TrimSpace(c.Strategy)
 	c.Handoff = cleanListPreserveCase(c.Handoff)
+	c.Complexity = NormalizeComplexity(c.Complexity)
+	c.Kind = NormalizeKind(c.Kind)
 
 	var phases []PhaseChoice
 	seen := map[string]bool{}
@@ -313,6 +320,35 @@ func Apply(comp Composition) (pipeline.Config, error) {
 		return pipeline.Config{}, fmt.Errorf("composer: %w", err)
 	}
 	return base, nil
+}
+
+// Profile returns the budget class this composition declares. Safe on a
+// zero-value Composition: unset fields normalize to the standard task budget.
+func (c Composition) Profile() Profile { return ProfileFor(c.Complexity, c.Kind) }
+
+// ApplyProfile fills in whatever the composition did not choose for itself.
+//
+// The precedence is deliberate and one-directional: an explicit choice ALWAYS
+// wins over the class. The profile is a budget, not an override — a composer
+// that named its phases has already reasoned about this specific request,
+// which is strictly more information than a class derived from the query
+// string. This only fills the gaps, and it is what makes the class useful on
+// the heuristic path (where nothing else fills them) without overriding the
+// LLM path (where something already did).
+func (c *Composition) ApplyProfile(p Profile) {
+	if c == nil {
+		return
+	}
+	c.Complexity, c.Kind = p.Complexity, p.Kind
+	if len(c.Phases) == 0 {
+		c.Phases = make([]PhaseChoice, 0, len(p.Phases))
+		for _, id := range p.Phases {
+			c.Phases = append(c.Phases, PhaseChoice{ID: id, Enabled: true})
+		}
+	}
+	if c.Execute.MaxWaves == 0 {
+		c.Execute.MaxWaves = p.MaxWaves
+	}
 }
 
 // SkillsByRole flattens the composer's team into a role → skills map.

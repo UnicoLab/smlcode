@@ -70,6 +70,15 @@ func (t *Task) Normalize() {
 	if t.Priority == 0 {
 		t.Priority = 3
 	}
+	t.Criteria = NormalizeCriteria(t.Criteria)
+	// Keep the prose surface in sync so every consumer that reads Acceptance —
+	// board markdown, worker prompts, review packs, the acceptance smoke scan —
+	// sees a structured task exactly as it sees a prose one. Only synthesized
+	// when the model supplied criteria and no prose; a model that wrote both
+	// keeps its own words.
+	if strings.TrimSpace(t.Acceptance) == "" && len(t.Criteria) > 0 {
+		t.Acceptance = CriteriaText(t.Criteria)
+	}
 	for i := range t.Checklist {
 		if t.Checklist[i].ID == "" {
 			t.Checklist[i].ID = fmt.Sprintf("c%d", i+1)

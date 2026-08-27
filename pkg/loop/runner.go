@@ -176,6 +176,16 @@ type Runner struct {
 	StaticQuality bool
 	// RequireSmoke blocks fast-path approve for coding tasks without smoke pass.
 	RequireSmoke bool
+	// EscalationRungs is how many model rungs are registered above the base
+	// agents. Zero disables failure escalation entirely. See escalate.go.
+	EscalationRungs int
+	// EscalateAfter is how many recorded failures a task takes before stepping
+	// up a rung. Zero uses DefaultEscalateAfter.
+	EscalateAfter int
+	// HasRole reports whether an agent id is registered. Escalation consults it
+	// before every dispatch: an unregistered id is a hard task failure, and it
+	// would land on exactly the tasks that were already struggling.
+	HasRole func(string) bool
 	// ClaimsGate rejects hallucinated files_changed paths.
 	ClaimsGate bool
 	// WorkerCritique runs one auto self-fix pass on weak worker output.
@@ -1087,7 +1097,7 @@ func (r *Runner) prepareWave(ctx context.Context, board *plan.Board, wave []plan
 		roles:     make([]string, len(wave)),
 	}
 	for i, t := range wave {
-		role := r.normalizeExecRole(t.Role)
+		role := r.execAgentFor(t)
 		ws.roles[i] = role
 		ws.snapshots[i] = r.snapshotTargets(t)
 		scope := strings.Join(t.Files, ", ")
@@ -1124,7 +1134,7 @@ func (r *Runner) executeWave(ctx context.Context, board *plan.Board, ws *waveSta
 		ctx = r.startTask(ctx, t.ID)
 		_ = r.spend(t.ID, "worker")
 		req := ggagent.SubAgentRequest{
-			AgentID:    r.normalizeExecRole(t.Role),
+			AgentID:    r.execAgentFor(t),
 			Input:      r.taskInputFor(board, t),
 			Timeout:    r.callTimeout(ctx),
 			ShareState: true,
@@ -1308,6 +1318,7 @@ func (r *Runner) wantCritique(role string) bool {
 	if !r.WorkerCritique && r.ThinkPasses < 2 {
 		return false
 	}
+	role = baseRole(role)
 	return role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector
 }
 
@@ -1564,6 +1575,14 @@ type gateState struct {
 	staticFail   bool
 	claimsFail   bool
 	smokeMissing bool
+	// criteriaFail is a REPRODUCED failure of a must-criterion: a whitelisted
+	// command ran in this repo and did not exit 0. It is a hard gate.
+	criteriaFail bool
+	// criteriaOpen means at least one stated criterion was never checked —
+	// no verify command, or one the whitelist refused. It is NOT a failure and
+	// never blocks; it only denies the reviewer fast path, because an
+	// unchecked condition is exactly the case a judgement call is for.
+	criteriaOpen bool
 }
 
 // hasEvidence reports whether anything at all proves a write happened.
@@ -1573,13 +1592,22 @@ func (g gateState) hasEvidence() bool {
 
 // blocking reports whether a hard gate failed.
 func (g gateState) blocking() bool {
-	return g.shellFail || g.smokeFail || g.acceptFail || g.staticFail || g.claimsFail || g.smokeMissing
+	return g.shellFail || g.smokeFail || g.acceptFail || g.staticFail || g.claimsFail ||
+		g.smokeMissing || g.criteriaFail
 }
 
 // fastPath reports whether the reviewer LLM can be skipped entirely.
 func (g gateState) fastPath(role string) bool {
 	if g.renameDisk {
 		return true
+	}
+	// An open criterion denies the fast path even when every hard gate is
+	// clean. Disk write evidence proves the worker CHANGED something; it says
+	// nothing about whether the condition the task was given is now true. That
+	// gap is the reviewer's job, and skipping it here is how "the harness did
+	// not check" would quietly become "auto-approved".
+	if g.criteriaOpen {
+		return false
 	}
 	return role != plan.RoleTester && !g.blocking() &&
 		(g.satisfied || g.diskWrite || g.diskSection) && g.scopeWhy == ""
@@ -1594,6 +1622,9 @@ func (g gateState) rejectReason() (summary string, issue string) {
 	case g.staticFail:
 		return "rejected: static quality gate (stubs/placeholders)",
 			"stub/placeholder code detected — replace with real implementation"
+	case g.criteriaFail:
+		return "rejected: acceptance criterion failed",
+			"a must-criterion's verify command failed — make it exit 0 before claiming done"
 	case g.acceptFail:
 		return "rejected: acceptance smoke failed",
 			"whitelisted acceptance command failed — make the acceptance command exit 0"
@@ -1626,6 +1657,34 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 	g.acceptFail = quality.AcceptanceFailedInOutput(current.Output)
 	g.staticFail = quality.StaticFailedInOutput(current.Output)
 	g.claimsFail = quality.ClaimsFailedInOutput(current.Output)
+	g.criteriaFail = quality.CriteriaBlockedInOutput(current.Output)
+	g.criteriaOpen = quality.CriteriaUnverifiedInOutput(current.Output)
+
+	// Review-time criteria insurance, mirroring the static and smoke ones
+	// below: a corrector that overwrote the output, or a skipped-worker path,
+	// never ran the criteria gate, so a task with a stated contract would
+	// reach the reviewer with no section at all — indistinguishable from a
+	// task that has no contract. Run it now.
+	// The SAME role filter the worker path uses, and for a concrete reason: a
+	// tester task's whole job is to run the project's suite, and its criteria
+	// almost always name that same suite. Without this the harness would run it
+	// once as the tester and again as review-time insurance — the exact
+	// double-execution VerifyCriteria's command cache exists to prevent, just
+	// spread across two calls where the cache cannot see it.
+	if acceptanceSmokeRole(current.Role) && len(current.Criteria) > 0 && !hasCriteriaSection(current.Output) {
+		rep := quality.VerifyCriteria(ctx, r.Root, *current, r.Timeout,
+			quality.NormalizeBootstrapPolicy(r.BootstrapDeps))
+		if sec := quality.FormatCriteriaSection(rep); sec != "" {
+			current.Output = appendHarnessSection(current.Output, sec)
+			g.criteriaFail = rep.Blocked()
+			_, _, unverified, _ := rep.Counts()
+			g.criteriaOpen = unverified > 0
+			if g.criteriaFail {
+				o, _ := rep.FirstBlocking()
+				r.logf("%s review-time criteria FAILED: %s (%s)", current.ID, o.Criterion.ID, o.Command)
+			}
+		}
+	}
 
 	// Review-time static insurance: skipped-worker / already-satisfied paths
 	// never ran CheckStaticQuality — catch Placeholder stubs before fast-path.
@@ -2249,13 +2308,21 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 
 		current.MoveTo(plan.ColInProgress)
 		current.Retries = attempt + 1
+		// By this point the task has a failure ledger, so the corrector is the
+		// agent actually holding the failing work — the one place a model
+		// ladder is worth spending. Resolved ONCE so the start event, the
+		// dispatch, the gate pass and the end event all name the same agent.
+		corrector := r.correctorIDFor(current)
+		if note := r.escalationNote(current); note != "" {
+			r.logf("%s %s", current.ID, note)
+		}
 		r.logf("%s correcting (attempt %d)", current.ID, attempt+1)
-		r.fire(stream.KindAgentStart, r.correctorID(), current.ID, "correction pass",
+		r.fire(stream.KindAgentStart, corrector, current.ID, "correction pass",
 			strings.Join(current.Files, ", "), "")
 
 		corrIn := r.formatCorrectPrompt(current, review)
 		corr, ok := r.execOne(ctx, current.ID, "correction", ggagent.SubAgentRequest{
-			AgentID: r.correctorID(), Input: corrIn,
+			AgentID: corrector, Input: corrIn,
 			Timeout: r.callTimeout(ctx), ShareState: true, TaskID: current.ID,
 		})
 		if !ok {
@@ -2273,8 +2340,8 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		// Re-run EVERY gate after a corrector pass — including the claims gate,
 		// which used to be skipped, so a corrector that hallucinated
 		// files_changed after a rejection went un-regated.
-		r.runGates(ctx, &current, r.correctorID(), baseline, gateOpts{})
-		r.fire(stream.KindAgentEnd, r.correctorID(), current.ID, "corrector finished", "",
+		r.runGates(ctx, &current, corrector, baseline, gateOpts{})
+		r.fire(stream.KindAgentEnd, corrector, current.ID, "corrector finished", "",
 			truncate(current.Output, 800))
 		current.MoveTo(plan.ColInReview)
 	}
@@ -2667,7 +2734,7 @@ func clipForReview(out string, budget int) string {
 }
 
 func roleMaxIter(role string) int {
-	switch role {
+	switch baseRole(role) {
 	case "deep":
 		return 20
 	case plan.RoleCorrector, plan.RoleTester:
@@ -3104,6 +3171,20 @@ var evidentialDiskMarkers = []string{
 // once the first task in a wave writes anything — so accepting it handed every
 // subsequent task a Disk evidence section and a fast-path auto-approval.
 const outOfScopeDirtyMarker = "out-of-scope repo dirt (NOT evidence for this task):"
+
+// hasCriteriaSection reports whether a criteria evidence section is already
+// attached — genuine or forged.
+//
+// Forgery is harmless in this direction and checking for it would be worse:
+// the only thing a match suppresses is a SECOND run of the same commands, and
+// a forged section carries no verdict marker, so CriteriaBlockedInOutput and
+// CriteriaUnverifiedInOutput both stay false and the reviewer simply judges
+// the task on the other gates. Treating a forged header as absent would
+// instead re-run the project's test suite on every review of every task whose
+// worker happened to echo the header — a real cost to defend against nothing.
+func hasCriteriaSection(output string) bool {
+	return strings.Contains(output, quality.CriteriaSectionHeader)
+}
 
 func hasDiskEvidenceSection(output string) bool {
 	lower := strings.ToLower(output)

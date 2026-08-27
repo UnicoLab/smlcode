@@ -117,6 +117,21 @@ func init() {
 				"depends_on":  strList(),
 				"files":       strList(),
 				"acceptance":  str(),
+				// Structured acceptance. NOT required: a small model that can
+				// only manage the prose field must still produce a valid task,
+				// and plan.Normalize treats prose-only exactly as before.
+				// Making this required would trade a working degraded mode for
+				// a hard parse failure on the models this harness exists for.
+				"criteria": map[string]any{
+					"type":     "array",
+					"maxItems": 8,
+					"items": obj(map[string]any{
+						"id":       str(),
+						"text":     str(),
+						"verify":   str(),
+						"priority": enum("must", "should", "nice"),
+					}, "text", "priority"),
+				},
 			}, "id", "title", "description", "role", "files", "acceptance"),
 		},
 	}, "tasks"))
@@ -275,7 +290,12 @@ func init() {
 	register(RoleComposition, false, obj(map[string]any{
 		"summary":  str(),
 		"strategy": str(),
-		"handoff":  strListMax(6),
+		// Budget class. Optional: a model that omits it gets the standard
+		// task budget, which is what every composition got before the class
+		// existed — so an SLM too small to reason about cost still composes.
+		"complexity": enum("trivial", "simple", "standard", "critical"),
+		"kind":       enum("inquiry", "task", "debug"),
+		"handoff":    strListMax(6),
 		"phases": map[string]any{
 			"type":     "array",
 			"maxItems": 16,

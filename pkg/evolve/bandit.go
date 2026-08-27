@@ -27,6 +27,10 @@ const (
 	DecExplorePhase     Decision = "explore_phase"
 	DecRetryLadder      Decision = "retry_ladder"
 	DecReviewStrictness Decision = "review_strictness"
+	// DecEscalateModel is whether a repeatedly-failing task should step up the
+	// configured model ladder. Only pulled when a ladder is configured at all,
+	// so an install with one model never spends the arm.
+	DecEscalateModel Decision = "escalate_model"
 )
 
 // Bandit tuning.
@@ -276,6 +280,15 @@ func DefaultPriors() map[string]map[string]Prior {
 		string(DecRetryLadder): {
 			"reread_then_shrink": {Alpha: 6, Beta: 3},
 			"escalate_model":     {Alpha: 3, Beta: 5},
+		},
+		string(DecEscalateModel): {
+			// Leaning on: the arm is only pulled when an operator has
+			// explicitly configured a ladder, which is already a statement
+			// that they want the bigger model used when it helps. The bandit
+			// is here to find out whether it actually does, for this model
+			// family and language — not to relitigate the opt-in.
+			"on":  {Alpha: 6, Beta: 4},
+			"off": {Alpha: 4, Beta: 4},
 		},
 	}
 }

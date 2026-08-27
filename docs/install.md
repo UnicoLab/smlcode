@@ -126,7 +126,7 @@ fetched, the installer says so loudly rather than pretending it checked.
 To check by hand, or to verify a binary you downloaded from the Releases page:
 
 ```bash
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.20.0/SHA256SUMS
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.21.0/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing     # macOS
 sha256sum -c SHA256SUMS --ignore-missing         # Linux
 ```

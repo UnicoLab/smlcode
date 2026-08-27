@@ -9,7 +9,7 @@
 class Slmcode < Formula
   desc "Coding harness for SLMs and any OpenAI-compatible LLM — building blocks, language packs, Studio UI"
   homepage "https://unicolab.ai"
-  version "0.20.0"
+  version "0.21.0"
   license "MIT"
 
   # ── About the sha256 values below ────────────────────────────────────────

@@ -214,3 +214,66 @@ func (o *Orchestrator) runSquadIntegration(ctx context.Context, board *plan.Boar
 	o.recordGate("integration", false, res.Summary)
 	return true
 }
+
+// routeBoardToSpecialists assigns every task the specialist its own files call
+// for, after squads have been assigned.
+//
+// The composer picks ONE language specialist per run. That is correct for a
+// single-language repository and wrong for every task on the other side of a
+// mixed one: in a Go API with a React SPA, a run-level `go-worker` is wrong for
+// everything under web/. Routing per task fixes that with the strongest
+// evidence available — the extensions of the files the task will actually edit.
+//
+// Runs whether or not squads are active: a mixed-language repo does not need
+// two teams to need two specialists.
+func (o *Orchestrator) routeBoardToSpecialists(board *plan.Board) {
+	if o == nil || board == nil || o.factory == nil {
+		return
+	}
+	policy := plan.RoutePolicy{
+		Available:       o.factory.HasRole,
+		DefaultWorker:   o.Pipeline().Execute.DefaultRole,
+		DefaultReviewer: o.Pipeline().Execute.Reviewer,
+		DefaultTester:   o.Pipeline().Execute.Corrector,
+		SquadWorker:     o.squadWorkerLookup(),
+	}
+	tally, byTask := plan.RouteBoard(board.Tasks, policy)
+
+	changed := 0
+	for _, r := range byTask {
+		if r.Changed {
+			changed++
+		}
+	}
+	if changed == 0 {
+		return
+	}
+	o.emit("split", fmt.Sprintf("routed %d task(s) to language specialists: %s",
+		changed, plan.TallyLine(tally)), "")
+	// One line per reroute, so a surprising choice is auditable rather than
+	// mysterious. Bounded: a 40-task board should not produce 40 events.
+	shown := 0
+	for _, t := range board.Tasks {
+		r := byTask[t.ID]
+		if !r.Changed || shown >= 8 {
+			continue
+		}
+		o.emitAgent("split", r.Role, t.ID, "assigned "+r.Role+" — "+r.Reason, "", "")
+		shown++
+	}
+}
+
+// squadWorkerLookup exposes the manager's per-squad worker choice to routing.
+func (o *Orchestrator) squadWorkerLookup() func(string) string {
+	if o == nil || o.squadPlan == nil {
+		return nil
+	}
+	plan := o.squadPlan
+	return func(id string) string {
+		s, ok := plan.Squad(id)
+		if !ok {
+			return ""
+		}
+		return s.Worker
+	}
+}

@@ -48,6 +48,30 @@ owes the other teams. It is useless without all three.
   the only thing it will never do is activate a plan it could not validate.
   Full guide: [Squads](squads.md).
 
+### Added — per-task specialist routing
+
+The composer picks ONE language specialist per run. That is correct for a
+single-language repository and wrong for every task on the other side of a mixed
+one: in a Go API with a React SPA, a run-level `go-worker` is wrong for
+everything under `web/`.
+
+Every task is now staffed from **its own files** after the split, with the
+reviewer and tester matched to the same language — a reviewer judging TypeScript
+with a Go reviewer's prompt reads the diff for the wrong hazards.
+
+Precedence, each rung earning its place over the one below: a registered
+specialist the task already names (somebody chose it on purpose) → a
+non-implementer role left alone (a tester task is not a worker task) → **the
+language of its own files** → its squad's preferred worker → the run-level
+default → the generic worker. Files outrank the squad label for the same reason
+`langpick.go` prefers the repository over a word in the query: a file extension
+is a fact, a label can be stale.
+
+An agent that is not registered is never named — that fails to dispatch, which is
+worse than a slightly less apt specialist doing the work. Every reroute is
+reported with its reason, so a surprising choice is auditable rather than
+mysterious.
+
 ### Changed — defects arrive as correction tickets, not alarms
 
 A failing tester used to produce a red notification and a generic

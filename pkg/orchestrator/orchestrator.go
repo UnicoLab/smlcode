@@ -1269,6 +1269,10 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// Stamp each task with its owning squad before execute. No-op without a
 	// squad plan, which is the common case.
 	o.routeBoardToSquads(o.squadPlan, board)
+	// Then staff each task with the specialist its own files call for. Runs
+	// with or without squads: a mixed-language repo needs two specialists
+	// whether or not it needs two teams.
+	o.routeBoardToSpecialists(board)
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
 	if err := o.runPipelineSlots(ctx, "execute", "before", query, exploreOut, planOut); err != nil {

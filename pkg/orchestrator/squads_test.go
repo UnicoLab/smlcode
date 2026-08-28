@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"strings"
 	"sync"
 	"testing"
@@ -292,5 +294,102 @@ func TestCorrectionTicketFallsBackWhenNoSpecialistExists(t *testing.T) {
 		if strings.Contains(task.Notes, "correction ticket") && task.Role != plan.RoleWorker {
 			t.Errorf("with no rust specialist registered the ticket must go to the generic worker, got %q", task.Role)
 		}
+	}
+}
+
+// ── Per-task specialist routing ──────────────────────────────────────────
+
+// routingOrchestrator builds an orchestrator whose factory really does know the
+// Go and React language packs — registered the same way the block loader
+// registers them, so HasRole answers from the same path production uses. A test
+// that skipped because the packs were absent would prove nothing about routing.
+func routingOrchestrator(t *testing.T, squadPlan *squads.Plan) (*Orchestrator, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	f := agents.NewFactory(nil, nil, "m", "p")
+	for _, id := range []string{
+		"go-worker", "go-reviewer", "go-tester",
+		"react-worker", "react-reviewer", "react-tester",
+	} {
+		f.ExtraCustoms = append(f.ExtraCustoms, agents.CustomSpec{
+			ID: id, Title: id, SystemPrompt: "test specialist", MaxIter: 2,
+		})
+	}
+	o := &Orchestrator{
+		cfg:       &config.Config{Root: t.TempDir()},
+		factory:   f,
+		squadPlan: squadPlan,
+		onEvent:   rec.handle,
+	}
+	return o, rec
+}
+
+// The headline: one board, two languages, the right specialist on each task —
+// which a single run-level pick cannot do.
+func TestBoardIsRoutedPerTaskInAMixedRepo(t *testing.T) {
+	o, rec := routingOrchestrator(t, nil)
+	for _, id := range []string{"go-worker", "react-worker"} {
+		if !o.factory.HasRole(id) {
+			t.Fatalf("the fixture must register %s, or this test proves nothing", id)
+		}
+	}
+
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: plan.RoleWorker, Files: []string{"cmd/server/main.go"}},
+		{ID: "T2", Role: plan.RoleWorker, Files: []string{"web/src/App.tsx"}},
+		{ID: "T3", Role: plan.RoleTester, Files: []string{"cmd/server/main.go"}},
+	}}
+	o.routeBoardToSpecialists(board)
+
+	want := map[string]string{"T1": "go-worker", "T2": "react-worker", "T3": plan.RoleTester}
+	for _, task := range board.Tasks {
+		if task.Role != want[task.ID] {
+			t.Errorf("%s = %q, want %q", task.ID, task.Role, want[task.ID])
+		}
+	}
+	if out := rec.text(); !strings.Contains(out, "routed") {
+		t.Errorf("a reroute should be reported:\n%s", out)
+	}
+}
+
+func TestRoutingIsSilentWhenItChangesNothing(t *testing.T) {
+	o, rec := routingOrchestrator(t, nil)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: plan.RoleTester, Files: []string{"README.md"}},
+	}}
+	o.routeBoardToSpecialists(board)
+	if out := rec.text(); strings.Contains(out, "routed") {
+		t.Errorf("nothing changed, so nothing should be reported:\n%s", out)
+	}
+}
+
+func TestRoutingIsSafeWithoutAFactory(t *testing.T) {
+	o := &Orchestrator{cfg: &config.Config{Root: t.TempDir()}}
+	board := &plan.Board{Tasks: []plan.Task{{ID: "T1", Role: plan.RoleWorker, Files: []string{"main.go"}}}}
+	o.routeBoardToSpecialists(board) // must not panic
+	if board.Tasks[0].Role != plan.RoleWorker {
+		t.Errorf("without a registry the role must stay put, got %q", board.Tasks[0].Role)
+	}
+	o.routeBoardToSpecialists(nil)
+}
+
+// The manager's per-squad worker is consulted when the files say nothing.
+func TestSquadWorkerLookupFeedsRouting(t *testing.T) {
+	p := e2ePlan(t)
+	p.Squads[1].Worker = "react-worker"
+	o, _ := routingOrchestrator(t, p)
+
+	lookup := o.squadWorkerLookup()
+	if lookup == nil {
+		t.Fatal("a squad plan must expose its worker choices")
+	}
+	if got := lookup("frontend"); got != "react-worker" {
+		t.Errorf("lookup(frontend) = %q", got)
+	}
+	if got := lookup("nope"); got != "" {
+		t.Errorf("unknown squad = %q, want empty", got)
+	}
+	if (&Orchestrator{}).squadWorkerLookup() != nil {
+		t.Error("no plan, no lookup")
 	}
 }

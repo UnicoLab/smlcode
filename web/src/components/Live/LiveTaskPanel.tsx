@@ -16,7 +16,6 @@ import type { Task, AgentSpec, Board } from '@/types';
 import clsx from 'clsx';
 import {
   Plus,
-  Edit3,
   Trash2,
   Save,
   X,
@@ -192,8 +191,6 @@ export default function LiveTaskPanel() {
       setOptimisticTasks((prev) => {
         if (!prev || !Array.isArray(prev)) return [];
         const tasks = b.tasks || [];
-        const cols = b.columns || [];
-        const byCol = b.by_column || {};
         const serverIds = new Set(tasks.map((t) => t.id));
         // Keep only optimistic tasks whose IDs are not yet in the server response
         const stillMissing = prev.filter((t) => !serverIds.has(t.id));
@@ -239,8 +236,11 @@ export default function LiveTaskPanel() {
       });
 
       setLastPollTime(Date.now());
-    } catch (err) {
-      // silently ignore polling errors
+    } catch {
+      // Deliberately silent. A poll that fails every couple of seconds must not
+      // spam the user, and a persistent failure is already visible: lastPollTime
+      // only advances on success, so the panel's "Updated N ago" goes stale and
+      // says so without a single toast.
     } finally {
       setTasksLoading(false);
       setRefreshing(false);

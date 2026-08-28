@@ -7,7 +7,6 @@ import {
   Trash2,
   Edit3,
   Check,
-  X,
   Cpu,
   Wrench,
   Thermometer,

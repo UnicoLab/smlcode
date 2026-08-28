@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getDoc, updateDoc, listDocs } from '@/api/client';
-import type { DocItem } from '@/types';
+import { getDoc, updateDoc } from '@/api/client';
 import { Save, FileText, Loader } from 'lucide-react';
 
 export default function MarkdownEditor() {
   const { docId } = useParams<{ docId: string }>();
-  const [doc, setDoc] = useState<DocItem | null>(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -17,7 +15,6 @@ export default function MarkdownEditor() {
     setLoading(true);
     try {
       const d = await getDoc(docId);
-      setDoc(d);
       setContent(d.content || '');
     } catch (e) {
       console.error('Failed to load doc:', e);

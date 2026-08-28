@@ -23,7 +23,6 @@ import {
   AlertCircle,
   Archive,
   Bot,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Code2,

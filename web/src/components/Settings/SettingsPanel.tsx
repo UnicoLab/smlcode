@@ -10,7 +10,6 @@ import AutoConfigure from './AutoConfigure';
 import {
   Cpu,
   Key,
-  Sliders,
   ShieldCheck,
   Gauge,
   Wrench,

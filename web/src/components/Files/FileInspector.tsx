@@ -5,10 +5,8 @@ import {
   FileMinus,
   FilePenLine,
   MessageSquare,
-  GitBranch,
   PlusCircle,
   Send,
-  Clock,
   Flag,
   X,
   CornerDownRight,
@@ -21,20 +19,13 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import { addTask, updateDoc, getDoc, getWorkspaceFile, getWorkspaceTree } from '@/api/client';
+import { addTask, getWorkspaceFile, getWorkspaceTree } from '@/api/client';
 import type { RunEvent } from '@/types';
 import clsx from 'clsx';
 
 // ── Types ──
 
 type FileStatus = 'changed' | 'created' | 'deleted' | 'unchanged';
-
-interface FileInfo {
-  path: string;
-  status: FileStatus;
-  events: RunEvent[];
-  lastEvent: RunEvent | null;
-}
 
 interface LineComment {
   id: string;
@@ -82,15 +73,6 @@ function extractModifiedPaths(events: RunEvent[]): Set<string> {
   }
   return paths;
 }
-
-// ── Status helpers ──
-
-const STATUS_META: Record<FileStatus, { icon: typeof FileCode; label: string; cls: string; dotCls: string }> = {
-  changed:   { icon: FilePenLine, label: 'Modified',  cls: 'text-amber-600 dark:text-amber-400', dotCls: 'bg-amber-400' },
-  created:   { icon: FilePlus,    label: 'Created',   cls: 'text-emerald-600 dark:text-emerald-400', dotCls: 'bg-emerald-400' },
-  deleted:   { icon: FileMinus,   label: 'Deleted',   cls: 'text-red-600 dark:text-red-400', dotCls: 'bg-red-400' },
-  unchanged: { icon: FileCode,    label: '',           cls: 'text-gray-400 dark:text-gray-500', dotCls: 'bg-gray-300 dark:bg-gray-600' },
-};
 
 // ── Simple syntax highlighter ──
 

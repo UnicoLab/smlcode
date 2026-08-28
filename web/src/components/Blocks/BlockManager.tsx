@@ -127,9 +127,6 @@ export default function BlockManager() {
 
   const handleDelete = async (block: BlockCatalogEntry) => {
     const title = KIND_TITLES[block.kind] || block.kind;
-    const message = block.custom
-      ? `Delete ${title.toLowerCase()} "${block.name || block.id}"?`
-      : `Delete ${title.toLowerCase()} "${block.name || block.id}"? This removes the override of the builtin block.`;
     const ok = await confirm({
       title: `Delete ${title.toLowerCase()} "${block.name || block.id}"?`,
       description: block.custom ? undefined : 'This removes the override of the builtin block.',

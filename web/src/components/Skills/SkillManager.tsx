@@ -9,7 +9,6 @@ import {
   EyeOff,
   Tag,
   User,
-  FileText,
   X,
   Check,
   Edit3,

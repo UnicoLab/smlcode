@@ -13,7 +13,7 @@ import {
 import clsx from 'clsx';
 import { AppContext } from '@/App';
 import { applyPendingChanges, getPendingReview, rejectPendingChanges } from '@/api/client';
-import type { PendingChange, ReviewQueue } from '@/types';
+import type { ReviewQueue } from '@/types';
 import { useToast } from '@/components/ui/Toast';
 import { useConfirm } from '@/components/ui/Modal';
 import DiffView, { type DiffMode } from './DiffView';

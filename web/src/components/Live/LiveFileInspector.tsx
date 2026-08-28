@@ -5,7 +5,6 @@ import {
   GitBranch,
   PlusCircle,
   Flag,
-  Eye,
   ChevronDown,
   ChevronRight,
   Send,

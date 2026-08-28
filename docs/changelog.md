@@ -1,5 +1,77 @@
 # Changelog
 
+## Unreleased
+
+Two virtual dev teams, and defects that arrive as tickets instead of alarms.
+
+### Added — Squads: parallel virtual dev teams
+
+"Build a Go backend serving a React frontend" is not one stream of work. It is
+two, and running it as one fails in two different ways: sequentially the wall
+clock is the sum of both halves, and concurrently — with nothing frozen between
+them — the frontend invents `GET /todos` returning `{items:[…]}` while the
+backend builds `GET /api/todos` returning a bare array. Both halves pass their
+own tests and the application is broken.
+
+A **squad** is a domain it owns, its own acceptance command, and a contract it
+owes the other teams. It is useless without all three.
+
+- **`manager` specialist** assembles the org chart from the query: who exists,
+  what each owns, the interfaces between them, and how the halves are joined. It
+  returns one squad for a single-domain query and the run proceeds as a normal
+  single stream — squads are an accelerator, never a prerequisite.
+- **The contract is frozen to `.slmcode/CONTRACT.md` before any worker starts.**
+  Two squads running concurrently cannot ask each other what the seam looks
+  like, so the seam has to be a file they both read — and one a human can
+  correct between phases.
+- **Ownership is enforced, not requested.** Every other squad's paths go on the
+  workspace deny list for the wave, so a write outside a worker's lane is
+  refused at the tool layer. A prompt saying "do not edit `web/`" is a
+  suggestion a stuck model talks itself out of; a deny list is not.
+- **Disjoint ownership is validated before anything runs.** Two squads claiming
+  one path means one team's edit is silently lost, so an overlap is an error and
+  the run falls back to a single stream rather than starting teams that can
+  corrupt each other. The check is deliberately conservative: a wrong "these
+  overlap" costs one more specific glob, a wrong "these are disjoint" costs an
+  edit.
+- **Per-task briefs**: each worker gets its own charter, its boundary and the
+  interfaces it owes — never the whole contract, which would spend a 30B model's
+  attention on the team it is not on.
+- **Cross-team management**: per-squad progress between waves, and a named
+  cross-team stall when a consumer is blocked on an interface its provider has
+  not delivered. That is a contract dependency, not a task defect, and retrying
+  the consumer's tasks forever is the wrong response.
+- **Integration gate**: once every squad is green, the join command runs. Both
+  halves green with the assembled application broken is a failed run — that is
+  the whole reason the step exists.
+- On by default (`squads: true`). Every failure mode falls back to one stream;
+  the only thing it will never do is activate a plan it could not validate.
+  Full guide: [Squads](squads.md).
+
+### Changed — defects arrive as correction tickets, not alarms
+
+A failing tester used to produce a red notification and a generic
+"Fix tester failures" task assigned to `worker`, with the failure lines pasted
+into its description. Three things were wrong with that, and all three are why
+the failures felt like noise rather than progress:
+
+- **The generic role.** A TypeScript compile error handed to the plain worker
+  gets a plain worker's guess. Tickets now route to the specialist whose
+  language actually broke — `go-worker`, `react-worker`, `python-worker` — by
+  majority of the implicated files, falling back to the generic worker when that
+  specialist is not registered (naming an agent that does not exist fails to
+  dispatch, which is worse). A task already held by a specialist is never
+  re-routed: that choice was made deliberately by the composer, the manager or a
+  human.
+- **The missing evidence.** "test failed" is not a bug report. A ticket now
+  carries what broke, the command that found it, the tail of that command's
+  output (a runner prints the failing assertion last), the implicated files, and
+  an acceptance that names the command rather than saying "the tester passes".
+- **The noise.** A reopened task IS the correction ticket, so it gets the same
+  treatment instead of a one-line verdict; repeat corrections say which attempt
+  they are and not to repeat the last one; and the same unresolved defect
+  reopens its existing ticket instead of stacking a new one every gate run,
+  which is what made the board look like it was losing ground.
 ## v0.21.0 — 2026-08-27
 
 Adapts the structural ideas from [zeroshot](https://github.com/the-open-engine/zeroshot)'s

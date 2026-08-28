@@ -398,6 +398,25 @@ func (r *Runner) applyWaveProtections(wave []plan.Task) func() {
 		return func() {}
 	}
 	pats := waveProtections(wave)
+	// The squad boundary is a different promise from the text-derived ones and
+	// both must hold, so it is merged in rather than chosen between. It is also
+	// NOT subject to collidesWithSibling: that check exists to stop a guess
+	// drawn from one task's prose from blocking another task's declared target,
+	// while ownership is the plan's explicit statement of who may write where —
+	// a sibling "colliding" with it is precisely the write to refuse.
+	if squadPats := r.squadProtections(wave); len(squadPats) > 0 {
+		seen := map[string]bool{}
+		for _, p := range pats {
+			seen[p] = true
+		}
+		for _, p := range squadPats {
+			if !seen[p] {
+				seen[p] = true
+				pats = append(pats, p)
+			}
+		}
+		sort.Strings(pats)
+	}
 	r.Focus.Protect(pats...)
 	if len(pats) > 0 {
 		r.logf("wave %d protected paths (from task text): %s", r.waveN, strings.Join(pats, ", "))

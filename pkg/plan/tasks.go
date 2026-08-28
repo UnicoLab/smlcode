@@ -53,17 +53,22 @@ const (
 
 // Task is an atomic, SLM-sized unit of work.
 type Task struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Role        string   `json:"role"`
-	Assignee    string   `json:"assignee,omitempty"`
-	Column      string   `json:"column"`
-	Status      string   `json:"status"`
-	Priority    int      `json:"priority,omitempty"`
-	DependsOn   []string `json:"depends_on,omitempty"`
-	Files       []string `json:"files,omitempty"`
-	Acceptance  string   `json:"acceptance,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Role        string `json:"role"`
+	Assignee    string `json:"assignee,omitempty"`
+	// Squad names the virtual team that owns this task (see pkg/squads).
+	// Empty on every single-stream run, which is the overwhelming majority:
+	// squads are opt-in and only assemble when a query genuinely spans two
+	// domains that can be built at the same time.
+	Squad      string   `json:"squad,omitempty"`
+	Column     string   `json:"column"`
+	Status     string   `json:"status"`
+	Priority   int      `json:"priority,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
+	Files      []string `json:"files,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
 	// Criteria is the structured form of Acceptance: individually addressable,
 	// individually verifiable conditions. See criteria.go.
 	//

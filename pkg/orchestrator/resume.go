@@ -661,8 +661,13 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	}
 	o.recordGate("completeness", !completenessFailed, "")
 
+	// Squad integration runs BEFORE the QA gate: it is the more specific
+	// question ("do the two halves fit?") and its failure output names the seam,
+	// which is far more useful than the generic gate's when both are red.
+	integrationFailed := o.runSquadIntegration(ctx, out.Board)
+
 	out.QACmd = o.qaCommand()
-	out.QAFailed = o.runQAGate(ctx, query, out.Board)
+	out.QAFailed = o.runQAGate(ctx, query, out.Board) || integrationFailed
 	if out.QAFailed {
 		out.TesterRejected = true
 		fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`

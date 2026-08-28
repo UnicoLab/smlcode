@@ -36,6 +36,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
@@ -109,6 +110,10 @@ type Orchestrator struct {
 	rewindMgr   *rewind.Manager
 	waveCounter int
 	pipe        *pipeline.Config // config-driven phases / slots / loop agents
+	// squadPlan is the virtual-team org chart for this run, nil on every
+	// single-stream run. Set by the manager phase before plan/split; read by
+	// the board router, the execute loop and the between-wave report.
+	squadPlan *squads.Plan
 
 	// workspace / repoMap / tracker come from the tool layer so the
 	// orchestrator can reset the per-task loop guard and seed focus discovery.
@@ -1179,6 +1184,15 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.composeDynamicPipeline(ctx, query, inventory, exploreOut, archOut)
 	}
 
+	// 2a' Squad assembly (optional): split a two-domain query into teams that
+	// build in parallel against an interface frozen before either starts. Runs
+	// BEFORE plan/split so the splitter's tasks can be routed to an owner, and
+	// returns nil — meaning "one stream" — for every single-domain query and
+	// every failure mode.
+	if o.cfg.Squads {
+		o.squadPlan = o.assembleSquads(ctx, query, inventory, exploreOut, archOut)
+	}
+
 	// 2b+2c Architect + Clarify run in parallel after explore.
 	// Both depend on explore output but not on each other.
 	var interview plan.ScopeInterview
@@ -1252,6 +1266,9 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	if err != nil {
 		return nil, err
 	}
+	// Stamp each task with its owning squad before execute. No-op without a
+	// squad plan, which is the common case.
+	o.routeBoardToSquads(o.squadPlan, board)
 
 	// 5 Execute + review/correct (live board — human can edit/add mid-run)
 	if err := o.runPipelineSlots(ctx, "execute", "before", query, exploreOut, planOut); err != nil {

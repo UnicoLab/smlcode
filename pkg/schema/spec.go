@@ -44,6 +44,7 @@ const (
 	RoleClarify     = "clarify"
 	RoleEscalate    = "escalate"
 	RoleComposition = "composition"
+	RoleSquads      = "squads"
 	RoleScopeJudge  = "scope_judge"
 	RoleWorker      = "worker"
 	RoleExplore     = "explore"
@@ -287,6 +288,46 @@ func init() {
 
 	// composition: `slots` is an open-ended pipeline.Slot list, so this contract
 	// can never be strict. json_object / GBNF still help a lot.
+	// The project manager's org chart. Not strict: a manager that returns a
+	// squad without an acceptance command is still a usable plan (Validate
+	// downgrades that to a warning), and refusing the whole object over it
+	// would throw away the contract too.
+	register(RoleSquads, false, obj(map[string]any{
+		"summary": str(),
+		"contract": obj(map[string]any{
+			"summary": str(),
+			"interfaces": map[string]any{
+				"type":     "array",
+				"maxItems": 24,
+				"items": obj(map[string]any{
+					"id":        str(),
+					"provider":  str(),
+					"consumers": strListMax(6),
+					"spec":      str(),
+				}, "id", "provider"),
+			},
+		}),
+		"squads": map[string]any{
+			"type":     "array",
+			"minItems": 2,
+			"maxItems": 4,
+			"items": obj(map[string]any{
+				"id":         str(),
+				"name":       str(),
+				"charter":    str(),
+				"owns":       strListMax(8),
+				"acceptance": str(),
+				"worker":     str(),
+				"reviewer":   str(),
+				"skills":     strListMax(4),
+			}, "id", "owns"),
+		},
+		"integration": obj(map[string]any{
+			"acceptance": str(),
+			"notes":      strListMax(6),
+		}),
+	}, "squads", "contract"))
+
 	register(RoleComposition, false, obj(map[string]any{
 		"summary":  str(),
 		"strategy": str(),
@@ -355,6 +396,8 @@ func normalizeRole(role string) string {
 		return RoleScopeJudge
 	case "composer":
 		return RoleComposition
+	case "manager", "pm", "project-manager":
+		return RoleSquads
 	case "explorer":
 		return RoleExplore
 	case "deep", "corrector":

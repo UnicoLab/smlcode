@@ -126,10 +126,17 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 		}
 		return err
 	}
+	// The squad plan drives the per-task brief and, more importantly, the
+	// ownership deny list that makes one team physically unable to write the
+	// other's files. nil on a single-stream run.
+	runner.Squads = o.squadPlan
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.maybeCompactContext(ctx)
 		o.coordinate(ctx, query, board, "after-wave")
+		// Per-squad progress and cross-team stalls. An aggregate task count
+		// hides one team finishing while the other sits blocked.
+		o.reportSquadProgress(o.squadPlan, board)
 	}
 	// The objective gate, asked BETWEEN waves rather than only after the board
 	// drains. A board that keeps rejecting one task never drains, so the

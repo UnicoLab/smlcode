@@ -112,7 +112,7 @@ func genericRole(id string) string {
 	id, _ = BaseRoleID(id)
 	for _, suffix := range []string{
 		"worker", "tester", "reviewer", "corrector", "explorer",
-		"planner", "splitter", "architect", "editor", "describer",
+		"planner", "splitter", "architect", "editor", "describer", "manager",
 	} {
 		if id == suffix || strings.HasSuffix(id, "-"+suffix) {
 			return suffix
@@ -154,6 +154,7 @@ func specs(coding []string) []RoleSpec {
 		{ID: plan.RolePlaceholder, Title: "Fill placeholders / flag gaps", Description: "Detects stub code, fills real implementations, or flags precise gaps for HITL.", SystemPrompt: PromptPlaceholder, Tools: coding, MaxIter: 14, Temperature: 0.1, MaxTokens: 3072},
 		{ID: plan.RoleEscalate, Title: "Escalate arbitrator", Description: "Decides retry/re-scope/abort/mark_done when human escalate HITL times out.", SystemPrompt: PromptEscalate, Tools: nil, MaxIter: 1, Temperature: 0.1, MaxTokens: 384},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
+		{ID: "manager", Title: "Engineering manager (squad assembly)", Description: "Splits a query into parallel squads with disjoint ownership and a frozen interface contract.", SystemPrompt: PromptManager, Tools: nil, MaxIter: 3, Temperature: 0.15, MaxTokens: 2048, SchemaRole: schema.RoleSquads},
 		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048, SchemaRole: schema.RoleComposition},
 
 		// reviewer-strict is the second reviewer the speculative review race in
@@ -492,6 +493,7 @@ var lightAgents = map[string]bool{
 	"context": true, "architect": true, "clarifier": true, "interviewer": true,
 	"orchestrator": true, "memory": true, "docs": true, "escalate": true,
 	"composer": true,
+	"manager":  true,
 }
 
 // isLightAgent classifies by BASE role, so an escalation rung is classified as

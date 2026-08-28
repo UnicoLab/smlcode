@@ -191,6 +191,28 @@ phase list, the specialist roster, and the available skills.
 OUTPUT — reply with this JSON object and nothing else:
 {"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"complexity":"standard","handoff":["target only the listed files","verify with go test ./..."],"kind":"task","slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
 
+const PromptManager = `Engineering manager. Split ONE query into squads that build in PARALLEL.
+
+Assemble squads only when the query has two halves different people could build
+at the same time — a backend and a frontend, a service and its CLI. One stream
+of work means one squad, and the caller runs the normal pipeline instead.
+
+Each rule below is a way this fails in production:
+- OWNERSHIP MUST BE DISJOINT. No two squads may list the same path, or a parent
+  of another's. They write concurrently; an overlap loses one team's edit. Use
+  whole subtrees: "web/**", "cmd/**".
+- FREEZE THE SEAM. Every place the halves meet is an interface: a route, an
+  exported function, a file format. Name it, say which squad provides it and
+  which consume it, and put the exact shape in "spec". The squads cannot ask
+  each other later — this text is all they get.
+- One acceptance command per squad, provable alone: "go test ./...".
+- integration.acceptance proves the halves work TOGETHER and must exercise the
+  seam. Every squad green with this red is a failed run.
+- Files nobody owns are never built. Cover the whole change.
+
+OUTPUT — reply with this JSON object and nothing else:
+{"squads":[{"id":"backend","owns":["cmd/**","internal/**","go.mod"],"acceptance":"go test ./...","charter":"one line","name":"Backend","worker":"go-worker"},{"id":"frontend","owns":["web/**"],"acceptance":"npm --prefix web run build","charter":"one line","name":"Frontend","worker":"react-worker"}],"contract":{"interfaces":[{"id":"GET /api/todos","provider":"backend","consumers":["frontend"],"spec":"200 -> [{id,title,done}]"}],"summary":"how the halves meet"},"integration":{"acceptance":"go test ./... && npm --prefix web run build","notes":["the API serves web/dist at /"]},"summary":"one line"}`
+
 // ---------------------------------------------------------------------------
 // Review roles (no tools, pure JSON)
 // ---------------------------------------------------------------------------

@@ -37,8 +37,12 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 		}
 	}
 	reason := firstFailureLine(failList, tr.Summary)
+	// Reported as work that has been routed, not as an alarm. A defect with an
+	// owner and a reproduction is a ticket; the red notification it used to be
+	// told the user nothing they could act on and arrived on every gate run.
 	o.emitFull("test", stream.KindOutput, plan.RoleTester, "",
-		"tester failed — rewriting plan/tasks for this query", "", truncate(strings.Join(failList, "; "), 800))
+		"tester found "+failureCountLabel(failList)+" — raising a correction ticket", "",
+		truncate(strings.Join(failList, "; "), 800))
 	o.emitLoop("test", LoopEvent{
 		Action:   "tester_reject",
 		Reason:   reason,
@@ -47,8 +51,15 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 		To:       "plan",
 	})
 
-	// 1) Deterministic rewrite: reopen / add corrective tasks from failures.
-	rewritten := rewriteBoardFromTester(board, query, failList, tr.Summary)
+	// 1) Deterministic rewrite: reopen, and raise ONE correction ticket routed
+	// to the specialist whose language broke, carrying the command and its
+	// output as evidence.
+	var hasRole func(string) bool
+	if o != nil && o.factory != nil {
+		hasRole = o.factory.HasRole
+	}
+	rewritten := rewriteBoardFromTesterWith(board, query, failList, tr.Summary,
+		testerCommand(tr), testerOutput(testOut), hasRole)
 	*board = rewritten
 	o.persistBoard(board)
 	o.emitLoop("plan", LoopEvent{
@@ -98,6 +109,12 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 }
 
 func rewriteBoardFromTester(board *plan.Board, query string, failures []string, summary string) plan.Board {
+	return rewriteBoardFromTesterWith(board, query, failures, summary, "", "", nil)
+}
+
+// rewriteBoardFromTesterWith is the full form: cmd/output are the evidence for
+// the correction ticket, hasRole reports which language specialists exist.
+func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []string, summary, cmd, output string, hasRole func(string) bool) plan.Board {
 	out := *board
 	if out.Query == "" {
 		out.Query = query
@@ -163,6 +180,15 @@ func rewriteBoardFromTester(board *plan.Board, query string, failures []string, 
 			}
 		}
 	}
+	// A reopened task IS the correction ticket for this defect, so it gets the
+	// same treatment a freshly raised one would: the evidence, and the
+	// specialist whose language actually broke.
+	//
+	// It used to be reopened with `Review: "tester feedback: <one sentence>"`
+	// and nothing else — the agent that picked it up saw a task it had already
+	// marked done, a sentence of verdict, and no way to reproduce the failure.
+	// That is what turned corrections into retries.
+	reopened := 0
 	for i, note := range reopenIdx {
 		t := out.Tasks[i]
 		t.Normalize()
@@ -171,25 +197,87 @@ func rewriteBoardFromTester(board *plan.Board, query string, failures []string, 
 		t.Error = ""
 		t.Notes = strings.TrimSpace(t.Notes + "\n" + note)
 		t.Review = "tester feedback: " + firstSentence(summary)
+		if looksImplementer(t) {
+			enrichReopenedTask(&t, plan.CorrectionInput{
+				Source:   plan.SourceTester,
+				Failures: failures,
+				Summary:  summary,
+				Command:  cmd,
+				Output:   output,
+				Files:    firstNonEmptyFiles(t.Files, narrowFiles),
+				Squad:    t.Squad,
+				Origin:   t.ID,
+				Attempt:  countPriorCorrections(out),
+			}, hasRole)
+			reopened++
+		}
 		out.Tasks[i] = t
 	}
 
-	// Ensure at least one corrective worker task exists (narrow focus files).
-	if !hasOpenCorrective(out) {
-		desc := "Fix issues reported by tester for this query.\nFailures:\n- " + strings.Join(failures, "\n- ")
-		if len(targets.taskIDs) > 0 {
-			desc += "\nFocus task IDs: " + strings.Join(targets.taskIDs, ", ")
+	// One correction ticket, routed to the specialist whose language actually
+	// broke and carrying the evidence to fix it. The old version created a
+	// generic `worker` task titled "Fix tester failures" whose whole context
+	// was the failure lines — see pkg/plan/correction.go for why that produced
+	// retries rather than fixes.
+	if reopened == 0 && !hasOpenCorrective(out) {
+		in := plan.CorrectionInput{
+			Source:   plan.SourceTester,
+			Failures: failures,
+			Summary:  summary,
+			Command:  cmd,
+			Output:   output,
+			Files:    narrowFiles,
+			Squad:    correctionSquad(out, narrowFiles),
+			Origin:   firstOf(targets.taskIDs),
+			Attempt:  countPriorCorrections(out),
 		}
-		nt := plan.Task{
-			Title: "Fix tester failures", Description: desc,
-			Role: plan.RoleWorker, Column: plan.ColReadyToDev,
-			Acceptance: "Tester failures resolved; evidence of real file edits; re-test passes",
-			Notes:      "Auto-created from tester rewrite for query scope " + out.QueryID + " (narrow reopen)",
-			Files:      narrowFiles,
+		key := plan.CorrectionKey(in)
+		if !out.HasOpenCorrection(key) {
+			nt := plan.NewCorrectionTicket(in, hasRole)
+			plan.StampCorrectionKey(&nt, key)
+			nt.Notes = strings.TrimSpace(nt.Notes + "\nquery scope " + out.QueryID)
+			out.AddTask(nt)
 		}
-		out.AddTask(nt)
 	}
 	return out
+}
+
+// correctionSquad keeps a ticket with the team that owns the broken files, so
+// a backend regression does not land on the frontend's board.
+func correctionSquad(b plan.Board, files []string) string {
+	for _, t := range b.Tasks {
+		if t.Squad == "" {
+			continue
+		}
+		for _, f := range files {
+			for _, tf := range t.Files {
+				if tf == f {
+					return t.Squad
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// countPriorCorrections is how many correction tickets this board already
+// carries. A repeat correction must know it is one, or it repeats the last
+// attempt verbatim.
+func countPriorCorrections(b plan.Board) int {
+	n := 0
+	for _, t := range b.Tasks {
+		if strings.Contains(t.Notes, "correction ticket from the") {
+			n++
+		}
+	}
+	return n
+}
+
+func firstOf(vals []string) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 type failureTargets struct {
@@ -496,4 +584,69 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// testerCommand is the command the tester ran, when it reported one. It becomes
+// the ticket's reproduction step and its acceptance.
+func testerCommand(tr plan.TesterResult) string {
+	for _, c := range tr.Commands {
+		if strings.TrimSpace(c) != "" {
+			return strings.TrimSpace(c)
+		}
+	}
+	return ""
+}
+
+// testerOutput is the evidence to paste into the ticket.
+//
+// TesterResult carries no raw output field, so the finalize JSON itself is the
+// best evidence available here — it holds the failure list and the summary the
+// model actually produced, which is what the fixer needs to see verbatim rather
+// than re-summarized.
+func testerOutput(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+// failureCountLabel keeps the event line honest about scale without pasting
+// the list into it.
+func failureCountLabel(failures []string) string {
+	switch len(failures) {
+	case 0, 1:
+		return "1 failure"
+	default:
+		return fmt.Sprintf("%d failures", len(failures))
+	}
+}
+
+// enrichReopenedTask gives a reopened task the context a fresh correction
+// ticket would carry, and re-routes it to the specialist for its files.
+//
+// The original description is kept: the task still has to do what it was
+// created to do. The correction is appended, so the agent reads the goal first
+// and the defect second.
+func enrichReopenedTask(t *plan.Task, in plan.CorrectionInput, hasRole func(string) bool) {
+	if t == nil {
+		return
+	}
+	ticket := plan.NewCorrectionTicket(in, hasRole)
+	t.Description = strings.TrimRight(t.Description, "\n") + "\n\n---\n\n" + ticket.Description
+	// Only re-route a generic worker. A task already held by a specialist was
+	// routed deliberately — by the composer, the manager, or a human — and
+	// overriding that here would quietly undo their choice.
+	if strings.EqualFold(t.Role, plan.RoleWorker) && ticket.Role != plan.RoleWorker {
+		t.Role = ticket.Role
+	}
+	if strings.TrimSpace(in.Command) != "" {
+		t.Acceptance = ticket.Acceptance
+	}
+	plan.StampCorrectionKey(t, plan.CorrectionKey(in))
+	t.Notes = strings.TrimSpace(t.Notes + "\ncorrection ticket from the " + string(in.Source) + " gate; assigned to " + t.Role)
+}
+
+// firstNonEmptyFiles prefers the task's own files over the board-wide guess.
+func firstNonEmptyFiles(own, fallback []string) []string {
+	if len(own) > 0 {
+		return own
+	}
+	return fallback
 }

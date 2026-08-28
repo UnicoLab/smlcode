@@ -24,6 +24,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/repair"
 	"github.com/UnicoLab/slmcode/pkg/rewind"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
@@ -91,6 +92,10 @@ type Runner struct {
 	SlmDir   string          // optional; defaults to Root/.slmcode
 	TurnID   string          // query turn id for react checkpoints
 	Focus    *workspace.FocusGuard
+	// Squads is the virtual-team plan for this run, nil on a single-stream run
+	// (which is almost all of them). When set, it adds a per-task brief to the
+	// worker prompt and an ownership deny list to every wave.
+	Squads *squads.Plan
 	// TakeShellScope drains the workspace's out-of-scope ws_shell ledger — set
 	// it to Workspace.TakeShellScopeEvents. nil simply means the loop reports no
 	// shell-scope evidence; every gate that reads it is nil-safe.
@@ -795,6 +800,9 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 	}
 	if led := r.attemptLogSection(t); led != "" {
 		prompt += led
+	}
+	if squad := r.squadBriefSection(t); squad != "" {
+		prompt += squad
 	}
 	if brief := r.sharedBriefSection(board, t); brief != "" {
 		prompt += brief

@@ -346,6 +346,13 @@ type Config struct {
 	// DynamicPipeline runs the composer specialist first to assemble a
 	// task-specific pipeline (phases, team, tools, skills) before executing.
 	DynamicPipeline bool `yaml:"dynamic_pipeline" json:"dynamic_pipeline"`
+	// Squads runs the manager specialist to split a two-domain query into
+	// virtual teams that build in parallel behind a frozen interface contract
+	// (see pkg/squads). It costs one extra planning call per run and returns
+	// "one stream" for single-domain queries, so it is on by default: the call
+	// is cheap next to the sequential build it removes, and the contract it
+	// freezes is what stops the halves from not fitting together.
+	Squads bool `yaml:"squads" json:"squads"`
 	// PinnedSkills are always loaded (in addition to @skill: refs / matching).
 	PinnedSkills []string `yaml:"pinned_skills" json:"pinned_skills"`
 
@@ -656,6 +663,7 @@ func Default(root string) *Config {
 		// task-specific pipeline (phases, team, tools, skills) per run. Disable
 		// via config `dynamic_pipeline: false` or `slmcode run --no-dynamic`.
 		DynamicPipeline: true,
+		Squads:          true,
 		Temperature:     0.2,
 		MaxTokens:       4096,
 		MaxRetries:      DefaultMaxRetries,
@@ -1235,6 +1243,7 @@ type Patch struct {
 	Mode                   *string                  `json:"mode,omitempty"`
 	Specialist             *string                  `json:"specialist,omitempty"`
 	DynamicPipeline        *bool                    `json:"dynamic_pipeline,omitempty"`
+	Squads                 *bool                    `json:"squads,omitempty"`
 	PinnedSkills           *[]string                `json:"pinned_skills,omitempty"`
 	Temperature            *float64                 `json:"temperature,omitempty"`
 	MaxTokens              *int                     `json:"max_tokens,omitempty"`
@@ -1363,6 +1372,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.DynamicPipeline != nil {
 		c.DynamicPipeline = *p.DynamicPipeline
+	}
+	if p.Squads != nil {
+		c.Squads = *p.Squads
 	}
 	if p.PinnedSkills != nil {
 		c.PinnedSkills = append([]string{}, (*p.PinnedSkills)...)

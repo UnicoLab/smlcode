@@ -219,3 +219,30 @@ func TestAnAuthFailureStillPointsAtAuth(t *testing.T) {
 		t.Errorf("remedy = %q, want the auth command", remedy)
 	}
 }
+
+// The refusal block is what a user reads when their first run does not start.
+// The line their eye goes to has to name the command that does not require
+// already knowing the answer.
+func TestTheRefusalBlockLeadsWithConfigure(t *testing.T) {
+	p := ProbeResult{
+		State: ProbeDown, Provider: "omlx", Model: "some-model",
+		Endpoint: "http://127.0.0.1:8000/v1", Cause: "connection refused",
+		Remedy: "nothing is listening",
+	}
+	block := p.Block()
+	ci := strings.Index(block, "slmcode configure")
+	di := strings.Index(block, "slmcode doctor")
+	if ci < 0 {
+		t.Fatalf("the refusal block does not name configure:\n%s", block)
+	}
+	if di >= 0 && ci > di {
+		t.Errorf("doctor comes before configure — configure is the one that does not\n"+
+			"require knowing the answer already:\n%s", block)
+	}
+	// The block still says what is wrong, not just what to run.
+	for _, want := range []string{"connection refused", "http://127.0.0.1:8000/v1", "omlx"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the refusal block lost %q:\n%s", want, block)
+		}
+	}
+}

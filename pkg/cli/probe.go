@@ -95,7 +95,11 @@ func (p ProbeResult) Block() string {
 	if p.Remedy != "" {
 		b.WriteString(Dim("  tip:      ") + p.Remedy + "\n")
 	}
-	b.WriteString(Dim("  fix:      slmcode doctor   ·   slmcode run --endpoint <url> --provider <name>\n"))
+	// `configure` leads: it is the only one of these that does not require
+	// already knowing the answer. `doctor` explains what is wrong to somebody
+	// who can act on it, and the flags are for somebody who knows where their
+	// server is — both are the second thing to reach for, not the first.
+	b.WriteString(Dim("  fix:      slmcode configure   ·   slmcode doctor   ·   slmcode run --endpoint <url>\n"))
 	return b.String()
 }
 

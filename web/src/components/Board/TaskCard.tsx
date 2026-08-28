@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent, ReactNode } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { ticketInfo } from './ticketInfo';
 import {
   AlertTriangle,
+  ArrowRight,
   CheckCircle,
   ChevronDown,
   ChevronRight,
@@ -13,6 +15,7 @@ import {
   Save,
   Trash2,
   User,
+  Wrench,
   X,
 } from 'lucide-react';
 import { patchTask, deleteTask } from '@/api/client';
@@ -57,6 +60,7 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<TaskDraft>(() => taskToDraft(task));
   const titleFieldRef = useRef<HTMLTextAreaElement>(null);
+  const ticket = ticketInfo(task);
 
   useEffect(() => {
     setDraft(taskToDraft(task));
@@ -210,6 +214,30 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
             {task.priority > 0 && <span className="badge-warn text-[9px]">P{task.priority}</span>}
             {task.depends_on?.length > 0 && <span className="badge-neutral text-[9px]">{task.depends_on.length} dep</span>}
             {task.retries > 0 && <span className="badge-warn text-[9px]">{task.retries} retry</span>}
+            {/* A correction ticket looks exactly like planned work — same
+                shape, same badges — but it is a defect a gate found, with a
+                reproduction and an owner, possibly on its second attempt and
+                possibly moved here by the project manager. Reading the whole
+                description to work that out is what makes a board feel like a
+                log rather than a plan. */}
+            {ticket.isTicket && (
+              <span
+                className="badge-warn flex items-center gap-1 text-[9px]"
+                title="A defect a gate found, not planned work"
+              >
+                <Wrench size={9} />
+                {ticket.attempt > 1 ? `fix · attempt ${ticket.attempt}` : 'fix'}
+              </span>
+            )}
+            {ticket.reassignedTo && (
+              <span
+                className="badge-brand flex items-center gap-1 text-[9px]"
+                title={`The project manager moved this to ${ticket.reassignedTo}`}
+              >
+                <ArrowRight size={9} />
+                {ticket.reassignedTo}
+              </span>
+            )}
           </div>
         </div>
 

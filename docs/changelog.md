@@ -295,6 +295,18 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Added — correction tickets are legible on the board
+
+A correction ticket looked exactly like planned work: same card, same badges, a
+role and a title. It is not the same thing — it is a defect a gate found, with a
+reproduction and an owner, possibly on its second attempt and possibly moved
+there by the project manager because the first specialist could not fix it.
+Reading the whole description to work that out is what makes a board feel like a
+log rather than a plan.
+
+Cards now carry a `fix` badge (with `attempt N` on a repeat) and, when a manager
+moved it, the specialist it went to.
+
 ### Added — a Fixes tab: what the harness repaired by itself
 
 The harness recovers from most of what goes wrong, and none of it was visible.

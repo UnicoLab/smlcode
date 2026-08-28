@@ -95,3 +95,47 @@ func containsFold(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// LaneOf reports the single squad that owns every one of these paths.
+//
+// It answers a narrower question than Assign: not "who should do this work" but
+// "is this defect entirely inside one team's territory". The answer is "" the
+// moment the paths straddle two teams or land somewhere nobody owns, because a
+// defect on the seam belongs to both halves and one that lands nowhere belongs
+// to whoever the board says.
+//
+// # WHY THIS EXISTS
+//
+// A tester failure names files. The reopen heuristics that decide which tasks
+// to reopen from those files are text matches — acceptance snippets, basenames,
+// task ids in the failure blob — and text matches leak across teams. The
+// frozen contract makes it worse rather than better: it is attached as
+// acceptance criteria to BOTH halves, so one clause of shared text is enough
+// for a backend compile error to reopen the frontend's finished work.
+//
+// The frontend team then re-runs, fails at a defect it does not own and cannot
+// see, and the run ends reporting "frontend 0/1 working" over a half that was
+// correct and complete. That is the same failure the write deny list exists to
+// prevent, arriving through the board instead of through the tool layer.
+func LaneOf(p *Plan, paths []string) string {
+	if p == nil || len(paths) == 0 {
+		return ""
+	}
+	lane := ""
+	for _, path := range paths {
+		owner, ok := p.Owner(path)
+		if !ok {
+			// Unowned: it could belong to anybody, so it cannot narrow the
+			// defect to one team.
+			return ""
+		}
+		if lane == "" {
+			lane = owner
+			continue
+		}
+		if lane != owner {
+			return ""
+		}
+	}
+	return lane
+}

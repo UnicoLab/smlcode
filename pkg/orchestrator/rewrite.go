@@ -9,20 +9,35 @@ import (
 
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
 // applyTesterFeedback rewrites this query's plan/tasks when verification fails.
 // Empty/malformed tester finalize is treated as failure (never a silent skip).
 func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, board *plan.Board, testOut string) bool {
+	rejected, _ := o.applyTesterFeedbackRestaffed(ctx, query, board, testOut)
+	return rejected
+}
+
+// applyTesterFeedbackRestaffed is applyTesterFeedback plus the number of
+// tickets the project manager re-staffed.
+//
+// The caller needs that count separately from "was it rejected". A rejection
+// with no re-staffing means the same agents face the same work; a rejection
+// that MOVED a ticket to a different specialist, with guidance the last attempt
+// did not have, is new information nobody has acted on yet — and stopping there
+// throws the whole triage step away.
+func (o *Orchestrator) applyTesterFeedbackRestaffed(ctx context.Context, query string,
+	board *plan.Board, testOut string) (rejected bool, restaffed int) {
 	if board == nil {
-		return false
+		return false, 0
 	}
 	tr := plan.ParseTesterJSON(testOut)
 	if tr.Passed {
 		o.emitFullL("test", stream.KindAgentEnd, plan.RoleTester, "", "tester passed", "",
 			truncate(tr.Summary, 400), stream.LevelSuccess)
-		return false
+		return false, 0
 	}
 
 	failList := tr.Failures
@@ -59,11 +74,11 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 		hasRole = o.factory.HasRole
 	}
 	rewritten := rewriteBoardFromTesterWith(board, query, failList, tr.Summary,
-		testerCommand(tr), testerOutput(testOut), hasRole)
+		testerCommand(tr), testerOutput(testOut), hasRole, o.squadPlan)
 	*board = rewritten
 	// 1b) A defect that has already had a ticket goes past the project manager
 	// before it goes back to the specialist that could not fix it last time.
-	o.triageRepeatTickets(ctx, board)
+	restaffed = o.triageRepeatTickets(ctx, board)
 	o.persistBoard(board)
 	o.emitLoop("plan", LoopEvent{
 		Action:   "rewrite",
@@ -108,16 +123,19 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 
 	_ = o.store.Append(contextstore.DocScratch, "Tester rewrite",
 		fmt.Sprintf("passed=false\nfailures:\n- %s\n\n%s", strings.Join(failList, "\n- "), truncate(testOut, 2000)))
-	return true
+	return true, restaffed
 }
 
 func rewriteBoardFromTester(board *plan.Board, query string, failures []string, summary string) plan.Board {
-	return rewriteBoardFromTesterWith(board, query, failures, summary, "", "", nil)
+	return rewriteBoardFromTesterWith(board, query, failures, summary, "", "", nil, nil)
 }
 
 // rewriteBoardFromTesterWith is the full form: cmd/output are the evidence for
-// the correction ticket, hasRole reports which language specialists exist.
-func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []string, summary, cmd, output string, hasRole func(string) bool) plan.Board {
+// the correction ticket, hasRole reports which language specialists exist, and
+// sq is the org chart whose ownership boundaries keep one team's defect from
+// reopening another team's finished work.
+func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []string, summary, cmd, output string,
+	hasRole func(string) bool, sq *squads.Plan) plan.Board {
 	out := *board
 	if out.Query == "" {
 		out.Query = query
@@ -136,6 +154,21 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 	}
 
 	targets := resolveFailureTargets(out, failures, summary)
+
+	// Which team's territory this defect is in, when it is cleanly in one.
+	//
+	// The reopen heuristics below are text matches, and text matches leak
+	// across teams — the frozen contract is attached as acceptance criteria to
+	// BOTH halves, so one clause of shared text is enough for a backend compile
+	// error to reopen the frontend's finished work. The frontend then re-runs,
+	// fails at a defect it does not own and cannot see, and the run ends
+	// reporting "frontend 0/1 working" over a half that was correct.
+	//
+	// The lane is empty whenever the defect straddles teams, lands somewhere
+	// nobody owns, or there are no squads — in which case nothing is filtered
+	// and the heuristics decide alone, as they always did.
+	lane := squads.LaneOf(sq, pathsTheTesterNamed(failures, summary))
+
 	narrowFiles := targets.files
 	if len(narrowFiles) == 0 {
 		// Vague / uncited: newest done implementer only (not whole board / blocked).
@@ -151,6 +184,9 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 	for i := range out.Tasks {
 		t := out.Tasks[i]
 		t.Normalize()
+		if outsideLane(lane, t) {
+			continue
+		}
 		role := strings.ToLower(t.Role)
 		switch {
 		case role == plan.RoleTester && t.Column == plan.ColDone:
@@ -174,7 +210,7 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 			}
 			t := out.Tasks[i]
 			t.Normalize()
-			if !looksImplementer(t) || t.Column != plan.ColDone {
+			if !looksImplementer(t) || t.Column != plan.ColDone || outsideLane(lane, t) {
 				continue
 			}
 			if len(t.Files) > 0 && taskInPrimaryFocus(t, narrowFiles) {
@@ -665,4 +701,34 @@ func firstNonEmptyFiles(own, fallback []string) []string {
 		return own
 	}
 	return fallback
+}
+
+// outsideLane reports whether a task belongs to a team other than the one whose
+// territory this defect is in.
+//
+// An unassigned task is never outside: it has no team to be outside of, and
+// refusing to reopen it would leave a real defect with nobody on it.
+func outsideLane(lane string, t plan.Task) bool {
+	if lane == "" {
+		return false
+	}
+	squad := strings.TrimSpace(t.Squad)
+	return squad != "" && !strings.EqualFold(squad, lane)
+}
+
+// pathsTheTesterNamed is the paths in the tester's OWN words.
+//
+// Deliberately not resolveFailureTargets' file list: that list is widened by
+// task matches, so a task that matched on a shared acceptance snippet
+// contributes its own files to it — which is precisely the leak the lane check
+// exists to catch. Computing the lane from the widened list would let the
+// contamination decide that the defect straddles both teams, and the check
+// would disable itself exactly when it is needed.
+func pathsTheTesterNamed(failures []string, summary string) []string {
+	blob := strings.Join(failures, "\n") + "\n" + summary
+	var out []string
+	for _, m := range pathLikeRe.FindAllString(blob, -1) {
+		out = appendUnique(out, filepath.ToSlash(m))
+	}
+	return out
 }

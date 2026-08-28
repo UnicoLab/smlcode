@@ -236,6 +236,32 @@ applied.
 The same manager decides when the review ladder runs out of retries, one handoff
 before a human is asked.
 
+### The reassignment is executed, not just recorded
+
+A ticket the manager just moved is new information nobody has acted on, so it
+gets its own wave — `re-staffed wave: 1 ticket(s) moved by the project manager`
+— followed by a re-verify. Without it the run would finish having done the whole
+analysis and thrown it away.
+
+It is bounded twice: a ticket is re-staffed **at most once**, and the
+corrective-wave budget still applies. A second verdict would be a third agent
+guessing at work two others could not do, which is a scoping problem rather than
+a staffing one, and that is what a human is being asked to look at.
+
+### A defect stays in its own team's lane
+
+Reopening work from a tester failure is a text match — file basenames,
+acceptance snippets, task ids in the failure blob — and text matches leak across
+teams. The frozen contract makes that worse, not better: it is attached as
+acceptance criteria to *both* halves, so one clause of shared text used to be
+enough for a backend compile error to reopen the frontend's finished tasks.
+
+So ownership scopes it, the same property the write deny list enforces one layer
+down. When every path the tester named lies inside one team's territory, only
+that team's work may be reopened. Unassigned tasks are never excluded — they have
+no team to be outside of — a defect on the seam reaches both halves, and a run
+without an org chart is filtered by nothing.
+
 ### Each team can have its own manager
 
 A run-wide manager answering for a specific team picks from a roster it has no

@@ -179,6 +179,42 @@ that it failed again.
   after a full model call has been spent. Both the approval card and the Teams
   page offer only the eligible list.
 
+### Fixed — the run stopped without acting on the manager's decision
+
+The tester path's last act was to re-staff a ticket: raise it, notice the defect
+had come back, hand it to a different specialist with guidance the last attempt
+did not have — and then finish. The user saw "run complete" over a defect still
+on disk and a correctly-assigned ticket nobody had touched, which is worse than
+never having triaged at all.
+
+A reassignment is new information nobody has acted on, so it now gets a wave.
+Bounded twice: a ticket is re-staffed at most once (a second manager verdict is
+a third agent guessing at work two others could not do — a scoping problem, and
+what a human is being asked to see), and the corrective-wave budget still
+applies. The stream says `resolved after the project manager reassigned it`, or
+says once that it is still failing.
+
+### Fixed — one team's defect reopened the other team's finished work
+
+The reopen heuristics are text matches, and text matches leak across teams. The
+frozen contract made it worse rather than better: it is attached as acceptance
+criteria to *both* halves, so a single clause of shared text was enough for a
+backend compile error to reopen the frontend's completed tasks. The frontend
+then re-ran, failed at a defect it did not own and could not see, exhausted its
+retries and the run ended reporting `frontend 0/1 working` over a half that was
+correct and finished.
+
+Ownership now scopes the reopen, the same property the write deny list enforces
+one layer down. When every path the tester named is inside one team's territory,
+only that team's work — and unassigned work, which has no team to be outside of
+— may be reopened. A defect on the seam still reaches both halves, and a run
+with no org chart is filtered by nothing.
+
+The lane is computed from the tester's own words rather than the resolved target
+list, because that list is widened by the very task matches the check exists to
+catch: computing from it would let the contamination declare the defect a
+straddle and disable the check exactly when it is needed.
+
 ### Added — a Teams page
 
 The rail's Teams tab answers "how are the teams doing right now". The new

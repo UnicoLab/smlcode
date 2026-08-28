@@ -261,6 +261,29 @@ func TestARejectedDeliveryReachesTheProjectManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The narrative, kept for a failure and silent otherwise. A run this long
+	// is unreadable from assertion messages alone, and re-running it with
+	// logging bolted back on is how an hour goes.
+	var evMu sync.Mutex
+	var events []string
+	orch.OnEvent(func(ev orchestrator.Event) {
+		evMu.Lock()
+		defer evMu.Unlock()
+		switch ev.Kind {
+		case "phase", "output", "loop", "success":
+			events = append(events, ev.Phase+"/"+ev.Kind+": "+ev.Message)
+		}
+	})
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		evMu.Lock()
+		defer evMu.Unlock()
+		for _, e := range events {
+			t.Logf("EVENT %s", e)
+		}
+	})
 	if cerr := h.SetOrchestrator(orch); cerr != nil {
 		t.Fatalf("install orchestrator: %v", cerr)
 	}
@@ -367,6 +390,23 @@ func TestARejectedDeliveryReachesTheProjectManager(t *testing.T) {
 	for _, f := range []string{backendFile, frontendFile} {
 		if _, err := os.Stat(filepath.Join(root, f)); err != nil {
 			t.Errorf("%s was never written: %v", f, err)
+		}
+	}
+
+	// 6. THE POINT OF ALL OF IT: the specialist the manager picked actually
+	//    ran, and the defect is gone.
+	//
+	// A run that ticketed the defect, picked the right specialist and then
+	// stopped without running it has done the analysis and thrown it away. The
+	// user sees "finished" over a bug still on disk and a ticket nobody
+	// touched, which is worse than never having triaged at all.
+	if !model.theBugIsFixed() {
+		t.Error("the run finished with the defect still on disk — the manager's pick never ran")
+	}
+	for _, task := range res.Board.Tasks {
+		if task.Column == plan.ColReadyToDev && plan.CorrectionKeyOf(task) != "" {
+			t.Errorf("%s: the run finished leaving a correction ticket unstarted (role=%s)",
+				task.ID, task.Role)
 		}
 	}
 }

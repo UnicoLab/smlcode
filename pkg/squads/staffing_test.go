@@ -110,3 +110,41 @@ func TestColleaguesOnlyOrdersAgentsTheRosterAlreadyHad(t *testing.T) {
 		}
 	}
 }
+
+// ── Whose territory a defect is in ───────────────────────────────────────
+
+func TestLaneNamesTheTeamThatOwnsTheWholeDefect(t *testing.T) {
+	p := staffedPlan()
+	if got := LaneOf(p, []string{"cmd/server/main.go", "internal/store/todo.go"}); got != "backend" {
+		t.Errorf("LaneOf = %q, want backend", got)
+	}
+	if got := LaneOf(p, []string{"web/src/App.tsx"}); got != "frontend" {
+		t.Errorf("LaneOf = %q, want frontend", got)
+	}
+}
+
+// A defect on the seam belongs to both halves, and one that lands nowhere
+// belongs to whoever the board says. Either way the lane cannot narrow it, and
+// saying so is what keeps the check from filtering work it has no business
+// filtering.
+func TestLaneIsEmptyWhenItCannotNarrowTheDefect(t *testing.T) {
+	p := staffedPlan()
+	for _, tc := range []struct {
+		name  string
+		paths []string
+	}{
+		{"straddles both teams", []string{"cmd/server/main.go", "web/src/App.tsx"}},
+		{"nobody owns it", []string{"README.md"}},
+		{"one owned, one not", []string{"cmd/server/main.go", "Makefile"}},
+		{"nothing named", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LaneOf(p, tc.paths); got != "" {
+				t.Errorf("LaneOf = %q, want empty", got)
+			}
+		})
+	}
+	if got := LaneOf(nil, []string{"cmd/server/main.go"}); got != "" {
+		t.Errorf("LaneOf(nil plan) = %q, want empty", got)
+	}
+}

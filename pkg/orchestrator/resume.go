@@ -505,10 +505,22 @@ func (o *Orchestrator) correctiveTesterWave(ctx context.Context, query string, b
 		})
 		return board, testOut, false, nil, nil
 	}
-	if o.applyTesterFeedback(ctx, query, board, testOut2) {
+	if rejected, restaffed := o.applyTesterFeedbackRestaffed(ctx, query, board, testOut2); rejected {
 		snap = o.boardStore.Snapshot()
 		board = &snap
-		return board, testOut, true, nil, nil
+		// The project manager just moved this ticket to a different specialist
+		// and told it what to do differently. Stopping now would do the whole
+		// analysis and throw it away: the user sees "finished" over a defect
+		// still on disk and a ticket nobody touched, which is worse than never
+		// having triaged at all.
+		//
+		// Bounded twice over — a ticket is re-staffed at most once (see
+		// reassignedMarker), and RunCorrectiveBoard still refuses past
+		// max_waves — so this cannot become the loop it exists to end.
+		if restaffed > 0 {
+			board, testOut, rejected = o.runRestaffedTickets(ctx, query, board, runner, testPack, restaffed)
+		}
+		return board, testOut, rejected, nil, nil
 	}
 	o.emitLoop("test", LoopEvent{
 		Action: "resolved", Reason: "tester passed after corrective wave",
@@ -1247,4 +1259,65 @@ func promoteRenameTasksDone(board *plan.Board) {
 		t.MoveTo(plan.ColDone)
 		board.Tasks[i] = *t
 	}
+}
+
+// runRestaffedTickets executes the tickets the project manager just moved, and
+// re-verifies.
+//
+// This is the step that turns triage from an observation into a fix. Everything
+// here is best effort: a wave that cannot run (budget spent, canceled context)
+// leaves the board exactly as triage left it, which is still a correctly
+// staffed ticket a human or the next run can pick up.
+func (o *Orchestrator) runRestaffedTickets(ctx context.Context, query string, board *plan.Board,
+	runner *loop.Runner, testPack string, restaffed int) (*plan.Board, string, bool) {
+
+	failed := `{"passed":false,"summary":"tester rejected after the re-staffed wave","failures":["unresolved after reassignment"]}`
+	if runner == nil || !board.AgentWorkRemaining() {
+		return board, failed, true
+	}
+	o.emit("execute", fmt.Sprintf("re-staffed wave: %d ticket(s) moved by the project manager", restaffed), "")
+	o.emitLoop("execute", LoopEvent{
+		Action: "restaffed_wave",
+		Reason: "the project manager moved the ticket to a different specialist",
+		From:   "plan", To: "execute", Wave: o.waveCounter,
+	})
+	ran, err := runner.RunCorrectiveBoard(ctx, board)
+	if !ran {
+		o.emit("execute", "re-staffed wave skipped — max_waves budget exhausted", "")
+		return board, failed, true
+	}
+	if err != nil {
+		if isCancelErr(err) {
+			return board, failed, true
+		}
+		o.emit("execute", "re-staffed wave warning: "+err.Error(), "")
+	}
+	snap := o.boardStore.Snapshot()
+	board = &snap
+	o.persistBoard(board)
+
+	o.emitAgent("test", plan.RoleTester, "", "re-verify after the re-staffed wave", "", "")
+	_, tasksMD := board.ToMarkdown()
+	out, _ := o.runRoleTracked(ctx, plan.RoleTester, "", testPack+
+		"\nTasks:\n"+truncate(tasksMD, 4000)+
+		"\n\nRe-verify after the reassignment.\n\n"+o.langHint()+"\nSTRICT JSON with passed true/false.")
+	if strings.TrimSpace(out) == "" {
+		return board, failed, true
+	}
+	if !plan.ParseTesterJSON(out).Passed {
+		// Still red, and the ticket has now spent its one handoff. Say so once
+		// rather than reassigning again: a third agent guessing at work two
+		// others could not do is a scoping problem, not a staffing one.
+		o.emitLoop("test", LoopEvent{
+			Action: "unresolved", Reason: "still failing after the project manager's reassignment",
+			From: "test", To: "plan", Wave: o.waveCounter,
+		})
+		return board, out, true
+	}
+	o.emitSuccess("test", "resolved after the project manager reassigned it", "")
+	o.emitLoop("test", LoopEvent{
+		Action: "resolved", Reason: "the re-staffed specialist fixed it",
+		From: "test", To: "done", Wave: o.waveCounter,
+	})
+	return board, out, false
 }

@@ -233,7 +233,7 @@ func TestTesterFailureRaisesARoutedCorrectionTicket(t *testing.T) {
 		"1 of 9 tests failed",
 		"go test ./internal/store/",
 		"--- FAIL: TestTodoStore_Add\n    store_test.go:41: want 1 item, got 0\n",
-		hasGoReactRoles)
+		hasGoReactRoles, nil)
 
 	var ticket *plan.Task
 	for i := range out.Tasks {
@@ -271,9 +271,9 @@ func TestRepeatedTesterFailuresDoNotStackTickets(t *testing.T) {
 	}}
 	failures := []string{"TestX failed"}
 
-	first := rewriteBoardFromTesterWith(board, "q", failures, "1 failed", "go test ./...", "boom", hasGoReactRoles)
+	first := rewriteBoardFromTesterWith(board, "q", failures, "1 failed", "go test ./...", "boom", hasGoReactRoles, nil)
 	// Simulate the ticket still being open when the gate runs again.
-	second := rewriteBoardFromTesterWith(&first, "q", failures, "1 failed", "go test ./...", "boom", hasGoReactRoles)
+	second := rewriteBoardFromTesterWith(&first, "q", failures, "1 failed", "go test ./...", "boom", hasGoReactRoles, nil)
 
 	n := 0
 	for _, task := range second.Tasks {
@@ -291,7 +291,7 @@ func TestCorrectionTicketFallsBackWhenNoSpecialistExists(t *testing.T) {
 		{ID: "T1", Role: plan.RoleWorker, Column: plan.ColDone, Files: []string{"main.rs"}},
 	}}
 	out := rewriteBoardFromTesterWith(board, "q", []string{"cargo test failed"}, "",
-		"cargo test", "error[E0308]", func(string) bool { return false })
+		"cargo test", "error[E0308]", func(string) bool { return false }, nil)
 
 	for _, task := range out.Tasks {
 		if strings.Contains(task.Notes, "correction ticket") && task.Role != plan.RoleWorker {
@@ -954,5 +954,148 @@ func TestASpecialistVerdictIsHonoredAsGiven(t *testing.T) {
 	}
 	if got := board.Tasks[1].Role; got != "react-worker" {
 		t.Errorf("Role = %q, want the manager's deliberate cross-language pick", got)
+	}
+}
+
+// ── One team's defect must not reopen another team's finished work ───────
+//
+// The reopen heuristics are text matches, and text matches leak across teams.
+// The frozen contract makes it worse rather than better: it is attached as
+// acceptance criteria to BOTH halves, so one clause of shared text is enough
+// for a backend compile error to reopen the frontend's completed work. The
+// frontend then re-runs, fails at a defect it does not own and cannot see, and
+// the run ends reporting "frontend 0/1 working" over a half that was correct.
+
+func twoLanePlan() *squads.Plan {
+	p := &squads.Plan{Squads: []squads.Squad{
+		{ID: "backend", Owns: []string{"cmd/**", "internal/**"}, Acceptance: "go test ./...", Worker: "go-worker"},
+		{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build", Worker: "react-worker"},
+	}}
+	p.Normalize()
+	return p
+}
+
+// The shared acceptance text is what makes both halves match. That is the leak.
+func twoLaneBoard() *plan.Board {
+	const shared = "the contract clause GET /api/todos returns 200 with [{id,title,done}]"
+	return &plan.Board{Tasks: []plan.Task{
+		{
+			ID: "T1", Role: "go-worker", Squad: "backend", Title: "serve the todo API",
+			Files: []string{"cmd/server/main.go"}, Acceptance: shared,
+			Column: plan.ColDone, Status: plan.StatusDone,
+		},
+		{
+			ID: "T2", Role: "react-worker", Squad: "frontend", Title: "todo list view",
+			Files: []string{"web/src/App.tsx"}, Acceptance: shared,
+			Column: plan.ColDone, Status: plan.StatusDone,
+		},
+	}}
+}
+
+func TestABackendDefectLeavesTheFrontendsWorkAlone(t *testing.T) {
+	failures := []string{"cmd/server/main.go:7: undefined: json.NewEncoder"}
+	summary := "the contract clause GET /api/todos returns 200 with [{id,title,done}] is not met"
+
+	got := rewriteBoardFromTesterWith(twoLaneBoard(), "build a todo app", failures, summary,
+		"go build ./...", "undefined: json.NewEncoder", nil, twoLanePlan())
+
+	byID := map[string]plan.Task{}
+	for _, task := range got.Tasks {
+		byID[task.ID] = task
+	}
+	if byID["T1"].Column != plan.ColReadyToDev {
+		t.Errorf("T1 column = %q, want the owning team's task reopened", byID["T1"].Column)
+	}
+	if byID["T2"].Column != plan.ColDone {
+		t.Errorf("T2 column = %q — a backend defect reopened the frontend's finished work",
+			byID["T2"].Column)
+	}
+	if strings.Contains(byID["T2"].Notes, "REOPENED") {
+		t.Errorf("T2 was reopened for another team's defect: %q", byID["T2"].Notes)
+	}
+}
+
+// The lane only narrows things when it CAN. A defect on the seam belongs to
+// both halves, and refusing to reopen either would leave it with nobody.
+func TestADefectOnTheSeamStillReachesBothTeams(t *testing.T) {
+	failures := []string{
+		"cmd/server/main.go:7: returns a bare array",
+		"web/src/App.tsx:12: expects {items:[...]}",
+	}
+	got := rewriteBoardFromTesterWith(twoLaneBoard(), "build a todo app", failures,
+		"the two halves disagree about the response shape", "", "", nil, twoLanePlan())
+
+	for _, task := range got.Tasks {
+		if task.Column != plan.ColReadyToDev {
+			t.Errorf("%s column = %q, want both halves of a seam defect reopened", task.ID, task.Column)
+		}
+	}
+}
+
+// With no org chart the heuristics decide alone, exactly as they always did.
+func TestWithoutSquadsNothingIsFiltered(t *testing.T) {
+	board := twoLaneBoard()
+	for i := range board.Tasks {
+		board.Tasks[i].Squad = ""
+	}
+	failures := []string{"cmd/server/main.go:7: undefined: json.NewEncoder"}
+	got := rewriteBoardFromTesterWith(board, "build a todo app", failures,
+		"the contract clause GET /api/todos returns 200 with [{id,title,done}] is not met",
+		"", "", nil, nil)
+	reopened := 0
+	for _, task := range got.Tasks {
+		if task.Column == plan.ColReadyToDev {
+			reopened++
+		}
+	}
+	if reopened == 0 {
+		t.Error("with no squads the heuristics must still reopen implicated work")
+	}
+}
+
+// An unassigned task has no team to be outside of, and refusing to reopen it
+// would leave a real defect with nobody on it.
+func TestAnUnassignedTaskIsNeverOutsideTheLane(t *testing.T) {
+	if outsideLane("backend", plan.Task{ID: "T9"}) {
+		t.Error("a task with no squad is not outside anybody's lane")
+	}
+	if outsideLane("", plan.Task{ID: "T9", Squad: "frontend"}) {
+		t.Error("with no lane there is nothing to be outside of")
+	}
+	if !outsideLane("backend", plan.Task{ID: "T9", Squad: "frontend"}) {
+		t.Error("another team's task IS outside the lane")
+	}
+	if outsideLane("backend", plan.Task{ID: "T9", Squad: "BACKEND"}) {
+		t.Error("the lane check must not be case-sensitive")
+	}
+}
+
+// ── One handoff per ticket ───────────────────────────────────────────────
+//
+// A second manager verdict would be a third agent guessing at work two others
+// could not do. That is not a staffing problem any more — it is a scoping
+// problem, and that is what a human is being asked to see.
+func TestATicketIsReStaffedAtMostOnce(t *testing.T) {
+	exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"encoder bug"}`}
+	o := managedOrchestrator(t, exec, nil)
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("first triage moved %d tickets, want 1", moved)
+	}
+
+	// The defect comes back a third time. The ticket has spent its handoff.
+	plan.StampCorrectionAttempt(&board.Tasks[1], 3)
+	board.Tasks[1].Column = plan.ColReadyToDev
+	exec.askedAgent = ""
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+		t.Errorf("second triage moved %d tickets, want 0", moved)
+	}
+	if exec.askedAgent != "" {
+		t.Errorf("asked %q for a second verdict on a ticket that already changed hands", exec.askedAgent)
 	}
 }

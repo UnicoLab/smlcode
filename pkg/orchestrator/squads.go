@@ -507,6 +507,11 @@ func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.Tria
 	return d, true
 }
 
+// reassignedMarker records a manager handoff in a ticket's notes, so the
+// one-handoff budget survives persistence and a resumed run does not restart
+// it. Same marker the review ladder writes — see pkg/loop/handoff.go.
+const reassignedMarker = "reassigned-to: "
+
 // triageRepeatTickets sends a SECOND attempt at the same defect past the
 // project manager before it goes back to work.
 //
@@ -543,6 +548,13 @@ func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Boar
 			plan.CorrectionAttemptOf(t) < 2 {
 			continue
 		}
+		// One handoff per ticket, the same budget the review ladder uses. A
+		// second manager verdict would be a third agent guessing at work two
+		// others could not do, which is not a staffing problem any more — it is
+		// a scoping problem, and that is what a human is being asked to see.
+		if strings.Contains(t.Notes, reassignedMarker) {
+			continue
+		}
 		staff := squads.StaffingFor(o.squadPlan, t.Squad)
 		d, ok := o.triageRejectedDelivery(ctx, loop.TriageRequest{
 			Task: t,
@@ -576,7 +588,7 @@ func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Boar
 			t.Description = "## From the project manager\n\n" + g + "\n\n---\n\n" +
 				strings.TrimLeft(t.Description, "\n")
 		}
-		t.Notes = strings.TrimSpace(t.Notes + "\nreassigned-to: " + assignee +
+		t.Notes = strings.TrimSpace(t.Notes + "\n" + reassignedMarker + assignee +
 			" (repeat ticket, routed by the project manager)")
 		board.Tasks[i] = t
 		moved++

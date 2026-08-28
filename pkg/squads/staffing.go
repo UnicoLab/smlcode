@@ -139,3 +139,114 @@ func LaneOf(p *Plan, paths []string) string {
 	}
 	return lane
 }
+
+// SeamOwner names who owes the interfaces an integration failure implicates,
+// and which clauses those are.
+//
+// # WHY THIS EXISTS
+//
+// An integration failure is the most specific defect a two-team run can
+// produce: every squad's own acceptance is green and the assembled application
+// is still broken, which means the seam between them is wrong. That is the
+// exact failure the frozen contract exists to prevent, and the one where a
+// generic "the gate is red" ticket is least useful — nobody owns it, no
+// specialist is implied, and the agent that picks it up has to rediscover which
+// half is lying about its own interface.
+//
+// The provider owes the clause. A consumer built against text it was handed;
+// the provider is the one that either implemented that text or drifted from it.
+// When several teams provide interfaces, the failure output usually names one
+// of their lanes, and that is the tiebreak. When it names none, the answer is
+// "" and the ticket stays unassigned rather than landing on a guess.
+func SeamOwner(p *Plan, output string) (squad string, clauses []string) {
+	if p == nil || len(p.Contract.Interfaces) == 0 {
+		return "", nil
+	}
+	byProvider := map[string][]string{}
+	var providers []string
+	for _, in := range p.Contract.Interfaces {
+		id := strings.TrimSpace(in.Provider)
+		if id == "" {
+			continue
+		}
+		if _, seen := byProvider[id]; !seen {
+			providers = append(providers, id)
+		}
+		byProvider[id] = append(byProvider[id], in.ID)
+	}
+	switch len(providers) {
+	case 0:
+		return "", nil
+	case 1:
+		return providers[0], byProvider[providers[0]]
+	}
+	// Several providers: the failure text decides, by naming a squad or a path
+	// inside its lane.
+	lower := strings.ToLower(output)
+	for _, id := range providers {
+		if strings.Contains(lower, strings.ToLower(id)) {
+			return id, byProvider[id]
+		}
+	}
+	for _, path := range PathsIn(output) {
+		if owner, ok := p.Owner(path); ok {
+			if clause, mine := byProvider[owner]; mine {
+				return owner, clause
+			}
+		}
+	}
+	return "", nil
+}
+
+// PathsIn pulls repo-relative-looking paths out of command output.
+//
+// Deliberately conservative: a path is something with a slash and an extension,
+// which is what a compiler, a bundler and a test runner all print. Over-matching
+// here would put a ticket on files nobody touched.
+func PathsIn(output string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, field := range strings.FieldsFunc(output, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == '"' || r == '\'' || r == '(' || r == ')' || r == '`'
+	}) {
+		field = strings.TrimRight(strings.Trim(field, ",;"), ":")
+		// Trim a trailing `:12:34` line/column suffix.
+		for {
+			trimmed := trimLineRef(field)
+			if trimmed == field {
+				break
+			}
+			field = trimmed
+		}
+		if !strings.Contains(field, "/") || !strings.Contains(filepathBase(field), ".") {
+			continue
+		}
+		if strings.HasPrefix(field, "/") || strings.Contains(field, "://") || seen[field] {
+			continue
+		}
+		seen[field] = true
+		out = append(out, field)
+	}
+	return out
+}
+
+// trimLineRef removes one trailing `:<digits>` from a path reference.
+func trimLineRef(s string) string {
+	i := strings.LastIndexByte(s, ':')
+	if i <= 0 || i == len(s)-1 {
+		return s
+	}
+	for _, r := range s[i+1:] {
+		if r < '0' || r > '9' {
+			return s
+		}
+	}
+	return s[:i]
+}
+
+func filepathBase(s string) string {
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}

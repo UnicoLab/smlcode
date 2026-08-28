@@ -293,6 +293,34 @@ hands the team back to the run's default manager.
 
 ---
 
+## When the halves do not fit 🔗
+
+Every squad green and the assembled application broken is the defect this whole
+design exists to catch: both halves passed their own tests and the seam between
+them is wrong.
+
+The integration command runs as soon as every squad is complete, and a failure
+raises a **ticket somebody owns** rather than a warning at the end of a
+"successful" run:
+
+- the **provider owes the clause** — a consumer built against text it was
+  handed, so the team that either implemented that text or drifted from it is
+  the one that gets the ticket;
+- the ticket carries the integration command, the output that names the seam,
+  the contract clauses at stake and the implicated files;
+- files are kept to the owing team's lane. If the output named nothing there,
+  the ticket ships unscoped rather than pointing at the other half's files.
+
+With several providers, the failure text decides — by naming a team or a path
+inside its lane. When it names neither, the ticket stays unassigned: a guess is
+worse than nothing, because an unassigned ticket with real evidence beats one
+parked on the wrong team.
+
+A seam that fails again is the same defect: the existing ticket's attempt count
+goes up rather than a second ticket appearing.
+
+---
+
 ## Safety: disjoint ownership 🛡️
 
 **Two squads may never own the same path.** They write concurrently; an overlap

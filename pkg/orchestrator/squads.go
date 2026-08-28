@@ -226,7 +226,87 @@ func (o *Orchestrator) runSquadIntegration(ctx context.Context, board *plan.Boar
 	o.emitWarn("integrate", "INTEGRATION FAILED — every squad is green but the assembled "+
 		"application is not. The seam is wrong: "+res.Summary, res.Output)
 	o.recordGate("integration", false, res.Summary)
+	o.raiseIntegrationTicket(board, gate.Command, res.Summary, res.Output)
 	return true
+}
+
+// raiseIntegrationTicket turns a failed join into a ticket somebody owns.
+//
+// This is the defect the whole squads design exists to catch — every half green
+// and the assembled application broken — and it used to arrive as the least
+// useful ticket the harness can produce. The QA path raised it with a synthetic
+// verdict reading `qa_gate command still failing` / `qa_gate red`, so the
+// command that failed, the output naming the seam, the interfaces at stake and
+// the team that owes them were all discarded. What landed was a generic
+// `worker` task with no files, owned by nobody, whose entire context was that a
+// gate was red.
+//
+// The contract knows who owes each clause, so the ticket goes to that team with
+// the evidence attached.
+func (o *Orchestrator) raiseIntegrationTicket(board *plan.Board, cmd, summary, output string) {
+	if o == nil || board == nil {
+		return
+	}
+	squad, clauses := squads.SeamOwner(o.squadPlan, output)
+	failures := []string{"the halves do not fit together: " + firstSentence(summary)}
+	for _, c := range clauses {
+		failures = append(failures, "contract clause at stake: "+c)
+	}
+
+	in := plan.CorrectionInput{
+		Source:   plan.SourceIntegration,
+		Failures: failures,
+		Summary:  summary,
+		Command:  cmd,
+		Output:   output,
+		// Files the integration output actually named, kept to the owing team's
+		// lane: a bundler error listing half the tree would otherwise scope the
+		// ticket to everything.
+		Files: o.seamFiles(output, squad),
+		Squad: squad,
+	}
+	key := plan.CorrectionKey(in)
+	in.Attempt = board.CorrectionAttempts(key)
+	if board.NoteRepeatedRejection(key) > 0 {
+		o.persistBoard(board)
+		return
+	}
+	var hasRole func(string) bool
+	if o.factory != nil {
+		hasRole = o.factory.HasRole
+	}
+	ticket := plan.NewCorrectionTicket(in, hasRole)
+	plan.StampCorrectionKey(&ticket, key)
+	plan.StampCorrectionAttempt(&ticket, in.Attempt+1)
+	board.AddTask(ticket)
+	o.persistBoard(board)
+
+	where := "unassigned"
+	if squad != "" {
+		where = squad
+	}
+	o.emit("integrate", fmt.Sprintf("raised an integration ticket for %s → %s", where, ticket.Role), ticket.ID)
+}
+
+// seamFiles is the paths the integration output named, narrowed to one team's
+// lane when a team owes the seam.
+func (o *Orchestrator) seamFiles(output, squad string) []string {
+	named := squads.PathsIn(output)
+	if squad == "" || o.squadPlan == nil {
+		return limitList(named, 8)
+	}
+	var mine []string
+	for _, f := range named {
+		if owner, ok := o.squadPlan.Owner(f); ok && owner == squad {
+			mine = append(mine, f)
+		}
+	}
+	if len(mine) == 0 {
+		// The output named nothing in this team's lane. Better an unscoped
+		// ticket with the evidence than one scoped to the other half's files.
+		return nil
+	}
+	return limitList(mine, 8)
 }
 
 // routeBoardToSpecialists assigns every task the specialist its own files call

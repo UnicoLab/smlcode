@@ -215,6 +215,30 @@ list, because that list is widened by the very task matches the check exists to
 catch: computing from it would let the contamination declare the defect a
 straddle and disable the check exactly when it is needed.
 
+### Fixed — an integration failure raised the worst ticket in the harness
+
+Every squad green and the assembled application broken is the defect the whole
+squads design exists to catch. It arrived as the *least* useful ticket the
+harness can produce: the failure was routed through the QA path with a synthetic
+verdict reading `qa_gate command still failing` / `qa_gate red`, so the
+integration command, the output that names the seam, the contract clauses at
+stake and the team that owes them were all discarded. What landed was a generic
+`worker` task with no files, owned by nobody, whose entire context was that a
+gate was red.
+
+It now raises a real correction ticket: the provider owes the clause (a consumer
+built against text it was handed), the evidence rides along, and the implicated
+files are kept to the owing team's lane — if the output named nothing there, the
+ticket ships unscoped rather than pointing at the other half's files. With
+several providers the failure text decides; when it names neither a team nor a
+path in one's lane, the ticket stays unassigned, because an unassigned ticket
+with real evidence beats one parked on the wrong team.
+
+A seam that fails again bumps the existing ticket instead of stacking a second,
+and the QA path no longer re-enters the tester rewrite for it — its reopen pass
+would have reopened halves that are green by definition, which is exactly what
+"every squad passed and the seam is wrong" means.
+
 ### Added — the run summary says what it repaired
 
 `Todo app: Go API + React SPA — 2/2 tasks done, 0 failed` read exactly the same

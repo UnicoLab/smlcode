@@ -679,11 +679,21 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	integrationFailed := o.runSquadIntegration(ctx, out.Board)
 
 	out.QACmd = o.qaCommand()
-	out.QAFailed = o.runQAGate(ctx, query, out.Board) || integrationFailed
+	qaFailed := o.runQAGate(ctx, query, out.Board)
+	out.QAFailed = qaFailed || integrationFailed
 	if out.QAFailed {
 		out.TesterRejected = true
-		fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`
-		_ = o.applyTesterFeedback(ctx, query, out.Board, fake)
+		// An integration failure has already raised its own ticket, carrying
+		// the command, the output that names the seam, the contract clauses at
+		// stake and the team that owes them. Re-entering the tester path with
+		// a synthetic `qa_gate red` verdict would throw all of that away and
+		// stack a second, generic ticket on top of the specific one — and its
+		// reopen pass would reopen halves that are green by definition, which
+		// is what "every squad passed and the seam is wrong" means.
+		if qaFailed {
+			fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`
+			_ = o.applyTesterFeedback(ctx, query, out.Board, fake)
+		}
 		snap := o.boardStore.Snapshot()
 		out.Board = &snap
 		return out

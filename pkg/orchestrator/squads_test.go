@@ -1099,3 +1099,111 @@ func TestATicketIsReStaffedAtMostOnce(t *testing.T) {
 		t.Errorf("asked %q for a second verdict on a ticket that already changed hands", exec.askedAgent)
 	}
 }
+
+// ── An integration failure is a ticket, not a warning ────────────────────
+//
+// Every squad green and the assembled application broken is the defect the
+// whole design exists to catch. It used to arrive as the least useful ticket
+// the harness can produce: the QA path raised it with a synthetic
+// `qa_gate command still failing` verdict, so the command, the output naming
+// the seam, the contract clauses and the team that owes them were all
+// discarded — leaving a generic `worker` task with no files, owned by nobody.
+
+func seamOrchestrator(t *testing.T) *Orchestrator {
+	t.Helper()
+	p := &squads.Plan{
+		Squads: []squads.Squad{
+			{ID: "backend", Owns: []string{"cmd/**", "internal/**"}, Acceptance: "go test ./...", Worker: "go-worker"},
+			{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build", Worker: "react-worker"},
+		},
+		Contract: squads.Contract{Interfaces: []squads.Interface{
+			{ID: "GET /api/todos", Provider: "backend", Consumers: []string{"frontend"},
+				Spec: "200 -> [{id,title,done}]"},
+		}},
+	}
+	p.Normalize()
+	o, _ := routingOrchestrator(t, p)
+	return o
+}
+
+func TestAnIntegrationFailureRaisesATicketWithTheEvidence(t *testing.T) {
+	o := seamOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: "go-worker", Squad: "backend", Column: plan.ColDone, Files: []string{"cmd/server/main.go"}},
+		{ID: "T2", Role: "react-worker", Squad: "frontend", Column: plan.ColDone, Files: []string{"web/src/App.tsx"}},
+	}}
+	const output = "cmd/server/main.go:41: returned {items:[]}, the contract says a bare array"
+
+	o.raiseIntegrationTicket(board, "go test ./... && npm run build", "the halves do not agree on the response shape", output)
+
+	var ticket *plan.Task
+	for i := range board.Tasks {
+		if plan.CorrectionKeyOf(board.Tasks[i]) != "" {
+			ticket = &board.Tasks[i]
+		}
+	}
+	if ticket == nil {
+		t.Fatal("an integration failure must produce a ticket somebody owns")
+	}
+	// The provider owes the clause: the consumer built against text it was handed.
+	if ticket.Squad != "backend" {
+		t.Errorf("Squad = %q, want the team that provides the broken interface", ticket.Squad)
+	}
+	// A .go file means the Go specialist, not the generic worker.
+	if !strings.HasPrefix(ticket.Role, "go-") {
+		t.Errorf("Role = %q, want the specialist the implicated file calls for", ticket.Role)
+	}
+	// The evidence that used to be thrown away.
+	for _, want := range []string{
+		"go test ./... && npm run build", // how to reproduce it
+		"{items:[]}",                     // what it printed
+		"GET /api/todos",                 // which clause is at stake
+		"cmd/server/main.go",             // where
+	} {
+		if !strings.Contains(ticket.Description, want) {
+			t.Errorf("the ticket is missing %q:\n%s", want, ticket.Description)
+		}
+	}
+	if len(ticket.Files) == 0 {
+		t.Error("the ticket has no files, so nothing scopes the fix")
+	}
+}
+
+// The same broken seam on the next round is the same defect. Stacking a ticket
+// per integration run is how a board loses the plot.
+func TestARepeatedSeamFailureBumpsTheTicketRatherThanStackingOne(t *testing.T) {
+	o := seamOrchestrator(t)
+	board := &plan.Board{}
+	const output = "cmd/server/main.go:41: returned {items:[]}"
+
+	o.raiseIntegrationTicket(board, "make check", "shape mismatch", output)
+	o.raiseIntegrationTicket(board, "make check", "shape mismatch", output)
+
+	tickets := 0
+	for _, task := range board.Tasks {
+		if plan.CorrectionKeyOf(task) != "" {
+			tickets++
+			if got := plan.CorrectionAttemptOf(task); got != 2 {
+				t.Errorf("attempt = %d, want the repeat recorded on the one ticket", got)
+			}
+		}
+	}
+	if tickets != 1 {
+		t.Errorf("%d tickets on the board, want 1", tickets)
+	}
+}
+
+// Scoping a ticket to the OTHER half's files is worse than not scoping it.
+func TestASeamTicketNeverScopesToTheOtherTeamsFiles(t *testing.T) {
+	o := seamOrchestrator(t)
+	if got := o.seamFiles("web/src/App.tsx:12: boom", "backend"); len(got) != 0 {
+		t.Errorf("seamFiles = %v, want nothing rather than the frontend's files", got)
+	}
+	if got := o.seamFiles("cmd/server/main.go:41: boom", "backend"); len(got) != 1 || got[0] != "cmd/server/main.go" {
+		t.Errorf("seamFiles = %v, want the owning team's file", got)
+	}
+	// With nobody owing the seam, everything named is still useful context.
+	if got := o.seamFiles("web/src/App.tsx:12: boom", ""); len(got) != 1 {
+		t.Errorf("seamFiles(unowned) = %v, want the named path kept", got)
+	}
+}

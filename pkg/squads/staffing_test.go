@@ -2,6 +2,7 @@ package squads
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +147,93 @@ func TestLaneIsEmptyWhenItCannotNarrowTheDefect(t *testing.T) {
 	}
 	if got := LaneOf(nil, []string{"cmd/server/main.go"}); got != "" {
 		t.Errorf("LaneOf(nil plan) = %q, want empty", got)
+	}
+}
+
+// ── Who owes a broken seam ───────────────────────────────────────────────
+//
+// An integration failure is the defect the whole design exists to catch: every
+// squad's own acceptance green and the assembled application still broken. It
+// is also where a generic "the gate is red" ticket is least useful — nobody
+// owns it, no specialist is implied, and whoever picks it up has to rediscover
+// which half is lying about its own interface.
+
+func contractPlan(ifaces ...Interface) *Plan {
+	p := staffedPlan()
+	p.Contract.Interfaces = ifaces
+	p.Normalize()
+	return p
+}
+
+// The provider owes the clause: a consumer built against text it was handed.
+func TestTheProviderOwesTheSeam(t *testing.T) {
+	p := contractPlan(Interface{ID: "GET /api/todos", Provider: "backend", Consumers: []string{"frontend"}})
+	squad, clauses := SeamOwner(p, "expected [] got {items:[]}")
+	if squad != "backend" {
+		t.Errorf("squad = %q, want backend", squad)
+	}
+	if len(clauses) != 1 || clauses[0] != "GET /api/todos" {
+		t.Errorf("clauses = %v, want the interface at stake", clauses)
+	}
+}
+
+// With several providers the failure text decides, by naming a team or a path
+// inside its lane.
+func TestSeveralProvidersAreBrokenByWhatTheOutputNames(t *testing.T) {
+	p := contractPlan(
+		Interface{ID: "GET /api/todos", Provider: "backend"},
+		Interface{ID: "window.mountApp", Provider: "frontend"},
+	)
+	if got, _ := SeamOwner(p, "web/src/App.tsx:12: mountApp is not a function"); got != "frontend" {
+		t.Errorf("squad = %q, want the team whose lane the output names", got)
+	}
+	if got, _ := SeamOwner(p, "backend handler returned 500"); got != "backend" {
+		t.Errorf("squad = %q, want the team the output names outright", got)
+	}
+}
+
+// A guess is worse than nothing: an unassigned ticket with real evidence beats
+// one parked on the wrong team.
+func TestAnUnattributableSeamStaysUnassigned(t *testing.T) {
+	p := contractPlan(
+		Interface{ID: "GET /api/todos", Provider: "backend"},
+		Interface{ID: "window.mountApp", Provider: "frontend"},
+	)
+	if got, clauses := SeamOwner(p, "exit status 1"); got != "" || clauses != nil {
+		t.Errorf("SeamOwner = %q/%v, want no guess", got, clauses)
+	}
+	if got, _ := SeamOwner(nil, "anything"); got != "" {
+		t.Errorf("SeamOwner(nil) = %q", got)
+	}
+	if got, _ := SeamOwner(staffedPlan(), "anything"); got != "" {
+		t.Errorf("a plan with no contract owes nothing: %q", got)
+	}
+}
+
+func TestPathsInReadsCompilerAndBundlerOutput(t *testing.T) {
+	out := `web/src/App.tsx:12:5 - error TS2339
+cmd/server/main.go:41: undefined: json.NewEncoder
+    at /abs/path/node_modules/x.js:1
+see https://example.com/docs/a.html
+ok  	github.com/x/y	0.1s`
+	got := PathsIn(out)
+	want := map[string]bool{"web/src/App.tsx": true, "cmd/server/main.go": true}
+	for _, g := range got {
+		delete(want, g)
+		// Absolute paths and URLs are not repo-relative files.
+		if strings.HasPrefix(g, "/") || strings.Contains(g, "://") {
+			t.Errorf("PathsIn returned %q, which is not a repo path", g)
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("PathsIn = %v, missing %v", got, want)
+	}
+}
+
+func TestPathsInIsQuietOnOutputWithNoPaths(t *testing.T) {
+	for _, in := range []string{"", "exit status 1", "FAIL", "make: *** [all] Error 2"} {
+		if got := PathsIn(in); len(got) != 0 {
+			t.Errorf("PathsIn(%q) = %v, want nothing", in, got)
+		}
 	}
 }

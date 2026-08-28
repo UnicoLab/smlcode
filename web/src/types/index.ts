@@ -258,6 +258,19 @@ export interface MCPStatus {
 }
 
 // ── SSE Events ──
+/**
+ * What a run found and repaired by itself — mirrors orchestrator.RunRepairs.
+ *
+ * Absent when nothing ever went wrong, which is the common case and needs no
+ * line about it.
+ */
+export interface RunRepairs {
+  found: number;
+  resolved: number;
+  restaffed: number;
+  needs_human: number;
+}
+
 export interface RunEvent {
   phase: string;
   kind: string;
@@ -419,6 +432,8 @@ export interface OrchestratorResult {
   summary: string;
   duration: number;       // nanoseconds
   failed_tasks: number;
+  /** What the run repaired by itself. Absent when nothing went wrong. */
+  repairs?: RunRepairs | null;
 }
 
 export interface LatestRunResponse {

@@ -31,7 +31,6 @@ import type {
   PipelineView,
   DynamicComposition,
   InterruptedRun,
-  LatestRunResponse,
 } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
@@ -41,6 +40,7 @@ import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import SquadPanel from './SquadPanel';
 import RecoveryPanel from './RecoveryPanel';
+import ResultPanel from './ResultPanel';
 import { buildRecovery, recoveryTally } from './recovery';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
@@ -768,52 +768,6 @@ function EmptyState({ hasPreviousRun }: { hasPreviousRun: boolean }) {
             The previous run&rsquo;s summary is under <span className="font-semibold">Result</span>.
           </p>
         )}
-      </div>
-    </div>
-  );
-}
-
-function ResultPanel({ result }: { result: LatestRunResponse | null }) {
-  if (!result?.result) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-gray-400">
-        <CheckCircle2 size={28} className="opacity-40" />
-        <p className="text-sm">No result yet</p>
-        <p className="text-xs">A summary appears here when the run finishes.</p>
-      </div>
-    );
-  }
-  const r = result.result;
-  const seconds = r.duration > 1e9 ? `${(r.duration / 1e9).toFixed(1)}s` : `${(r.duration / 1e6).toFixed(0)}ms`;
-  return (
-    <div className="h-full space-y-3 overflow-auto p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Result</h3>
-        <span className={clsx('badge text-[10px]', r.success ? 'badge-success' : 'badge-error')}>
-          {r.success ? 'Success' : 'Failed'}
-        </span>
-      </div>
-      {r.summary && <p className="text-sm text-gray-600 dark:text-gray-300">{r.summary}</p>}
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="Failed" value={String(r.failed_tasks)} bad={r.failed_tasks > 0} />
-        <Stat label="Duration" value={seconds} />
-        <Stat label="Events" value={String(result.events?.length ?? 0)} />
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
-  return (
-    <div className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">{label}</div>
-      <div
-        className={clsx(
-          'mt-0.5 font-mono text-sm font-bold tabular-nums',
-          bad ? 'text-rose-500' : 'text-gray-800 dark:text-gray-100',
-        )}
-      >
-        {value}
       </div>
     </div>
   );

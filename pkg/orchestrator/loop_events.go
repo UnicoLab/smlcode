@@ -27,6 +27,13 @@ func (o *Orchestrator) emitLoop(phase string, ev LoopEvent) {
 	if ev.Action == "" {
 		ev.Action = "loop"
 	}
+	// Every rewind funnels through here, so this is the one place the run's
+	// own resilience can be counted without threading a ledger through the
+	// pipeline.
+	o.repairs.note(ev.Action)
+	if ev.Awaiting {
+		o.repairs.note("continue_pending")
+	}
 	if ev.Wave <= 0 {
 		o.waveCounter++
 		ev.Wave = o.waveCounter

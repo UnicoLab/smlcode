@@ -926,7 +926,8 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		Success: success, FailedTasks: failed,
 		Outcome:         outcome,
 		UnexecutedTasks: unexecuted,
-		Duration:        time.Since(start), Summary: summarize(board, board.Plan),
+		Duration:        time.Since(start), Summary: summarizeWithRepairs(board, board.Plan, &o.repairs),
+		Repairs: o.repairs.snapshot(),
 		Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
 		Usage: o.snapshotUsage(),
 	}

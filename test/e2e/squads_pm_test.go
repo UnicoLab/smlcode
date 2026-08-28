@@ -400,6 +400,20 @@ func TestARejectedDeliveryReachesTheProjectManager(t *testing.T) {
 	// stopped without running it has done the analysis and thrown it away. The
 	// user sees "finished" over a bug still on disk and a ticket nobody
 	// touched, which is worse than never having triaged at all.
+	// The one line most people read has to say the run repaired itself.
+	// Without it a run that hit a defect and fixed it reads exactly like one
+	// where nothing happened — after a stream full of loud red failures.
+	t.Logf("summary: %s", res.Summary)
+	if !strings.Contains(res.Summary, "defect") {
+		t.Errorf("the summary hides the run's own repair work: %q", res.Summary)
+	}
+	if res.Repairs == nil || res.Repairs.Found == 0 || res.Repairs.Resolved != res.Repairs.Found {
+		t.Errorf("Repairs = %+v, want the defect recorded and closed", res.Repairs)
+	}
+	if res.Repairs != nil && res.Repairs.Restaffed == 0 {
+		t.Error("the project manager's handoff is not in the repair record")
+	}
+
 	if !model.theBugIsFixed() {
 		t.Error("the run finished with the defect still on disk — the manager's pick never ran")
 	}

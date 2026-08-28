@@ -75,7 +75,10 @@ type Result struct {
 	UnexecutedTasks int `json:"unexecuted_tasks,omitempty"`
 	Duration        time.Duration
 	Summary         string `json:"summary"`
-	Backend         string `json:"backend"`
+	// Repairs counts what the run found and fixed by itself. Nil when nothing
+	// ever went wrong, which is the common case and needs no line about it.
+	Repairs *RunRepairs `json:"repairs,omitempty"`
+	Backend string      `json:"backend"`
 	// LatencyMs is wall time per phase/role for SLM tuning (plan/split/worker/…).
 	LatencyMs map[string]int64 `json:"latency_ms,omitempty"`
 	// Usage aggregates prompt/completion tokens (estimated when providers omit on early_exit).
@@ -109,7 +112,10 @@ type Orchestrator struct {
 	mcpMgr      *mcp.Manager
 	rewindMgr   *rewind.Manager
 	waveCounter int
-	pipe        *pipeline.Config // config-driven phases / slots / loop agents
+	// repairs counts what this run found and fixed by itself, folded from the
+	// loop events as they are emitted. See repairs.go.
+	repairs repairLedger
+	pipe    *pipeline.Config // config-driven phases / slots / loop agents
 	// squadPlan is the virtual-team org chart for this run, nil on every
 	// single-stream run. Set by the manager phase before plan/split; read by
 	// the board router, the execute loop and the between-wave report.
@@ -1284,6 +1290,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.focus.Clear()
 	}
 	o.waveCounter = 0
+	o.repairs = repairLedger{}
 	o.applyArchitectEditorRoles(board)
 	runner := o.buildRunner(query, runID, skillPack)
 	snap := o.boardStore.Snapshot()
@@ -2480,6 +2487,16 @@ func fallbackTasks(pl plan.Plan) []plan.Task {
 }
 
 func summarize(board *plan.Board, pl plan.Plan) string {
+	return summarizeWithRepairs(board, pl, nil)
+}
+
+// summarizeWithRepairs is summarize plus the run's own repair record.
+//
+// A run that hit two defects and fixed both used to read exactly like one where
+// nothing went wrong. The failures are already loud in the stream, so a summary
+// that mentions none of them reads either as a swallowed failure or as a
+// summary not worth trusting.
+func summarizeWithRepairs(board *plan.Board, pl plan.Plan, repairs *repairLedger) string {
 	done, total := 0, len(board.Tasks)
 	for _, t := range board.Tasks {
 		t.Normalize()
@@ -2487,8 +2504,12 @@ func summarize(board *plan.Board, pl plan.Plan) string {
 			done++
 		}
 	}
-	return fmt.Sprintf("%s — %d/%d tasks done, %d failed",
+	out := fmt.Sprintf("%s — %d/%d tasks done, %d failed",
 		firstSentence(pl.Summary), done, total, board.FailedCount())
+	if line := repairs.line(); line != "" {
+		out += " · " + line
+	}
+	return out
 }
 
 func firstSentence(s string) string {

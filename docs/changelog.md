@@ -215,6 +215,23 @@ list, because that list is widened by the very task matches the check exists to
 catch: computing from it would let the contamination declare the defect a
 straddle and disable the check exactly when it is needed.
 
+### Added — the run summary says what it repaired
+
+`Todo app: Go API + React SPA — 2/2 tasks done, 0 failed` read exactly the same
+whether the run sailed through or hit two defects and fixed both. The failures
+are already loud in the stream, so a summary mentioning none of them reads
+either as a swallowed failure or as a summary not worth trusting.
+
+It now ends `· 1 defect found and fixed`, or `· 1 of 2 defects fixed, 1 still
+open` when something is still owed to a person. The count rides on the run
+result as `repairs` (found / resolved / restaffed / needs_human) and the Studio's
+result panel says it in words: *Fixed the 1 defect without you · 1 reassigned by
+the project manager*.
+
+A defect that comes back is one defect with another attempt, folded by the same
+rule the Fixes tab uses — the summary and the panel must never disagree about
+how many things went wrong.
+
 ### Added — a Fixes tab: what the harness repaired by itself
 
 The harness recovers from most of what goes wrong, and none of it was visible.

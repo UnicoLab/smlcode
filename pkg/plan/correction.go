@@ -358,6 +358,60 @@ func (b *Board) NoteRepeatedRejection(key string) int {
 	return 0
 }
 
+// bookkeepingMarkers are the `key: value` lines the harness stamps into a
+// task's Notes for its own use.
+//
+// They exist so a resumed run can find its own state — a dedupe key, an attempt
+// count, which turn a ticket belongs to. None of it means anything to an agent.
+var bookkeepingMarkers = []string{
+	"correction-key:",
+	"correction-attempt:",
+	"query scope ",
+}
+
+// PromptNotes is the part of a task's Notes worth showing an agent.
+//
+// # WHY THIS EXISTS
+//
+// BuildWorkerPrompt renders Notes under the heading "Human notes", and on a
+// correction ticket that block reads:
+//
+//	correction ticket from the tester gate; assigned to go-worker
+//	correction-key: tester|handler returns 500|internal/http/todo.go
+//	correction-attempt: 2
+//	query scope run-1787…
+//
+// A human wrote none of it. A 30B model told these are HUMAN notes treats them
+// as the highest-authority instruction in the pack and spends attention parsing
+// a dedupe key — while the things those markers stand for (this is a repeat,
+// somebody else had it) are already stated properly in the ticket body, in
+// prose, where they belong.
+//
+// So the bookkeeping lines are dropped. Harness prose that genuinely tells an
+// agent something ("REOPENED: tester implicated this task", "PLACEHOLDER GAP:
+// …") is kept — see the heading change in BuildWorkerPrompt, which stops
+// claiming a human wrote it.
+func PromptNotes(notes string) string {
+	if strings.TrimSpace(notes) == "" {
+		return ""
+	}
+	var kept []string
+	for _, line := range strings.Split(notes, "\n") {
+		trimmed := strings.TrimSpace(line)
+		drop := false
+		for _, m := range bookkeepingMarkers {
+			if strings.HasPrefix(trimmed, m) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
 // markerValue reads a single-line marker's value out of a notes field.
 //
 // The markers carry a leading newline so they cannot match mid-line, but the

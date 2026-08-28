@@ -24,7 +24,7 @@ func CapTasksPreserveHarness(tasks []Task, max int) []Task {
 		testers := []Task{}
 		others := []Task{}
 		for _, t := range keep {
-			if t.Role == RoleTester {
+			if IsTesterRole(t.Role) {
 				testers = append(testers, t)
 			} else {
 				others = append(others, t)
@@ -47,7 +47,7 @@ func CapTasksPreserveHarness(tasks []Task, max int) []Task {
 }
 
 func isHarnessCriticalTask(t Task) bool {
-	if t.Role == RoleTester {
+	if IsTesterRole(t.Role) {
 		return true
 	}
 	blob := strings.ToLower(t.Title + " " + t.Description + " " + strings.Join(t.Files, " "))

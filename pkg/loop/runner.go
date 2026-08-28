@@ -2013,7 +2013,7 @@ func bestReviewParse(raw, repaired string) plan.ReviewResult {
 // a small reviewer model returns a broken or over-strict verdict.
 func (r *Runner) slmApprovalFallback(review plan.ReviewResult, current plan.Task,
 	g gateState, reviewRaw string) plan.ReviewResult {
-	if review.Approved || current.Role == plan.RoleTester || g.blocking() {
+	if review.Approved || plan.IsTesterRole(current.Role) || g.blocking() {
 		return review
 	}
 	// review.NoVerdict is the PARSER's own report that it could not read a

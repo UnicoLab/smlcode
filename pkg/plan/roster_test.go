@@ -219,3 +219,22 @@ func TestAManifestPicksTheRightSpecialist(t *testing.T) {
 		t.Errorf("SpecialistFor(go.mod) = %q, want the Go specialist", got)
 	}
 }
+
+// ── A language-specialised tester is still a tester ──────────────────────
+
+func TestIsTesterRoleMatchesTheSuffix(t *testing.T) {
+	for _, role := range []string{RoleTester, "go-tester", "python-tester", "react-tester", "TS-Tester"} {
+		if !IsTesterRole(role) {
+			t.Errorf("IsTesterRole(%q) = false, want true", role)
+		}
+	}
+	for _, role := range []string{
+		"", "worker", "go-worker", "reviewer", "go-reviewer", "corrector",
+		// A prefix match must not count: "tester-helper" is not a tester.
+		"tester-helper", "testerish", "planner",
+	} {
+		if IsTesterRole(role) {
+			t.Errorf("IsTesterRole(%q) = true, want false", role)
+		}
+	}
+}

@@ -246,7 +246,7 @@ func reopenForContinue(board *plan.Board, gaps []quality.PreciseGap) {
 			strings.Contains(blob, "timeout") || strings.Contains(blob, "timed out") ||
 			strings.Contains(blob, "deadline") {
 			if t.Role == plan.RoleWorker || t.Role == plan.RoleCorrector || t.Role == "deep" ||
-				t.Role == plan.RoleTester || t.Role == plan.RolePlaceholder {
+				plan.IsTesterRole(t.Role) || t.Role == plan.RolePlaceholder {
 				t.Error = ""
 				t.Notes = strings.TrimSpace(t.Notes + "\nREOPENED: continue wave after exhausted retries")
 				t.MoveTo(plan.ColReadyToDev)

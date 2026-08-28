@@ -71,6 +71,27 @@ type Routing struct {
 // rather than by the rule that was supposed to protect it.
 func isImplementerRole(role string) bool { return IsImplementerRole(role) }
 
+// IsTesterRole reports whether role names a verification agent.
+//
+// Suffix-aware for the same reason IsImplementerRole is: per-task routing puts
+// `go-tester` / `python-tester` on a verification task whenever a language pack
+// is active, which is most runs. Every exact-id check then stops recognizing it
+// — and the consequences are not cosmetic. The worst was the finish contract: a
+// tester handed the WORKER contract answers {"status":"done","files_changed":…}
+// while the gate parses for {"passed":…,"failures":…}, so a passing
+// verification reads as a malformed one and the run rewrites a plan that was
+// fine.
+func IsTesterRole(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == RoleTester {
+		return true
+	}
+	if i := strings.LastIndex(role, "-"); i >= 0 {
+		return role[i+1:] == RoleTester
+	}
+	return false
+}
+
 // IsImplementerRole reports whether role names an agent that WRITES code and
 // may therefore be re-routed to a language specialist.
 //

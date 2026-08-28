@@ -139,13 +139,17 @@ func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
 			fmt.Fprintf(&b, "- %s %s\n", mark, c.Text)
 		}
 	}
-	if strings.TrimSpace(t.Notes) != "" {
-		b.WriteString("\nHuman notes:\n")
-		b.WriteString(t.Notes)
+	// "Notes", not "Human notes": most of what lands here is written by the
+	// harness — a reopen reason, a placeholder gap — and claiming a human wrote
+	// it hands harness prose an authority it should not have. The bookkeeping
+	// lines are dropped entirely; see plan.PromptNotes.
+	if notes := plan.PromptNotes(t.Notes); notes != "" {
+		b.WriteString("\nNotes:\n")
+		b.WriteString(notes)
 		b.WriteString("\n")
 	}
 
-	if t.Role == plan.RoleTester {
+	if plan.IsTesterRole(t.Role) {
 		b.WriteString(TesterTaskRules(opt.LangHint))
 		return b.String()
 	}

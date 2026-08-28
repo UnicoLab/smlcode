@@ -112,7 +112,7 @@ func rankSharedBriefItems(tasks []plan.Task, current plan.Task, root string) []s
 		if task.Column == plan.ColInReview || strings.TrimSpace(task.Review) != "" {
 			score += 20
 		}
-		if task.Role == plan.RoleExplorer || task.Role == plan.RoleTester {
+		if task.Role == plan.RoleExplorer || plan.IsTesterRole(task.Role) {
 			score += 15
 		}
 		items = append(items, sharedBriefItem{task: task, score: score, order: i})

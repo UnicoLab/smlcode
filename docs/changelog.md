@@ -295,6 +295,47 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Fixed — a language-specialised tester was given the wrong finish contract
+
+Per-task routing puts `go-tester` / `python-tester` on a verification task
+whenever a language pack is active, which is most runs. Everything recognizing a
+tester by exact id then stopped recognizing it, across eight call sites — and
+the finish contract was the one that hurt: a tester handed the **worker**
+contract answers `{"status":"done","files_changed":[]}` while the gate parses
+for `{"passed":…,"failures":[]}`, so a passing verification read as a malformed
+one and the run rewrote a plan that was fine.
+
+The other seven mattered too. The tester task was never reopened after a failure
+(so the run never re-verified), tester budget caps did not apply, and the
+shared-task brief ranked its output as an ordinary worker's.
+
+This is the third time the same bug has appeared — `isImplementerRole` and
+`looksImplementer` were the first two — so `plan.IsTesterRole` joins
+`plan.IsImplementerRole` as the shared, suffix-aware predicate, and no exact-id
+tester check remains.
+
+### Changed — the worker prompt stops presenting bookkeeping as human instruction
+
+`BuildWorkerPrompt` rendered a task's Notes under the heading **Human notes**.
+On a correction ticket that block reads:
+
+```text
+correction ticket from the tester gate; assigned to go-worker
+correction-key: tester|handler returns 500|internal/http/todo.go
+correction-attempt: 2
+query scope run-1787…
+```
+
+A human wrote none of it. A 30B model told these are *human* notes treats them
+as the highest-authority text in its pack and spends attention parsing a dedupe
+key — while what those markers stand for (this is a repeat; somebody else had
+it) is already stated properly, in prose, in the ticket body.
+
+The bookkeeping lines are dropped, harness prose that genuinely tells an agent
+something is kept, and the heading is now just **Notes** — because most of what
+lands there is written by the harness, and claiming otherwise hands it an
+authority it should not have.
+
 ### Fixed — invalid UTF-8 in a model answer poisoned the next prompt
 
 Five parsers echo raw model output into their result whenever JSON parsing

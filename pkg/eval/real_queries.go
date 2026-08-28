@@ -113,7 +113,7 @@ func EvaluateHarnessPlan(rq RealQuery) HarnessPlanResult {
 	for _, t := range tasks {
 		blob.WriteString(t.Title + " " + t.Description + " " + t.Acceptance + " " +
 			strings.Join(t.Files, " ") + " " + t.Role + "\n")
-		if t.Role == plan.RoleTester {
+		if plan.IsTesterRole(t.Role) {
 			res.HasTester = true
 		}
 	}

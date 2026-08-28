@@ -189,7 +189,7 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 		}
 		role := strings.ToLower(t.Role)
 		switch {
-		case role == plan.RoleTester && t.Column == plan.ColDone:
+		case plan.IsTesterRole(role) && t.Column == plan.ColDone:
 			reopenIdx[i] = "REOPENED: tester reported failure — re-verify after fixes."
 		case targets.matches(t) && (t.Column == plan.ColDone || t.Column == plan.ColBlocked ||
 			t.Status == plan.StatusFailed || t.Error != ""):

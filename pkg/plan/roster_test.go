@@ -168,3 +168,54 @@ func TestEveryLanguagePrefixHasALabel(t *testing.T) {
 		}
 	}
 }
+
+// ── Manifests have a language too ────────────────────────────────────────
+//
+// An extension cannot say: `requirements.txt` is a .txt and `Gemfile` has none
+// at all, so both routed to whatever the run picked as its default specialist —
+// a Go worker editing a Python dependency list in a mixed repo. Manifests come
+// up constantly in real builds ("add the dependency", every greenfield
+// scaffold), so getting them wrong is not an edge case.
+
+func TestAManifestRoutesByItsName(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"requirements.txt", "python"},
+		{"etl/requirements.txt", "python"},
+		{"pyproject.toml", "python"},
+		{"conftest.py", "python"},
+		{"go.mod", "go"},
+		{"go.sum", "go"},
+		{"Cargo.toml", "rust"},
+		{"Gemfile", "ruby"},
+		{"pom.xml", "java"},
+		{"composer.json", "php"},
+	} {
+		if got := langOf(tc.path); got != tc.want {
+			t.Errorf("langOf(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// package.json and tsconfig.json are genuinely ambiguous between a TypeScript
+// and a React lane, and the file-language rung OUTRANKS the squad rung — so
+// claiming them would override the frontend team's own choice of worker with a
+// guess. Leaving them unmapped lets the better signal win.
+func TestTheAmbiguousWebManifestsAreLeftToTheTeam(t *testing.T) {
+	for _, path := range []string{"package.json", "web/package.json", "tsconfig.json"} {
+		if got := langOf(path); got != "" {
+			t.Errorf("langOf(%q) = %q, want the squad rung to decide", path, got)
+		}
+	}
+}
+
+func TestAManifestPicksTheRightSpecialist(t *testing.T) {
+	has := func(id string) bool {
+		return id == "python-worker" || id == "go-worker" || id == RoleWorker
+	}
+	if got := SpecialistFor([]string{"requirements.txt"}, has); got != "python-worker" {
+		t.Errorf("SpecialistFor(requirements.txt) = %q, want the Python specialist", got)
+	}
+	if got := SpecialistFor([]string{"go.mod"}, has); got != "go-worker" {
+		t.Errorf("SpecialistFor(go.mod) = %q, want the Go specialist", got)
+	}
+}

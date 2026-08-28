@@ -215,6 +215,24 @@ list, because that list is widened by the very task matches the check exists to
 catch: computing from it would let the contamination declare the defect a
 straddle and disable the check exactly when it is needed.
 
+### Fixed — a manifest routed to whatever the run defaulted to
+
+`requirements.txt` is a `.txt` and `Gemfile` has no extension at all, so neither
+carried a language signal and both landed on the run's default specialist — in a
+mixed repo, a Go worker editing a Python dependency list. Manifests come up
+constantly in real builds ("add the dependency", every greenfield scaffold), so
+this was not an edge case.
+
+Manifests now route by name: `go.mod`/`go.sum`/`go.work`, `requirements.txt`/
+`pyproject.toml`/`setup.py`/`Pipfile`/`conftest.py`/`tox.ini`, `Cargo.toml`,
+`Gemfile`, `pom.xml`/`build.gradle`, `composer.json`.
+
+`package.json` and `tsconfig.json` are deliberately excluded. Both are genuinely
+ambiguous between a TypeScript and a React lane, and the file-language rung
+outranks the squad rung — so claiming them would override the frontend team's
+own choice of worker with a guess. Leaving them unmapped lets the better signal
+win.
+
 ### Fixed — one unassigned task unfenced both teams
 
 `ForeignPatterns` stood down entirely as soon as a wave contained any task with

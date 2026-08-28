@@ -114,6 +114,9 @@ func SpecialistFor(files []string, available func(string) bool) string {
 
 // langOf maps a path to a language-pack prefix, "" when it does not matter.
 func langOf(path string) string {
+	if lang := manifestLang(path); lang != "" {
+		return lang
+	}
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
 	case ".go":
 		return "go"
@@ -143,6 +146,38 @@ func langOf(path string) string {
 		return "shell"
 	case ".html", ".css", ".scss":
 		return "web"
+	}
+	return ""
+}
+
+// manifestLang maps a project manifest to its language by NAME.
+//
+// An extension cannot: `requirements.txt` is a .txt, `Gemfile` has none at all,
+// and both were routed to whatever the run picked as its default specialist —
+// which in a mixed repo means a Go worker editing a Python dependency list.
+// Manifests come up constantly in real builds ("add the dependency", every
+// greenfield scaffold), so getting them wrong is not an edge case.
+//
+// Deliberately excluded: `package.json` and `tsconfig.json`. Both are genuinely
+// ambiguous between a TypeScript and a React lane, and the file-language rung
+// OUTRANKS the squad rung in RouteTask — so claiming them here would override
+// the frontend team's own choice of worker with a guess. Leaving them unmapped
+// lets the better signal win.
+func manifestLang(path string) string {
+	switch strings.ToLower(filepath.Base(strings.TrimSpace(path))) {
+	case "go.mod", "go.sum", "go.work":
+		return "go"
+	case "requirements.txt", "requirements-dev.txt", "pyproject.toml",
+		"setup.py", "setup.cfg", "pipfile", "conftest.py", "tox.ini":
+		return "python"
+	case "cargo.toml", "cargo.lock":
+		return "rust"
+	case "gemfile", "gemfile.lock":
+		return "ruby"
+	case "composer.json":
+		return "php"
+	case "pom.xml", "build.gradle", "build.gradle.kts":
+		return "java"
 	}
 	return ""
 }

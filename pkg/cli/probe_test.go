@@ -16,7 +16,7 @@ func TestRemediationMapsTransportErrors(t *testing.T) {
 		wantCause string
 		wantIn    string
 	}{
-		{err: "dial tcp 127.0.0.1:1234: connect: connection refused", wantCause: "connection refused", wantIn: "start your"},
+		{err: "dial tcp 127.0.0.1:1234: connect: connection refused", wantCause: "connection refused", wantIn: "slmcode configure"},
 		{err: `dial tcp: lookup nope.invalid: no such host`, wantCause: "host not found", wantIn: "typo"},
 		{err: "context deadline exceeded", wantCause: "timed out", wantIn: "still loading"},
 		{err: "x509: certificate signed by unknown authority", wantCause: "TLS handshake failed", wantIn: "http://"},
@@ -176,5 +176,46 @@ func TestProbeCacheUnknownKey(t *testing.T) {
 	c := NewProbeCache(time.Minute)
 	if got := c.Last("nope"); got.State != ProbeUnknown {
 		t.Fatalf("state=%v", got.State)
+	}
+}
+
+// ── Pointing at the command that fixes it ────────────────────────────────
+//
+// Both of these used to tell the user to go and work out the answer. Since
+// `slmcode configure` exists, it IS the answer for exactly these two: a dead
+// address when a server may be running elsewhere, and an endpoint that is up
+// but does not serve the configured model.
+
+func TestADeadEndpointPointsAtConfigure(t *testing.T) {
+	_, remedy := Remediation("omlx", "http://127.0.0.1:8000/v1", "some-model", 0,
+		"dial tcp 127.0.0.1:8000: connect: connection refused")
+	if !strings.Contains(remedy, "slmcode configure") {
+		t.Errorf("remedy = %q, want it to name the command that finds the server", remedy)
+	}
+	// And it still says how to start one, for the case where none is running.
+	if !strings.Contains(remedy, "ollama serve") {
+		t.Errorf("remedy = %q, want the start-a-server hint kept", remedy)
+	}
+}
+
+func TestAnUnservedModelPointsAtConfigure(t *testing.T) {
+	_, remedy := Remediation("lmstudio", "http://127.0.0.1:1234/v1", "gpt-9-ultra", 404, "")
+	if !strings.Contains(remedy, "slmcode configure") {
+		t.Errorf("remedy = %q, want it to name the command that picks a served model", remedy)
+	}
+	if !strings.Contains(remedy, "gpt-9-ultra") {
+		t.Errorf("remedy = %q, want the model that is missing named", remedy)
+	}
+}
+
+// A rejected key is not something auto-configuration can fix, and offering it
+// there would send somebody in a circle.
+func TestAnAuthFailureStillPointsAtAuth(t *testing.T) {
+	_, remedy := Remediation("openai", "https://api.openai.com/v1", "gpt-4o", 401, "")
+	if strings.Contains(remedy, "slmcode configure") {
+		t.Errorf("remedy = %q — configure cannot supply a key", remedy)
+	}
+	if !strings.Contains(remedy, "auth set") {
+		t.Errorf("remedy = %q, want the auth command", remedy)
 	}
 }

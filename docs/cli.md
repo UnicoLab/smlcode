@@ -119,6 +119,7 @@ path is embedded in a file that may be committed. Older files are migrated forwa
 
 | Command | Purpose |
 |---|---|
+| `configure` | Find a model server and write a working config — start here |
 | `config` | `show` · `get` · `set` · `unset` · `schema` · `path` |
 | `stack` | `list` · `show` · `apply` · `edit` · `new` — provider/model presets |
 | `agent` | `list` · `show` · `edit` · `clear-llm` — per-agent LLM pins |
@@ -300,6 +301,78 @@ Details worth knowing:
 - `errors  .slmcode/errors/errors.md` appears only when that file actually holds something.
 - The same block prints when a run fails, dies at a gate or is interrupted — "did my files
   change?" is a more urgent question after a failure than after a success.
+
+## `configure`
+
+The first command to run, and the one to run when nothing works.
+
+```bash
+slmcode configure                  # look around, then ask before writing
+slmcode configure --yes            # accept the best candidate
+slmcode configure --dry-run        # show what it would write and stop
+slmcode configure --json           # machine-readable
+slmcode configure --endpoint http://127.0.0.1:1234/v1
+slmcode configure --model Qwen3-Coder-30B-A3B-Instruct
+slmcode configure --user           # write to the user config, not this project
+```
+
+It probes the configured endpoint first, then the addresses local model servers
+listen on (oMLX, Ollama, LM Studio, vLLM), then any hosted provider whose API
+key is already in the environment. Candidates are probed **at once**, so a
+machine with nothing running answers in a couple of seconds rather than waiting
+out each address in turn.
+
+```text
+Looking for a model server…
+  ✗ omlx  http://127.0.0.1:8000/v1 — nothing is listening
+  ✗ ollama  http://127.0.0.1:11434 — nothing is listening
+  ✓ lmstudio  http://127.0.0.1:1234/v1 — 3 model(s) in 3ms (default lmstudio address)
+
+  provider  lmstudio
+  endpoint  http://127.0.0.1:1234/v1
+  model     Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
+            tuned for code (coder), instruction-tuned, 30B, 3B active
+  also available: Qwen2.5-1.5B-Instruct
+```
+
+### How the model is chosen
+
+A model server serves whatever it was given, and the list is rarely all chat
+models — embedding models, rerankers, speech, vision and safety classifiers sit
+next to the one you want. Picking one of those produces a failure that is
+baffling rather than obvious: the harness runs, the model answers, and nothing
+it says is JSON.
+
+So the ranking rules those **out** first, then prefers coder-tuned over
+instruction-tuned over larger. A mixture-of-experts name is read correctly, so
+`30B-A3B` is a 30B model with 3B active rather than a 3B one. Matching is on
+whole name segments rather than substrings — `codestral` contains `tts` and
+`instruct` contains `stt`.
+
+### Three things it will not do
+
+- **Replace a working configuration.** The endpoint you set is probed first and
+  kept if it answers. Re-detecting around a working setup is how a tool moves
+  somebody's configuration out from under them.
+- **Send your API key to a local port.** A key travels only to the endpoint you
+  configured, or to a hosted provider offered because that provider's own key is
+  present — never to `127.0.0.1:1234` because LM Studio *might* be there.
+- **Second-guess `--endpoint`.** That flag is an instruction: a dead address you
+  named fails rather than falling through to whatever else is running.
+
+### When it finds nothing
+
+The three real problems have different fixes, so they are reported differently:
+nothing listening, a server with no models loaded, and a server whose models
+cannot write code. Collapsing them into "no endpoint found" is what sends
+somebody to restart a server that is already running.
+
+`slmcode configure` is also the remedy named when a run refuses to start
+because the endpoint is down or the configured model is not served. In the
+Studio it is the **Find my model server** panel in Settings, with the same two
+steps: *Look around* changes nothing, *Configure for me* writes.
+
+---
 
 ## `compose`
 

@@ -295,6 +295,42 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Added — `slmcode configure`, on both surfaces
+
+Every piece of this existed and none of it was joined up. The harness could list
+an endpoint's models, measure what a (model, endpoint) pair can do, probe
+decoding support and check whether the configured endpoint was answering — but
+nothing could answer the question a new user actually has, which is *what do I
+put in the config*. They got a default endpoint that may not be running, a
+default model that may not be served, and a refusal at their first run.
+
+`slmcode configure` probes the configured endpoint first, then the addresses
+local model servers listen on (oMLX, Ollama, LM Studio, vLLM), then any hosted
+provider whose API key is already set. Candidates are probed concurrently, so a
+machine with nothing running answers in a couple of seconds rather than waiting
+out each address in turn. In the Studio the same thing is the **Find my model
+server** panel in Settings, split the same way: *Look around* changes nothing,
+*Configure for me* writes.
+
+The model is chosen by ruling out what cannot do the job before preferring what
+can. A server serves whatever it was given and the list is rarely all chat
+models; picking an embedding or speech model by accident produces a failure that
+is baffling rather than obvious — the harness runs, the model answers, and
+nothing it says is JSON. Among what survives, coder-tuned beats
+instruction-tuned beats bigger, `30B-A3B` is read as a 30B model with 3B active,
+and matching is on whole name segments so `codestral` is not ruled out for
+containing `tts`.
+
+Three things it will not do: replace a working configuration (yours is probed
+first and kept if it answers), send your API key to a local port that merely
+might be a model server, or second-guess an explicit `--endpoint`.
+
+A failed pass distinguishes the three real problems — nothing listening, a
+server with no models loaded, and a server whose models cannot write code —
+because they have different fixes. And it is now the remedy named when a run
+refuses to start because the endpoint is down or the configured model is not
+served, which is where somebody actually needs it.
+
 ### Added — correction tickets are legible on the board
 
 A correction ticket looked exactly like planned work: same card, same badges, a

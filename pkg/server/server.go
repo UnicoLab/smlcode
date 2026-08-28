@@ -411,6 +411,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/auth", s.handlePutAuth)
 	s.mux.HandleFunc("GET /api/mcp", s.handleMCPStatus)
 	s.mux.HandleFunc("GET /api/config/schema", s.handleConfigSchema)
+	// Auto-configuration: GET looks and reports, POST writes. One endpoint
+	// doing both would mean the only way to see what it would do is to let it
+	// happen.
+	s.mux.HandleFunc("GET /api/configure", s.handleConfigureScan)
+	s.mux.HandleFunc("POST /api/configure", s.handleConfigureApply)
 	s.mux.HandleFunc("GET /api/queries/{id}/events", s.handleQueryEvents)
 	s.mux.HandleFunc("GET /api/stacks", s.handleListStacks)
 	s.mux.HandleFunc("GET /api/stacks/{id}", s.handleGetStack)

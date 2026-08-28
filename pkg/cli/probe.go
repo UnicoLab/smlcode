@@ -112,7 +112,12 @@ func Remediation(provider, endpoint, model string, status int, err string) (caus
 	le := strings.ToLower(err)
 	switch {
 	case strings.Contains(le, "connection refused"):
-		return "connection refused", "nothing is listening on " + endpoint + " — start your " + provider + " server (e.g. `ollama serve`, LM Studio, oMLX) or point --endpoint elsewhere"
+		// `configure` leads because it is the only remedy here that does not
+		// require knowing the answer: if a server IS running somewhere else,
+		// it finds it, and if none is, it says which of the three problems
+		// this actually is.
+		return "connection refused", "nothing is listening on " + endpoint +
+			" — run `slmcode configure` to find your model server, or start one (`ollama serve`, LM Studio, oMLX)"
 	case strings.Contains(le, "no such host"), strings.Contains(le, "dns"):
 		return "host not found", "the endpoint hostname does not resolve — check --endpoint / SLMCODE_ENDPOINT for a typo"
 	case strings.Contains(le, "timeout"), strings.Contains(le, "deadline exceeded"):
@@ -125,7 +130,9 @@ func Remediation(provider, endpoint, model string, status int, err string) (caus
 		return fmt.Sprintf("HTTP %d unauthorized", status), "the provider rejected the API key — set one with `slmcode auth set <key>` or SLMCODE_API_KEY"
 	case 404:
 		if model != "" {
-			return "HTTP 404 — model not found", fmt.Sprintf("%q is not served by this endpoint — list what is available with `slmcode agent list` or switch with `slmcode config set model <id>`", model)
+			return "HTTP 404 — model not found", fmt.Sprintf(
+				"%q is not served by this endpoint — run `slmcode configure` to pick one it does serve, "+
+					"or set it yourself with `slmcode config set model <id>`", model)
 		}
 		return "HTTP 404", "the endpoint path is wrong — most OpenAI-compatible servers need the /v1 suffix"
 	case 429:

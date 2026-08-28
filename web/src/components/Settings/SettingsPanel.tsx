@@ -6,6 +6,7 @@ import StackSelector from './StackSelector';
 import PackSelector from './PackSelector';
 import ReadinessPanel from './ReadinessPanel';
 import CalibrationPanel from './CalibrationPanel';
+import AutoConfigure from './AutoConfigure';
 import {
   Cpu,
   Key,
@@ -156,6 +157,10 @@ export default function SettingsPanel() {
             }}
           />
         </section>
+
+        {/* The three fields below are the ones a new user has no way to fill
+            in correctly by guessing, and the answer is on their own machine. */}
+        <AutoConfigure onApplied={() => ctx?.refresh()} />
 
         {/* Provider & Model */}
         <section className="card p-6 space-y-4">

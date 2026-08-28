@@ -271,6 +271,36 @@ export interface RunRepairs {
   needs_human: number;
 }
 
+/** One endpoint auto-configuration tried — mirrors pkg/server/configure.go. */
+export interface ConfigureCandidate {
+  provider: string;
+  endpoint: string;
+  reason: string;
+  models?: string[] | null;
+  live: boolean;
+  error: string;
+  latency_ms: number;
+}
+
+/** The configuration auto-configuration recommends. */
+export interface ConfigureChoice {
+  provider: string;
+  endpoint: string;
+  model: string;
+  why: string;
+  others?: string[] | null;
+}
+
+export interface ConfigureResult {
+  ok: boolean;
+  applied: boolean;
+  tried: ConfigureCandidate[];
+  choice?: ConfigureChoice;
+  /** Why nothing was found, when ok is false. */
+  reason?: string;
+  current?: { provider: string; endpoint: string; model: string };
+}
+
 export interface RunEvent {
   phase: string;
   kind: string;

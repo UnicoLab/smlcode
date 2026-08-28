@@ -53,6 +53,7 @@ import type {
   PlanEdits,
   SquadsView,
   SquadEdit,
+  ConfigureResult,
 } from '@/types';
 
 import { planEditsEmpty } from '@/types';
@@ -221,6 +222,29 @@ export async function putAuthKey(apiKey: string, provider?: string): Promise<{ o
 
 export async function getMCPStatus(): Promise<import('@/types').MCPStatus> {
   return request('/mcp');
+}
+
+/**
+ * GET /api/configure looks for a model server and reports what it found,
+ * changing nothing.
+ *
+ * Separate from the POST because the only way to see what auto-configuration
+ * would do should not be to let it happen.
+ */
+export async function scanForModelServer(endpoint?: string): Promise<ConfigureResult> {
+  const q = endpoint ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+  return request(`/configure${q}`);
+}
+
+/** POST /api/configure writes the result and rebuilds the orchestrator. */
+export async function applyModelServerConfig(
+  opts?: { endpoint?: string; model?: string },
+): Promise<ConfigureResult> {
+  const q = opts?.endpoint ? `?endpoint=${encodeURIComponent(opts.endpoint)}` : '';
+  return request(`/configure${q}`, {
+    method: 'POST',
+    body: JSON.stringify({ model: opts?.model ?? '' }),
+  });
 }
 
 export async function getConfigSchema(): Promise<{ fields: Array<{ key: string; type: string; label: string; group: string; enum?: string[]; patchable: boolean; description?: string }>; slash: string[] }> {

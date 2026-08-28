@@ -41,6 +41,14 @@ never persisted for exactly that last reason. Older files are migrated forward o
 
 ## Provider & model
 
+!!! tip "Let the harness fill these in"
+
+    `slmcode configure` finds the model server running on your machine, asks it
+    what it serves, and writes `provider`, `endpoint` and `model` for you —
+    ruling out the embedding, speech and vision models that sit next to the one
+    you want. In the Studio it is the **Find my model server** panel in
+    Settings. See [`configure`](cli.md#configure).
+
 | Key | Default | Meaning |
 |---|---|---|
 | `provider` | `omlx` | `omlx` `ollama` `openai` `lmstudio` `openrouter` `vllm` `litellm` `together` `groq` `deepseek` `mistral` `google` `fireworks` `anthropic` … Any other name is treated as an OpenAI-compatible gateway. |

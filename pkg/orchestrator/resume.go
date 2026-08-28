@@ -131,7 +131,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 	o.applyArchitectEditorRoles(board)
 	runner := o.buildRunner(query, runID, skillPack)
 
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseExecute)
 	if session.HasReactHistory(o.cfg.SlmDir(), runID) {
 		o.emit("execute", fmt.Sprintf("resume execute · %d tasks · ReAct history restored", len(board.Tasks)), "")
 	} else {
@@ -164,7 +164,7 @@ func (o *Orchestrator) finishFromExecute(ctx context.Context, runID, query, skil
 // Resume). It was ~300 lines of interleaved verification, gating and HITL; the
 // stages are now named functions with explicit inputs and outputs.
 func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, skillPack string, board *plan.Board, runner *loop.Runner, start time.Time) (*Result, error) {
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseTest)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseTest)
 
 	// EARLY FINISH #0 — a BETWEEN-WAVES probe already ran the objective command
 	// on this exact tree and stopped the board on the strength of it. RunBoard
@@ -785,7 +785,7 @@ func runOutcome(success bool, failed int) string {
 }
 
 func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, qaCmd string, start time.Time) (*Result, error) {
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseMemory)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseMemory)
 	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
 	var lessonsMD string
 	if o.phaseEnabled("memory") {
@@ -987,12 +987,12 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	if strings.TrimSpace(testOut) != "" {
 		extraNotes = strings.TrimSpace(extraNotes + "\n\n### Tester\n" + truncate(testOut, 1500))
 	}
-	if o.currentTurn != nil {
-		if spath, serr := session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, extraNotes); serr == nil && spath != "" {
+	if turn := o.turn(); turn != nil {
+		if spath, serr := session.WriteTurnSummary(o.cfg.SlmDir(), turn, *board, extraNotes); serr == nil && spath != "" {
 			o.emit("session", "summary "+filepath.Base(filepath.Dir(spath))+"/summary.md", "")
 		}
-		_ = session.ClearInterrupted(o.cfg.SlmDir(), o.currentTurn)
-		session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseDone)
+		_ = session.ClearInterrupted(o.cfg.SlmDir(), turn)
+		session.SetPhase(o.cfg.SlmDir(), turn, session.PhaseDone)
 	}
 	if path, err := session.Save(o.cfg.SlmDir(), session.Session{
 		ID: runID, Query: query, Summary: res.Summary, Success: res.Success, Board: *board,
@@ -1026,24 +1026,24 @@ func (o *Orchestrator) checkpointInterrupt(ctx context.Context, board *plan.Boar
 	if board != nil {
 		o.persistBoard(board)
 	}
-	if o.currentTurn != nil && board != nil && ctx != nil && ctx.Err() != nil && isCancelErr(err) {
-		_ = session.MarkInterrupted(o.cfg.SlmDir(), o.currentTurn, *board, phase)
+	if turn := o.turn(); turn != nil && board != nil && ctx != nil && ctx.Err() != nil && isCancelErr(err) {
+		_ = session.MarkInterrupted(o.cfg.SlmDir(), turn, *board, phase)
 		// `/resume <id>` is a REPL slash command, and this string is persisted:
 		// it reaches a CLI run, a headless JSON consumer and a saved session
 		// summary, none of which have a REPL to type it into. Emit the run id
 		// as DATA and let each renderer phrase its own instruction.
 		saved := "board saved"
-		if session.HasReactHistory(o.cfg.SlmDir(), o.currentTurn.ID) {
+		if session.HasReactHistory(o.cfg.SlmDir(), turn.ID) {
 			saved = "ReAct history + board saved"
 		}
 		msg := fmt.Sprintf("interrupted at %s — %s", phase, saved)
 		o.emitFullDataL("stop", stream.KindPhase, "", "", msg, "", "", stream.LevelWarn,
-			map[string]any{"resume_id": o.currentTurn.ID, "phase": phase, "saved": saved})
+			map[string]any{"resume_id": turn.ID, "phase": phase, "saved": saved})
 		res := &Result{
-			ID: o.currentTurn.ID, Query: o.currentTurn.Query, Board: *board,
+			ID: turn.ID, Query: turn.Query, Board: *board,
 			Success: false, FailedTasks: board.FailedCount(), Outcome: OutcomeFailure,
 			Summary: fmt.Sprintf("interrupted at %s — %s, resumable as %s",
-				phase, saved, o.currentTurn.ID),
+				phase, saved, turn.ID),
 			Backend: o.cfg.Backend, LatencyMs: o.snapshotLatency(),
 			Usage: o.snapshotUsage(),
 		}

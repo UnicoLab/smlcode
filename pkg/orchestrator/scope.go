@@ -49,7 +49,7 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 		}
 	}
 
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseClarify)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseClarify)
 	o.emitAgent("clarify", "interviewer", "", "scope interview", "", "")
 
 	clarifyPrompt := agents.PromptClarifier + "\n\n## Query\n" + truncate(query, 1200) +

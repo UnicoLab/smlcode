@@ -175,8 +175,8 @@ func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, qu
 	// Persist for inspection; pipeline.yaml is intentionally left untouched.
 	_ = pipeline.SaveDynamic(o.cfg.SlmDir(), &cfg)
 	_ = composer.SaveDynamic(o.cfg.SlmDir(), comp)
-	if o.currentTurn != nil {
-		_ = composer.SaveDynamic(session.TurnDir(o.cfg.SlmDir(), o.currentTurn.ID), comp)
+	if turn := o.turn(); turn != nil {
+		_ = composer.SaveDynamic(session.TurnDir(o.cfg.SlmDir(), turn.ID), comp)
 	}
 
 	prof := config.ResolveModelProfile(o.cfg.ModelProfiles, o.cfg.Model)

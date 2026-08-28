@@ -1000,8 +1000,8 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 	if res.Summary == "" {
 		res.Summary = fmt.Sprintf("specialist %s finished", role)
 	}
-	if o.currentTurn != nil {
-		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, res.Summary)
+	if turn := o.turn(); turn != nil {
+		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), turn, *board, res.Summary)
 	}
 	o.emitLatencySummary(res)
 	o.emit("done", res.Summary, "")
@@ -1300,7 +1300,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	}
 	o.persistBoard(board)
 
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseExecute)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseExecute)
 	execStart := time.Now()
 	// pipeline gate: phaseEnabled("execute") — when=never skips this phase
 	if !o.phaseEnabled("execute") {
@@ -1419,8 +1419,8 @@ func (o *Orchestrator) runClaudeCode(ctx context.Context, runID, query, skillPac
 		Duration: time.Since(start), Summary: firstSentence(out),
 		Backend: config.BackendClaudeCode,
 	}
-	if o.currentTurn != nil {
-		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), o.currentTurn, *board, res.Summary)
+	if turn := o.turn(); turn != nil {
+		_, _ = session.WriteTurnSummary(o.cfg.SlmDir(), turn, *board, res.Summary)
 	}
 	o.emit("done", res.Summary, "")
 	return res, err
@@ -2051,14 +2051,14 @@ func (o *Orchestrator) persistBoard(board *plan.Board) {
 	if board == nil {
 		return
 	}
-	if o.currentTurn != nil {
+	if turn := o.turn(); turn != nil {
 		if board.QueryID == "" {
-			board.QueryID = o.currentTurn.ID
+			board.QueryID = turn.ID
 		}
 		if board.Query == "" {
-			board.Query = o.currentTurn.Query
+			board.Query = turn.Query
 		}
-		_ = session.SaveTurnBoard(o.cfg.SlmDir(), o.currentTurn, *board)
+		_ = session.SaveTurnBoard(o.cfg.SlmDir(), turn, *board)
 	}
 	if o.boardStore != nil {
 		_ = o.boardStore.Replace(*board)
@@ -2070,6 +2070,25 @@ func (o *Orchestrator) persistBoard(board *plan.Board) {
 	planMD, tasksMD := board.ToMarkdown()
 	_ = o.store.Write(contextstore.DocPlan, planMD)
 	_ = o.store.Write(contextstore.DocTasks, tasksMD)
+}
+
+// turn returns the active session turn, read under the lock.
+//
+// The event path runs on every goroutine the harness has — parallel workers and
+// background probes both emit — while Run writes this field at the start of a
+// run and nils it in a defer at the end. The unlocked read there was not merely
+// a reported race: the nil assignment could land between the `!= nil` check and
+// the `.ID` dereference on the next line, which is a panic in the one code path
+// that must never take the process down.
+//
+// Safe to call from anywhere: no emit path holds o.mu.
+func (o *Orchestrator) turn() *session.Turn {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.currentTurn
 }
 
 func (o *Orchestrator) emit(phase, msg, taskID string) {
@@ -2115,8 +2134,8 @@ func (o *Orchestrator) emitFullDataL(phase, kind, agent, taskID, msg, scope, out
 	// double-printed every line and shredded the dashboard. Verbosity is a
 	// RENDERER concern now: every event carries a Level and the CLI decides
 	// which levels it shows.
-	if o.cfg != nil && o.cfg.SessionEventLog && o.currentTurn != nil {
-		_ = session.AppendEvent(o.cfg.SlmDir(), o.currentTurn.ID, session.EventRecord{
+	if turn := o.turn(); o.cfg != nil && o.cfg.SessionEventLog && turn != nil {
+		_ = session.AppendEvent(o.cfg.SlmDir(), turn.ID, session.EventRecord{
 			Phase: phase, Kind: kind, Agent: agent, TaskID: taskID,
 			Message: msg, Scope: scope, Output: stream.Truncate(output, 4000), Data: data,
 			Model: o.cfg.Model,

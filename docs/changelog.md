@@ -295,6 +295,21 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Fixed — a data race in the event path, with a nil dereference inside it
+
+`emitFullDataL` read `o.currentTurn` without the lock while `Run` wrote it under
+one. The race detector found it on the e2e suite (which `make check` does not
+cover — it races `pkg/...` only), and it is worse than a reported race: `Run`
+nils that field in a `defer`, so the write could land between the `!= nil` check
+and the `.ID` dereference on the very next line. That is a panic in the one code
+path that must never take the process down, reachable whenever a background
+probe emits while a run is finishing.
+
+Every read now goes through one locked accessor — including the ones that are
+provably single-goroutine today, because the field having exactly one obvious
+way to read it is what stops the next one being written unlocked. The e2e suite
+runs clean under `-race`.
+
 ### Fixed — a scheme-less endpoint broke everything that built a URL from it
 
 `endpoint: 127.0.0.1:1234/v1` is a spelling config files genuinely carry, and

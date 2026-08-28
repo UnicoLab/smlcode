@@ -104,7 +104,7 @@ func (o *Orchestrator) runPlanSplitApprove(ctx context.Context, in planSplitInpu
 // critique/refine, then parse + PRD merge.
 func (o *Orchestrator) runPlanPhase(ctx context.Context, in planSplitInput, replanNotes []string) (string, plan.Plan, error) {
 	var pl plan.Plan
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhasePlan)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhasePlan)
 	if err := o.runPipelineSlots(ctx, "plan", "before", in.Query, in.ExploreOut, ""); err != nil {
 		return "", pl, err
 	}
@@ -189,7 +189,7 @@ func (o *Orchestrator) maybeCritiquePlan(ctx context.Context, query, planAgent, 
 
 // runSplitPhase is phase 4: splitter, sanitize, reconcile, cap, board build.
 func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl plan.Plan, planOut string, replanNotes []string) (*plan.Board, error) {
-	session.SetPhase(o.cfg.SlmDir(), o.currentTurn, session.PhaseSplit)
+	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseSplit)
 	if err := o.runPipelineSlots(ctx, "split", "before", in.Query, in.ExploreOut, planOut); err != nil {
 		return nil, err
 	}

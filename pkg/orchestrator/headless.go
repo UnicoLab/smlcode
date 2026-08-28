@@ -341,9 +341,7 @@ func (o *Orchestrator) retainedWorkHint() string {
 	if o == nil || o.cfg == nil {
 		return ""
 	}
-	o.mu.Lock()
-	turn := o.currentTurn
-	o.mu.Unlock()
+	turn := o.turn()
 	if turn == nil || turn.ID == "" {
 		return ""
 	}

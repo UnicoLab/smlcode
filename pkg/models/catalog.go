@@ -127,6 +127,13 @@ func requiresAPIKey(provider string) bool {
 	}
 }
 
+// APIKeyEnvFor names the environment variable a provider's key lives in.
+//
+// Exported because auto-configuration has to ask "is this provider worth
+// probing at all" before it has a config to resolve: a hosted endpoint with no
+// key is a guaranteed 401, and offering it as a candidate is noise.
+func APIKeyEnvFor(provider string) string { return envKeyFor(provider) }
+
 func envKeyFor(provider string) string {
 	switch config.NormalizeProvider(provider) {
 	case "openai":

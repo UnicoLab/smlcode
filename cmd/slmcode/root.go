@@ -196,7 +196,7 @@ func main() {
 	var all []*cobra.Command
 	all = append(all, inGroup("run", tuiCmd(), initCmd(), runCmd(), chatCmd(), studioCmd(), watchCmd())...)
 	all = append(all, inGroup("review", applyCmd(), rejectCmd(), diffCmd(), commitCmd())...)
-	all = append(all, inGroup("config", configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), hooksCmd(), updateCmd())...)
+	all = append(all, inGroup("config", configureCmd(), configCmd(), authCmd(), stackCmd(), agentCmd(), blockCmd(), skillsCmd(), hooksCmd(), updateCmd())...)
 	all = append(all, inGroup("inspect", statusCmd(), boardCmd(), composeCmd(), readinessCmd(), taskCmd(),
 		contextCmd(), docsCmd(), planCmd(), sessionCmd(), doctorCmd(), evalCmd(),
 		memoryCmd(), evolveCmd(), calibrateCmd(), graphCmd(), autoresearchCmd(), metricsCmd(), versionCmd())...)

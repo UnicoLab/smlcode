@@ -113,7 +113,7 @@ outweigh support the fact's text is replaced and its counters reset. That is
 how a fact decays when the project changes under it.
 
 Numeric drift is not a contradiction: "works here (2/2 runs)" and "works here
-(7/8 runs)" are recognised as the same claim with fresher arithmetic. Without
+(7/8 runs)" are recognized as the same claim with fresher arithmetic. Without
 that, re-distilling would thrash the store back and forth forever.
 
 Facts with `"pinned": true` are user-authored: never overwritten, never
@@ -456,7 +456,7 @@ every failure with how it was resolved — and emits:
 * **regression checks** for failures that were fixed;
 * `.slmcode/memory/REFLECTION.md`, a human-readable report.
 
-An optional summarizer appends a "Model commentary" section labelled *advisory
+An optional summarizer appends a "Model commentary" section labeled *advisory
 only*. It is strictly additive — an error, a timeout or an empty answer leaves
 the computed report byte-for-byte unchanged.
 

@@ -66,41 +66,62 @@ func (m *squadModel) calls() map[string]int {
 	return out
 }
 
-func (m *squadModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasSuffix(r.URL.Path, "/models") {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"object": "list", "data": []map[string]any{{"id": fakeModelID, "object": "model"}},
-		})
-		return
+// serveModelsList answers the provider's capability probe, and reports whether
+// it handled the request.
+func serveModelsList(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasSuffix(r.URL.Path, "/models") {
+		return false
 	}
-	raw, _ := io.ReadAll(r.Body)
-	var req struct {
-		Stream   bool `json:"stream"`
-		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
-		Tools []json.RawMessage `json:"tools"`
-	}
-	_ = json.Unmarshal(raw, &req)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"object": "list", "data": []map[string]any{{"id": fakeModelID, "object": "model"}},
+	})
+	return true
+}
 
-	var all strings.Builder
-	sawToolResult := false
-	for _, msg := range req.Messages {
-		all.WriteString(msg.Content)
-		all.WriteByte('\n')
+// chatRequest is the slice of an OpenAI chat completion these fakes read.
+type chatRequest struct {
+	Stream   bool `json:"stream"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+	Tools []json.RawMessage `json:"tools"`
+}
+
+// readChatRequest parses one completion into the four things a fake answers
+// from: the whole conversation, the system prompt (which names the contract the
+// asking role must satisfy), whether tools were offered, and whether a tool has
+// already answered in this turn.
+func readChatRequest(_ http.ResponseWriter, r *http.Request) (
+	req *chatRequest, all, system string, hasTools, sawToolResult bool,
+) {
+	raw, _ := io.ReadAll(r.Body)
+	var parsed chatRequest
+	_ = json.Unmarshal(raw, &parsed)
+
+	var b strings.Builder
+	for _, msg := range parsed.Messages {
+		b.WriteString(msg.Content)
+		b.WriteByte('\n')
 		if msg.Role == "tool" {
 			sawToolResult = true
 		}
 	}
-	system := ""
-	if len(req.Messages) > 0 {
-		system = req.Messages[0].Content
+	if len(parsed.Messages) > 0 {
+		system = parsed.Messages[0].Content
 	}
-	role := squadRoleOf(system, all.String())
-	m.record(role, all.String())
+	return &parsed, b.String(), system, len(parsed.Tools) > 0, sawToolResult
+}
 
-	content, call := squadAnswerFor(role, all.String(), len(req.Tools) > 0, sawToolResult)
+func (m *squadModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if serveModelsList(w, r) {
+		return
+	}
+	req, all, system, hasTools, sawToolResult := readChatRequest(w, r)
+	role := squadRoleOf(system, all)
+	m.record(role, all)
+
+	content, call := squadAnswerFor(role, all, hasTools, sawToolResult)
 	if req.Stream {
 		writeStreamedCompletion(w, content, call)
 		return

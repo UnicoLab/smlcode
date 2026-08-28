@@ -155,6 +155,14 @@ that it failed again.
   there the last attempt did not already have.
 - **A first ticket is never sent to it.** The obvious choice has not been tried
   yet, and a model call to confirm it is pure latency.
+- **The roster is ranked and labeled, not alphabetical.** Sorted by name the
+  generics come first, so the model took one — even though its own prompt said
+  to prefer a specialist. The task's own language now leads the list, each
+  entry marked `(Go specialist)` or `(generic)`, and the preference is enforced
+  afterwards: a generic pick is upgraded to the language corrector, or its
+  worker when no corrector is registered. A specialist pick is never
+  overridden — a manager that deliberately reached for another language's
+  expert has a reason the file extensions cannot see.
 - **The verdict is validated before it is applied.** Naming an unregistered
   agent (the ticket then sits unassigned) and re-picking the agent that just
   failed (the loop this exists to end) both fall through to the deterministic
@@ -184,6 +192,20 @@ manager, sends only the fields you touched, and — when an edit would make two
 teams share a path — shows *which* teams collide instead of a bare refusal.
 Nothing is saved in that case: a half-applied org chart is worse than the one it
 replaced, because you believe you fixed it.
+
+### Fixed — reopened tasks on a squad run were never made into tickets
+
+`looksImplementer` matched only the bare role ids `worker`, `corrector` and
+`deep`. Per-task specialist routing puts `go-worker` on the task, so on any run
+with language packs — which is every squad run — a reopened task failed that
+check and was never enriched into a correction ticket. It came back with
+`Review: "tester feedback: <one sentence>"` and nothing else: no command to
+reproduce the failure, no output, no implicated files. That is exactly what
+turns corrections into retries.
+
+It is the third copy of the same predicate and the second time it has had this
+bug, so there is now one exported `plan.IsImplementerRole` and the copies are
+gone.
 
 ### Fixed — a correction attempt counted the board, not the defect
 
@@ -315,7 +337,7 @@ entry below still describes them.
 - The Live page is rebuilt around the stream it exists to show: four fixed
   zones, a single phase rail replacing four header panels, and the run setup
   behind a disclosure that is closed while running. The pipeline shown while you
-  type is now labelled a **guess** — it is assembled from the query text alone,
+  type is now labeled a **guess** — it is assembled from the query text alone,
   and the composer decides the real one when the run starts.
 - The navigation rail collapses to icons below `lg`, where it was taking 60% of
   a phone screen.

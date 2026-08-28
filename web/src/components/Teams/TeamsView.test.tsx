@@ -80,7 +80,7 @@ describe('TeamsView', () => {
   });
 
   // Ownership globs are per-team, so labels must name the team. Two textareas
-  // both labelled "Owns" is a page a screen reader cannot navigate.
+  // both labeled "Owns" is a page a screen reader cannot navigate.
   it('labels every field with the team it belongs to', async () => {
     await renderPage();
     expect(screen.getByLabelText(/Owns — backend/)).toHaveValue('cmd/**\ninternal/**');

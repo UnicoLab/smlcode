@@ -69,7 +69,17 @@ type Routing struct {
 // which made the explicit-specialist rung below unreachable: every named
 // specialist fell into the "leave it alone" branch and got there by accident
 // rather than by the rule that was supposed to protect it.
-func isImplementerRole(role string) bool {
+func isImplementerRole(role string) bool { return IsImplementerRole(role) }
+
+// IsImplementerRole reports whether role names an agent that WRITES code and
+// may therefore be re-routed to a language specialist.
+//
+// It matches the suffix, not just the bare id. Every private copy of this
+// predicate that checked only `worker` and `corrector` has had the same bug:
+// once per-task routing puts `go-worker` on a task, a check for the bare id
+// says that task has no implementer — and whatever the check was gating
+// silently stops happening for every task on a squad run, which is all of them.
+func IsImplementerRole(role string) bool {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
 	case "", RoleWorker, RoleCorrector:

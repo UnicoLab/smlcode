@@ -234,20 +234,7 @@ func specSuffix(in Interface) string {
 }
 
 // isImplementer reports whether a role writes code.
-func isImplementer(role string) bool {
-	role = strings.ToLower(strings.TrimSpace(role))
-	switch role {
-	case "", plan.RoleWorker, plan.RoleCorrector:
-		return true
-	}
-	if i := strings.LastIndex(role, "-"); i >= 0 {
-		switch role[i+1:] {
-		case plan.RoleWorker, plan.RoleCorrector:
-			return true
-		}
-	}
-	return false
-}
+func isImplementer(role string) bool { return plan.IsImplementerRole(role) }
 
 // withoutExisting drops clauses the task already carries, matched on text.
 func withoutExisting(have, add []plan.Criterion) []plan.Criterion {

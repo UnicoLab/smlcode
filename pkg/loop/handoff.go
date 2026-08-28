@@ -174,8 +174,16 @@ func (r *Runner) decideNextHolder(ctx context.Context, t plan.Task, review plan.
 		}
 		if d, ok := r.Triage(ctx, req); ok {
 			if usable, why := d.Usable(t.Role, r.RoleExists); usable {
-				r.logf("%s triaged to %s: %s", t.ID, d.Assignee, d.Reason)
-				return d.Assignee, d.Guidance
+				// The prompt asks for a specialist over a generic; asking is
+				// not enough. A generic corrector handed a failing Go handler
+				// brings nothing the generic worker that already failed did.
+				assignee := d.Assignee
+				if upgraded, changed := plan.PreferSpecialist(assignee, t.Role, t.Files, req.Roster); changed {
+					r.logf("%s: %s over the generic %s", t.ID, upgraded, assignee)
+					assignee = upgraded
+				}
+				r.logf("%s triaged to %s: %s", t.ID, assignee, d.Reason)
+				return assignee, d.Guidance
 			} else {
 				r.logf("%s triage ignored — the manager %s; using the deterministic ladder", t.ID, why)
 			}

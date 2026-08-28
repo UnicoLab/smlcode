@@ -604,7 +604,10 @@ func TestTriageIsSkippedWithNoRoster(t *testing.T) {
 // it to the agent that just failed at it, which is the loop that made tester
 // failures feel like noise rather than progress.
 
-func ticket(id, key, col, role string) plan.Task {
+// ticket builds a first-attempt correction ticket. ticketAt makes it the nth.
+func ticket(id, key, col, role string) plan.Task { return ticketAt(id, key, col, role, 1) }
+
+func ticketAt(id, key, col, role string, attempt int) plan.Task {
 	t := plan.Task{
 		ID: id, Column: col, Role: role, Squad: "backend",
 		Title:       "fix the todo handler",
@@ -613,6 +616,7 @@ func ticket(id, key, col, role string) plan.Task {
 		Files:       []string{"internal/http/todo.go"},
 	}
 	plan.StampCorrectionKey(&t, key)
+	plan.StampCorrectionAttempt(&t, attempt)
 	return t
 }
 
@@ -645,10 +649,10 @@ func TestASecondTicketForTheSameDefectIsARepeat(t *testing.T) {
 	const key = "tester|handler returns 500|internal/http/todo.go"
 	board := &plan.Board{Tasks: []plan.Task{
 		ticket("C1", key, plan.ColDone, "go-worker"),
-		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
 	}}
-	if got := board.CorrectionAttempts(key); got != 2 {
-		t.Fatalf("fixture is wrong: attempts = %d, want 2", got)
+	if got := plan.CorrectionAttemptOf(board.Tasks[1]); got != 2 {
+		t.Fatalf("fixture is wrong: attempt = %d, want 2", got)
 	}
 	// No model is wired here, so triage cannot answer — the ticket must survive
 	// exactly as the router left it rather than being parked or blanked.
@@ -667,7 +671,7 @@ func TestOnlyReadyTicketsAreTriaged(t *testing.T) {
 		o := managedOrchestrator(t, exec, nil)
 		board := &plan.Board{Tasks: []plan.Task{
 			ticket("C1", key, plan.ColDone, "go-worker"),
-			ticket("C2", key, col, "go-worker"),
+			ticketAt("C2", key, col, "go-worker", 2),
 		}}
 		if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
 			t.Errorf("column %q: triaged %d tickets, want 0", col, moved)
@@ -778,7 +782,7 @@ func TestARepeatTicketIsReassignedByTheManager(t *testing.T) {
 	const key = "tester|handler returns 500|internal/http/todo.go"
 	board := &plan.Board{Tasks: []plan.Task{
 		ticket("C1", key, plan.ColDone, "go-worker"),
-		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
 	}}
 
 	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
@@ -828,7 +832,7 @@ func TestAnUnusableTicketVerdictLeavesTheRoutersPick(t *testing.T) {
 			const key = "tester|handler returns 500|internal/http/todo.go"
 			board := &plan.Board{Tasks: []plan.Task{
 				ticket("C1", key, plan.ColDone, "go-worker"),
-				ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+				ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
 			}}
 			if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
 				t.Fatalf("applied an unusable verdict to %d tickets", moved)
@@ -859,7 +863,7 @@ func TestTheTeamsOwnManagerAnswersForItsTickets(t *testing.T) {
 	const key = "tester|handler returns 500|internal/http/todo.go"
 	board := &plan.Board{Tasks: []plan.Task{
 		ticket("C1", key, plan.ColDone, "go-worker"),
-		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
 	}}
 	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
 		t.Fatalf("triaged %d tickets, want 1", moved)
@@ -888,12 +892,67 @@ func TestAnIneligibleManagerFallsBackToTheRunDefault(t *testing.T) {
 	const key = "tester|handler returns 500|internal/http/todo.go"
 	board := &plan.Board{Tasks: []plan.Task{
 		ticket("C1", key, plan.ColDone, "go-worker"),
-		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
 	}}
 	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
 		t.Fatalf("triaged %d tickets, want 1", moved)
 	}
 	if exec.askedAgent != agents.RoleTriage {
 		t.Errorf("asked %q, want the run's default manager", exec.askedAgent)
+	}
+}
+
+// The triage prompt asks for a specialist over a generic. Asking is not enough:
+// it is the rule a small model skips most often, and the cost of skipping it is
+// a correction that brings nothing the failed attempt did not have — a generic
+// corrector handed a failing Go handler has no more Go knowledge than the go
+// worker that already failed.
+func TestAGenericVerdictIsUpgradedToTheLanguageSpecialist(t *testing.T) {
+	exec := &triageExec{reply: `{"assignee":"corrector","reason":"needs a fresh pair of hands"}`}
+	o := managedOrchestrator(t, exec, nil)
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("triaged %d tickets, want 1", moved)
+	}
+	if got := board.Tasks[1].Role; got != "go-corrector" {
+		t.Errorf("Role = %q, want the Go specialist over the generic corrector", got)
+	}
+	if !strings.Contains(board.Tasks[1].Notes, "reassigned-to: go-corrector") {
+		t.Errorf("the notes record the wrong assignee: %q", board.Tasks[1].Notes)
+	}
+
+	// The manager saw a ranked, labeled roster rather than an alphabetical one
+	// with the generics on top.
+	gi := strings.Index(exec.gotInput, "- go-")
+	ci := strings.Index(exec.gotInput, "- corrector")
+	if gi < 0 || ci < 0 || gi > ci {
+		t.Errorf("the roster did not lead with the task's language:\n%s", exec.gotInput)
+	}
+	if !strings.Contains(exec.gotInput, "(Go specialist)") {
+		t.Errorf("the roster is not labeled:\n%s", exec.gotInput)
+	}
+}
+
+// A manager that deliberately reached for another language's expert has a
+// reason the file extensions cannot see.
+func TestASpecialistVerdictIsHonoredAsGiven(t *testing.T) {
+	exec := &triageExec{reply: `{"assignee":"react-worker","reason":"the seam is on the web side"}`}
+	o := managedOrchestrator(t, exec, nil)
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticketAt("C2", key, plan.ColReadyToDev, "go-worker", 2),
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("triaged %d tickets, want 1", moved)
+	}
+	if got := board.Tasks[1].Role; got != "react-worker" {
+		t.Errorf("Role = %q, want the manager's deliberate cross-language pick", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -267,30 +268,99 @@ func StampCorrectionKey(t *Task, key string) {
 
 // CorrectionKeyOf reads the dedupe key back off a ticket, "" when the task is
 // not a correction.
+func CorrectionKeyOf(t Task) string { return markerValue(t.Notes, correctionKeyMarker) }
+
+// correctionAttemptMarker records which attempt at a defect a ticket is.
 //
-// The marker carries a leading newline so it cannot match mid-line, but the
-// notes it is written into are trimmed by several callers — and a stamp that
+// The number cannot be derived from the board. A defect that is re-reported
+// while its ticket is still open produces no second task — dedupe is doing its
+// job — so counting tickets would call the third rejection of one defect a
+// first attempt, and hand it straight back to the agent that has now failed at
+// it twice.
+const correctionAttemptMarker = "\ncorrection-attempt: "
+
+// StampCorrectionAttempt records which attempt at a defect this ticket is,
+// replacing any previous stamp.
+func StampCorrectionAttempt(t *Task, n int) {
+	if t == nil || n <= 0 {
+		return
+	}
+	t.Notes = strings.TrimRight(stripMarker(t.Notes, correctionAttemptMarker), "\n") +
+		correctionAttemptMarker + strconv.Itoa(n)
+}
+
+// CorrectionAttemptOf is which attempt at its defect this ticket is; 0 when the
+// task is not a correction ticket at all.
+func CorrectionAttemptOf(t Task) int {
+	n, err := strconv.Atoi(markerValue(t.Notes, correctionAttemptMarker))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// NoteRepeatedRejection records that a defect was reported again while its
+// ticket was still open, and returns the ticket's new attempt count.
+//
+// This is the moment a correction becomes a repeat: the gate found the same
+// thing, the ticket that was supposed to fix it is still sitting there, and
+// handing it back unchanged to the agent already holding it is the loop.
+// Returns 0 when no open ticket covers the defect.
+func (b *Board) NoteRepeatedRejection(key string) int {
+	if b == nil || key == "" {
+		return 0
+	}
+	for i := range b.Tasks {
+		t := b.Tasks[i]
+		if t.Column == ColDone || t.Status == StatusDone || CorrectionKeyOf(t) != key {
+			continue
+		}
+		n := CorrectionAttemptOf(t) + 1
+		StampCorrectionAttempt(&t, n)
+		b.Tasks[i] = t
+		return n
+	}
+	return 0
+}
+
+// markerValue reads a single-line marker's value out of a notes field.
+//
+// The markers carry a leading newline so they cannot match mid-line, but the
+// notes they are written into are trimmed by several callers — and a stamp that
 // landed at position 0 then loses that newline. Matching the first line as well
 // as an interior one is what keeps a trim from silently un-ticketing a defect:
 // dedupe would stop seeing it and the board would grow a second ticket for the
 // same failure.
-func CorrectionKeyOf(t Task) string {
-	notes := t.Notes
+func markerValue(notes, marker string) string {
+	head := strings.TrimPrefix(marker, "\n")
 	rest := ""
 	switch {
-	case strings.HasPrefix(notes, strings.TrimPrefix(correctionKeyMarker, "\n")):
-		rest = notes[len(correctionKeyMarker)-1:]
+	case strings.HasPrefix(notes, head):
+		rest = notes[len(head):]
 	default:
-		i := strings.Index(notes, correctionKeyMarker)
+		i := strings.Index(notes, marker)
 		if i < 0 {
 			return ""
 		}
-		rest = notes[i+len(correctionKeyMarker):]
+		rest = notes[i+len(marker):]
 	}
 	if j := strings.IndexByte(rest, '\n'); j >= 0 {
 		rest = rest[:j]
 	}
 	return strings.TrimSpace(rest)
+}
+
+// stripMarker removes a marker line so a re-stamp replaces rather than stacks.
+func stripMarker(notes, marker string) string {
+	head := strings.TrimPrefix(marker, "\n")
+	var kept []string
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), strings.TrimSpace(head)) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // CorrectionAttempts counts the tickets this board has raised for ONE defect,

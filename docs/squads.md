@@ -200,6 +200,33 @@ what to do differently. Its direction is written *above* the evidence in the
 ticket, because it is the only thing there the last attempt did not already
 have.
 
+The roster it picks from is **ranked and labeled**, not alphabetical. Sorted by
+name, `corrector` and `deep` come before `go-worker` and `python-corrector`, so
+the generic agents sit at the top of the list the model reads first — and it
+takes one, even though the prompt told it to prefer a specialist. The task's own
+language leads:
+
+```text
+## ROSTER — pick exactly one of these, best fit first
+- go-corrector (Go specialist)
+- go-worker (Go specialist)
+- react-worker (React specialist)
+- corrector (generic)
+- worker (generic)
+```
+
+And the preference is **enforced**, not merely requested: a generic pick is
+upgraded to the language corrector — or its worker, when no corrector is
+registered — whenever the roster offers one. A generic corrector handed a
+failing Go handler brings nothing the Go worker that already failed did not
+have. A pick that is already a specialist is never overridden: a manager that
+deliberately reached for another language's expert has a reason the file
+extensions cannot see.
+
+Testers are deliberately absent from the roster. Triage decides who *writes* the
+fix; offering a tester or a reviewer invites an answer the loop would then
+refuse.
+
 Its verdict is validated before it is applied. Two answers are worse than no
 manager at all — naming an agent that cannot be dispatched (the ticket then sits
 unassigned) and re-picking the agent that just failed (the loop triage exists to

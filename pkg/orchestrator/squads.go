@@ -469,9 +469,12 @@ func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.Tria
 		}
 	}
 
-	b.WriteString("\n## ROSTER — pick exactly one of these\n")
-	for _, id := range req.Roster {
-		b.WriteString("- " + id + "\n")
+	// Ranked and labeled, not alphabetical. Sorted by name the generics sit at
+	// the top of the list the model reads first, and it takes one — even though
+	// the prompt told it to prefer a specialist for the language of the files.
+	b.WriteString("\n## ROSTER — pick exactly one of these, best fit first\n")
+	for _, a := range plan.RankRoster(req.Roster, t.Files) {
+		b.WriteString("- " + a.ID + " (" + a.Note + ")\n")
 	}
 
 	// A team may name its own manager; the run's `triage` agent answers for
@@ -494,8 +497,13 @@ func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.Tria
 		o.emitWarn("coord", "unreadable triage verdict — using the deterministic handoff", "")
 		return plan.TriageDecision{}, false
 	}
-	o.emitAgent("coord", manager, t.ID,
-		fmt.Sprintf("%s reassigned to %s — %s", t.ID, d.Assignee, d.Reason), "", "")
+	// A verdict is a PROPOSAL. Announcing it as a reassignment here put
+	// "T1 reassigned to go-corrector" on the stream immediately before
+	// "triage ignored — not a registered agent", so a watching human saw a
+	// handoff that never happened. Both callers validate the verdict and
+	// announce the one they actually applied.
+	o.emitFull("coord", stream.KindDebug, manager, t.ID,
+		fmt.Sprintf("%s proposes %s — %s", manager, d.Assignee, d.Reason), "", "")
 	return d, true
 }
 
@@ -527,8 +535,12 @@ func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Boar
 	for i := range board.Tasks {
 		t := board.Tasks[i]
 		t.Normalize()
-		key := plan.CorrectionKeyOf(t)
-		if key == "" || t.Column != plan.ColReadyToDev || board.CorrectionAttempts(key) < 2 {
+		// The stamped attempt, not a count of tickets: a defect re-reported
+		// while its ticket is still open produces no second task — dedupe is
+		// doing its job — so counting tickets would call the third rejection of
+		// one defect a first attempt.
+		if plan.CorrectionKeyOf(t) == "" || t.Column != plan.ColReadyToDev ||
+			plan.CorrectionAttemptOf(t) < 2 {
 			continue
 		}
 		staff := squads.StaffingFor(o.squadPlan, t.Squad)
@@ -549,20 +561,27 @@ func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Boar
 			o.emitWarn("plan", t.ID+" triage ignored — the manager "+why, "")
 			continue
 		}
+		assignee := d.Assignee
+		if upgraded, changed := plan.PreferSpecialist(assignee, t.Role, t.Files, roster); changed {
+			o.emitFull("plan", stream.KindDebug, upgraded, t.ID,
+				fmt.Sprintf("%s: %s over the generic %s for %s", t.ID, upgraded, assignee,
+					plan.LanguageOf(t.Files)), "", "")
+			assignee = upgraded
+		}
 		from := t.Role
-		t.Role = d.Assignee
+		t.Role = assignee
 		if g := strings.TrimSpace(d.Guidance); g != "" {
 			// Above the evidence, not below it: the guidance is the only thing
 			// here the last attempt did not already have.
 			t.Description = "## From the project manager\n\n" + g + "\n\n---\n\n" +
 				strings.TrimLeft(t.Description, "\n")
 		}
-		t.Notes = strings.TrimSpace(t.Notes + "\nreassigned-to: " + d.Assignee +
+		t.Notes = strings.TrimSpace(t.Notes + "\nreassigned-to: " + assignee +
 			" (repeat ticket, routed by the project manager)")
 		board.Tasks[i] = t
 		moved++
-		o.emitFull("plan", stream.KindOutput, d.Assignee, t.ID,
-			fmt.Sprintf("%s reassigned from %s to %s — %s", t.ID, from, d.Assignee, d.Reason),
+		o.emitFull("plan", stream.KindOutput, assignee, t.ID,
+			fmt.Sprintf("%s reassigned from %s to %s — %s", t.ID, from, assignee, d.Reason),
 			strings.Join(t.Files, ", "), "")
 	}
 	return moved

@@ -201,6 +201,9 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 		t.Notes = strings.TrimSpace(t.Notes + "\n" + note)
 		t.Review = "tester feedback: " + firstSentence(summary)
 		if looksImplementer(t) {
+			// A reopen of a task already ticketed for this defect is the NEXT
+			// attempt at it, not the first.
+			attempt := plan.CorrectionAttemptOf(t) + 1
 			enrichReopenedTask(&t, plan.CorrectionInput{
 				Source:   plan.SourceTester,
 				Failures: failures,
@@ -210,8 +213,9 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 				Files:    firstNonEmptyFiles(t.Files, narrowFiles),
 				Squad:    t.Squad,
 				Origin:   t.ID,
-				Attempt:  countPriorCorrections(out),
+				Attempt:  attempt - 1,
 			}, hasRole)
+			plan.StampCorrectionAttempt(&t, attempt)
 			reopened++
 		}
 		out.Tasks[i] = t
@@ -239,9 +243,14 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 		// the board carries: a first attempt that announces itself as a third
 		// tells its worker that approaches it never tried are already ruled out.
 		in.Attempt = out.CorrectionAttempts(key)
-		if !out.HasOpenCorrection(key) {
+		// The ticket for this defect may still be open, with the gate having
+		// found the same thing again. Dedupe keeps the board from growing a
+		// second one, but the open ticket has now failed once more and has to
+		// say so — that count is what routes it past the project manager.
+		if out.NoteRepeatedRejection(key) == 0 {
 			nt := plan.NewCorrectionTicket(in, hasRole)
 			plan.StampCorrectionKey(&nt, key)
+			plan.StampCorrectionAttempt(&nt, in.Attempt+1)
 			nt.Notes = strings.TrimSpace(nt.Notes + "\nquery scope " + out.QueryID)
 			out.AddTask(nt)
 		}
@@ -490,12 +499,12 @@ func countOpenCorrective(b plan.Board) int {
 }
 
 func looksImplementer(t plan.Task) bool {
-	switch strings.ToLower(t.Role) {
-	case plan.RoleWorker, plan.RoleCorrector, "deep":
-		return true
-	default:
-		return false
-	}
+	// Suffix-aware, via the shared predicate. This used to match only the bare
+	// ids, so once per-task routing put `go-worker` on a task, no reopened task
+	// on a squad run was ever enriched into a correction ticket: it came back
+	// with a sentence of verdict and no way to reproduce the failure, which is
+	// exactly what turns corrections into retries.
+	return plan.IsImplementerRole(t.Role) || strings.EqualFold(strings.TrimSpace(t.Role), "deep")
 }
 
 func failureMentionsTask(failures []string, t plan.Task) bool {

@@ -354,6 +354,9 @@ func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
 		if e.Reviewer != nil {
 			s.Reviewer = strings.TrimSpace(*e.Reviewer)
 		}
+		if e.Manager != nil {
+			s.Manager = strings.TrimSpace(*e.Manager)
+		}
 		if e.OwnsSet {
 			s.Owns = e.Owns
 		}

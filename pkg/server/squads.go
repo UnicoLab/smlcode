@@ -1,9 +1,15 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 )
 
@@ -44,6 +50,7 @@ func (s *Server) handleGetSquads(w http.ResponseWriter, _ *http.Request) {
 			"acceptance": sq.Acceptance,
 			"worker":     sq.Worker,
 			"reviewer":   sq.Reviewer,
+			"manager":    sq.Manager,
 			"total":      st.Total,
 			"done":       st.Done,
 			"blocked":    st.Blocked,
@@ -76,6 +83,7 @@ func (s *Server) handleGetSquads(w http.ResponseWriter, _ *http.Request) {
 		"squads":     out,
 		"interfaces": interfaces,
 		"stalls":     stalls,
+		"managers":   s.triageCapableAgents(),
 		"integration": map[string]interface{}{
 			"acceptance": p.Integration.Acceptance,
 			"notes":      p.Integration.Notes,
@@ -97,4 +105,72 @@ func (s *Server) boardTasks() []plan.Task {
 	}
 	snap := b.Snapshot()
 	return snap.Tasks
+}
+
+// handlePatchSquads applies edits to the saved org chart outside a run.
+//
+// The approval gate can edit teams, but only while a plan is pending. A team
+// structure outlives one approval — the ownership boundaries and the staffing
+// are what the NEXT run inherits — so there has to be a way to fix them from
+// the Teams page without waiting for a gate to open.
+//
+// Validation is the same as everywhere else and is not negotiable: an edit that
+// makes two squads share a path is refused whole, and the saved plan is left
+// exactly as it was. A half-applied org chart is worse than the one it
+// replaced, because the user believes they fixed it.
+func (s *Server) handlePatchSquads(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Squads       []plan.SquadEdit `json:"squads"`
+		RemoveSquads []string         `json:"remove_squads"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if len(body.Squads) == 0 && len(body.RemoveSquads) == 0 {
+		http.Error(w, "no edits", http.StatusBadRequest)
+		return
+	}
+
+	p, ok, err := squads.Load(s.slmDir())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "no squad plan to edit", http.StatusNotFound)
+		return
+	}
+
+	if probs := squads.ApplyEdits(&p, body.Squads, body.RemoveSquads); probs.Errors() {
+		// 422, not 400: the request was well-formed and the harness understood
+		// it — it is the resulting org chart that cannot be run, and the client
+		// needs the reasons to show the user.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok": false, "problems": probs.Strings(),
+		})
+		return
+	}
+	if err := squads.Save(s.slmDir(), p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "charter", Kind: "output",
+		Message: "squad plan edited: " + p.Summarize(), Time: time.Now(),
+	})
+	writeJSON(w, map[string]interface{}{"ok": true, "summary": p.Summarize()})
+}
+
+// triageCapableAgents lists the agents a team may be given as its manager.
+//
+// Not every agent can be one. The decoding grammar for a request is derived
+// from the agent's own system prompt, so an agent that does not answer the
+// triage contract returns something the reassignment step cannot read — and it
+// only finds that out after a full model call. Offering a choice the harness
+// would then refuse is worse than offering a short list.
+func (s *Server) triageCapableAgents() []string {
+	return agents.AgentsEmitting(schema.RoleTriage, s.loadCustomAgents())
 }

@@ -45,6 +45,7 @@ const (
 	RoleEscalate    = "escalate"
 	RoleComposition = "composition"
 	RoleSquads      = "squads"
+	RoleTriage      = "triage"
 	RoleScopeJudge  = "scope_judge"
 	RoleWorker      = "worker"
 	RoleExplore     = "explore"
@@ -288,6 +289,18 @@ func init() {
 
 	// composition: `slots` is an open-ended pipeline.Slot list, so this contract
 	// can never be strict. json_object / GBNF still help a lot.
+	// The project manager's triage verdict on one rejected delivery.
+	//
+	// Small on purpose: who takes it, why, and what they need to know that the
+	// last attempt did not. A manager asked to restate the whole board spends
+	// its budget describing instead of deciding.
+	register(RoleTriage, false, obj(map[string]any{
+		"assignee": str(),
+		"reason":   str(),
+		"guidance": str(),
+		"priority": enum("normal", "high"),
+	}, "assignee", "reason"))
+
 	// The project manager's org chart. Not strict: a manager that returns a
 	// squad without an acceptance command is still a usable plan (Validate
 	// downgrades that to a warning), and refusing the whole object over it
@@ -398,6 +411,8 @@ func normalizeRole(role string) string {
 		return RoleComposition
 	case "manager", "pm", "project-manager":
 		return RoleSquads
+	case "triage", "pm-triage":
+		return RoleTriage
 	case "explorer":
 		return RoleExplore
 	case "deep", "corrector":

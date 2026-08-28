@@ -19,6 +19,7 @@ const MarkdownEditorView = lazy(() => import('./components/Docs/MarkdownEditor')
 const RunHistory = lazy(() => import('./components/Runs/RunHistory'));
 const SettingsPanel = lazy(() => import('./components/Settings/SettingsPanel'));
 const ReviewView = lazy(() => import('./components/Review/ReviewView'));
+const TeamsView = lazy(() => import('./components/Teams/TeamsView'));
 
 export interface AppContextValue {
   health: Health | null;
@@ -236,6 +237,7 @@ function AppInner() {
               <Route path="review" element={<ReviewView />} />
               <Route path="pipeline" element={<PipelineEditor />} />
               <Route path="agents" element={<AgentManager />} />
+              <Route path="teams" element={<TeamsView />} />
               <Route path="blocks" element={<BlockManager />} />
               <Route path="files" element={<FileInspector events={stream.events} running={stream.running} />} />
               <Route path="skills" element={<SkillManager />} />

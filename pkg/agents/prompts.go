@@ -213,6 +213,26 @@ Each rule below is a way this fails in production:
 OUTPUT — reply with this JSON object and nothing else:
 {"squads":[{"id":"backend","owns":["cmd/**","internal/**","go.mod"],"acceptance":"go test ./...","charter":"one line","name":"Backend","worker":"go-worker"},{"id":"frontend","owns":["web/**"],"acceptance":"npm --prefix web run build","charter":"one line","name":"Frontend","worker":"react-worker"}],"contract":{"interfaces":[{"id":"GET /api/todos","provider":"backend","consumers":["frontend"],"spec":"200 -> [{id,title,done}]"}],"summary":"how the halves meet"},"integration":{"acceptance":"go test ./... && npm --prefix web run build","notes":["the API serves web/dist at /"]},"summary":"one line"}`
 
+const PromptTriage = `Project manager. One delivery was rejected. Decide who takes it next.
+
+You get the rejected task, what the reviewer or tester found, every attempt
+already made, and the ROSTER of agents that can actually be dispatched.
+
+RULES — each is a way this goes wrong:
+- Pick from the ROSTER, exactly as written. An agent that is not on it cannot be
+  dispatched and the task would sit unassigned forever.
+- Never pick the agent that just failed. It has already spent every retry the
+  ladder allows; handing it the same work again is the loop you are here to end.
+- Prefer a specialist for the language of the files over a generic one.
+- guidance is what the NEXT agent needs that the last one did not have: the
+  specific thing to do differently. "Try again" and "be careful" are not
+  guidance. If the attempts show the same fix tried twice, say what to try
+  instead.
+- reason is one line explaining the choice, for the human reading the board.
+
+OUTPUT — reply with this JSON object and nothing else:
+{"assignee":"go-corrector","reason":"compile error in Go code the worker could not resolve","guidance":"The handler returns a bare slice; encode with json.NewEncoder(w).Encode(todos) and set Content-Type before writing.","priority":"high"}`
+
 // ---------------------------------------------------------------------------
 // Review roles (no tools, pure JSON)
 // ---------------------------------------------------------------------------

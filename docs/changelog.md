@@ -140,6 +140,65 @@ an agent that cannot be dispatched — a task nobody can staff would sit in
 guessing at work two others could not do is a scoping problem, which is exactly
 what the human is being asked to look at.
 
+### Added — a project manager decides who takes a rejected delivery
+
+Routing a correction ticket by language is the right *first* answer and the
+wrong *second* one: when the same defect comes back, language routing hands it
+to the agent that just failed at it, carrying a ticket whose only new content is
+that it failed again.
+
+- **A repeat ticket goes past a project manager** before it goes back to work —
+  on the reviewer path when the ladder is spent, and now on the tester path too,
+  which is where most gate failures come from. The manager does the two things
+  the router cannot: pick somebody else, and say what to do differently. Its
+  direction lands *above* the evidence in the ticket, since it is the only thing
+  there the last attempt did not already have.
+- **A first ticket is never sent to it.** The obvious choice has not been tried
+  yet, and a model call to confirm it is pure latency.
+- **The verdict is validated before it is applied.** Naming an unregistered
+  agent (the ticket then sits unassigned) and re-picking the agent that just
+  failed (the loop this exists to end) both fall through to the deterministic
+  route rather than being applied.
+- **Each team can carry its own manager.** A run-wide manager answering for a
+  specific team picks from a roster it has no reason to understand — the agents
+  who can fix a failing Go handler are not the ones staffing the React half. The
+  request now names the team and its staff, and lists the team's own people
+  first. First, not exclusively: the reason a delivery was rejected may be that
+  the team lacks the skill the fix needs.
+- **Only agents that answer the triage contract may be nominated.** An agent's
+  decoding grammar comes from its own system prompt, so one that answers a
+  different contract replies with something the reassignment step cannot read —
+  after a full model call has been spent. Both the approval card and the Teams
+  page offer only the eligible list.
+
+### Added — a Teams page
+
+The rail's Teams tab answers "how are the teams doing right now". The new
+**Teams** page answers "are the teams right at all" — a different question, at a
+different time, with a consequence the rail does not have: a team structure
+outlives the run that proposed it, so the boundaries and staffing edited here
+are what the next run inherits.
+
+It edits names, owned globs, acceptance commands and each team's project
+manager, sends only the fields you touched, and — when an edit would make two
+teams share a path — shows *which* teams collide instead of a bare refusal.
+Nothing is saved in that case: a half-applied org chart is worse than the one it
+replaced, because you believe you fixed it.
+
+### Fixed — a correction attempt counted the board, not the defect
+
+A ticket's "correction attempt N" came from a count of every correction on the
+board, so two unrelated failures made a first attempt at a third defect announce
+itself as a third — telling its worker that approaches it had never tried were
+already ruled out. It now counts tickets for *that* defect, finished ones
+included.
+
+Reading a ticket's dedupe key back is also trim-safe now. The marker carries a
+leading newline so it cannot match mid-line, but a stamp that lands at the start
+of an empty notes field loses that newline to any caller that trims — after
+which dedupe stops seeing the ticket and the board grows a second one for the
+same failure.
+
 ### Fixed — greenfield scaffolding could not scope its own tasks
 
 Found by running the squad path end to end against a fake model, and it is the

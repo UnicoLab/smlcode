@@ -247,7 +247,7 @@ func (b *Board) HasOpenCorrection(key string) bool {
 		if t.Column == ColDone || t.Status == StatusDone {
 			continue
 		}
-		if strings.Contains(t.Notes, correctionKeyMarker+key) {
+		if CorrectionKeyOf(t) == key {
 			return true
 		}
 	}
@@ -263,6 +263,55 @@ func StampCorrectionKey(t *Task, key string) {
 		return
 	}
 	t.Notes = strings.TrimRight(t.Notes, "\n") + correctionKeyMarker + key
+}
+
+// CorrectionKeyOf reads the dedupe key back off a ticket, "" when the task is
+// not a correction.
+//
+// The marker carries a leading newline so it cannot match mid-line, but the
+// notes it is written into are trimmed by several callers — and a stamp that
+// landed at position 0 then loses that newline. Matching the first line as well
+// as an interior one is what keeps a trim from silently un-ticketing a defect:
+// dedupe would stop seeing it and the board would grow a second ticket for the
+// same failure.
+func CorrectionKeyOf(t Task) string {
+	notes := t.Notes
+	rest := ""
+	switch {
+	case strings.HasPrefix(notes, strings.TrimPrefix(correctionKeyMarker, "\n")):
+		rest = notes[len(correctionKeyMarker)-1:]
+	default:
+		i := strings.Index(notes, correctionKeyMarker)
+		if i < 0 {
+			return ""
+		}
+		rest = notes[i+len(correctionKeyMarker):]
+	}
+	if j := strings.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// CorrectionAttempts counts the tickets this board has raised for ONE defect,
+// finished ones included.
+//
+// This is the number that says whether handing the ticket back to the same
+// deterministic choice is a fix or a rerun. A board-wide count of corrections
+// cannot: two unrelated failures make a first attempt at a third defect look
+// like a third attempt, and the ticket then tells its worker that approaches it
+// never tried have already been ruled out.
+func (b *Board) CorrectionAttempts(key string) int {
+	if b == nil || key == "" {
+		return 0
+	}
+	n := 0
+	for _, t := range b.Tasks {
+		if CorrectionKeyOf(t) == key {
+			n++
+		}
+	}
+	return n
 }
 
 func dedupeFiles(in []string) []string {

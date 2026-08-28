@@ -377,3 +377,51 @@ func TestApplyEditsIsANoOpWithNothingToDo(t *testing.T) {
 		t.Error("editing a nil plan is an error")
 	}
 }
+
+// ── Attaching a manager to a team ────────────────────────────────────────
+
+func TestATeamCanBeGivenItsOwnManager(t *testing.T) {
+	p := staffedPlan()
+	pm := "backend-pm"
+	if probs := ApplyEdits(p, []plan.SquadEdit{{ID: "backend", Manager: &pm}}, nil); probs.Errors() {
+		t.Fatalf("refused a plain staffing edit: %v", probs.Strings())
+	}
+	if got := StaffingFor(p, "backend").Manager; got != pm {
+		t.Errorf("Manager = %q, want %q", got, pm)
+	}
+	// Untouched teams keep answering to the run's default.
+	if got := StaffingFor(p, "frontend").Manager; got != "" {
+		t.Errorf("frontend Manager = %q, want empty", got)
+	}
+}
+
+func TestClearingAManagerHandsTheTeamBackToTheRunDefault(t *testing.T) {
+	p := staffedPlan()
+	pm, none := "backend-pm", ""
+	if probs := ApplyEdits(p, []plan.SquadEdit{{ID: "backend", Manager: &pm}}, nil); probs.Errors() {
+		t.Fatalf("setup: %v", probs.Strings())
+	}
+	if probs := ApplyEdits(p, []plan.SquadEdit{{ID: "backend", Manager: &none}}, nil); probs.Errors() {
+		t.Fatalf("refused clearing a manager: %v", probs.Strings())
+	}
+	if got := StaffingFor(p, "backend").Manager; got != "" {
+		t.Errorf("Manager = %q, want it cleared", got)
+	}
+}
+
+// An absent field means "leave it alone". Nil-versus-empty is the whole
+// distinction the pointer exists to carry.
+func TestAnEditThatDoesNotMentionTheManagerKeepsIt(t *testing.T) {
+	p := staffedPlan()
+	pm := "backend-pm"
+	if probs := ApplyEdits(p, []plan.SquadEdit{{ID: "backend", Manager: &pm}}, nil); probs.Errors() {
+		t.Fatalf("setup: %v", probs.Strings())
+	}
+	name := "Backend · Go API"
+	if probs := ApplyEdits(p, []plan.SquadEdit{{ID: "backend", Name: &name}}, nil); probs.Errors() {
+		t.Fatalf("refused a name edit: %v", probs.Strings())
+	}
+	if got := StaffingFor(p, "backend").Manager; got != pm {
+		t.Errorf("Manager = %q, want it untouched at %q", got, pm)
+	}
+}

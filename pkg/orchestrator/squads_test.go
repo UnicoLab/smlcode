@@ -2,18 +2,21 @@ package orchestrator
 
 import (
 	"context"
-
-	"github.com/UnicoLab/slmcode/pkg/agents"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
+
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
+	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
 
 // recorder captures the event stream so a test can assert on what a watching
@@ -308,7 +311,7 @@ func routingOrchestrator(t *testing.T, squadPlan *squads.Plan) (*Orchestrator, *
 	rec := &recorder{}
 	f := agents.NewFactory(nil, nil, "m", "p")
 	for _, id := range []string{
-		"go-worker", "go-reviewer", "go-tester",
+		"go-worker", "go-reviewer", "go-tester", "go-corrector",
 		"react-worker", "react-reviewer", "react-tester",
 	} {
 		f.ExtraCustoms = append(f.ExtraCustoms, agents.CustomSpec{
@@ -553,5 +556,344 @@ func TestApprovalCardCarriesTheTeamsAndTheStaffableAgents(t *testing.T) {
 	solo := &Orchestrator{cfg: o.cfg}
 	if solo.squadsAskView(board) != nil {
 		t.Error("no squad plan, no squads on the card")
+	}
+}
+
+// ── Manager triage ───────────────────────────────────────────────────────
+
+func TestTriageRosterOffersOnlyImplementers(t *testing.T) {
+	o, _ := routingOrchestrator(t, nil)
+	roster := o.triageRoster()
+	if len(roster) == 0 {
+		t.Fatal("the manager must have someone to choose from")
+	}
+	has := map[string]bool{}
+	for _, id := range roster {
+		has[id] = true
+	}
+	for _, want := range []string{"go-worker", "react-worker", plan.RoleWorker, plan.RoleCorrector} {
+		if !has[want] {
+			t.Errorf("roster is missing the implementer %q", want)
+		}
+	}
+	// Triage decides who WRITES the fix. Offering a reviewer or a planner
+	// invites an answer the loop would then refuse.
+	for _, unwanted := range []string{plan.RoleTester, plan.RoleReviewer, "planner", "go-reviewer", "triage"} {
+		if has[unwanted] {
+			t.Errorf("roster should not offer the non-implementer %q", unwanted)
+		}
+	}
+}
+
+func TestTriageIsSkippedWithNoRoster(t *testing.T) {
+	o, _ := routingOrchestrator(t, nil)
+	if _, ok := o.triageRejectedDelivery(context.Background(), loop.TriageRequest{}); ok {
+		t.Error("with nothing to choose from there is nothing to decide")
+	}
+	solo := &Orchestrator{}
+	if _, ok := solo.triageRejectedDelivery(context.Background(), loop.TriageRequest{Roster: []string{"worker"}}); ok {
+		t.Error("no factory, no triage")
+	}
+}
+
+// ── Repeat tickets go past the project manager ───────────────────────────
+//
+// The tester path routes tickets by language: a failing .go file to go-worker,
+// a failing .tsx to react-worker. That is the right FIRST answer and the wrong
+// second one — when the same defect comes back, the deterministic route hands
+// it to the agent that just failed at it, which is the loop that made tester
+// failures feel like noise rather than progress.
+
+func ticket(id, key, col, role string) plan.Task {
+	t := plan.Task{
+		ID: id, Column: col, Role: role, Squad: "backend",
+		Title:       "fix the todo handler",
+		Review:      "tester feedback: handler returns 500",
+		Description: "The tester gate rejected this work.\n\n## What failed\n- todo_test.go:41 want 200, got 500\n- the body is not JSON\n\n## Reproduce it\n```\ngo test ./...\n```\n",
+		Files:       []string{"internal/http/todo.go"},
+	}
+	plan.StampCorrectionKey(&t, key)
+	return t
+}
+
+// A first ticket is the router's to own: it has not been tried yet, and a model
+// call to confirm the obvious choice is pure latency.
+func TestAFirstTicketIsNotSentToTheManager(t *testing.T) {
+	// A manager IS wired and would happily reassign — the gate is what stops
+	// it, not the absence of anyone to ask.
+	exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"encoder bug"}`}
+	o := managedOrchestrator(t, exec, nil)
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{ticket("C1", key, plan.ColReadyToDev, "go-worker")}}
+
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+		t.Errorf("triaged %d first-attempt tickets, want 0", moved)
+	}
+	if board.Tasks[0].Role != "go-worker" {
+		t.Errorf("Role = %q, want the router's pick left alone", board.Tasks[0].Role)
+	}
+	// And no model call was spent confirming the obvious choice.
+	if exec.askedAgent != "" {
+		t.Errorf("asked %q about a first attempt; that is pure latency", exec.askedAgent)
+	}
+}
+
+// The gate itself: a second ticket for the same defect is a repeat, and repeats
+// are what the manager exists to break.
+func TestASecondTicketForTheSameDefectIsARepeat(t *testing.T) {
+	o, _ := routingOrchestrator(t, nil)
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+	}}
+	if got := board.CorrectionAttempts(key); got != 2 {
+		t.Fatalf("fixture is wrong: attempts = %d, want 2", got)
+	}
+	// No model is wired here, so triage cannot answer — the ticket must survive
+	// exactly as the router left it rather than being parked or blanked.
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+		t.Errorf("moved %d tickets with no manager available, want 0", moved)
+	}
+	if board.Tasks[1].Role != "go-worker" || board.Tasks[1].Column != plan.ColReadyToDev {
+		t.Errorf("an unanswerable triage changed the ticket: %+v", board.Tasks[1])
+	}
+}
+
+func TestOnlyReadyTicketsAreTriaged(t *testing.T) {
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	for _, col := range []string{plan.ColDone, plan.ColInProgress, plan.ColInReview, plan.ColBlocked} {
+		exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"encoder bug"}`}
+		o := managedOrchestrator(t, exec, nil)
+		board := &plan.Board{Tasks: []plan.Task{
+			ticket("C1", key, plan.ColDone, "go-worker"),
+			ticket("C2", key, col, "go-worker"),
+		}}
+		if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+			t.Errorf("column %q: triaged %d tickets, want 0", col, moved)
+		}
+		// Reassigning work an agent is holding takes it off them mid-flight.
+		if exec.askedAgent != "" {
+			t.Errorf("column %q: asked the manager about a ticket nobody can pick up", col)
+		}
+	}
+}
+
+// A task that is not a correction has no defect history, and reassigning one
+// mid-flight would take work off an agent that is doing it.
+func TestPlainTasksAreNeverTouchedByTicketTriage(t *testing.T) {
+	o := managedOrchestrator(t, &triageExec{reply: `{"assignee":"go-corrector","reason":"x"}`}, nil)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Column: plan.ColReadyToDev, Role: "go-worker", Title: "todo store"},
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+		t.Errorf("triaged %d non-correction tasks, want 0", moved)
+	}
+}
+
+func TestTicketTriageIsSafeWithNothingWiredUp(t *testing.T) {
+	var nilOrch *Orchestrator
+	if got := nilOrch.triageRepeatTickets(context.Background(), &plan.Board{}); got != 0 {
+		t.Errorf("nil orchestrator triaged %d tickets", got)
+	}
+	o, _ := routingOrchestrator(t, nil)
+	if got := o.triageRepeatTickets(context.Background(), nil); got != 0 {
+		t.Errorf("nil board triaged %d tickets", got)
+	}
+	solo := &Orchestrator{}
+	if got := solo.triageRepeatTickets(context.Background(), &plan.Board{}); got != 0 {
+		t.Errorf("no factory triaged %d tickets", got)
+	}
+}
+
+// The manager is handed the tester's actual findings, not a re-derived summary.
+func TestTheTicketBodyIsWhatTheManagerReviews(t *testing.T) {
+	task := ticket("C2", "k", plan.ColReadyToDev, "go-worker")
+	if got := ticketHeadline(task); got != "tester feedback: handler returns 500" {
+		t.Errorf("ticketHeadline = %q", got)
+	}
+	got := ticketFindings(task)
+	want := []string{"todo_test.go:41 want 200, got 500", "the body is not JSON"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ticketFindings = %v, want %v", got, want)
+	}
+	// The bullet list stops at the next heading: the reproduce command is
+	// evidence, not a finding.
+	for _, f := range got {
+		if strings.Contains(f, "go test") {
+			t.Errorf("ticketFindings leaked past the section: %q", f)
+		}
+	}
+	if ticketFindings(plan.Task{Description: "no sections here"}) != nil {
+		t.Error("a ticket with no findings section has no findings")
+	}
+}
+
+func TestATicketWithNoReviewFallsBackToItsTitle(t *testing.T) {
+	task := ticket("C2", "k", plan.ColReadyToDev, "go-worker")
+	task.Review = ""
+	if got := ticketHeadline(task); got != "fix the todo handler" {
+		t.Errorf("ticketHeadline = %q, want the title", got)
+	}
+}
+
+// triageExec answers every dispatch with one canned triage verdict, recording
+// which agent was asked and what it was shown.
+type triageExec struct {
+	askedAgent string
+	gotInput   string
+	reply      string
+	err        error
+}
+
+func (e *triageExec) ExecuteSubAgents(_ context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	if len(reqs) > 0 {
+		e.askedAgent = reqs[0].AgentID
+		e.gotInput = reqs[0].Input
+	}
+	if e.err != nil {
+		return nil, e.err
+	}
+	return []ggagent.SubAgentResult{{Output: e.reply}}, nil
+}
+
+func managedOrchestrator(t *testing.T, exec *triageExec, squadPlan *squads.Plan) *Orchestrator {
+	t.Helper()
+	o, _ := routingOrchestrator(t, squadPlan)
+	o.cfg = config.Default(t.TempDir())
+	o.executor = exec
+	o.shared = ggagent.NewSharedState()
+	return o
+}
+
+// The headline: the second attempt at a defect goes to somebody else, with the
+// manager's direction above the evidence — instead of back to the agent that
+// could not fix it, holding a ticket whose only new content is that it failed
+// again.
+func TestARepeatTicketIsReassignedByTheManager(t *testing.T) {
+	exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"the worker cannot see the encoder bug",` +
+		`"guidance":"Set Content-Type before writing the body, then json.NewEncoder(w).Encode(todos)."}`}
+	o := managedOrchestrator(t, exec, nil)
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+	}}
+
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("triaged %d tickets, want 1", moved)
+	}
+	got := board.Tasks[1]
+	if got.Role != "go-corrector" {
+		t.Errorf("Role = %q, want the manager's pick", got.Role)
+	}
+	// The guidance is the one thing here the last attempt did not already have,
+	// so burying it under the failure dump is how it gets skimmed past.
+	pmAt := strings.Index(got.Description, "From the project manager")
+	failAt := strings.Index(got.Description, "## What failed")
+	if pmAt < 0 || failAt < 0 || pmAt > failAt {
+		t.Errorf("the manager's direction is not above the evidence:\n%s", got.Description)
+	}
+	if !strings.Contains(got.Description, "json.NewEncoder") {
+		t.Errorf("the guidance did not reach the next agent:\n%s", got.Description)
+	}
+	if !strings.Contains(got.Notes, "reassigned-to: go-corrector") {
+		t.Errorf("the handoff was not recorded: %q", got.Notes)
+	}
+	// The ticket keeps its identity: same defect, same files, same key.
+	if plan.CorrectionKeyOf(got) != key || got.ID != "C2" {
+		t.Errorf("the ticket lost its identity: %+v", got)
+	}
+	// And the manager was shown the tester's actual findings.
+	if !strings.Contains(exec.gotInput, "todo_test.go:41 want 200, got 500") {
+		t.Errorf("the manager was not shown what failed:\n%s", exec.gotInput)
+	}
+}
+
+// A verdict the loop would refuse leaves the ticket alone rather than parking
+// it on an agent that cannot be dispatched.
+func TestAnUnusableTicketVerdictLeavesTheRoutersPick(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply string
+	}{
+		{"unregistered agent", `{"assignee":"cobol-worker","reason":"why not"}`},
+		{"re-picks the agent that just failed", `{"assignee":"go-worker","reason":"try again"}`},
+		{"names nobody", `{"reason":"unsure"}`},
+		{"unreadable", `I think go-corrector should take it.`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := managedOrchestrator(t, &triageExec{reply: tc.reply}, nil)
+			const key = "tester|handler returns 500|internal/http/todo.go"
+			board := &plan.Board{Tasks: []plan.Task{
+				ticket("C1", key, plan.ColDone, "go-worker"),
+				ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+			}}
+			if moved := o.triageRepeatTickets(context.Background(), board); moved != 0 {
+				t.Fatalf("applied an unusable verdict to %d tickets", moved)
+			}
+			if board.Tasks[1].Role != "go-worker" {
+				t.Errorf("Role = %q, want the router's pick kept", board.Tasks[1].Role)
+			}
+		})
+	}
+}
+
+// A team may name its own manager. The one that answers has to be the one that
+// knows the team's people.
+func TestTheTeamsOwnManagerAnswersForItsTickets(t *testing.T) {
+	p := &squads.Plan{Squads: []squads.Squad{
+		{ID: "backend", Owns: []string{"internal/**"}, Acceptance: "go test ./...",
+			Worker: "go-worker", Manager: "backend-triage"},
+		{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build", Worker: "react-worker"},
+	}}
+	p.Normalize()
+
+	exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"encoder bug"}`}
+	o := managedOrchestrator(t, exec, p)
+	o.factory.ExtraCustoms = append(o.factory.ExtraCustoms, agents.CustomSpec{
+		ID: "backend-triage", Title: "Backend PM", SystemPrompt: agents.PromptTriage, MaxIter: 2,
+	})
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("triaged %d tickets, want 1", moved)
+	}
+	if exec.askedAgent != "backend-triage" {
+		t.Errorf("asked %q, want the team's own manager", exec.askedAgent)
+	}
+	if !strings.Contains(exec.gotInput, "project manager for the backend team") {
+		t.Errorf("the manager was not told which team it answers for:\n%s", exec.gotInput)
+	}
+}
+
+// An agent that answers a different contract is refused BEFORE the model call:
+// the decoding grammar comes from its own prompt, so its reply could not be
+// read as a verdict however long it took to produce.
+func TestAnIneligibleManagerFallsBackToTheRunDefault(t *testing.T) {
+	p := &squads.Plan{Squads: []squads.Squad{
+		{ID: "backend", Owns: []string{"internal/**"}, Acceptance: "go test ./...", Manager: "go-worker"},
+		{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+	}}
+	p.Normalize()
+
+	exec := &triageExec{reply: `{"assignee":"go-corrector","reason":"encoder bug"}`}
+	o := managedOrchestrator(t, exec, p)
+
+	const key = "tester|handler returns 500|internal/http/todo.go"
+	board := &plan.Board{Tasks: []plan.Task{
+		ticket("C1", key, plan.ColDone, "go-worker"),
+		ticket("C2", key, plan.ColReadyToDev, "go-worker"),
+	}}
+	if moved := o.triageRepeatTickets(context.Background(), board); moved != 1 {
+		t.Fatalf("triaged %d tickets, want 1", moved)
+	}
+	if exec.askedAgent != agents.RoleTriage {
+		t.Errorf("asked %q, want the run's default manager", exec.askedAgent)
 	}
 }

@@ -135,6 +135,11 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	// naming an agent that cannot be dispatched.
 	if o.factory != nil {
 		runner.RoleExists = o.factory.HasRole
+		// The project manager decides who takes a rejected delivery next; the
+		// deterministic ladder is the fallback when it cannot be asked or its
+		// answer cannot be used.
+		runner.RosterIDs = o.triageRoster()
+		runner.Triage = o.triageRejectedDelivery
 	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)

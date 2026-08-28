@@ -6,8 +6,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/squads"
+	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
 // ── Virtual dev teams ────────────────────────────────────────────────────
@@ -309,7 +313,7 @@ func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
 		view.Squads = append(view.Squads, plan.PlanSquad{
 			ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: s.Owns,
 			Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer,
-			TaskCount: counts[s.ID],
+			Manager: s.Manager, TaskCount: counts[s.ID],
 		})
 	}
 	for _, in := range o.squadPlan.Contract.Interfaces {
@@ -318,6 +322,26 @@ func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
 		})
 	}
 	return view
+}
+
+// manageableAgents lists the agents a team may be given as its project manager.
+//
+// Narrower than staffableAgents, and for a reason the UI cannot infer: the
+// decoding grammar for a request is derived from the agent's own system prompt,
+// so an agent that does not answer the triage contract replies with something
+// the reassignment step cannot read — after a full model call has been spent.
+func (o *Orchestrator) manageableAgents() []string {
+	if o == nil || o.factory == nil {
+		return nil
+	}
+	var out []string
+	for _, spec := range o.factory.AllSpecs() {
+		if strings.EqualFold(spec.SchemaRole, schema.RoleTriage) {
+			out = append(out, spec.ID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // staffableAgents lists the agent ids this run can actually dispatch.
@@ -381,4 +405,214 @@ func (o *Orchestrator) applyPlanEdits(board *plan.Board, edits *plan.PlanEdits) 
 	o.routeBoardToSpecialists(board)
 	o.persistBoard(board)
 	o.emit("plan", fmt.Sprintf("applied plan edits — %d task(s) on the board", len(board.Tasks)), "")
+}
+
+// triageRejectedDelivery asks the project manager who should take a rejected
+// task next, and what they need to know that the last attempt did not.
+//
+// Non-fatal in every direction. A manager that fails, times out or answers with
+// something unusable leaves the deterministic ladder in charge — the loop
+// validates the answer before applying it, so a bad verdict costs one call, not
+// a stalled task.
+func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.TriageRequest) (plan.TriageDecision, bool) {
+	// No executor means nothing can be dispatched at all. Triage is an
+	// accelerator over the deterministic ladder, never a prerequisite, so a
+	// half-built orchestrator declines the question instead of crashing on it.
+	if o == nil || o.factory == nil || o.executor == nil || len(req.Roster) == 0 {
+		return plan.TriageDecision{}, false
+	}
+	t := req.Task
+
+	var b strings.Builder
+	// Who is being asked. A run-wide manager answering for a specific team
+	// picks from a roster it has no reason to understand; saying which team
+	// this is, and who staffs it, is what makes "prefer your own people" a
+	// decision the model can actually make.
+	if st := req.Staffing; st.Squad != "" {
+		fmt.Fprintf(&b, "## You are the project manager for the %s team\n", st.Squad)
+		if len(st.Members) > 0 {
+			fmt.Fprintf(&b, "Your team is staffed with: %s\n", strings.Join(st.Members, ", "))
+		}
+		b.WriteString("Prefer your own people. Reach outside the team only when the fix needs a skill it does not have.\n\n")
+	}
+
+	b.WriteString("## Rejected task\n")
+	fmt.Fprintf(&b, "%s — %s\n", t.ID, t.Title)
+	if t.Squad != "" {
+		fmt.Fprintf(&b, "squad: %s\n", t.Squad)
+	}
+	fmt.Fprintf(&b, "held by: %s\n", t.Role)
+	if req.Language != "" {
+		fmt.Fprintf(&b, "language: %s\n", req.Language)
+	}
+	if len(t.Files) > 0 {
+		fmt.Fprintf(&b, "files: %s\n", strings.Join(t.Files, ", "))
+	}
+	if s := strings.TrimSpace(t.Acceptance); s != "" {
+		fmt.Fprintf(&b, "acceptance: %s\n", truncate(s, 300))
+	}
+
+	b.WriteString("\n## What the reviewer found\n")
+	if s := strings.TrimSpace(req.Review.Summary); s != "" {
+		b.WriteString(s + "\n")
+	}
+	for _, issue := range limitList(req.Review.Issues, 6) {
+		b.WriteString("- " + issue + "\n")
+	}
+
+	// The attempt ledger is the whole reason a manager can do better than a
+	// ladder: it is what says "this was already tried".
+	if len(t.AttemptLog) > 0 {
+		b.WriteString("\n## Attempts already made — do not repeat these\n")
+		for _, a := range limitList(t.AttemptLog, 6) {
+			b.WriteString("- " + truncate(a, 240) + "\n")
+		}
+	}
+
+	b.WriteString("\n## ROSTER — pick exactly one of these\n")
+	for _, id := range req.Roster {
+		b.WriteString("- " + id + "\n")
+	}
+
+	// A team may name its own manager; the run's `triage` agent answers for
+	// the teams that did not. The nominee has to actually answer the triage
+	// contract — see Factory.EmitsSchema for why existing is not enough.
+	manager := agents.RoleTriage
+	if m := strings.TrimSpace(req.Staffing.Manager); m != "" && o.factory.EmitsSchema(m, schema.RoleTriage) {
+		manager = m
+	}
+
+	out, err := o.runRoleTracked(ctx, manager, "", b.String())
+	if err != nil {
+		if ctx.Err() == nil {
+			o.emitWarn("coord", manager+" failed ("+err.Error()+") — using the deterministic handoff", "")
+		}
+		return plan.TriageDecision{}, false
+	}
+	d, err := plan.ParseTriage(out)
+	if err != nil {
+		o.emitWarn("coord", "unreadable triage verdict — using the deterministic handoff", "")
+		return plan.TriageDecision{}, false
+	}
+	o.emitAgent("coord", manager, t.ID,
+		fmt.Sprintf("%s reassigned to %s — %s", t.ID, d.Assignee, d.Reason), "", "")
+	return d, true
+}
+
+// triageRepeatTickets sends a SECOND attempt at the same defect past the
+// project manager before it goes back to work.
+//
+// The tester path routes tickets by language: a failing .go file goes to
+// go-worker, a failing .tsx to react-worker. That is the right first answer and
+// the wrong second one. When the same defect comes back, the deterministic
+// route hands it to the agent that just failed at it, with a ticket whose only
+// new content is that it failed again — which is the loop that made tester
+// failures feel like noise rather than progress.
+//
+// A manager breaks it, and can do the two things the router cannot: pick
+// somebody else, and say what to do differently. Everything here is best
+// effort — no manager, an unreadable verdict, or a verdict naming an agent that
+// cannot be dispatched all leave the ticket exactly as the router left it,
+// which still works.
+func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Board) int {
+	if o == nil || board == nil || o.factory == nil {
+		return 0
+	}
+	roster := o.triageRoster()
+	if len(roster) == 0 {
+		return 0
+	}
+
+	moved := 0
+	for i := range board.Tasks {
+		t := board.Tasks[i]
+		t.Normalize()
+		key := plan.CorrectionKeyOf(t)
+		if key == "" || t.Column != plan.ColReadyToDev || board.CorrectionAttempts(key) < 2 {
+			continue
+		}
+		staff := squads.StaffingFor(o.squadPlan, t.Squad)
+		d, ok := o.triageRejectedDelivery(ctx, loop.TriageRequest{
+			Task: t,
+			// The ticket body IS the review here: the tester's findings were
+			// written into it when it was raised, and re-deriving a summary
+			// from the board would only lose detail.
+			Review:   plan.ReviewResult{Summary: ticketHeadline(t), Issues: ticketFindings(t)},
+			Roster:   squads.Colleagues(o.squadPlan, t.Squad, roster),
+			Language: plan.LanguageOf(t.Files),
+			Staffing: staff,
+		})
+		if !ok {
+			continue
+		}
+		if usable, why := d.Usable(t.Role, o.factory.HasRole); !usable {
+			o.emitWarn("plan", t.ID+" triage ignored — the manager "+why, "")
+			continue
+		}
+		from := t.Role
+		t.Role = d.Assignee
+		if g := strings.TrimSpace(d.Guidance); g != "" {
+			// Above the evidence, not below it: the guidance is the only thing
+			// here the last attempt did not already have.
+			t.Description = "## From the project manager\n\n" + g + "\n\n---\n\n" +
+				strings.TrimLeft(t.Description, "\n")
+		}
+		t.Notes = strings.TrimSpace(t.Notes + "\nreassigned-to: " + d.Assignee +
+			" (repeat ticket, routed by the project manager)")
+		board.Tasks[i] = t
+		moved++
+		o.emitFull("plan", stream.KindOutput, d.Assignee, t.ID,
+			fmt.Sprintf("%s reassigned from %s to %s — %s", t.ID, from, d.Assignee, d.Reason),
+			strings.Join(t.Files, ", "), "")
+	}
+	return moved
+}
+
+// ticketHeadline is a correction ticket's one-line verdict, for a manager that
+// needs to know what is failing without being handed the whole body.
+func ticketHeadline(t plan.Task) string {
+	if s := strings.TrimSpace(t.Review); s != "" {
+		return s
+	}
+	return strings.TrimSpace(t.Title)
+}
+
+// ticketFindings pulls the bullet list out of a ticket's "What failed" section.
+func ticketFindings(t plan.Task) []string {
+	body := t.Description
+	i := strings.Index(body, "## What failed")
+	if i < 0 {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(body[i:], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "## What failed") {
+			break
+		}
+		if after, found := strings.CutPrefix(line, "- "); found {
+			out = append(out, strings.TrimSpace(after))
+		}
+	}
+	return limitList(out, 6)
+}
+
+// triageRoster is the set of agents the project manager may choose from.
+//
+// Implementers only: triage decides who WRITES the fix, and offering a reviewer
+// or a planner invites an answer the loop would then refuse.
+func (o *Orchestrator) triageRoster() []string {
+	if o == nil || o.factory == nil {
+		return nil
+	}
+	var out []string
+	for _, spec := range o.factory.AllSpecs() {
+		id := strings.ToLower(spec.ID)
+		if strings.HasSuffix(id, "-worker") || strings.HasSuffix(id, "-corrector") ||
+			id == plan.RoleWorker || id == plan.RoleCorrector {
+			out = append(out, spec.ID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

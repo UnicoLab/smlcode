@@ -193,3 +193,104 @@ func TestBoardTracksOpenCorrections(t *testing.T) {
 		t.Error("an empty key matches nothing")
 	}
 }
+
+// ── Counting attempts at ONE defect ──────────────────────────────────────
+//
+// A board-wide count of correction tickets cannot say whether handing a ticket
+// back to the same specialist is a fix or a rerun: two unrelated failures make
+// a first attempt at a third defect look like a third attempt, and the ticket
+// then tells its worker that approaches it never tried are already ruled out.
+
+func TestCorrectionKeyRoundTripsThroughTheTicket(t *testing.T) {
+	in := CorrectionInput{
+		Source: SourceTester, Failures: []string{"todo_test.go:41 want 200, got 500"},
+		Files: []string{"internal/store/todo.go"},
+	}
+	key := CorrectionKey(in)
+	task := NewCorrectionTicket(in, nil)
+	if got := CorrectionKeyOf(task); got != "" {
+		t.Fatalf("an unstamped ticket reported key %q", got)
+	}
+	StampCorrectionKey(&task, key)
+	if got := CorrectionKeyOf(task); got != key {
+		t.Errorf("CorrectionKeyOf = %q, want %q", got, key)
+	}
+}
+
+// The key is followed by more notes in practice — the query scope line, a
+// handoff marker. Reading it back must stop at the newline.
+func TestCorrectionKeySurvivesLaterNotes(t *testing.T) {
+	key := "tester|boom|a.go"
+	task := Task{ID: "T1"}
+	StampCorrectionKey(&task, key)
+	task.Notes += "\nquery scope Q1\nreassigned-to: go-corrector"
+	if got := CorrectionKeyOf(task); got != key {
+		t.Errorf("CorrectionKeyOf = %q, want %q", got, key)
+	}
+}
+
+func TestAttemptsCountOneDefectNotTheWholeBoard(t *testing.T) {
+	mine := "tester|handler returns 500|internal/http/todo.go"
+	other := "tester|build failed|web/src/App.tsx"
+
+	stamp := func(id, key, col string) Task {
+		task := Task{ID: id, Column: col}
+		StampCorrectionKey(&task, key)
+		return task
+	}
+	b := &Board{Tasks: []Task{
+		stamp("C1", mine, ColDone),
+		stamp("C2", other, ColDone),
+		stamp("C3", other, ColReadyToDev),
+		{ID: "T1", Column: ColDone}, // not a correction at all
+	}}
+
+	if got := b.CorrectionAttempts(mine); got != 1 {
+		t.Errorf("attempts at my defect = %d, want 1", got)
+	}
+	// Finished tickets count: a defect that was "fixed" and came back has been
+	// attempted, and that is exactly what the next ticket needs to know.
+	if got := b.CorrectionAttempts(other); got != 2 {
+		t.Errorf("attempts at the other defect = %d, want 2", got)
+	}
+	if got := b.CorrectionAttempts("never seen"); got != 0 {
+		t.Errorf("attempts at an unknown defect = %d, want 0", got)
+	}
+	if got := b.CorrectionAttempts(""); got != 0 {
+		t.Errorf("attempts at an empty key = %d, want 0", got)
+	}
+	var nilBoard *Board
+	if got := nilBoard.CorrectionAttempts(mine); got != 0 {
+		t.Errorf("attempts on a nil board = %d, want 0", got)
+	}
+}
+
+// The marker carries a leading newline so it cannot match mid-line. Several
+// callers trim the notes they build, and a stamp that landed at position 0 then
+// loses that newline — after which dedupe stops seeing the ticket and the board
+// grows a second one for the same defect.
+func TestATrimmedTicketIsStillTheSameTicket(t *testing.T) {
+	key := "tester|handler returns 500|internal/http/todo.go"
+	task := Task{ID: "C1"} // no prior notes: the stamp lands at position 0
+	StampCorrectionKey(&task, key)
+	task.Notes = strings.TrimSpace(task.Notes + "\nreassigned-to: go-corrector")
+
+	if got := CorrectionKeyOf(task); got != key {
+		t.Errorf("CorrectionKeyOf = %q, want %q", got, key)
+	}
+	b := &Board{Tasks: []Task{task}}
+	if !b.HasOpenCorrection(key) {
+		t.Error("a trimmed ticket must still deduplicate, or the board grows a second one")
+	}
+	if got := b.CorrectionAttempts(key); got != 1 {
+		t.Errorf("CorrectionAttempts = %d, want 1", got)
+	}
+}
+
+// The key must not match a mention of it inside prose.
+func TestAKeyMentionedMidLineIsNotAStamp(t *testing.T) {
+	task := Task{ID: "T1", Notes: "see correction-key: tester|boom|a.go for context"}
+	if got := CorrectionKeyOf(task); got != "" {
+		t.Errorf("CorrectionKeyOf = %q, want empty for a mid-line mention", got)
+	}
+}

@@ -52,14 +52,16 @@ type PlanEdits struct {
 
 // SquadEdit changes one virtual team. Nil fields are untouched.
 type SquadEdit struct {
-	ID         string   `json:"id"`
-	Name       *string  `json:"name,omitempty"`
-	Charter    *string  `json:"charter,omitempty"`
-	Acceptance *string  `json:"acceptance,omitempty"`
-	Worker     *string  `json:"worker,omitempty"`
-	Reviewer   *string  `json:"reviewer,omitempty"`
-	Owns       []string `json:"owns,omitempty"`
-	OwnsSet    bool     `json:"owns_set,omitempty"`
+	ID         string  `json:"id"`
+	Name       *string `json:"name,omitempty"`
+	Charter    *string `json:"charter,omitempty"`
+	Acceptance *string `json:"acceptance,omitempty"`
+	Worker     *string `json:"worker,omitempty"`
+	Reviewer   *string `json:"reviewer,omitempty"`
+	// Manager is the agent that triages this team's rejected work.
+	Manager *string  `json:"manager,omitempty"`
+	Owns    []string `json:"owns,omitempty"`
+	OwnsSet bool     `json:"owns_set,omitempty"`
 	// New marks a squad the user added rather than edited.
 	New bool `json:"new,omitempty"`
 }

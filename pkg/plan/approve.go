@@ -47,7 +47,11 @@ type PlanApproveAsk struct {
 	// role the harness cannot dispatch produces a task that never starts, so
 	// the choices have to come from the harness rather than from a hardcoded
 	// list in the frontend.
-	Agents    []string `json:"agents,omitempty"`
+	Agents []string `json:"agents,omitempty"`
+	// Managers lists the agents that can be a team's project manager — the
+	// ones that answer the triage contract. A narrower list than Agents on
+	// purpose: an agent that cannot answer it is refused after a model call.
+	Managers  []string `json:"managers,omitempty"`
 	Options   []string `json:"options,omitempty"`
 	TimeoutS  int      `json:"timeout_sec,omitempty"`
 	OnTimeout string   `json:"on_timeout,omitempty"` // "approve"
@@ -228,6 +232,8 @@ type PlanSquad struct {
 	Acceptance string   `json:"acceptance,omitempty"`
 	Worker     string   `json:"worker,omitempty"`
 	Reviewer   string   `json:"reviewer,omitempty"`
+	// Manager is the agent that triages this team's rejected work.
+	Manager string `json:"manager,omitempty"`
 	// TaskCount is how much work this squad was given, so an idle team is
 	// visible on the card rather than only in the event log.
 	TaskCount int `json:"task_count"`

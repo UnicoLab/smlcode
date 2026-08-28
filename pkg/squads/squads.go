@@ -58,6 +58,18 @@ type Squad struct {
 	// pipeline's defaults.
 	Worker   string `json:"worker,omitempty"`
 	Reviewer string `json:"reviewer,omitempty"`
+	// Manager is the agent that triages THIS squad's rejected work.
+	//
+	// A rejected delivery is a staffing decision — who takes it next, and what
+	// do they need to know that the last attempt did not — and it is a decision
+	// about one team's people, in one team's domain. A single run-wide manager
+	// answering it for every squad is choosing from a roster it has no reason
+	// to understand: the agents who can actually fix a failing Go handler are
+	// not the ones staffing the React half.
+	//
+	// Empty means the run's default manager, which is still better than the
+	// deterministic ladder. See pkg/loop/handoff.go.
+	Manager string `json:"manager,omitempty"`
 	// Skills are loaded into this squad's task packs.
 	Skills []string `json:"skills,omitempty"`
 }
@@ -314,6 +326,7 @@ func (p *Plan) Normalize() {
 		s.Acceptance = strings.TrimSpace(s.Acceptance)
 		s.Worker = strings.TrimSpace(s.Worker)
 		s.Reviewer = strings.TrimSpace(s.Reviewer)
+		s.Manager = strings.TrimSpace(s.Manager)
 		s.Owns = dedupePaths(s.Owns)
 		s.Skills = dedupeStrings(s.Skills)
 		kept = append(kept, s)

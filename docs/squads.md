@@ -182,6 +182,61 @@ A failing tester or reviewer does not produce a red notification and a generic
   look like it was losing ground.
 
 A repeat correction says which attempt it is and not to repeat the last one.
+The attempt count is per **defect**, not per board: two unrelated failures used
+to make a first attempt at a third defect announce itself as a third, telling
+its worker that approaches it never tried had already been ruled out.
+
+### The project manager decides who takes it next
+
+Routing a ticket by language is the right *first* answer and the wrong *second*
+one. When the same defect comes back, language routing hands it to the agent
+that just failed at it, carrying a ticket whose only new content is that it
+failed again — which is the loop that made gate failures feel like noise rather
+than progress.
+
+So a **repeat** ticket goes past a project manager before it goes back to work.
+The manager does the two things the router cannot: pick somebody else, and say
+what to do differently. Its direction is written *above* the evidence in the
+ticket, because it is the only thing there the last attempt did not already
+have.
+
+Its verdict is validated before it is applied. Two answers are worse than no
+manager at all — naming an agent that cannot be dispatched (the ticket then sits
+unassigned) and re-picking the agent that just failed (the loop triage exists to
+end) — and either one falls through to the deterministic route rather than being
+applied.
+
+The same manager decides when the review ladder runs out of retries, one handoff
+before a human is asked.
+
+### Each team can have its own manager
+
+A run-wide manager answering for a specific team picks from a roster it has no
+reason to understand: the agents who can fix a failing Go handler are not the
+ones staffing the React half. So a squad may carry its own `manager`, and the
+triage request tells it which team it answers for and who staffs it.
+
+The team's own people are listed **first** in the roster, not exclusively — the
+whole reason a delivery was rejected may be that the team lacks the skill the
+fix needs, and a manager forbidden from looking outside could only choose
+between agents that have already failed.
+
+Only an agent that answers the triage contract may be nominated. An agent's
+decoding grammar is derived from its own system prompt, so one that answers a
+different contract replies with something the reassignment step cannot read —
+after a full model call has already been spent. Nominate a built-in `triage`, or
+write your own agent with a `-triage` suffix in its id:
+
+```yaml
+# .slmcode/agents/backend-triage.yaml
+id: backend-triage
+title: Backend project manager
+system_prompt: |
+  You decide who takes a rejected delivery next...
+```
+
+Attach one on the plan-approval card or on the **Teams** page; leaving it empty
+hands the team back to the run's default manager.
 
 ---
 

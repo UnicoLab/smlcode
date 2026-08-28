@@ -1,10 +1,13 @@
 package agents
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/schema"
 )
 
 func TestSpecsRoster(t *testing.T) {
@@ -286,5 +289,87 @@ func TestPreferFastAccessorsAreNilSafeAndClearable(t *testing.T) {
 	f.ClearPreferFast("")
 	if _, ok := f.PreferFast("worker"); ok {
 		t.Fatal("ClearPreferFast(\"\") must drop every override")
+	}
+}
+
+// ── Who can be a team's project manager ──────────────────────────────────
+//
+// Existence is not enough. The decoding grammar for a request is derived from
+// the agent's own system prompt, so an agent that does not answer the triage
+// contract replies with something the reassignment step cannot read — and it
+// only finds that out after a full model call. Offering a choice the harness
+// would then refuse is worse than offering a short list.
+
+func TestOnlyTriageAgentsCanManageATeam(t *testing.T) {
+	f := NewFactory(nil, nil, "m", "p")
+	if !f.EmitsSchema(RoleTriage, schema.RoleTriage) {
+		t.Error("the built-in project manager must be eligible")
+	}
+	for _, id := range []string{plan.RoleWorker, plan.RoleReviewer, plan.RoleTester, "planner"} {
+		if f.EmitsSchema(id, schema.RoleTriage) {
+			t.Errorf("%q answers a different contract and must not be offered as a manager", id)
+		}
+	}
+	// An agent that does not exist is not eligible either.
+	if f.EmitsSchema("cobol-pm", schema.RoleTriage) {
+		t.Error("an unregistered agent must never be eligible")
+	}
+	for _, id := range []string{"", "  "} {
+		if f.EmitsSchema(id, schema.RoleTriage) || f.EmitsSchema(RoleTriage, id) {
+			t.Errorf("EmitsSchema accepted a blank argument (%q)", id)
+		}
+	}
+}
+
+func TestAgentsEmittingListsTheEligibleManagers(t *testing.T) {
+	got := AgentsEmitting(schema.RoleTriage, nil)
+	if len(got) == 0 {
+		t.Fatal("the built-in roster must offer at least one manager")
+	}
+	has := map[string]bool{}
+	for _, id := range got {
+		has[id] = true
+	}
+	if !has[RoleTriage] {
+		t.Errorf("AgentsEmitting = %v, missing the built-in manager", got)
+	}
+	for _, unwanted := range []string{plan.RoleWorker, plan.RoleReviewer, plan.RoleTester} {
+		if has[unwanted] {
+			t.Errorf("AgentsEmitting offered %q, which answers a different contract", unwanted)
+		}
+	}
+	if !sort.StringsAreSorted(got) {
+		t.Errorf("AgentsEmitting = %v, want a stable sorted list", got)
+	}
+	if AgentsEmitting("", nil) != nil {
+		t.Error("no contract, no candidates")
+	}
+}
+
+// A user who writes their own manager in the Agents page gets it offered.
+//
+// The naming convention is what makes it eligible: NormalizeDecoding derives
+// the contract from the id, so a `-triage` agent answers the triage schema
+// while an agent called "backend-pm" answers nothing in particular.
+func TestACustomManagerJoinsTheEligibleList(t *testing.T) {
+	custom := []CustomSpec{{
+		ID: "backend-triage", Title: "Backend PM", SystemPrompt: PromptTriage, MaxIter: 2,
+	}}
+	got := AgentsEmitting(schema.RoleTriage, custom)
+	found := false
+	for _, id := range got {
+		if id == "backend-triage" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("AgentsEmitting = %v, missing the user's own manager", got)
+	}
+	// A custom agent that answers something else stays out.
+	other := []CustomSpec{{ID: "helper", Title: "Helper", SystemPrompt: PromptWorker, MaxIter: 2}}
+	for _, id := range AgentsEmitting(schema.RoleTriage, other) {
+		if id == "helper" {
+			t.Error("a non-triage custom agent must not be offered as a manager")
+		}
 	}
 }

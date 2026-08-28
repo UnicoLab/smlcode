@@ -100,6 +100,13 @@ type Runner struct {
 	// agents.Factory.HasRole. nil means "no registry": reassignment then
 	// declines rather than naming an agent that cannot be dispatched.
 	RoleExists func(id string) bool
+	// RosterIDs are the agent ids offered to the project manager when it
+	// triages a rejected delivery. Filtered through RoleExists before use.
+	RosterIDs []string
+	// Triage asks the project manager who should take a rejected delivery next
+	// and what they need to know. nil falls back to the deterministic ladder —
+	// which is also where an unusable answer lands.
+	Triage func(context.Context, TriageRequest) (plan.TriageDecision, bool)
 	// TakeShellScope drains the workspace's out-of-scope ws_shell ledger — set
 	// it to Workspace.TakeShellScopeEvents. nil simply means the loop reports no
 	// shell-scope evidence; every gate that reads it is nil-safe.
@@ -2197,7 +2204,7 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 	// that produced the escalation in the first place — and "needs human input
 	// or smaller scope" is the least actionable thing the harness can say.
 	if esc != nil && err == nil {
-		if next, ok := r.reassignFailedTask(final, esc.review); ok {
+		if next, ok := r.reassignFailedTask(ctx, final, esc.review); ok {
 			from := t.Role
 			final = next
 			board.UpdateTask(final)

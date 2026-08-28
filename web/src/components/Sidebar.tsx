@@ -17,6 +17,7 @@ import {
   ChevronRight,
   FileCode,
   FileDiff,
+  Users,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { useMediaQuery } from '@/hooks/useUiState';
@@ -38,6 +39,7 @@ const navItems: NavItem[] = [
   { to: '/review', label: 'Review', icon: <FileDiff size={18} />, badge: 'pending' },
   { to: '/pipeline', label: 'Pipeline', icon: <Workflow size={18} /> },
   { to: '/agents', label: 'Agents', icon: <Bot size={18} /> },
+  { to: '/teams', label: 'Teams', icon: <Users size={18} /> },
   { to: '/blocks', label: 'Blocks', icon: <Package size={18} /> },
   { to: '/skills', label: 'Skills', icon: <Puzzle size={18} /> },
   { to: '/files', label: 'Files', icon: <FileCode size={18} /> },

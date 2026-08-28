@@ -52,6 +52,7 @@ import type {
   RunTrace,
   PlanEdits,
   SquadsView,
+  SquadEdit,
 } from '@/types';
 
 import { planEditsEmpty } from '@/types';
@@ -83,6 +84,25 @@ export class ApiError extends Error {
   /** True when the studio session token is missing or stale. */
   get isUnauthorized(): boolean {
     return this.status === 401;
+  }
+
+  /**
+   * Validation problems the harness returned with a 422.
+   *
+   * 422 means the request was understood but the result cannot be run — an
+   * ownership overlap in a squad edit, say. The reasons ride in the body, and
+   * showing them is the whole difference between "refused" and "refused
+   * because backend and frontend both claim web/**".
+   */
+  get problems(): string[] {
+    if (this.status !== 422) return [];
+    try {
+      const parsed = JSON.parse(this.body) as { problems?: unknown };
+      return Array.isArray(parsed.problems) ? parsed.problems.map(String) : [];
+    } catch {
+      // A 422 without a JSON body is still a refusal; displayMessage covers it.
+      return [];
+    }
   }
 
   /** A short, human-readable line suitable for a toast. */
@@ -703,4 +723,21 @@ export async function getUpdateInfo(): Promise<UpdateInfo> {
 // `ok:false` simply means this run is single-stream, which is most of them.
 export async function getSquads(): Promise<SquadsView> {
   return request('/squads');
+}
+
+/**
+ * PATCH /api/squads applies edits to the saved org chart outside a run.
+ *
+ * A 422 means the harness understood the request but the resulting org chart
+ * cannot be run — overlapping ownership, most often. The problems come back in
+ * the body so the page can show them rather than a bare failure.
+ */
+export async function patchSquads(
+  squads: SquadEdit[],
+  removeSquads?: string[],
+): Promise<{ ok: boolean; summary?: string; problems?: string[] }> {
+  return request('/squads', {
+    method: 'PATCH',
+    body: JSON.stringify({ squads, remove_squads: removeSquads }),
+  });
 }

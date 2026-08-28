@@ -61,6 +61,9 @@ func (o *Orchestrator) applyTesterFeedback(ctx context.Context, query string, bo
 	rewritten := rewriteBoardFromTesterWith(board, query, failList, tr.Summary,
 		testerCommand(tr), testerOutput(testOut), hasRole)
 	*board = rewritten
+	// 1b) A defect that has already had a ticket goes past the project manager
+	// before it goes back to the specialist that could not fix it last time.
+	o.triageRepeatTickets(ctx, board)
 	o.persistBoard(board)
 	o.emitLoop("plan", LoopEvent{
 		Action:   "rewrite",
@@ -232,6 +235,10 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 			Attempt:  countPriorCorrections(out),
 		}
 		key := plan.CorrectionKey(in)
+		// How many times THIS defect has been ticketed, not how many tickets
+		// the board carries: a first attempt that announces itself as a third
+		// tells its worker that approaches it never tried are already ruled out.
+		in.Attempt = out.CorrectionAttempts(key)
 		if !out.HasOpenCorrection(key) {
 			nt := plan.NewCorrectionTicket(in, hasRole)
 			plan.StampCorrectionKey(&nt, key)

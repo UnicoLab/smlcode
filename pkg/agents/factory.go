@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -112,7 +113,7 @@ func genericRole(id string) string {
 	id, _ = BaseRoleID(id)
 	for _, suffix := range []string{
 		"worker", "tester", "reviewer", "corrector", "explorer",
-		"planner", "splitter", "architect", "editor", "describer", "manager",
+		"planner", "splitter", "architect", "editor", "describer", "manager", "triage",
 	} {
 		if id == suffix || strings.HasSuffix(id, "-"+suffix) {
 			return suffix
@@ -154,6 +155,7 @@ func specs(coding []string) []RoleSpec {
 		{ID: plan.RolePlaceholder, Title: "Fill placeholders / flag gaps", Description: "Detects stub code, fills real implementations, or flags precise gaps for HITL.", SystemPrompt: PromptPlaceholder, Tools: coding, MaxIter: 14, Temperature: 0.1, MaxTokens: 3072},
 		{ID: plan.RoleEscalate, Title: "Escalate arbitrator", Description: "Decides retry/re-scope/abort/mark_done when human escalate HITL times out.", SystemPrompt: PromptEscalate, Tools: nil, MaxIter: 1, Temperature: 0.1, MaxTokens: 384},
 		{ID: "memory", Title: "Distill MEMORY.md", Description: "Distills durable project lessons into MEMORY.md.", SystemPrompt: PromptMemory, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 768},
+		{ID: RoleTriage, Title: "Project manager (ticket triage)", Description: "Decides who takes a rejected delivery next, and what they need to know that the last attempt did not.", SystemPrompt: PromptTriage, Tools: nil, MaxIter: 2, Temperature: 0.15, MaxTokens: 640, SchemaRole: schema.RoleTriage},
 		{ID: "manager", Title: "Engineering manager (squad assembly)", Description: "Splits a query into parallel squads with disjoint ownership and a frozen interface contract.", SystemPrompt: PromptManager, Tools: nil, MaxIter: 3, Temperature: 0.15, MaxTokens: 2048, SchemaRole: schema.RoleSquads},
 		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048, SchemaRole: schema.RoleComposition},
 
@@ -181,6 +183,9 @@ const (
 	RoleDescriber = "describer"
 	// RoleEditor is the formatting half of the architect/editor pair.
 	RoleEditor = "editor"
+	// RoleTriage is the run's default project manager: it decides who takes a
+	// rejected delivery next. A squad may nominate its own instead.
+	RoleTriage = "triage"
 )
 
 // PublicSpecs strips prompts for API/UI (built-ins only — callers merge customs).
@@ -494,6 +499,7 @@ var lightAgents = map[string]bool{
 	"orchestrator": true, "memory": true, "docs": true, "escalate": true,
 	"composer": true,
 	"manager":  true,
+	"triage":   true,
 }
 
 // isLightAgent classifies by BASE role, so an escalation rung is classified as
@@ -576,6 +582,71 @@ func (f *Factory) HasRole(id string) bool {
 	for _, s := range f.AllSpecs() {
 		if s.ID == id {
 			return true
+		}
+	}
+	return false
+}
+
+// AgentsEmitting lists the agent ids that answer a given pkg/schema contract,
+// built-ins plus the caller's custom specs.
+//
+// The Studio needs this to offer a team a manager: only an agent that answers
+// the triage contract can decide who takes a rejected delivery, and the whole
+// registered roster is the wrong list to pick from. Package-level rather than a
+// Factory method because the server assembles custom specs itself and building
+// a factory to read a list would re-scan every agent directory.
+func AgentsEmitting(schemaRole string, custom []CustomSpec) []string {
+	schemaRole = strings.TrimSpace(schemaRole)
+	if schemaRole == "" {
+		return nil
+	}
+	coding := append(workspace.ToolNames(), workspace.SpecialistToolNames()...)
+	out := append([]RoleSpec{}, Specs()...)
+	index := map[string]int{}
+	for i, s := range out {
+		index[s.ID] = i
+	}
+	for _, c := range custom {
+		if i, ok := index[c.ID]; ok {
+			ApplyOverride(&out[i], c, coding)
+			continue
+		}
+		out = append(out, c.ToRoleSpec(coding))
+		index[c.ID] = len(out) - 1
+	}
+	var ids []string
+	for i := range out {
+		NormalizeDecoding(&out[i])
+		if strings.EqualFold(out[i].SchemaRole, schemaRole) {
+			ids = append(ids, out[i].ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// EmitsSchema reports whether id is an agent that answers with the given
+// pkg/schema contract.
+//
+// Existence is not enough when a caller needs a SPECIFIC answer shape. A squad
+// may nominate any registered agent as its manager, but the decoding grammar is
+// derived from that agent's own system prompt: hand the triage question to
+// `go-worker` and the reply is constrained to the worker contract, so the
+// triage parse fails after a full model call has already been spent. Asking
+// first is cheaper, and falls back to a manager that can actually answer.
+func (f *Factory) EmitsSchema(id, schemaRole string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	schemaRole = strings.TrimSpace(schemaRole)
+	if id == "" || schemaRole == "" {
+		return false
+	}
+	specs := Specs()
+	if f != nil {
+		specs = f.AllSpecs()
+	}
+	for _, s := range specs {
+		if strings.EqualFold(s.ID, id) {
+			return strings.EqualFold(s.SchemaRole, schemaRole)
 		}
 	}
 	return false

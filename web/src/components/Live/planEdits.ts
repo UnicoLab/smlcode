@@ -87,6 +87,12 @@ export function buildEdits(
       e.worker = d.worker;
       touched = true;
     }
+    if ((d.manager ?? '') !== (before.manager ?? '')) {
+      // Empty is meaningful: it hands the team back to the run's default
+      // manager, so it travels as '' rather than being dropped as falsy.
+      e.manager = d.manager ?? '';
+      touched = true;
+    }
     if (!sameList(d.owns, before.owns)) {
       e.owns = d.owns ?? [];
       e.owns_set = true;

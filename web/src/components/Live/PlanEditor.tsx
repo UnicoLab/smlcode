@@ -35,6 +35,7 @@ export default function PlanEditor({ ask, onChange, disabled }: Props) {
   const [squads, setSquads] = useState<PlanSquad[]>(() => originalSquads.map((s) => ({ ...s })));
 
   const agents = ask.agents ?? [];
+  const managers = ask.managers ?? [];
   const squadIds = squads.map((s) => s.id);
 
   // The diff is recomputed from both drafts on every change rather than
@@ -168,6 +169,18 @@ export default function PlanEditor({ ask, onChange, disabled }: Props) {
                   disabled={disabled}
                   allowEmpty
                   onChange={(v) => patchSquad(s.id, { worker: v })}
+                />
+                {/* Who decides where a rejected delivery goes next. A narrower
+                    roster than the worker's: only agents that answer the triage
+                    contract can produce a verdict the harness can read. */}
+                <AgentPicker
+                  id={`squad-${s.id}-manager`}
+                  label={`Project manager — ${s.id}`}
+                  value={s.manager ?? ''}
+                  agents={managers}
+                  disabled={disabled}
+                  allowEmpty
+                  onChange={(v) => patchSquad(s.id, { manager: v })}
                 />
               </div>
             </div>

@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/hitl"
@@ -1464,6 +1465,70 @@ func TestSquadsEndpointServesTheOrgChartAndProgress(t *testing.T) {
 	if integ == nil || integ["acceptance"] == "" {
 		t.Errorf("the integration command should be served: %v", out["integration"])
 	}
+
+	// The Teams page attaches a project manager to a team, so it needs the
+	// agents eligible to be one. Offering the whole roster would let a user
+	// pick an agent whose reply the reassignment step cannot read.
+	managers, _ := out["managers"].([]any)
+	if len(managers) == 0 {
+		t.Fatalf("no eligible managers offered: %s", rec.Body.String())
+	}
+	has := map[string]bool{}
+	for _, m := range managers {
+		has[fmt.Sprint(m)] = true
+	}
+	if !has[agents.RoleTriage] {
+		t.Errorf("managers = %v, missing the built-in project manager", managers)
+	}
+	for _, unwanted := range []string{plan.RoleWorker, plan.RoleReviewer, plan.RoleTester} {
+		if has[unwanted] {
+			t.Errorf("managers offered %q, which answers a different contract", unwanted)
+		}
+	}
+}
+
+// Attaching a manager to a team is what makes a rejected delivery somebody's
+// decision rather than a re-run by the agent that just failed at it.
+func TestPatchSquadsAttachesAProjectManager(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sp := squads.Plan{
+		Summary: "Go API + React SPA",
+		Squads: []squads.Squad{
+			{ID: "backend", Name: "Backend", Owns: []string{"cmd/**"}, Acceptance: "go test ./..."},
+			{ID: "frontend", Name: "Frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+		},
+	}
+	sp.Normalize()
+	if err := squads.Save(h.Config.SlmDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	rec := httptest.NewRecorder()
+	body := `{"squads":[{"id":"backend","manager":"triage"}]}`
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPatch, "/api/squads", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	saved, ok, err := squads.Load(h.Config.SlmDir())
+	if err != nil || !ok {
+		t.Fatalf("reload: ok=%v err=%v", ok, err)
+	}
+	if got := squads.StaffingFor(&saved, "backend").Manager; got != "triage" {
+		t.Errorf("backend manager = %q, want it persisted", got)
+	}
+	// The untouched team still answers to the run's default.
+	if got := squads.StaffingFor(&saved, "frontend").Manager; got != "" {
+		t.Errorf("frontend manager = %q, want empty", got)
+	}
 }
 
 // The overwhelming majority of runs are single-stream and have no org chart.
@@ -1489,5 +1554,98 @@ func TestSquadsEndpointIsQuietOnASingleStreamRun(t *testing.T) {
 	}
 	if out["ok"] != false {
 		t.Errorf("ok should be false with no plan: %v", out)
+	}
+}
+
+// A team structure outlives one approval — it is what the next run inherits —
+// so it has to be fixable from the Teams page without waiting for a gate.
+func TestPatchSquadsEditsTheSavedOrgChart(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sp := squads.Plan{
+		Squads: []squads.Squad{
+			{ID: "backend", Owns: []string{"cmd/**"}, Acceptance: "go test ./..."},
+			{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+		},
+		Integration: squads.Integration{Acceptance: "make check"},
+	}
+	sp.Normalize()
+	if err := squads.Save(h.Config.SlmDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+
+	body := `{"squads":[{"id":"backend","acceptance":"go test ./... -race","owns":["cmd/**","internal/**"],"owns_set":true}]}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPatch, "/api/squads", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	got, ok, err := squads.Load(h.Config.SlmDir())
+	if err != nil || !ok {
+		t.Fatalf("plan not saved: ok=%v err=%v", ok, err)
+	}
+	back, _ := got.Squad("backend")
+	if back.Acceptance != "go test ./... -race" {
+		t.Errorf("acceptance = %q", back.Acceptance)
+	}
+	if !back.OwnsPath("internal/store/db.go") {
+		t.Error("the new ownership glob was not saved")
+	}
+	// The contract is rewritten alongside the plan, or the agents read text
+	// describing a different org chart.
+	if _, err := os.Stat(filepath.Join(h.Config.SlmDir(), squads.ContractFile)); err != nil {
+		t.Errorf("CONTRACT.md should be rewritten: %v", err)
+	}
+}
+
+// An edit that makes two teams share a path is refused whole, and the saved
+// plan is left exactly as it was.
+func TestPatchSquadsRefusesOverlappingOwnership(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sp := squads.Plan{Squads: []squads.Squad{
+		{ID: "backend", Owns: []string{"cmd/**"}, Acceptance: "go test ./..."},
+		{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+	}}
+	sp.Normalize()
+	if err := squads.Save(h.Config.SlmDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+
+	body := `{"squads":[{"id":"backend","owns":["cmd/**","web/**"],"owns_set":true}]}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPatch, "/api/squads", strings.NewReader(body)))
+	// 422, not 400: the request was understood; the resulting org chart cannot
+	// be run, and the client needs the reasons to show the user.
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	problems, _ := out["problems"].([]any)
+	if len(problems) == 0 || !strings.Contains(fmt.Sprint(problems[0]), "both claim") {
+		t.Errorf("the refusal should name the collision: %v", out)
+	}
+
+	got, _, _ := squads.Load(h.Config.SlmDir())
+	if back, _ := got.Squad("backend"); back.OwnsPath("web/src/App.tsx") {
+		t.Error("a refused edit was saved anyway")
 	}
 }

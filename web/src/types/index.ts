@@ -713,6 +713,15 @@ export interface PlanAsk {
    * place that knows the real roster is the harness.
    */
   agents?: string[];
+  /**
+   * Agents that can be a team's project manager.
+   *
+   * Narrower than `agents` on purpose: an agent's decoding grammar comes from
+   * its own prompt, so one that does not answer the triage contract replies
+   * with something the reassignment step cannot read — after a full model call
+   * has already been spent.
+   */
+  managers?: string[];
   options?: string[];
   timeout_sec?: number;
   on_timeout?: string;
@@ -1088,6 +1097,8 @@ export interface PlanSquad {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  /** The agent that triages this team's rejected work. */
+  manager?: string;
   task_count: number;
 }
 
@@ -1125,6 +1136,7 @@ export interface SquadEdit {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  manager?: string;
   owns?: string[];
   owns_set?: boolean;
   /** Marks a squad the user added rather than edited. */
@@ -1161,6 +1173,8 @@ export interface SquadStatus {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  /** The agent that triages this team's rejected work. */
+  manager?: string;
   total: number;
   done: number;
   blocked: number;
@@ -1181,6 +1195,8 @@ export interface SquadsView {
   squads?: SquadStatus[];
   interfaces?: PlanInterface[];
   stalls?: SquadStall[];
+  /** Agents eligible to manage a team — see PlanAsk.managers. */
+  managers?: string[];
   integration?: {
     acceptance?: string;
     notes?: string[];

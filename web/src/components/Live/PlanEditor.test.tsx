@@ -25,6 +25,7 @@ const ask: PlanAsk = {
     integration: 'go test ./... && npm run build',
   },
   agents: ['worker', 'go-worker', 'react-worker', 'tester'],
+  managers: ['backend-triage', 'triage'],
 };
 
 function renderEditor() {
@@ -145,5 +146,33 @@ describe('PlanEditor', () => {
     render(<PlanEditor ask={{ ...ask, squads: null }} onChange={onChange} />);
     expect(screen.queryByText(/^Teams$/)).not.toBeInTheDocument();
     expect(screen.getByLabelText('Title of task T1')).toBeInTheDocument();
+  });
+});
+
+describe('PlanEditor team managers', () => {
+  // Who decides where a rejected delivery goes next. A narrower roster than
+  // the worker's: only agents that answer the triage contract produce a verdict
+  // the harness can read, and offering the rest invites an answer it refuses.
+  it('offers only triage-capable agents as a team manager', () => {
+    renderEditor();
+    const picker = screen.getByLabelText('Project manager — backend');
+    const offered = Array.from(picker.querySelectorAll('option')).map((o) => o.textContent);
+    expect(offered).toContain('backend-triage');
+    expect(offered).toContain('triage');
+    expect(offered).not.toContain('go-worker');
+    // The worker picker is still the full roster.
+    const worker = screen.getByLabelText('Worker — backend');
+    const workerOptions = Array.from(worker.querySelectorAll('option')).map((o) => o.textContent);
+    expect(workerOptions).toContain('go-worker');
+  });
+
+  it('sends the manager the user attached', async () => {
+    const user = userEvent.setup();
+    const { last } = renderEditor();
+
+    await user.selectOptions(screen.getByLabelText('Project manager — backend'), 'backend-triage');
+
+    expect(last().squads).toEqual([{ id: 'backend', manager: 'backend-triage' }]);
+    expect(last().tasks).toBeUndefined();
   });
 });

@@ -147,3 +147,36 @@ func TestAnExplicitEndpointIsNotSecondGuessed(t *testing.T) {
 		t.Errorf("the scan reached an endpoint nobody named: %s", rec.Body.String())
 	}
 }
+
+// PUT /api/config carries an untyped half, and a key the schema marks read-only
+// used to travel in it — so a request could register an MCP server, which is an
+// external process whose tools agents can call. The Studio panel that lists
+// them says "configured in config.yaml", because file-only is what the flag was
+// declaring.
+func TestPutConfigCannotRegisterAnMCPServer(t *testing.T) {
+	s, _ := configureServer(t)
+	body := `{"mcp_servers":[{"name":"attacker","command":"/bin/sh","args":["-c","id"]}]}`
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPut, "/api/config", strings.NewReader(body)))
+	if rec.Code >= 500 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := len(s.cfg().MCPServers); got != 0 {
+		t.Errorf("a config PUT registered %d MCP server(s): %+v", got, s.cfg().MCPServers)
+	}
+}
+
+// The same request must still apply the keys it is allowed to.
+func TestPutConfigStillAppliesPatchableKeys(t *testing.T) {
+	s, _ := configureServer(t)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPut, "/api/config",
+		strings.NewReader(`{"max_parallel":5}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.cfg().MaxParallel; got != 5 {
+		t.Errorf("max_parallel = %d, want the patch applied", got)
+	}
+}

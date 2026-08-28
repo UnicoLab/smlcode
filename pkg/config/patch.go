@@ -103,6 +103,20 @@ func (p Patch) WithValues(values map[string]any) Patch {
 // needs to report a bad value (that is what `slmcode config set` does).
 func (c *Config) applyExtra(p Patch) {
 	for _, k := range sortedKeys(p.extra) {
+		// The schema's read-only flag is a statement about REMOTE editing, and
+		// this is the remote-editing path. Without the check, three surfaces
+		// disagreed about the same key: `slmcode config set` refused it, the
+		// Studio's form never offered it, and a PUT /api/config carrying it in
+		// the untyped half set it anyway.
+		//
+		// That mattered most for `mcp_servers`. MCP servers are external
+		// processes whose tools agents can call, so a request that could
+		// register one is tool-execution surface — and the Studio panel that
+		// shows them says "configured in config.yaml", because file-only is
+		// exactly what the flag was declaring.
+		if _, patchable := PatchableField(k); !patchable {
+			continue
+		}
 		if err := c.Set(k, p.extra[k]); err != nil {
 			continue
 		}

@@ -295,6 +295,29 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Fixed — `PUT /api/config` could set keys the schema marks read-only
+
+A config patch carries an untyped half for keys without a dedicated field, and
+that half went straight to the low-level setter with no patchability check. So
+three surfaces disagreed about the same key: `slmcode config set` refused it,
+the Studio's settings form never offered it, and a `PUT /api/config` carrying it
+set it anyway.
+
+Three keys were reachable that way. `mcp_servers` is the one that matters: MCP
+servers are external processes whose tools agents can call, so a request able to
+register one is tool-execution surface — and the Studio panel listing them says
+*"configured in config.yaml"*, because file-only is exactly what the read-only
+flag was declaring. `skills_dirs` loads prompt content into agents;
+`context_role_budget` is benign.
+
+The check goes on the patch path rather than on `Config.Set`, which must keep
+accepting these — it is the setter env-var and config-file loading both use, and
+a read-only key still has to be loadable from the file that declares it. The
+flag is a statement about *remote* editing, so that is where it now holds.
+
+Found by walking every schema key through `Set`/`Get` and `ApplyPatch`. Nothing
+had checked that the schema and the code agreed about which keys are writable.
+
 ### Fixed — a language-specialised tester was given the wrong finish contract
 
 Per-task routing puts `go-tester` / `python-tester` on a verification task

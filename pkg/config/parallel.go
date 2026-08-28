@@ -63,15 +63,32 @@ func IsLocalEndpoint(provider, endpoint string) bool {
 	return isLoopbackHost(endpointHost(ep))
 }
 
+// NormalizeEndpoint gives a base URL a scheme when it has none.
+//
+// "127.0.0.1:1234/v1" is a spelling people genuinely put in config files, and
+// this package already tolerates it when deciding whether an endpoint is local.
+// Anything that BUILDS a URL from it did not: net/url refuses
+// "127.0.0.1:1234/v1/models" with "first path segment in URL cannot contain
+// colon", so a perfectly reachable server was reported as broken and
+// auto-configuration walked past it to something else.
+//
+// http rather than https because the shape appears almost exclusively for
+// local servers, and a local server serving TLS is the rarer case that people
+// spell out.
+func NormalizeEndpoint(endpoint string) string {
+	ep := strings.TrimSpace(endpoint)
+	if ep == "" || strings.Contains(ep, "://") {
+		return ep
+	}
+	return "http://" + ep
+}
+
 // endpointHost extracts the lower-cased host from a base URL, tolerating the
 // scheme-less spellings people put in config files ("127.0.0.1:1234/v1").
 func endpointHost(endpoint string) string {
-	ep := strings.TrimSpace(endpoint)
+	ep := NormalizeEndpoint(endpoint)
 	if ep == "" {
 		return ""
-	}
-	if !strings.Contains(ep, "://") {
-		ep = "http://" + ep
 	}
 	u, err := url.Parse(ep)
 	if err != nil {

@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -194,5 +195,89 @@ func TestSameProviderDifferentEndpointsGetDistinctBackends(t *testing.T) {
 	}
 	if got := ResolveAgentProviderKey("omlx", "openai", epB, "key-b"); got != keyB {
 		t.Fatalf("resolve B: %q want %q", got, keyB)
+	}
+}
+
+// ── Shaping a configured endpoint into a provider base URL ───────────────
+//
+// "127.0.0.1:1234/v1" is a spelling config files genuinely carry — pkg/config
+// tolerates it when deciding whether an endpoint is local — and net/url refuses
+// to build a request from one. This is the path EVERY model call goes through,
+// so without a scheme the whole harness failed on a config that reads as
+// perfectly correct.
+
+func TestOpenAIBaseURLShapesWhatTheClientNeeds(t *testing.T) {
+	for _, tc := range []struct{ endpoint, provider, want string }{
+		// The bug: scheme-less spellings.
+		{"127.0.0.1:1234/v1", "lmstudio", "http://127.0.0.1:1234/v1"},
+		{"localhost:8000", "omlx", "http://localhost:8000/v1"},
+		// go-openai wants the base to end at /v1.
+		{"http://127.0.0.1:8000", "omlx", "http://127.0.0.1:8000/v1"},
+		{"http://127.0.0.1:8000/", "omlx", "http://127.0.0.1:8000/v1"},
+		{"http://127.0.0.1:8000/v1/", "omlx", "http://127.0.0.1:8000/v1"},
+		// Already correct: untouched, https preserved.
+		{"https://api.openai.com/v1", "openai", "https://api.openai.com/v1"},
+		// Empty falls back to the provider default.
+		{"", "openai", "https://api.openai.com/v1"},
+		{"   ", "ollama", "http://127.0.0.1:11434/v1"},
+	} {
+		if got := openAIBaseURL(tc.endpoint, tc.provider); got != tc.want {
+			t.Errorf("openAIBaseURL(%q, %q) = %q, want %q", tc.endpoint, tc.provider, got, tc.want)
+		}
+	}
+}
+
+// Ollama serves its own API at the root, so /v1 must come OFF rather than go on.
+func TestOllamaBaseURLDropsTheV1Suffix(t *testing.T) {
+	for _, tc := range []struct{ endpoint, want string }{
+		{"127.0.0.1:11434", "http://127.0.0.1:11434"},
+		{"http://127.0.0.1:11434/v1", "http://127.0.0.1:11434"},
+		// A trailing slash after /v1 used to leave the suffix on, sending every
+		// Ollama call to /v1/api/tags.
+		{"http://127.0.0.1:11434/v1/", "http://127.0.0.1:11434"},
+		{"127.0.0.1:11434/v1/", "http://127.0.0.1:11434"},
+		{"http://127.0.0.1:11434", "http://127.0.0.1:11434"},
+		{"", "http://127.0.0.1:11434"},
+	} {
+		if got := ollamaBaseURL(tc.endpoint); got != tc.want {
+			t.Errorf("ollamaBaseURL(%q) = %q, want %q", tc.endpoint, got, tc.want)
+		}
+	}
+}
+
+// Whatever shape comes out, net/url has to accept it — that is the whole point.
+func TestEveryShapedBaseURLParses(t *testing.T) {
+	for _, ep := range []string{"127.0.0.1:1234/v1", "localhost:8000", "http://x/v1", ""} {
+		for name, got := range map[string]string{
+			"openai": openAIBaseURL(ep, "omlx"),
+			"ollama": ollamaBaseURL(ep),
+		} {
+			u, err := url.Parse(got + "/models")
+			if err != nil {
+				t.Errorf("%s base for %q = %q, which url.Parse rejects: %v", name, ep, got, err)
+				continue
+			}
+			if u.Host == "" || u.Scheme == "" {
+				t.Errorf("%s base for %q = %q parsed with no host/scheme", name, ep, got)
+			}
+		}
+	}
+}
+
+func TestRegistrationAcceptsASchemelessEndpoint(t *testing.T) {
+	for _, provider := range []string{"openai", "ollama"} {
+		cfg := config.Default(t.TempDir())
+		cfg.Provider = provider
+		cfg.Endpoint = "127.0.0.1:1234/v1"
+		m := llm.NewProviderManager()
+		var err error
+		if provider == "ollama" {
+			err = registerOllamaNamed(m, provider, cfg, true)
+		} else {
+			err = registerOpenAICompat(m, provider, cfg, true)
+		}
+		if err != nil {
+			t.Errorf("register %s with a scheme-less endpoint: %v", provider, err)
+		}
 	}
 }

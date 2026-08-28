@@ -19,7 +19,6 @@
 package autoconfig
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -110,11 +109,4 @@ func Candidates(cfg *config.Config, envKey func(string) string) []Candidate {
 var remoteProviders = []string{
 	"openai", "openrouter", "groq", "together", "deepseek",
 	"fireworks", "mistral", "gemini", "anthropic",
-}
-
-// sortedProviders is remoteProviders in a stable order for tests and help text.
-func sortedProviders() []string {
-	out := append([]string{}, remoteProviders...)
-	sort.Strings(out)
-	return out
 }

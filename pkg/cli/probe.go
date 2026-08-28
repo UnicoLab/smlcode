@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/UnicoLab/slmcode/pkg/config"
 )
 
 // Endpoint pre-flight.
@@ -219,7 +221,9 @@ func ProbeEndpoint(ctx context.Context, provider, endpoint, model, apiKey string
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := strings.TrimRight(endpoint, "/") + "/models"
+	// Scheme-less spellings ("127.0.0.1:1234/v1") are a shape config files
+	// carry; net/url refuses to build a request from one.
+	url := strings.TrimRight(config.NormalizeEndpoint(endpoint), "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		res.State = ProbeDown

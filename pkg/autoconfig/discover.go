@@ -190,7 +190,3 @@ func shorten(s string) string {
 	}
 	return s
 }
-
-// Providers lists the hosted providers a key would make probeable, for help
-// text that has to name them.
-func Providers() []string { return sortedProviders() }

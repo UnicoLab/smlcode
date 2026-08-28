@@ -295,6 +295,30 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Fixed — a scheme-less endpoint broke everything that built a URL from it
+
+`endpoint: 127.0.0.1:1234/v1` is a spelling config files genuinely carry, and
+`pkg/config` already tolerated it when deciding whether an endpoint is local.
+Everything that BUILT a URL from it did not: `net/url` refuses
+`127.0.0.1:1234/v1/models` with *first path segment in URL cannot contain
+colon*.
+
+That reached further than it sounds. The provider registration is the path
+**every model call** goes through, so a config that reads as perfectly correct
+produced a harness where nothing worked — and the endpoint probe, the model
+catalog and auto-configuration each reported a perfectly reachable server as
+broken, which sent auto-configuration walking past it to something else.
+
+One `config.NormalizeEndpoint` now serves all of them.
+
+### Fixed — an Ollama endpoint ending `/v1/` kept its suffix
+
+`TrimSuffix(ep, "/v1")` does not match a string ending in `/v1/`, and the
+trailing slash was trimmed *after* it — so `http://127.0.0.1:11434/v1/` shaped
+to `…/v1` and every Ollama call went to `/v1/api/tags`. The two trims are the
+other way round now, and the shaping for both providers is one tested function
+each rather than two similar-looking inline blocks that had drifted apart.
+
 ### Added — `slmcode configure`, on both surfaces
 
 Every piece of this existed and none of it was joined up. The harness could list

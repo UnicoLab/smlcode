@@ -94,3 +94,32 @@ func TestATransportFailureIsExplainedInPlainWords(t *testing.T) {
 		t.Errorf("err = %q, want a plain-words reason", err)
 	}
 }
+
+// A scheme-less endpoint is a shape config files genuinely carry — pkg/config
+// tolerates it when deciding whether an endpoint is local. Building a request
+// from one used to fail with "first path segment in URL cannot contain colon",
+// so a reachable server was reported broken and discovery walked past it.
+func TestASchemelessEndpointIsStillReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"Qwen2.5-Coder-7B-Instruct"}]}`))
+	}))
+	defer srv.Close()
+
+	bare := strings.TrimPrefix(srv.URL, "http://") // "127.0.0.1:PORT"
+	got, err := HTTPProber(0)(context.Background(),
+		Candidate{Provider: "lmstudio", Endpoint: bare + "/v1"}, "")
+	if err != nil {
+		t.Fatalf("a scheme-less endpoint must still be probeable: %v", err)
+	}
+	if len(got) != 1 || got[0] != "Qwen2.5-Coder-7B-Instruct" {
+		t.Errorf("models = %v", got)
+	}
+	// And the URL it built is one net/url accepts.
+	if u := modelsURL(Candidate{Provider: "lmstudio", Endpoint: "127.0.0.1:1234/v1"}); !strings.HasPrefix(u, "http://") {
+		t.Errorf("modelsURL = %q, want a scheme", u)
+	}
+}

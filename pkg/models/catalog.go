@@ -164,7 +164,9 @@ func Fetch(ctx context.Context, cfg *config.Config) (names []string, err error) 
 	}
 	cp := *cfg
 	cp.ResolveAPIKey()
-	endpoint := strings.TrimRight(cp.Endpoint, "/")
+	// A scheme-less endpoint is a shape config files genuinely carry, and
+	// net/url refuses to build a request from one.
+	endpoint := strings.TrimRight(config.NormalizeEndpoint(cp.Endpoint), "/")
 	url := endpoint + "/models"
 	if config.IsOllama(cp.Provider) {
 		base := strings.TrimSuffix(endpoint, "/v1")

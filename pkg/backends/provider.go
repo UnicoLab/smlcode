@@ -157,13 +157,7 @@ func registerOllama(m *llm.ProviderManager, cfg *config.Config, setDefault bool)
 }
 
 func registerOllamaNamed(m *llm.ProviderManager, regName string, cfg *config.Config, setDefault bool) error {
-	endpoint := cfg.Endpoint
-	if strings.Contains(endpoint, "/v1") {
-		endpoint = strings.TrimSuffix(strings.TrimSuffix(endpoint, "/v1"), "/")
-	}
-	if endpoint == "" {
-		endpoint = config.DefaultEndpointFor("ollama")
-	}
+	endpoint := ollamaBaseURL(cfg.Endpoint)
 	if regName == "" {
 		regName = "ollama"
 	}
@@ -211,14 +205,7 @@ func registerOpenAICompat(m *llm.ProviderManager, name string, cfg *config.Confi
 	if baseName == "" {
 		baseName = regName
 	}
-	endpoint := cfg.Endpoint
-	if endpoint == "" {
-		endpoint = config.DefaultEndpointFor(baseName)
-	}
-	// go-openai expects base URL ending at /v1
-	if !strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/v1") {
-		endpoint = strings.TrimRight(endpoint, "/") + "/v1"
-	}
+	endpoint := openAIBaseURL(cfg.Endpoint, baseName)
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = "local"
@@ -285,4 +272,44 @@ func providerSynonyms(name string) []string {
 	default:
 		return nil
 	}
+}
+
+// ── Shaping a configured endpoint into a provider base URL ───────────────
+//
+// Both providers want a specific shape and neither gets it from the config
+// verbatim, so the shaping is here rather than inline: it is the path EVERY
+// model call goes through, and it was previously two similar-looking blocks
+// that had drifted — only one of them tolerated the scheme-less spelling
+// pkg/config documents as something config files carry.
+
+// openAIBaseURL is the base URL go-openai wants: scheme present, ending at /v1.
+//
+// Without the scheme, net/url refuses "127.0.0.1:1234/v1/models" with "first
+// path segment in URL cannot contain colon" — so a config that reads as
+// perfectly correct produced a harness where nothing worked.
+func openAIBaseURL(endpoint, provider string) string {
+	ep := config.NormalizeEndpoint(endpoint)
+	if ep == "" {
+		ep = config.DefaultEndpointFor(provider)
+	}
+	ep = strings.TrimRight(ep, "/")
+	if !strings.HasSuffix(ep, "/v1") {
+		ep += "/v1"
+	}
+	return ep
+}
+
+// ollamaBaseURL is the base URL the Ollama client wants: scheme present, and
+// WITHOUT the /v1 suffix, since Ollama serves its own API at the root.
+func ollamaBaseURL(endpoint string) string {
+	ep := config.NormalizeEndpoint(endpoint)
+	// Trailing slash FIRST. The other order left "/v1" on a URL spelled
+	// "…:11434/v1/" — TrimSuffix(ep, "/v1") does not match a string ending in
+	// "/v1/" — and every Ollama call then went to /v1/api/tags.
+	ep = strings.TrimRight(ep, "/")
+	ep = strings.TrimSuffix(ep, "/v1")
+	if ep == "" {
+		ep = config.DefaultEndpointFor("ollama")
+	}
+	return ep
 }

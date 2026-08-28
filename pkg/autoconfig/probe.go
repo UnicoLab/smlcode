@@ -58,7 +58,7 @@ func HTTPProber(timeout time.Duration) Prober {
 // Ollama does not speak the OpenAI listing route; everything else does, and a
 // base URL that already ends in /v1 must not get a second one.
 func modelsURL(c Candidate) string {
-	endpoint := strings.TrimRight(strings.TrimSpace(c.Endpoint), "/")
+	endpoint := strings.TrimRight(config.NormalizeEndpoint(c.Endpoint), "/")
 	if config.IsOllama(c.Provider) {
 		return strings.TrimRight(strings.TrimSuffix(endpoint, "/v1"), "/") + "/api/tags"
 	}

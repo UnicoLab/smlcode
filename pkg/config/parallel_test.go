@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,5 +360,46 @@ func TestCalibrationKillSwitch(t *testing.T) {
 	}
 	if cfg.CalibrationEnabled() {
 		t.Fatal("calibrate: off must disable the probe")
+	}
+}
+
+// ── A scheme-less endpoint is a shape config files carry ─────────────────
+//
+// This package already tolerated it when deciding whether an endpoint is
+// local. Anything that BUILT a URL from it did not: net/url refuses
+// "127.0.0.1:1234/v1/models" with "first path segment in URL cannot contain
+// colon", so a perfectly reachable server was reported as broken — and
+// auto-configuration walked past it to something else.
+
+func TestNormalizeEndpointGivesASchemeToWhatHasNone(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"},
+		{"localhost:8000", "http://localhost:8000"},
+		{"  127.0.0.1:1234  ", "http://127.0.0.1:1234"},
+		// Already has one: left exactly alone, https included.
+		{"http://127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"},
+		{"https://api.openai.com/v1", "https://api.openai.com/v1"},
+		// Nothing to normalize.
+		{"", ""},
+		{"   ", ""},
+	} {
+		if got := NormalizeEndpoint(tc.in); got != tc.want {
+			t.Errorf("NormalizeEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The normalized form has to be something net/url will actually build a
+// request from — that is the whole point.
+func TestANormalizedEndpointParses(t *testing.T) {
+	for _, in := range []string{"127.0.0.1:1234/v1", "localhost:8000", "http://x/v1"} {
+		u, err := url.Parse(NormalizeEndpoint(in) + "/models")
+		if err != nil {
+			t.Errorf("url.Parse(%q) failed: %v", in, err)
+			continue
+		}
+		if u.Host == "" {
+			t.Errorf("%q parsed with no host: %+v", in, u)
+		}
 	}
 }

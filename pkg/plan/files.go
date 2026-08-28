@@ -171,9 +171,27 @@ func ReconcileFiles(root string, claimed, discovered []string) []string {
 				missing = append(missing, f)
 			}
 		}
+		// A repository with no source files in it cannot tell a real target
+		// from an invented one — there is nothing to reconcile against. In
+		// THAT state the claimed paths are the scope, because refusing them
+		// means the harness can never scaffold a project anywhere the fixed
+		// prefix list below does not already bless.
+		//
+		// This is what blocked "build a Go backend serving a React frontend":
+		// cmd/server/main.go and web/src/App.tsx are the conventional layouts
+		// for exactly that request, and neither starts with src/, tests/,
+		// lib/ or app/, so every task the splitter wrote was parked as
+		// unscoped and the run produced nothing.
+		//
+		// The looser rule is confined to the greenfield state on purpose. Once
+		// a repository HAS source files, a claimed path that does not exist is
+		// far more likely to be invented than intended, and the conservative
+		// behavior below is the right one — which is why the existing
+		// "hallucinated falls back to discovered" contract still holds.
+		green := isGreenfieldRoot(root)
 		out := append([]string{}, existing...)
 		for _, f := range missing {
-			if isGreenfieldCreatePath(f) {
+			if isGreenfieldCreatePath(f) || (green && looksLikeSourceTarget(f)) {
 				out = append(out, f)
 			}
 		}
@@ -198,4 +216,92 @@ func isGreenfieldCreatePath(f string) bool {
 	return strings.HasPrefix(f, "src/") || strings.HasPrefix(f, "tests/") ||
 		strings.HasPrefix(f, "test/") || strings.HasPrefix(f, "lib/") ||
 		strings.HasPrefix(f, "app/")
+}
+
+// isGreenfieldRoot reports whether a workspace holds no source files yet.
+//
+// Manifest-only counts as greenfield: a directory with nothing but go.mod or
+// package.json is a project about to be written, not one to reconcile against.
+func isGreenfieldRoot(root string) bool {
+	if strings.TrimSpace(root) == "" {
+		return true
+	}
+	for _, f := range ListWorkspaceFiles(root, 64) {
+		if isExistingCode(f) {
+			return false
+		}
+	}
+	return true
+}
+
+// isExistingCode reports whether a path is CODE — the only kind of file that
+// tells you where this project puts things.
+//
+// Narrower than looksLikeSourceTarget on purpose: those answer different
+// questions. "May a task create this?" includes a README and a config file.
+// "Does this repository have a layout to reconcile against?" does not — a
+// directory holding go.mod and a README is still a project about to be written,
+// and treating it as established re-blocks the greenfield scaffolding this
+// whole rule exists to allow.
+func isExistingCode(f string) bool {
+	if isProjectManifest(f) {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(f))) {
+	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue",
+		".svelte", ".rs", ".java", ".kt", ".kts", ".rb", ".php", ".swift",
+		".cs", ".c", ".h", ".cc", ".cpp", ".hpp":
+		return true
+	}
+	return false
+}
+
+// isProjectManifest reports whether a path is a project descriptor rather than
+// source. Their presence does not make a repository non-greenfield.
+func isProjectManifest(f string) bool {
+	switch strings.ToLower(filepath.Base(f)) {
+	case "go.mod", "go.sum", "package.json", "package-lock.json", "pnpm-lock.yaml",
+		"yarn.lock", "pyproject.toml", "requirements.txt", "setup.py", "cargo.toml",
+		"cargo.lock", "gemfile", "composer.json", "build.gradle", "pom.xml":
+		return true
+	}
+	return false
+}
+
+// looksLikeSourceTarget reports whether a path is a plausible file to create.
+//
+// Deliberately about the SHAPE of the path, not about a blessed directory: a
+// real source extension, no placeholder marker, no traversal, and a sane depth.
+// An extensionless path or one containing "path/to" is a model describing a
+// file rather than naming one.
+func looksLikeSourceTarget(f string) bool {
+	f = strings.ToLower(strings.TrimSpace(filepath.ToSlash(f)))
+	if f == "" || strings.HasPrefix(f, "/") || strings.Contains(f, "..") {
+		return false
+	}
+	for _, marker := range []string{"path/to", "placeholder", "<", ">", "your-", "example/", "foo/bar"} {
+		if strings.Contains(f, marker) {
+			return false
+		}
+	}
+	// A path nested eight levels deep is a description, not a target.
+	if strings.Count(f, "/") > 7 {
+		return false
+	}
+	return greenfieldSourceExts[filepath.Ext(f)]
+}
+
+// greenfieldSourceExts are the extensions a scaffolding task may create.
+//
+// Source and config only: an image, an archive or a compiled object is never
+// something a worker should be told to write.
+var greenfieldSourceExts = map[string]bool{
+	".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true,
+	".mjs": true, ".cjs": true, ".vue": true, ".svelte": true, ".rs": true,
+	".java": true, ".kt": true, ".kts": true, ".rb": true, ".php": true,
+	".swift": true, ".cs": true, ".c": true, ".h": true, ".cc": true, ".cpp": true,
+	".hpp": true, ".sh": true, ".bash": true, ".sql": true,
+	".html": true, ".htm": true, ".css": true, ".scss": true, ".sass": true,
+	".json": true, ".yaml": true, ".yml": true, ".toml": true, ".md": true,
+	".mod": true, ".txt": true, ".env": true, ".gitignore": true, ".dockerfile": true,
 }

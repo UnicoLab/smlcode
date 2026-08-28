@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Two virtual dev teams, and defects that arrive as tickets instead of alarms.
+Two virtual dev teams, per-task specialist routing, greenfield scaffolding that
+works, and defects that arrive as tickets instead of alarms.
 
 ### Added — Squads: parallel virtual dev teams
 
@@ -71,6 +72,33 @@ An agent that is not registered is never named — that fails to dispatch, which
 worse than a slightly less apt specialist doing the work. Every reroute is
 reported with its reason, so a surprising choice is auditable rather than
 mysterious.
+
+### Fixed — greenfield scaffolding could not scope its own tasks
+
+Found by running the squad path end to end against a fake model, and it is the
+bug that made the headline query produce nothing.
+
+`ReconcileFiles` refuses a claimed target that does not exist on disk, falling
+back to discovered files — the guard that stops a hallucinated path from
+becoming a twelve-file write allowlist. New files were allowed only under a
+fixed prefix list: `src/`, `tests/`, `test/`, `lib/`, `app/`, plus a handful of
+root manifests.
+
+"Build a Go backend serving a React frontend" targets `cmd/server/main.go` and
+`web/src/App.tsx` — the conventional layouts for exactly that request, and
+neither is under any of those prefixes. **Every task the splitter wrote was
+parked as `to_scope` with "no resolvable target files".** Nothing was built, no
+squad could be assigned (assignment is by file ownership), and the failure read
+as the splitter being wrong rather than the guard being too narrow.
+
+The discriminator is now the repository's state rather than the path's prefix: a
+workspace with no source code in it has nothing to reconcile against, so a
+claimed path that looks like a real file — a real source extension, no
+placeholder marker, no traversal, sane depth — is the scope. Once a repository
+has code, the conservative behavior is unchanged, because there a claimed path
+that does not exist really is more likely invented. Manifests and docs do not
+make a repository established: `go.mod` and a README describe a project about to
+be written, not a layout to reconcile against.
 
 ### Changed — defects arrive as correction tickets, not alarms
 

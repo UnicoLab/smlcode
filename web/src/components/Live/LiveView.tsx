@@ -12,6 +12,7 @@ import {
   Play,
   Square,
   Users,
+  Wrench,
   XCircle,
 } from 'lucide-react';
 import { AppContext } from '@/App';
@@ -39,6 +40,8 @@ import LiveFeedback from './LiveFeedback';
 import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import SquadPanel from './SquadPanel';
+import RecoveryPanel from './RecoveryPanel';
+import { buildRecovery, recoveryTally } from './recovery';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
 import RunSetup from './RunSetup';
@@ -78,7 +81,7 @@ const PIPELINE_GROUPS: RailGroup[] = [
   { id: 'finish', label: 'Finish', phases: ['memory', 'done'] },
 ];
 
-type RailTab = 'tasks' | 'teams' | 'files' | 'result';
+type RailTab = 'tasks' | 'teams' | 'fixes' | 'files' | 'result';
 
 /** Where the side rail becomes a column instead of an overlay. */
 const WIDE_VIEWPORT = '(min-width: 1024px)';
@@ -106,6 +109,17 @@ export default function LiveView() {
   const [query, setQuery] = useState('');
   // Persisted: a layout the user arranged has to survive a reload.
   const [railTab, setRailTab] = usePersistentState<RailTab>('live.rail.tab', 'tasks');
+  // The self-healing tally rides on the tab, so a user who never opens it still
+  // sees that something was found and something was done about it.
+  const fixes = useMemo(() => recoveryTally(buildRecovery(events)), [events]);
+  const fixesBadge =
+    fixes.needsYou > 0
+      ? String(fixes.needsYou)
+      : fixes.healing > 0
+        ? String(fixes.healing)
+        : fixes.resolved > 0
+          ? String(fixes.resolved)
+          : undefined;
   const [railWidth, setRailWidth] = usePersistentState('live.rail.width', RAIL_DEFAULT_PX);
   // The rail is a column on a wide viewport and a full-height OVERLAY below it,
   // so its default cannot be the same on both: opening it by default on a phone
@@ -635,6 +649,18 @@ export default function LiveView() {
                   icon={<Users size={14} />}
                   label="Teams"
                 />
+                {/* What the harness fixed by itself. The failures are red and
+                    loud and the recovery is a handful of plain lines in a log
+                    of fifty, so a user watching sees a run going wrong with no
+                    evidence anything is handling it — the worst possible
+                    reading of a system that is fixing itself. */}
+                <RailTabButton
+                  active={railTab === 'fixes'}
+                  onClick={() => setRailTab('fixes')}
+                  icon={<Wrench size={14} className={fixes.needsYou > 0 ? 'text-amber-500' : undefined} />}
+                  label="Fixes"
+                  badge={fixesBadge}
+                />
                 <RailTabButton
                   active={railTab === 'files'}
                   onClick={() => setRailTab('files')}
@@ -673,6 +699,11 @@ export default function LiveView() {
                     <SquadPanel refreshKey={events.length} />
                   </div>
                 )}
+                {railTab === 'fixes' && (
+                  <div className="h-full overflow-auto">
+                    <RecoveryPanel events={events} />
+                  </div>
+                )}
                 {railTab === 'files' && <LiveFileInspector events={events} running={running} />}
                 {railTab === 'result' && <ResultPanel result={result} />}
               </div>
@@ -690,9 +721,11 @@ function RailTabButton({
   onClick,
   icon,
   label,
+  badge,
 }: {
   active: boolean;
   onClick: () => void;
+  badge?: string;
   icon: React.ReactNode;
   label: string;
 }) {
@@ -709,6 +742,9 @@ function RailTabButton({
     >
       {icon}
       {label}
+      {badge && (
+        <span className="badge-neutral shrink-0 text-[10px] leading-none">{badge}</span>
+      )}
     </button>
   );
 }

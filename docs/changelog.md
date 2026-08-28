@@ -215,6 +215,23 @@ list, because that list is widened by the very task matches the check exists to
 catch: computing from it would let the contamination declare the defect a
 straddle and disable the check exactly when it is needed.
 
+### Added — a Fixes tab: what the harness repaired by itself
+
+The harness recovers from most of what goes wrong, and none of it was visible.
+The failures are red and loud — `tester found 1 failure`, `T2 reassigned after
+its retries were spent` — and the recovery was four plain lines somewhere in a
+log of fifty. A user watching that sees a run going wrong with no evidence
+anything is handling it, which is the worst possible reading of a system that is
+in fact fixing itself.
+
+The Live rail's new **Fixes** tab is one row per defect: what the gate found,
+which specialist has it now, the steps taken, and whether it closed. A defect
+that comes back is the *same* row with another attempt, not a second problem —
+splitting them would make a run look twice as broken as it is. The tab carries a
+count, so a user who never opens it still sees that something was found and
+something was done about it, and the one state that stands out is the one where
+the harness has run out of moves and a person has to look.
+
 ### Added — a Teams page
 
 The rail's Teams tab answers "how are the teams doing right now". The new

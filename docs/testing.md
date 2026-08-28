@@ -79,11 +79,46 @@ make check               # the one gate: tidy-check, fmt, vet, lint, tests+cover
 make e2e                 # offline e2e + prime CLI/API smoke
 RUN_E2E=1 make e2e       # also live oMLX / multi-agent
 make e2e-slm             # live-model scenario suite — needs a running oMLX, costs real time
+make e2e-release         # pre-release check against YOUR model server — see below
 make cover               # coverage against the floor in scripts/coverage-check.sh
 ./scripts/e2e_prime_smoke.sh   # stacks/agents/models/auth/mcp alone
 ```
 
 Frontend tests live in `web/`: `npm run lint && npm test` (Vitest + Testing Library).
+
+### Before a release: `make e2e-release`
+
+`make check` runs against fakes. It answers "is the tree correct" and cannot
+answer "does this release work on my machine" — the failures that live between a
+fake and a real server are precisely the ones a fixture cannot produce:
+
+- **the model list is real.** `configure` ranks the names the server was
+  actually given, not the names we thought of. Picking an embedding or speech
+  model is invisible until the first run returns something that is not JSON.
+- **listing is not completing.** An endpoint can answer `/v1/models` and still
+  fail a chat — a model listed but not loaded, a context window smaller than
+  the system prompt, a proxy that passes GETs and drops POSTs. Discovery alone
+  would call that machine configured.
+- **the manager is a real model at temperature.** Offline, the org chart squads
+  parse is a `const` in `squads_e2e_test.go` and always parses.
+
+So `test/e2e/live_release_test.go` drives the real binary against whatever is
+running: discovery → the `configure` command and the bytes it writes → a chat
+round-trip → a live two-language squads run. It asserts on **mechanism**, never
+on the model's prose — the same model asked twice writes different code, and a
+test that demands particular code fails for the wrong reason.
+
+```bash
+make e2e-release                      # everything (the squads run can take an hour)
+RUN_E2E_SQUADS=0 make e2e-release     # skip the slow two-language run
+make e2e-release ARGS="-run TestLiveReleaseSurface/configure"
+```
+
+It runs with your **real** environment rather than the hermetic one
+`binary_acceptance_test.go` builds — the credentials live in `~/.omlx`,
+`~/.slmcode` and the environment, and hiding them would test a machine you do
+not have. Nothing is written outside a temp directory: no subtest passes
+`configure --user`.
 
 ### The two suites that stand in for a real run
 

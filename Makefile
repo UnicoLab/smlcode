@@ -25,7 +25,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race race-e2e cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck release-binaries prebuilt install-offline
+.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race race-e2e cover e2e e2e-slm e2e-release check studio doctor clean docs docs-serve docs-build docs-venv govulncheck release-binaries prebuilt install-offline
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -371,6 +371,26 @@ e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 #   make e2e-slm ARGS="--scenario fix-a-bug --keep"
 e2e-slm: ## Live-model e2e against a real SLM — NEEDS a running oMLX, costs real time (not in `make check`)
 	@./scripts/e2e-slm.sh $(ARGS)
+
+# The pre-release check, against the model server you actually use.
+#
+# `make check` runs against fakes and answers "is the tree correct". It cannot
+# answer "does this release work on my machine", because the things that break
+# between a fake and a real server are exactly the things a fake cannot show: a
+# model list whose real names rank differently, an endpoint that serves
+# /v1/models but cannot complete a chat, a manager asked for an org chart at
+# temperature. So this drives the real binary and a real model.
+#
+# Needs a running model server (oMLX, Ollama, LM Studio, vLLM) or a hosted
+# provider's API key in the environment. Costs real wall-clock time — the
+# squads subtest builds a two-language app and can run an hour on a local SLM.
+#
+#   make e2e-release                      # everything
+#   make e2e-release ARGS="-run TestLiveReleaseSurface/configure"
+#   RUN_E2E_SQUADS=0 make e2e-release     # skip the slow two-language run
+e2e-release: ## Pre-release check against YOUR model server — needs a live endpoint, costs real time
+	RUN_E2E=1 go test ./test/e2e/ -count=1 -timeout 90m -v \
+		-run 'TestLiveReleaseSurface' $(ARGS)
 
 # docs/slm-learnings.md is evidence, so its tables are REGENERATED from the e2e
 # reports rather than hand-maintained. DIR defaults to the current directory;

@@ -209,10 +209,19 @@ func fixtureEnv(t *testing.T, home string) []string {
 // slm runs the binary in the fixture and returns combined output plus exit code.
 func slm(t *testing.T, dir, home string, args ...string) (string, int) {
 	t.Helper()
+	return slmWithEnv(t, dir, fixtureEnv(t, home), args...)
+}
+
+// slmWithEnv is slm with the environment chosen by the caller. The hermetic
+// fixtureEnv is right for this file and wrong for the live release check, which
+// exists to drive the developer's own model server with the developer's own
+// credentials (see live_release_test.go).
+func slmWithEnv(t *testing.T, dir string, env []string, args ...string) (string, int) {
+	t.Helper()
 	bin, _ := buildBinaries(t)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	cmd.Env = fixtureEnv(t, home)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {

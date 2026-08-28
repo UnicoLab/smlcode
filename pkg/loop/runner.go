@@ -96,6 +96,10 @@ type Runner struct {
 	// (which is almost all of them). When set, it adds a per-task brief to the
 	// worker prompt and an ownership deny list to every wave.
 	Squads *squads.Plan
+	// RoleExists reports whether an agent id is registered. Set it to
+	// agents.Factory.HasRole. nil means "no registry": reassignment then
+	// declines rather than naming an agent that cannot be dispatched.
+	RoleExists func(id string) bool
 	// TakeShellScope drains the workspace's out-of-scope ws_shell ledger — set
 	// it to Workspace.TakeShellScopeEvents. nil simply means the loop reports no
 	// shell-scope evidence; every gate that reads it is nil-safe.
@@ -2186,6 +2190,23 @@ func restoreTesterEvidence(res plan.TesterResult, rawOutput string) plan.TesterR
 // reviewAndCorrect reviews a task and runs correction rounds against the board.
 func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan.Task, baseline map[string]string) error {
 	final, esc, err := r.reviewAndCorrectTask(ctx, t, baseline)
+
+	// Before asking a human: hand the work to a different specialist ONCE,
+	// with the failure ledger as its context. The agent that just failed has
+	// already had every retry the ladder allows, so re-running it is the loop
+	// that produced the escalation in the first place — and "needs human input
+	// or smaller scope" is the least actionable thing the harness can say.
+	if esc != nil && err == nil {
+		if next, ok := r.reassignFailedTask(final, esc.review); ok {
+			from := t.Role
+			final = next
+			board.UpdateTask(final)
+			r.persist(board)
+			r.announceHandoff(final, from)
+			return nil
+		}
+	}
+
 	board.UpdateTask(final)
 	r.persist(board)
 	if esc != nil && r.OnEscalate != nil {
@@ -2206,10 +2227,14 @@ func (r *Runner) reviewAndCorrect(ctx context.Context, board *plan.Board, t plan
 	return err
 }
 
-// escalation records that a task ran out of retries and needs a human.
+// escalation records that a task ran out of retries.
 type escalation struct {
 	detail  string
 	attempt int
+	// review is the verdict that ended the ladder. Carried so a reassignment
+	// can hand the next specialist the actual findings rather than re-deriving
+	// them from the task's prose.
+	review plan.ReviewResult
 }
 
 // reviewAndCorrectTask is the board-free review+correct ladder for ONE task.
@@ -2423,7 +2448,7 @@ func (r *Runner) escalateTask(current plan.Task, review plan.ReviewResult, attem
 	// back. Each renderer supplies its own "how to answer this".
 	r.fireIntervention(current.ID, "escalate",
 		fmt.Sprintf("%s needs human review", current.ID), detail)
-	return current, &escalation{detail: detail, attempt: attempt}, nil
+	return current, &escalation{detail: detail, attempt: attempt, review: review}, nil
 }
 
 // rootDir is the nil-safe project root.

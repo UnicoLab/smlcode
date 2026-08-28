@@ -130,6 +130,12 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	// ownership deny list that makes one team physically unable to write the
 	// other's files. nil on a single-stream run.
 	runner.Squads = o.squadPlan
+	// Lets the review ladder hand an exhausted task to a DIFFERENT specialist
+	// once before asking a human. Without a registry it declines rather than
+	// naming an agent that cannot be dispatched.
+	if o.factory != nil {
+		runner.RoleExists = o.factory.HasRole
+	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.maybeCompactContext(ctx)

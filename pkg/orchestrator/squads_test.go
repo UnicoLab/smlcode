@@ -393,3 +393,165 @@ func TestSquadWorkerLookupFeedsRouting(t *testing.T) {
 		t.Error("no plan, no lookup")
 	}
 }
+
+// ── Approval-time editing ────────────────────────────────────────────────
+//
+// The gate used to offer approve or replan. Replan throws the whole board away
+// to fix one wrong file path, so people approved plans they could see were
+// slightly wrong. These pin the third answer.
+
+func editableOrchestrator(t *testing.T) (*Orchestrator, *recorder) {
+	t.Helper()
+	p := e2ePlan(t)
+	o, rec := routingOrchestrator(t, p)
+	return o, rec
+}
+
+func TestApplyPlanEditsChangesTheBoardTheUserSaw(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Title: "api", Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+		{ID: "T2", Title: "ui", Role: plan.RoleWorker, Column: plan.ColReadyToDev, Files: []string{"web/App.tsx"}},
+	}}
+	title := "serve the todo API"
+	role := "go-worker"
+	o.applyPlanEdits(board, &plan.PlanEdits{Tasks: []plan.TaskEdit{
+		{ID: "T1", Title: &title, Role: &role},
+	}})
+
+	if board.Tasks[0].Title != title || board.Tasks[0].Role != "go-worker" {
+		t.Errorf("edit not applied: %+v", board.Tasks[0])
+	}
+	if out := rec.text(); !strings.Contains(out, "applied plan edits") {
+		t.Errorf("the edit should be reported:\n%s", out)
+	}
+}
+
+// A role the harness cannot staff produces a task that never starts. Refuse it
+// where the user can still see why.
+func TestPlanEditsRefuseAnUnstaffableRole(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: "go-worker", Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+	}}
+	role := "cobol-worker"
+	o.applyPlanEdits(board, &plan.PlanEdits{Tasks: []plan.TaskEdit{{ID: "T1", Role: &role}}})
+
+	if board.Tasks[0].Role == "cobol-worker" {
+		t.Error("an unregistered agent was accepted")
+	}
+	if out := rec.text(); !strings.Contains(out, "not a registered agent") {
+		t.Errorf("the refusal should be visible:\n%s", out)
+	}
+}
+
+func TestPlanEditsCanRestaffASquad(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: "go-worker", Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+	}}
+	acc := "go test ./... -race"
+	o.applyPlanEdits(board, &plan.PlanEdits{Squads: []plan.SquadEdit{
+		{ID: "backend", Acceptance: &acc},
+	}})
+
+	back, ok := o.squadPlan.Squad("backend")
+	if !ok || back.Acceptance != acc {
+		t.Errorf("squad edit not applied: %+v", back)
+	}
+	if out := rec.text(); !strings.Contains(out, "squad plan edited") {
+		t.Errorf("the squad edit should be reported:\n%s", out)
+	}
+	// And it survives a reload — the run may be resumed.
+	saved, found, err := squads.Load(o.cfg.SlmDir())
+	if err != nil || !found {
+		t.Fatalf("the edited plan must be saved: found=%v err=%v", found, err)
+	}
+	if s, _ := saved.Squad("backend"); s.Acceptance != acc {
+		t.Errorf("the saved plan does not carry the edit: %+v", s)
+	}
+}
+
+// A squad edit that breaks disjoint ownership is refused WHOLE, and that must
+// not silently discard the unrelated task edits made in the same pass.
+func TestARefusedSquadEditKeepsTheTaskEdits(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Title: "api", Role: "go-worker", Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+	}}
+	title := "kept"
+	o.applyPlanEdits(board, &plan.PlanEdits{
+		Tasks: []plan.TaskEdit{{ID: "T1", Title: &title}},
+		Squads: []plan.SquadEdit{
+			{ID: "backend", Owns: []string{"cmd/**", "web/**"}, OwnsSet: true}, // collides
+		},
+	})
+
+	if board.Tasks[0].Title != "kept" {
+		t.Error("a valid task edit was discarded because a squad edit failed")
+	}
+	back, _ := o.squadPlan.Squad("backend")
+	if back.OwnsPath("web/src/App.tsx") {
+		t.Error("the overlapping ownership edit was applied")
+	}
+	out := rec.text()
+	if !strings.Contains(out, "squad edit REFUSED") || !strings.Contains(out, "both claim") {
+		t.Errorf("the user must be told their org-chart edit was refused, and why:\n%s", out)
+	}
+}
+
+func TestApplyPlanEditsIsInertWithNothingToDo(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{{ID: "T1", Role: "go-worker", Column: plan.ColReadyToDev}}}
+	o.applyPlanEdits(board, nil)
+	o.applyPlanEdits(board, &plan.PlanEdits{})
+	o.applyPlanEdits(nil, &plan.PlanEdits{Tasks: []plan.TaskEdit{{ID: "T1"}}})
+	if out := rec.text(); strings.Contains(out, "applied plan edits") {
+		t.Errorf("nothing to do should say nothing:\n%s", out)
+	}
+}
+
+// The approval card has to carry the org chart and the agents the harness can
+// actually staff, or the UI is guessing.
+func TestApprovalCardCarriesTheTeamsAndTheStaffableAgents(t *testing.T) {
+	o, _ := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Squad: "backend"}, {ID: "T2", Squad: "backend"}, {ID: "T3", Squad: "frontend"},
+	}}
+	view := o.squadsAskView(board)
+	if view == nil || len(view.Squads) != 2 {
+		t.Fatalf("the card should carry both squads, got %+v", view)
+	}
+	byID := map[string]plan.PlanSquad{}
+	for _, s := range view.Squads {
+		byID[s.ID] = s
+	}
+	// An idle team must be visible on the card, not only in the event log.
+	if byID["backend"].TaskCount != 2 || byID["frontend"].TaskCount != 1 {
+		t.Errorf("task counts = backend:%d frontend:%d",
+			byID["backend"].TaskCount, byID["frontend"].TaskCount)
+	}
+	if len(view.Interfaces) == 0 || view.Interfaces[0].Provider != "backend" {
+		t.Errorf("the contract should be on the card: %+v", view.Interfaces)
+	}
+
+	agents := o.staffableAgents()
+	if len(agents) == 0 {
+		t.Fatal("the card must offer the agents this run can staff")
+	}
+	found := map[string]bool{}
+	for _, a := range agents {
+		found[a] = true
+	}
+	for _, want := range []string{"go-worker", "react-worker", plan.RoleWorker} {
+		if !found[want] {
+			t.Errorf("staffable agents is missing %q", want)
+		}
+	}
+
+	// A single-stream run has no org chart to show.
+	solo := &Orchestrator{cfg: o.cfg}
+	if solo.squadsAskView(board) != nil {
+		t.Error("no squad plan, no squads on the card")
+	}
+}

@@ -1190,6 +1190,14 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid plan decision", http.StatusBadRequest)
 		return
 	}
+	// Edits only mean something alongside an approval: a replan discards the
+	// board they refer to, so carrying them would promise the user a change
+	// that is about to be thrown away.
+	if ans.Decision == "replan" && ans.Edits != nil && !ans.Edits.Empty() {
+		http.Error(w, "edits cannot accompany a replan — the board they edit is discarded",
+			http.StatusBadRequest)
+		return
+	}
 	ans.AskID = ask.ID
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
@@ -1202,8 +1210,12 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	msg := "plan decision: " + ans.Decision
+	if ans.Edits != nil && !ans.Edits.Empty() {
+		msg += " (with edits)"
+	}
 	s.emit(orchestrator.Event{
-		Phase: "plan", Kind: "ask_answered", Message: "plan decision: " + ans.Decision, Time: time.Now(),
+		Phase: "plan", Kind: "ask_answered", Message: msg, Time: time.Now(),
 	})
 	writeJSON(w, map[string]any{"ok": true})
 }

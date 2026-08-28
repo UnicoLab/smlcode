@@ -61,6 +61,10 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 		ask.Composition = planCompositionSnapshot(*o.dynamicComposition, o.cfg.DynamicPipeline, prof.ContextLimit)
 	}
 	o.mu.Unlock()
+	// The org chart and the agents this run can actually staff, so the approval
+	// UI can edit teams and offer role choices the harness can dispatch.
+	ask.Squads = o.squadsAskView(board)
+	ask.Agents = o.staffableAgents()
 	timeout := o.cfg.PlanApproveTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -165,6 +169,11 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 		o.emitRetainedWork("plan", board)
 		return planApprovalDecision{}, o.stoppedAtGateError("plan not approved")
 	}
+	// Edits ride with an approval and are applied BEFORE execute starts, so the
+	// plan the user saw is the plan that runs. A replan discards this board, so
+	// applying them on that path would be work thrown away — hence only here.
+	o.applyPlanEdits(board, ans.Edits)
+
 	if note := strings.TrimSpace(ans.Notes); note != "" && board != nil {
 		board.Plan.Assumptions = append(board.Plan.Assumptions, "User plan note: "+note)
 		o.persistBoard(board)

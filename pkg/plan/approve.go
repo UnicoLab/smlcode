@@ -40,10 +40,18 @@ type PlanApproveAsk struct {
 	TaskDetails []PlanApproveTask `json:"task_details,omitempty"`
 	Composition *PlanComposition  `json:"composition,omitempty"`
 	Validation  *ScopeJudgeResult `json:"validation,omitempty"`
-	Options     []string          `json:"options,omitempty"`
-	TimeoutS    int               `json:"timeout_sec,omitempty"`
-	OnTimeout   string            `json:"on_timeout,omitempty"` // "approve"
-	CreatedAt   string            `json:"created_at"`
+	// Squads is the org chart the manager assembled, so the approval UI can
+	// show and edit the teams as well as the tasks. Nil on a single-stream run.
+	Squads *PlanSquads `json:"squads,omitempty"`
+	// Agents lists the agent ids this run can actually staff. A UI offering a
+	// role the harness cannot dispatch produces a task that never starts, so
+	// the choices have to come from the harness rather than from a hardcoded
+	// list in the frontend.
+	Agents    []string `json:"agents,omitempty"`
+	Options   []string `json:"options,omitempty"`
+	TimeoutS  int      `json:"timeout_sec,omitempty"`
+	OnTimeout string   `json:"on_timeout,omitempty"` // "approve"
+	CreatedAt string   `json:"created_at"`
 }
 
 // PlanApproveTask is the structured, UI-friendly task preview for validation.
@@ -105,10 +113,16 @@ type PlanCompositionSlot struct {
 
 // PlanApproveAnswer is the user decision.
 type PlanApproveAnswer struct {
-	AskID      string `json:"ask_id,omitempty"`
-	Decision   string `json:"decision"` // approve | replan
-	Notes      string `json:"notes,omitempty"`
-	AnsweredAt string `json:"answered_at,omitempty"`
+	AskID    string `json:"ask_id,omitempty"`
+	Decision string `json:"decision"` // approve | replan
+	Notes    string `json:"notes,omitempty"`
+	// Edits are the changes the human made before approving. Applied by the
+	// harness, so what they saw is what runs.
+	//
+	// Only meaningful with decision=approve: a replan discards the board these
+	// edits refer to, so applying them first would be work thrown away.
+	Edits      *PlanEdits `json:"edits,omitempty"`
+	AnsweredAt string     `json:"answered_at,omitempty"`
 }
 
 // BuildPlanApproveAsk builds a compact approval card from the board.
@@ -187,4 +201,38 @@ func compactPlanText(s string, max int) string {
 		return s[:max]
 	}
 	return strings.TrimSpace(s[:max-3]) + "..."
+}
+
+// PlanSquads is the approval card's view of the virtual teams.
+//
+// A flat, JSON-friendly mirror of pkg/squads.Plan. It lives here rather than
+// being that type directly so pkg/plan does not depend on pkg/squads — the
+// dependency runs the other way, and a cycle would be the cost of convenience.
+type PlanSquads struct {
+	Summary     string          `json:"summary,omitempty"`
+	Squads      []PlanSquad     `json:"squads,omitempty"`
+	Interfaces  []PlanInterface `json:"interfaces,omitempty"`
+	Integration string          `json:"integration,omitempty"`
+}
+
+// PlanSquad is one team on the approval card.
+type PlanSquad struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name,omitempty"`
+	Charter    string   `json:"charter,omitempty"`
+	Owns       []string `json:"owns,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
+	Worker     string   `json:"worker,omitempty"`
+	Reviewer   string   `json:"reviewer,omitempty"`
+	// TaskCount is how much work this squad was given, so an idle team is
+	// visible on the card rather than only in the event log.
+	TaskCount int `json:"task_count"`
+}
+
+// PlanInterface is one frozen contract clause on the approval card.
+type PlanInterface struct {
+	ID        string   `json:"id"`
+	Provider  string   `json:"provider"`
+	Consumers []string `json:"consumers,omitempty"`
+	Spec      string   `json:"spec,omitempty"`
 }

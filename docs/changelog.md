@@ -89,6 +89,57 @@ worse than a slightly less apt specialist doing the work. Every reroute is
 reported with its reason, so a surprising choice is auditable rather than
 mysterious.
 
+### Added — the proposed plan is editable before you approve it
+
+The gate offered two answers: approve, or replan. Replan throws the whole board
+away and pays for another planning pass to fix one wrong file path or one task
+on the wrong specialist — so in practice people approved a plan they could see
+was slightly wrong and let the run discover it the expensive way.
+
+Edits are the third answer, applied by the harness so what you saw is what runs:
+
+- **tasks** — title, description, role, squad, acceptance, priority, files,
+  dependencies; add tasks, remove tasks;
+- **teams** — a squad's charter, owned paths, acceptance command and staffing;
+  add or remove a squad.
+
+Guarded where a wrong edit would be silent:
+
+- a **role the harness cannot staff** is refused with a reason, because the only
+  symptom of one is a task that never starts. The approval card carries the list
+  of agents this run can actually dispatch, so the UI offers real choices
+  instead of a hardcoded list;
+- **removing a task repairs the dependencies that named it** — a dangling
+  `depends_on` parks every dependent forever waiting on an id that no longer
+  exists, which looks exactly like the harness hanging;
+- a **squad edit that breaks disjoint ownership is refused whole and loudly**,
+  and leaves the live plan untouched. A half-applied org chart is worse than the
+  model's, because the user believes they fixed it. Unrelated task edits made in
+  the same pass still apply;
+- **omitted fields are untouched, cleared fields are cleared.** A UI sending
+  back only what it edited must not blank the rest, and both are expressible.
+
+### Changed — an exhausted task changes hands before it asks a human
+
+When the review ladder ran out of retries the task went to `to_scope` with
+"needs human input or smaller scope" and a red intervention event. On a long run
+that is the notification you see over and over, and it asks for the one thing
+that is hardest to do from a parked task: work out what the agent should have
+done differently.
+
+The agent has already had every retry the ladder allows, so re-running it is the
+loop that produced those notifications. The task is now handed **once** to a
+different specialist — the language corrector, whose entire prompt is "somebody
+else's code is failing, fix it" — carrying the reviewer's findings as context
+and told not to repeat the attempts already made. It keeps its id, files,
+acceptance and squad: this is a change of hands, not new work.
+
+A human is still the last resort, and reassignment declines rather than naming
+an agent that cannot be dispatched — a task nobody can staff would sit in
+`ready_to_dev` forever. A second handoff is not attempted: a third agent
+guessing at work two others could not do is a scoping problem, which is exactly
+what the human is being asked to look at.
+
 ### Fixed — greenfield scaffolding could not scope its own tasks
 
 Found by running the squad path end to end against a fake model, and it is the

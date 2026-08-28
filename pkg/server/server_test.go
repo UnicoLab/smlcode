@@ -1316,3 +1316,90 @@ func TestSPAContentTypes(t *testing.T) {
 		}
 	}
 }
+
+// The approval API has to carry a human's edits through to the harness, or the
+// editable approval card is a UI with nowhere to send its result.
+func TestPlanApproveCarriesEditsThrough(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build the app", &plan.Board{
+		Tasks: []plan.Task{{ID: "T1", Title: "api"}, {ID: "T2", Title: "ui"}},
+	})
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	body := `{"ask_id":"` + ask.ID + `","decision":"approve","edits":{` +
+		`"tasks":[{"id":"T1","title":"serve the todo API","role":"go-worker","files":["cmd/server/main.go"],"files_set":true}],` +
+		`"remove_tasks":["T2"],` +
+		`"squads":[{"id":"backend","acceptance":"go test ./... -race"}]}}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var ans plan.PlanApproveAnswer
+	ok, err := hitl.ReadAnswers(h.Config.SlmDir(), "plan", &ans)
+	if err != nil || !ok {
+		t.Fatalf("answer not stored: ok=%v err=%v", ok, err)
+	}
+	if ans.Edits == nil || ans.Edits.Empty() {
+		t.Fatal("the edits were dropped between the request and the harness")
+	}
+	if len(ans.Edits.Tasks) != 1 || ans.Edits.Tasks[0].ID != "T1" {
+		t.Fatalf("task edits = %+v", ans.Edits.Tasks)
+	}
+	if got := ans.Edits.Tasks[0]; got.Title == nil || *got.Title != "serve the todo API" {
+		t.Errorf("title edit lost: %+v", got.Title)
+	}
+	// files_set is what distinguishes "clear these" from "I did not touch them".
+	if !ans.Edits.Tasks[0].FilesSet || len(ans.Edits.Tasks[0].Files) != 1 {
+		t.Errorf("file edit lost: set=%v files=%v", ans.Edits.Tasks[0].FilesSet, ans.Edits.Tasks[0].Files)
+	}
+	if len(ans.Edits.RemoveTasks) != 1 || ans.Edits.RemoveTasks[0] != "T2" {
+		t.Errorf("removal lost: %v", ans.Edits.RemoveTasks)
+	}
+	if len(ans.Edits.Squads) != 1 || ans.Edits.Squads[0].ID != "backend" {
+		t.Errorf("squad edit lost: %+v", ans.Edits.Squads)
+	}
+}
+
+// A replan discards the board the edits refer to, so accepting them would
+// promise the user a change that is about to be thrown away.
+func TestPlanApproveRejectsEditsOnAReplan(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ask := plan.BuildPlanApproveAsk("build it", &plan.Board{Tasks: []plan.Task{{ID: "T1", Title: "x"}}})
+	if err := hitl.WriteAsk(h.Config.SlmDir(), "plan", ask); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	body := `{"ask_id":"` + ask.ID + `","decision":"replan","edits":{"remove_tasks":["T1"]}}`
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodPost, "/api/plan/approve", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// A plain replan is still fine.
+	rec2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec2, newAPIRequest(http.MethodPost, "/api/plan/approve",
+		strings.NewReader(`{"ask_id":"`+ask.ID+`","decision":"replan"}`)))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("plain replan status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+}

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -285,4 +286,99 @@ func (o *Orchestrator) squadWorkerLookup() func(string) string {
 		}
 		return s.Worker
 	}
+}
+
+// squadsAskView renders the org chart for the approval card.
+func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
+	if o == nil || o.squadPlan == nil || len(o.squadPlan.Squads) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	if board != nil {
+		for _, t := range board.Tasks {
+			if t.Squad != "" {
+				counts[t.Squad]++
+			}
+		}
+	}
+	view := &plan.PlanSquads{
+		Summary:     o.squadPlan.Summary,
+		Integration: o.squadPlan.Integration.Acceptance,
+	}
+	for _, s := range o.squadPlan.Squads {
+		view.Squads = append(view.Squads, plan.PlanSquad{
+			ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: s.Owns,
+			Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer,
+			TaskCount: counts[s.ID],
+		})
+	}
+	for _, in := range o.squadPlan.Contract.Interfaces {
+		view.Interfaces = append(view.Interfaces, plan.PlanInterface{
+			ID: in.ID, Provider: in.Provider, Consumers: in.Consumers, Spec: in.Spec,
+		})
+	}
+	return view
+}
+
+// staffableAgents lists the agent ids this run can actually dispatch.
+//
+// The approval UI offers these as the role choices. A UI with a hardcoded list
+// would let a user pick an agent the harness cannot staff, and the only symptom
+// of that is a task that never starts.
+func (o *Orchestrator) staffableAgents() []string {
+	if o == nil || o.factory == nil {
+		return nil
+	}
+	var out []string
+	for _, spec := range o.factory.AllSpecs() {
+		out = append(out, spec.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// applyPlanEdits applies a human's approval-time edits to the board and the
+// org chart.
+//
+// Task edits and squad edits are applied independently on purpose: a squad edit
+// that fails ownership validation is refused whole (see squads.ApplyEdits), and
+// that must not silently discard the task edits made in the same pass, which
+// are unrelated and individually valid.
+func (o *Orchestrator) applyPlanEdits(board *plan.Board, edits *plan.PlanEdits) {
+	if o == nil || edits == nil || edits.Empty() || board == nil {
+		return
+	}
+	var roleExists func(string) bool
+	if o.factory != nil {
+		roleExists = o.factory.HasRole
+	}
+
+	if problems := plan.ApplyTaskEdits(board, *edits, roleExists); len(problems) > 0 {
+		for _, p := range problems {
+			o.emitWarn("plan", "plan edit: "+p, "")
+		}
+	}
+
+	if len(edits.Squads) > 0 || len(edits.RemoveSquads) > 0 {
+		if probs := squads.ApplyEdits(o.squadPlan, edits.Squads, edits.RemoveSquads); probs.Errors() {
+			// Refused whole. Say so loudly: the user believes they fixed the
+			// org chart, and running the model's version without telling them
+			// is the worst of the three options.
+			for _, p := range probs {
+				o.emitWarn("plan", "squad edit REFUSED: "+p.Message, "")
+			}
+		} else {
+			if err := squads.Save(o.cfg.SlmDir(), *o.squadPlan); err != nil {
+				o.emitWarn("plan", "could not save the edited squad plan: "+err.Error(), "")
+			}
+			o.emit("plan", "squad plan edited: "+o.squadPlan.Summarize(), "")
+			// Ownership moved, so who owns which task may have moved with it.
+			o.routeBoardToSquads(o.squadPlan, board)
+		}
+	}
+
+	// Roles may have changed by hand; re-route only what the user did not pin.
+	o.routeBoardToSpecialists(board)
+	o.persistBoard(board)
+	o.emit("plan", fmt.Sprintf("applied plan edits — %d task(s) on the board", len(board.Tasks)), "")
 }

@@ -266,3 +266,123 @@ func withoutExisting(have, add []plan.Criterion) []plan.Criterion {
 	}
 	return out
 }
+
+// ── Editing the org chart ────────────────────────────────────────────────
+
+// ApplyEdits applies human edits to a squad plan and re-validates it.
+//
+// Re-validation is not optional and not advisory. The one rule squads rest on
+// is disjoint ownership, and a human editing `owns` by hand is at least as
+// likely to overlap two teams as a model is. If the edited plan does not
+// validate, NOTHING is applied: a half-applied org chart is worse than the one
+// the model proposed, because the user believes they fixed it.
+//
+// Returns the problems found. An empty result means the edits were applied.
+func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
+	if p == nil {
+		return Problems{{Severity: SeverityError, Message: "no squad plan to edit"}}
+	}
+	if len(edits) == 0 && len(removes) == 0 {
+		return nil
+	}
+
+	// Work on a copy so a rejected edit set leaves the live plan untouched.
+	next := p.clone()
+
+	gone := map[string]bool{}
+	for _, id := range removes {
+		gone[slug(id)] = true
+	}
+	if len(gone) > 0 {
+		kept := make([]Squad, 0, len(next.Squads))
+		for _, s := range next.Squads {
+			if !gone[s.ID] {
+				kept = append(kept, s)
+			}
+		}
+		next.Squads = kept
+		// An interface whose provider no longer exists is a clause nobody owes.
+		ifaces := make([]Interface, 0, len(next.Contract.Interfaces))
+		for _, in := range next.Contract.Interfaces {
+			if gone[in.Provider] {
+				continue
+			}
+			cons := make([]string, 0, len(in.Consumers))
+			for _, c := range in.Consumers {
+				if !gone[c] {
+					cons = append(cons, c)
+				}
+			}
+			in.Consumers = cons
+			ifaces = append(ifaces, in)
+		}
+		next.Contract.Interfaces = ifaces
+	}
+
+	index := map[string]int{}
+	for i, s := range next.Squads {
+		index[s.ID] = i
+	}
+	for _, e := range edits {
+		id := slug(e.ID)
+		if id == "" {
+			continue
+		}
+		i, ok := index[id]
+		if !ok {
+			if !e.New {
+				return Problems{{Severity: SeverityError, Squad: e.ID,
+					Message: "no such squad in this plan"}}
+			}
+			next.Squads = append(next.Squads, Squad{ID: id})
+			i = len(next.Squads) - 1
+			index[id] = i
+		}
+		s := next.Squads[i]
+		if e.Name != nil {
+			s.Name = strings.TrimSpace(*e.Name)
+		}
+		if e.Charter != nil {
+			s.Charter = strings.TrimSpace(*e.Charter)
+		}
+		if e.Acceptance != nil {
+			s.Acceptance = strings.TrimSpace(*e.Acceptance)
+		}
+		if e.Worker != nil {
+			s.Worker = strings.TrimSpace(*e.Worker)
+		}
+		if e.Reviewer != nil {
+			s.Reviewer = strings.TrimSpace(*e.Reviewer)
+		}
+		if e.OwnsSet {
+			s.Owns = e.Owns
+		}
+		next.Squads[i] = s
+	}
+
+	next.Normalize()
+	if problems := next.Validate(); problems.Errors() {
+		return problems
+	}
+	*p = next
+	return nil
+}
+
+// clone deep-copies a plan so a rejected edit set cannot leave the live one
+// half-modified through a shared backing array.
+func (p *Plan) clone() Plan {
+	out := *p
+	out.Squads = make([]Squad, len(p.Squads))
+	for i, s := range p.Squads {
+		s.Owns = append([]string(nil), s.Owns...)
+		s.Skills = append([]string(nil), s.Skills...)
+		out.Squads[i] = s
+	}
+	out.Contract.Interfaces = make([]Interface, len(p.Contract.Interfaces))
+	for i, in := range p.Contract.Interfaces {
+		in.Consumers = append([]string(nil), in.Consumers...)
+		out.Contract.Interfaces[i] = in
+	}
+	out.Integration.Notes = append([]string(nil), p.Integration.Notes...)
+	return out
+}

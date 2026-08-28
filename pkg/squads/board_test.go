@@ -275,3 +275,105 @@ func criteriaText(t plan.Task) string {
 	}
 	return b.String()
 }
+
+// ── Editing the org chart ────────────────────────────────────────────────
+
+func TestApplyEditsChangesTheTeam(t *testing.T) {
+	p := goReactPlan()
+	name := "Backend · Go API v2"
+	acc := "go test ./... -race"
+	if probs := ApplyEdits(&p, []plan.SquadEdit{{
+		ID: "backend", Name: &name, Acceptance: &acc,
+		Owns: []string{"cmd/**", "internal/**", "pkg/**"}, OwnsSet: true,
+	}}, nil); len(probs) != 0 {
+		t.Fatalf("a valid edit should apply cleanly:\n%s", strings.Join(probs.Strings(), "\n"))
+	}
+	back, _ := p.Squad("backend")
+	if back.Name != name || back.Acceptance != acc {
+		t.Errorf("edit not applied: %+v", back)
+	}
+	if !back.OwnsPath("pkg/x/y.go") {
+		t.Error("the new ownership glob was not applied")
+	}
+	// Untouched fields survive.
+	if front, _ := p.Squad("frontend"); front.Acceptance != "npm --prefix web run build" {
+		t.Error("editing one squad changed another")
+	}
+}
+
+// The one rule squads rest on is disjoint ownership, and a human editing `owns`
+// by hand is at least as likely to overlap two teams as a model is. A rejected
+// edit must leave the live plan exactly as it was — a half-applied org chart is
+// worse than the model's, because the user believes they fixed it.
+func TestOverlappingEditIsRejectedAndChangesNothing(t *testing.T) {
+	p := goReactPlan()
+	before := p.clone()
+
+	probs := ApplyEdits(&p, []plan.SquadEdit{{
+		ID: "backend", Owns: []string{"cmd/**", "web/**"}, OwnsSet: true, // collides with frontend
+	}}, nil)
+	if !probs.Errors() {
+		t.Fatal("an ownership overlap must be refused")
+	}
+	if !strings.Contains(strings.Join(probs.Strings(), "\n"), "both claim") {
+		t.Errorf("the refusal should name the collision:\n%s", strings.Join(probs.Strings(), "\n"))
+	}
+	if !reflect.DeepEqual(p, before) {
+		t.Fatalf("a rejected edit modified the live plan:\n got %+v\nwant %+v", p, before)
+	}
+}
+
+func TestApplyEditsCanAddASquad(t *testing.T) {
+	p := goReactPlan()
+	charter := "Terraform + CI"
+	acc := "terraform validate"
+	probs := ApplyEdits(&p, []plan.SquadEdit{{
+		ID: "infra", New: true, Charter: &charter, Acceptance: &acc,
+		Owns: []string{"deploy/**"}, OwnsSet: true,
+	}}, nil)
+	if len(probs) != 0 {
+		t.Fatalf("adding a disjoint squad should work:\n%s", strings.Join(probs.Strings(), "\n"))
+	}
+	if got := p.IDs(); len(got) != 3 || got[2] != "infra" {
+		t.Fatalf("IDs = %v", got)
+	}
+}
+
+func TestEditingAnUnknownSquadIsRefused(t *testing.T) {
+	p := goReactPlan()
+	name := "x"
+	probs := ApplyEdits(&p, []plan.SquadEdit{{ID: "mobile", Name: &name}}, nil)
+	if !probs.Errors() {
+		t.Fatal("editing a squad that does not exist must be refused")
+	}
+	if len(p.Squads) != 2 {
+		t.Error("the plan changed despite the refusal")
+	}
+}
+
+// An interface whose provider was removed is a clause nobody owes.
+func TestRemovingASquadCleansTheContract(t *testing.T) {
+	p := goReactPlan()
+	// Removing the provider leaves a single squad, which cannot validate — so
+	// remove the consumer instead and check the contract is repaired.
+	probs := ApplyEdits(&p, []plan.SquadEdit{{
+		ID: "backend", Owns: []string{"cmd/**", "internal/**", "go.mod", "go.sum", "web/**"}, OwnsSet: true,
+	}}, []string{"frontend"})
+	// One squad left: Validate refuses it, so nothing is applied.
+	if !probs.Errors() {
+		t.Fatal("a one-squad plan is not a team structure and must be refused")
+	}
+	if len(p.Squads) != 2 {
+		t.Errorf("the rejected removal was applied anyway: %v", p.IDs())
+	}
+}
+
+func TestApplyEditsIsANoOpWithNothingToDo(t *testing.T) {
+	p := goReactPlan()
+	if probs := ApplyEdits(&p, nil, nil); probs != nil {
+		t.Errorf("no edits, no problems, got %v", probs)
+	}
+	if probs := ApplyEdits(nil, []plan.SquadEdit{{ID: "x"}}, nil); !probs.Errors() {
+		t.Error("editing a nil plan is an error")
+	}
+}

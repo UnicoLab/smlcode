@@ -226,6 +226,15 @@ func (o *Orchestrator) runSquadIntegration(ctx context.Context, board *plan.Boar
 	o.emitWarn("integrate", "INTEGRATION FAILED — every squad is green but the assembled "+
 		"application is not. The seam is wrong: "+res.Summary, res.Output)
 	o.recordGate("integration", false, res.Summary)
+	// A defect, on the record. Without this the run summary reads "0 failed"
+	// over a broken application and the Fixes tab shows nothing — the exact
+	// silence that makes a user stop trusting either.
+	o.emitLoop("integrate", LoopEvent{
+		Action:   "integration_failed",
+		Reason:   "every squad is green but the halves do not fit together",
+		Failures: trimFailures([]string{firstSentence(res.Summary)}, 3),
+		From:     "integrate", To: "plan",
+	})
 	o.raiseIntegrationTicket(board, gate.Command, res.Summary, res.Output)
 	return true
 }

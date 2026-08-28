@@ -46,7 +46,7 @@ func (l *repairLedger) note(action string) {
 		return
 	}
 	switch action {
-	case "tester_reject", "placeholder_gaps":
+	case "tester_reject", "placeholder_gaps", "integration_failed":
 		if l.open {
 			// The same defect came back. Still one defect.
 			return

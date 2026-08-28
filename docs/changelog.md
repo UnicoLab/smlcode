@@ -226,6 +226,11 @@ stake and the team that owes them were all discarded. What landed was a generic
 `worker` task with no files, owned by nobody, whose entire context was that a
 gate was red.
 
+It is also on the repair ledger now, so the run summary says `1 defect found,
+none resolved` instead of `0 failed` over a broken application, and the Fixes
+tab shows the seam rather than nothing at all — that silence is what makes a
+user stop trusting both.
+
 It now raises a real correction ticket: the provider owes the clause (a consumer
 built against text it was handed), the evidence rides along, and the implicated
 files are kept to the owing team's lane — if the output named nothing there, the

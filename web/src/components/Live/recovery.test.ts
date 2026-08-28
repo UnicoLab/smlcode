@@ -136,6 +136,23 @@ describe('buildRecovery', () => {
   });
 });
 
+// Every team green and the app broken is a defect like any other, and the one
+// most worth showing: it is the failure the frozen contract exists to prevent.
+describe('a broken seam', () => {
+  it('opens an episode of its own', () => {
+    clock = 0;
+    const got = buildRecovery([
+      loop('integration_failed', 'every squad is green but the halves do not fit together', {
+        failures: ['returned {items:[]}, the contract says a bare array'],
+      }),
+    ]);
+    expect(got).toHaveLength(1);
+    expect(got[0].state).toBe('healing');
+    expect(got[0].steps[0].label).toBe('every team passed, the halves do not fit');
+    expect(got[0].failures).toEqual(['returned {items:[]}, the contract says a bare array']);
+  });
+});
+
 describe('recoveryTally', () => {
   it('counts each state', () => {
     const eps = buildRecovery(fullRecovery());

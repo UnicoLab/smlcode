@@ -55,7 +55,7 @@ interface LoopPayload {
 }
 
 /** Actions that OPEN an episode: something was found wanting. */
-const OPENERS = new Set(['tester_reject', 'placeholder_gaps']);
+const OPENERS = new Set(['tester_reject', 'placeholder_gaps', 'integration_failed']);
 
 /** Actions that CLOSE an episode green. */
 const RESOLVERS = new Set(['resolved', 'objective_met', 'escalate_resolved']);
@@ -66,6 +66,7 @@ const BLOCKERS = new Set(['unresolved', 'continue_pending', 'escalate_pending', 
 /** Actions that are progress worth showing inside an episode. */
 const STEP_LABELS: Record<string, string> = {
   tester_reject: 'the tester rejected the delivery',
+  integration_failed: 'every team passed, the halves do not fit',
   placeholder_gaps: 'placeholders left in the work',
   rewrite: 'raised a correction ticket',
   replan: 'revised the plan',

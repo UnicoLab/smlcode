@@ -120,3 +120,16 @@ func TestTheSummaryCarriesTheRepairLine(t *testing.T) {
 		t.Errorf("repaired summary = %q, want %q", repaired, want)
 	}
 }
+
+// Every squad green and the app broken is a defect like any other. Without it
+// on the ledger the summary reads "0 failed" over a broken application.
+func TestABrokenSeamIsADefect(t *testing.T) {
+	l := fold("integration_failed")
+	if got, want := l.line(), "1 defect found, none resolved"; got != want {
+		t.Errorf("line = %q, want %q", got, want)
+	}
+	fixed := fold("integration_failed", "restaffed_wave", "resolved")
+	if got, want := fixed.line(), "1 defect found and fixed"; got != want {
+		t.Errorf("line = %q, want %q", got, want)
+	}
+}

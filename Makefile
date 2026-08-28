@@ -25,7 +25,7 @@ SYSTEM_PREFIX := $(shell \
 STACKS_DIR := $(CURDIR)/stacks
 stack ?= omlx-local
 
-.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck release-binaries prebuilt install-offline
+.PHONY: help tidy tidy-check web-deps web-check ui-react lint lint-strict build bootstrap ui-check install install-user install-system update uninstall uninstall-system test race race-e2e cover e2e e2e-slm check studio doctor clean docs docs-serve docs-build docs-venv govulncheck release-binaries prebuilt install-offline
 
 # ── Stack management ──
 .PHONY: stack-list stack-show stack-apply stack-edit stack-new
@@ -44,6 +44,7 @@ help: ## Show this help
 	@echo "    make install-system  Install system-wide"
 	@echo "    make test            Run unit tests"
 	@echo "    make race            Run unit tests with the race detector (pkg/...)"
+	@echo "    make race-e2e        Run the integration suite with the race detector (slow)"
 	@echo "    make cover           Run tests with coverage, enforce the floor"
 	@echo "    make e2e             Run e2e tests"
 	@echo "    make e2e-slm         Live-model e2e vs a REAL SLM — needs a running oMLX,"
@@ -332,6 +333,13 @@ test: ## Run unit tests
 
 race: ## Run unit tests under the Go race detector (pkg/... — the engine core)
 	go test -race -count=1 ./pkg/...
+
+# The integration suite races the parts unit tests cannot: a full run has
+# parallel workers and background probes emitting while the run goroutine
+# rewrites session state, and that is where the currentTurn race lived — invisible
+# to `make race` because no pkg/... test starts a whole run.
+race-e2e: ## Run the integration suite under the race detector (slow — ~5 min)
+	go test -race -count=1 -timeout 30m ./test/e2e/
 
 # Coverage floor: today's measured total (see scripts/coverage-check.sh for
 # how the number is derived, and the floor value itself).

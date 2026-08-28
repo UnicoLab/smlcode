@@ -86,7 +86,7 @@ jobs:
   race-and-coverage:
     name: Race detector & coverage floor
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -99,6 +99,12 @@ jobs:
 
       - name: Race tests (pkg/...)
         run: make race
+
+      # A full run has parallel workers and background probes emitting while
+      # the run goroutine rewrites session state. No pkg/... test starts one,
+      # which is why a currentTurn race survived `make race` indefinitely.
+      - name: Race tests (integration suite)
+        run: make race-e2e
 
       - name: Coverage floor
         run: make cover

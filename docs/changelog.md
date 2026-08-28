@@ -307,8 +307,11 @@ probe emits while a run is finishing.
 
 Every read now goes through one locked accessor — including the ones that are
 provably single-goroutine today, because the field having exactly one obvious
-way to read it is what stops the next one being written unlocked. The e2e suite
-runs clean under `-race`.
+way to read it is what stops the next one being written unlocked.
+
+`make race-e2e` closes the gap that let it survive: a full run has parallel
+workers and background probes emitting while the run goroutine rewrites session
+state, and no `pkg/...` test starts one. CI runs it alongside `make race`.
 
 ### Fixed — a scheme-less endpoint broke everything that built a URL from it
 

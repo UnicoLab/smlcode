@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/schema"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // Clarify modes (Claude Code / pi-clarify style).
@@ -532,6 +534,10 @@ func JudgeTaskScopeHeuristics(tasks []Task, prd ScopePRD) ScopeJudgeResult {
 
 // ParseScopeJudgeJSON parses LLM scope-judge output.
 func ParseScopeJudgeJSON(raw string) ScopeJudgeResult {
+	// Model bytes reach the NEXT prompt through the fallbacks below, and a
+	// provider rejects invalid UTF-8 outright. Sanitizing the input once covers
+	// every path out of this function.
+	raw = textutil.Sanitize(raw)
 	raw = strings.TrimSpace(raw)
 	extracted := repairRole(extractJSON(raw), schema.RoleScopeJudge)
 	var r ScopeJudgeResult

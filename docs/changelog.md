@@ -295,6 +295,26 @@ A defect that comes back is one defect with another attempt, folded by the same
 rule the Fixes tab uses — the summary and the panel must never disagree about
 how many things went wrong.
 
+### Fixed — invalid UTF-8 in a model answer poisoned the next prompt
+
+Five parsers echo raw model output into their result whenever JSON parsing
+fails. That fallback is deliberate — it is what keeps a malformed answer useful
+— but it means the model's own bytes reach the *next* prompt, and a stray
+invalid sequence there is not cosmetic: providers reject invalid UTF-8 outright,
+turning one bad answer into a failed request the user cannot explain, and where
+it is accepted it tokenizes into replacement-character byte fallbacks, which is
+exactly the waste `pkg/context/textutil` exists to prevent.
+
+`textutil.Sanitize` drops invalid sequences (rather than replacing them with
+U+FFFD, which is a visible artifact a small model will try to reason about), and
+the five parsers sanitize their input once, which covers every path out of them.
+
+Found by a hostile-input sweep over every model-output parser: truncated JSON,
+prose-wrapped JSON, right-shape-wrong-types, another contract's answer, 200-deep
+nesting, 100KB strings and invalid encodings. None of them panicked, which is
+the property that most needed proving — the input is the one thing the harness
+does not control, and a parser panic takes the run down.
+
 ### Fixed — a data race in the event path, with a nil dereference inside it
 
 `emitFullDataL` read `o.currentTurn` without the lock while `Run` wrote it under

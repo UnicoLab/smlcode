@@ -104,3 +104,47 @@ func TestClipRunes(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// ── Sanitize ─────────────────────────────────────────────────────────────
+//
+// The pkg/plan parsers echo raw model output into their result whenever JSON
+// parsing fails, so the model's own bytes reach the next prompt by design. A
+// provider rejects invalid UTF-8 outright, which turns one stray byte into a
+// failed request the user cannot explain.
+
+func TestSanitizeLeavesValidTextExactlyAlone(t *testing.T) {
+	for _, s := range []string{
+		"", "plain ascii", "accented café", "emoji 🚀 works",
+		"{\"summary\":\"json\"}", "tabs\tand\nnewlines",
+	} {
+		if got := Sanitize(s); got != s {
+			t.Errorf("Sanitize(%q) = %q, want it untouched", s, got)
+		}
+	}
+}
+
+func TestSanitizeDropsInvalidSequences(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"\xff\xfe", ""},
+		{"before\xffafter", "beforeafter"},
+		{"\xc3(", "("},                       // truncated two-byte sequence
+		{"ok \xed\xa0\x80 done", "ok  done"}, // lone surrogate
+	} {
+		got := Sanitize(tc.in)
+		if got != tc.want {
+			t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("Sanitize(%q) returned invalid UTF-8: %q", tc.in, got)
+		}
+	}
+}
+
+// Dropped rather than replaced with U+FFFD: a replacement character is a
+// visible artifact a small model will try to reason about, and the bytes
+// carried no meaning to begin with.
+func TestSanitizeLeavesNoReplacementCharacters(t *testing.T) {
+	if got := Sanitize("a\xffb"); strings.ContainsRune(got, '�') {
+		t.Errorf("Sanitize introduced a replacement character: %q", got)
+	}
+}

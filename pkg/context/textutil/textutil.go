@@ -117,3 +117,23 @@ func HeadTail(s string, head, tail int, marker string) string {
 	}
 	return h + marker + t
 }
+
+// Sanitize drops invalid UTF-8 sequences, leaving valid text untouched.
+//
+// The parsers in pkg/plan echo raw model output into their result whenever JSON
+// parsing fails — that fallback is what keeps a malformed answer useful — so
+// the model's own bytes reach the NEXT prompt by design. A stray invalid byte
+// there is not cosmetic: providers reject invalid UTF-8 outright, turning one
+// bad model answer into a failed request the user cannot explain, and where it
+// is accepted it tokenizes into replacement-character byte fallbacks, which is
+// the waste this package exists to prevent.
+//
+// Sequences are dropped rather than replaced with U+FFFD: a replacement
+// character is a visible artifact a small model will try to reason about, and
+// the bytes carried no meaning to begin with.
+func Sanitize(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "")
+}

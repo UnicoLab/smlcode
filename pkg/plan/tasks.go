@@ -10,6 +10,8 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/repair"
 	"github.com/UnicoLab/slmcode/pkg/schema"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // repairRole runs the schema-aware repair ladder for a contract role and falls
@@ -428,6 +430,10 @@ func escapePipe(s string) string {
 
 // ParsePlanJSON extracts a Plan from model output (JSON or fenced JSON).
 func ParsePlanJSON(raw string) (Plan, error) {
+	// Model bytes reach the NEXT prompt through the fallbacks below, and a
+	// provider rejects invalid UTF-8 outright. Sanitizing the input once covers
+	// every path out of this function.
+	raw = textutil.Sanitize(raw)
 	original := strings.TrimSpace(raw)
 	raw = repairRole(extractJSON(raw), schema.RolePlan)
 	// Flexible decode: SLMs often emit steps as objects instead of strings.
@@ -627,6 +633,10 @@ type TesterResult struct {
 // ParseTesterJSON extracts a tester result. Empty, malformed, or ambiguous
 // finalize output is ALWAYS treated as failed — never a silent pass.
 func ParseTesterJSON(raw string) TesterResult {
+	// Model bytes reach the NEXT prompt through the fallbacks below, and a
+	// provider rejects invalid UTF-8 outright. Sanitizing the input once covers
+	// every path out of this function.
+	raw = textutil.Sanitize(raw)
 	if strings.TrimSpace(raw) == "" {
 		return TesterResult{
 			Passed:   false,
@@ -827,6 +837,10 @@ var (
 // `"approved": true` with no explicit `"approved": false` anywhere — a verdict
 // the model actually stated rather than one inferred from prose.
 func ParseReviewJSON(raw string) ReviewResult {
+	// Model bytes reach the NEXT prompt through the fallbacks below, and a
+	// provider rejects invalid UTF-8 outright. Sanitizing the input once covers
+	// every path out of this function.
+	raw = textutil.Sanitize(raw)
 	extracted := repairRole(verdictJSON(raw), schema.RoleReview)
 	// The verdict key must be PRESENT, not merely absent-and-therefore-false.
 	// extractJSON happily lifts `{"path":"main.go"}` out of an echoed tool call,

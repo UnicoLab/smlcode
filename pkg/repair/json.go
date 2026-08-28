@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 )
 
 // ExtractJSON returns the first balanced JSON object/array in s, or "".
@@ -88,7 +90,12 @@ func balance(s string) string {
 // bare keys, truncated closing braces, python bools, markdown fences, and
 // extraneous text before/after the JSON object.
 func RepairJSON(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
+	// Sanitize first, and once. What comes out of here becomes a prompt or —
+	// through RepairToolArgs — a TOOL CALL's arguments, so an invalid byte
+	// reaches a provider that rejects it outright or a tool that writes it to
+	// disk. Repair is the last thing between a bad answer and a usable one, so
+	// it is the right place to make the bytes clean rather than the tenth.
+	raw = textutil.Sanitize(strings.TrimSpace(raw))
 	if raw == "" {
 		return "", fmt.Errorf("empty json")
 	}
@@ -177,7 +184,8 @@ func RepairToolArgs(args string) (string, error) {
 	fixed, err := RepairJSON(args)
 	if err != nil {
 		// Last resort: wrap bare key=value prose into an object when it looks like path edits.
-		if m := pathEditFallback(args); m != "" {
+		// The fallback bypasses RepairJSON, so it sanitizes for itself.
+		if m := pathEditFallback(textutil.Sanitize(args)); m != "" {
 			return m, nil
 		}
 		return "", err

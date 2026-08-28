@@ -309,6 +309,12 @@ exactly the waste `pkg/context/textutil` exists to prevent.
 U+FFFD, which is a visible artifact a small model will try to reason about), and
 the five parsers sanitize their input once, which covers every path out of them.
 
+The repair layer sanitizes too, and it is the more consequential of the two:
+`RepairToolArgs` output becomes a **tool call's arguments**, so an invalid byte
+reaches a tool that writes it to disk rather than merely a prompt. Repair is the
+last thing between a bad answer and a usable one, which makes it the right place
+to clean the bytes rather than the tenth.
+
 Found by a hostile-input sweep over every model-output parser: truncated JSON,
 prose-wrapped JSON, right-shape-wrong-types, another contract's answer, 200-deep
 nesting, 100KB strings and invalid encodings. None of them panicked, which is

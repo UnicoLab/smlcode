@@ -340,6 +340,19 @@ The overlap check is deliberately conservative. A wrong "these overlap" costs
 the manager one more specific glob; a wrong "these are disjoint" costs a lost
 edit — the bias is not symmetric and neither is the rule.
 
+The fence is per wave, and a task with no squad no longer drops it for
+everybody. An unassigned task's **declared files** say which lanes it needs: a
+seam task naming `web/src/api.ts` opens the frontend's lane and nothing else, a
+task naming only `README.md` opens nothing, and every other team stays fenced.
+That matters more than it sounds — a task is unassigned whenever it straddles
+two teams *and* whenever nothing owns its files at all, so one `Makefile` task
+in a wave used to unfence both halves.
+
+The one case that still stands down completely is a task that declared **no
+files**. Declared files are a task's scope; one with no scope could write
+anywhere, and fencing it would block work the harness cannot show is out of
+bounds.
+
 Other findings are **warnings** (the run continues): a squad with no acceptance
 command, an interface with no spec, a plan with no integration command.
 

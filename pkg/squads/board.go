@@ -105,20 +105,38 @@ func ForeignPatterns(p *Plan, wave []plan.Task) []string {
 	if p == nil || len(p.Squads) == 0 || len(wave) == 0 {
 		return nil
 	}
+	// A squad is "present" when the wave contains work that may legitimately
+	// write in its lane, and a present squad's paths are never denied.
 	present := map[string]bool{}
-	unassigned := false
 	for _, t := range wave {
-		if t.Squad == "" {
-			// An unassigned task has no declared lane, so no squad's paths can
-			// safely be denied on its behalf: the cross-squad seam tasks are
-			// exactly the ones that legitimately touch both sides.
-			unassigned = true
-			break
+		if t.Squad != "" {
+			present[t.Squad] = true
+			continue
 		}
-		present[t.Squad] = true
-	}
-	if unassigned {
-		return nil
+		// An unassigned task has no declared lane. It used to disable the deny
+		// list for the WHOLE wave, which dropped ownership enforcement far more
+		// often than it looks: a task is unassigned whenever it straddles two
+		// teams AND whenever nothing owns its files at all — a README, a
+		// Makefile, a top-level config. One such task in a wave and neither
+		// team was fenced from the other any more.
+		//
+		// Its declared files say which lanes it actually needs. A seam task
+		// naming `web/src/api.ts` opens the frontend's lane and nothing else; a
+		// task naming only `README.md` opens nothing, and both teams stay
+		// fenced.
+		//
+		// A task that declared NO files is the one case where the old blanket
+		// stand-down is still right: declared files are a task's scope, and one
+		// with no scope could write anywhere. Fencing it would block work the
+		// harness cannot show is out of bounds, so nothing is denied.
+		if len(t.Files) == 0 {
+			return nil
+		}
+		for _, f := range t.Files {
+			if owner, ok := p.Owner(f); ok {
+				present[owner] = true
+			}
+		}
 	}
 	var out []string
 	for _, s := range p.Squads {

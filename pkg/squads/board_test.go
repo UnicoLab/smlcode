@@ -119,9 +119,9 @@ func TestForeignPatternsAllowsAMixedWaveToWorkOnBothSides(t *testing.T) {
 	}
 }
 
-// The cross-squad seam tasks legitimately touch both sides, so no squad's paths
-// can be denied on their behalf.
-func TestForeignPatternsStandsDownForUnassignedWork(t *testing.T) {
+// Declared files are a task's scope. A task with none could write anywhere, so
+// fencing it would block work the harness cannot show is out of bounds.
+func TestForeignPatternsStandsDownForUnscopedWork(t *testing.T) {
 	p := goReactPlan()
 	cases := [][]plan.Task{
 		{{ID: "T4", Squad: ""}},
@@ -131,6 +131,53 @@ func TestForeignPatternsStandsDownForUnassignedWork(t *testing.T) {
 		if got := ForeignPatterns(&p, wave); len(got) != 0 {
 			t.Errorf("case %d: expected no protections, got %v", i, got)
 		}
+	}
+}
+
+// An unassigned task used to disable the fence for the WHOLE wave, which
+// dropped ownership enforcement far more often than it looks: a task is
+// unassigned whenever it straddles two teams AND whenever nothing owns its
+// files at all — a README, a Makefile, a top-level config. One of those in a
+// wave and neither team was fenced from the other any more.
+func TestUnownedWorkDoesNotUnfenceTheTeams(t *testing.T) {
+	p := goReactPlan()
+	wave := []plan.Task{
+		{ID: "T1", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		{ID: "T4", Squad: "", Files: []string{"README.md", "Makefile"}},
+	}
+	got := ForeignPatterns(&p, wave)
+	if len(got) == 0 {
+		t.Fatal("a task touching nobody's lane must not open every lane")
+	}
+	if !reflect.DeepEqual(got, []string{"web/**"}) {
+		t.Errorf("ForeignPatterns = %v, want the frontend still fenced", got)
+	}
+}
+
+// A seam task opens exactly the lanes its declared files need — no more.
+func TestASeamTaskOpensOnlyTheLanesItNames(t *testing.T) {
+	p := goReactPlan()
+	wave := []plan.Task{
+		{ID: "T1", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		{ID: "T4", Squad: "", Files: []string{"web/src/api.ts", "README.md"}},
+	}
+	if got := ForeignPatterns(&p, wave); len(got) != 0 {
+		t.Errorf("ForeignPatterns = %v, want the frontend's lane opened for the seam task", got)
+	}
+
+	// A three-team plan: the seam task naming one other lane must not open the
+	// third.
+	p3 := goReactPlan()
+	p3.Squads = append(p3.Squads, Squad{
+		ID: "data", Owns: []string{"etl/**"}, Acceptance: "pytest", Worker: "python-worker",
+	})
+	p3.Normalize()
+	wave3 := []plan.Task{
+		{ID: "T1", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		{ID: "T4", Squad: "", Files: []string{"web/src/api.ts"}},
+	}
+	if got := ForeignPatterns(&p3, wave3); !reflect.DeepEqual(got, []string{"etl/**"}) {
+		t.Errorf("ForeignPatterns = %v, want the untouched third team still fenced", got)
 	}
 }
 

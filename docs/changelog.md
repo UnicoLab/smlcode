@@ -215,6 +215,22 @@ list, because that list is widened by the very task matches the check exists to
 catch: computing from it would let the contamination declare the defect a
 straddle and disable the check exactly when it is needed.
 
+### Fixed — one unassigned task unfenced both teams
+
+`ForeignPatterns` stood down entirely as soon as a wave contained any task with
+no squad, so neither team was fenced from the other. That dropped ownership
+enforcement far more often than it looks: a task is unassigned whenever it
+straddles two teams *and* whenever nothing owns its files at all — a README, a
+Makefile, a top-level config. One of those in a wave and the deny list went
+away for everybody in it.
+
+An unassigned task's declared files now say which lanes it actually needs. A
+seam task naming `web/src/api.ts` opens the frontend's lane and nothing else; a
+task naming only `README.md` opens nothing and both teams stay fenced; a third
+team nobody named stays fenced regardless. A task that declared *no* files still
+stands the fence down completely — declared files are a task's scope, and one
+with no scope could write anywhere.
+
 ### Fixed — an integration failure raised the worst ticket in the harness
 
 Every squad green and the assembled application broken is the defect the whole

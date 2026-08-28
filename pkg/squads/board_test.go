@@ -156,3 +156,122 @@ func TestBriefForOnlyBriefsAssignedTasks(t *testing.T) {
 		t.Errorf("no plan, no brief, got %q", got)
 	}
 }
+
+// ── Contract enforcement ─────────────────────────────────────────────────
+//
+// Without criteria the contract is present in the prompt and absent from the
+// gates: the seam is stated and then nothing checks it.
+
+func TestAttachContractPutsTheSeamInFrontOfTheReviewer(t *testing.T) {
+	p := goReactPlan()
+	tasks := []plan.Task{
+		{ID: "T1", Role: "go-worker", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		{ID: "T2", Role: "react-worker", Squad: "frontend", Files: []string{"web/src/App.tsx"}},
+	}
+	if n := AttachContract(&p, tasks); n != 2 {
+		t.Fatalf("both implementers should carry the contract, got %d", n)
+	}
+
+	// The provider MATCHES the spec — another team is building against it.
+	back := strings.ToLower(criteriaText(tasks[0]))
+	if !strings.Contains(back, "matches the frozen contract for get /api/todos") {
+		t.Errorf("backend criteria:\n%s", criteriaText(tasks[0]))
+	}
+	if !strings.Contains(back, "building against this right now") {
+		t.Errorf("the provider should be told the obligation is live:\n%s", criteriaText(tasks[0]))
+	}
+
+	// The consumer BUILDS AGAINST it and must not be failed for the provider
+	// not having written it yet.
+	front := strings.ToLower(criteriaText(tasks[1]))
+	if !strings.Contains(front, "calls get /api/todos") {
+		t.Errorf("frontend criteria:\n%s", criteriaText(tasks[1]))
+	}
+	if !strings.Contains(front, "whether or not it exists on disk yet") {
+		t.Errorf("a consumer must not be failed for being on time:\n%s", criteriaText(tasks[1]))
+	}
+
+	// Blocking: a drifted seam is not advisory.
+	for _, task := range tasks {
+		for _, c := range task.Criteria {
+			if !c.Blocking() {
+				t.Errorf("%s: contract criterion %q is not blocking", task.ID, c.Text)
+			}
+		}
+	}
+}
+
+// A task's own conditions have first claim on the criteria budget: a worker
+// whose whole list is contract clauses has been told what the seam is and
+// nothing about its job.
+func TestTaskOwnCriteriaKeepTheirPlace(t *testing.T) {
+	p := goReactPlan()
+	own := []plan.Criterion{
+		{ID: "AC1", Text: "the store persists a todo", Priority: plan.PriorityMust},
+		{ID: "AC2", Text: "delete is idempotent", Priority: plan.PriorityMust},
+	}
+	tasks := []plan.Task{{ID: "T1", Role: "go-worker", Squad: "backend", Criteria: own}}
+	AttachContract(&p, tasks)
+
+	if len(tasks[0].Criteria) < 3 {
+		t.Fatalf("expected the task's own criteria plus contract clauses, got %d", len(tasks[0].Criteria))
+	}
+	if tasks[0].Criteria[0].Text != "the store persists a todo" ||
+		tasks[0].Criteria[1].Text != "delete is idempotent" {
+		t.Errorf("the task's own conditions must come first:\n%s", criteriaText(tasks[0]))
+	}
+	if len(tasks[0].Criteria) > plan.MaxCriteria {
+		t.Errorf("criteria budget blown: %d > %d", len(tasks[0].Criteria), plan.MaxCriteria)
+	}
+}
+
+func TestAttachContractSkipsWorkItDoesNotApplyTo(t *testing.T) {
+	p := goReactPlan()
+	tasks := []plan.Task{
+		// A tester runs the acceptance; it does not re-assert the contract.
+		{ID: "T1", Role: plan.RoleTester, Squad: "backend"},
+		{ID: "T2", Role: plan.RoleReviewer, Squad: "backend"},
+		// The seam itself is unassigned, so there is no side to hold it to.
+		{ID: "T3", Role: "go-worker", Squad: ""},
+	}
+	if n := AttachContract(&p, tasks); n != 0 {
+		t.Fatalf("nothing here should carry contract criteria, got %d", n)
+	}
+	for _, task := range tasks {
+		if len(task.Criteria) != 0 {
+			t.Errorf("%s picked up %d criteria", task.ID, len(task.Criteria))
+		}
+	}
+}
+
+func TestAttachContractIsANoOpWithoutInterfaces(t *testing.T) {
+	p := goReactPlan()
+	p.Contract.Interfaces = nil
+	tasks := []plan.Task{{ID: "T1", Role: "go-worker", Squad: "backend"}}
+	if n := AttachContract(&p, tasks); n != 0 {
+		t.Errorf("no interfaces, no criteria, got %d", n)
+	}
+	if n := AttachContract(nil, tasks); n != 0 {
+		t.Errorf("no plan, no criteria, got %d", n)
+	}
+}
+
+// Idempotent: routing runs once, but a resumed run must not double the clauses.
+func TestAttachContractIsIdempotent(t *testing.T) {
+	p := goReactPlan()
+	tasks := []plan.Task{{ID: "T1", Role: "go-worker", Squad: "backend"}}
+	AttachContract(&p, tasks)
+	first := len(tasks[0].Criteria)
+	AttachContract(&p, tasks)
+	if got := len(tasks[0].Criteria); got != first {
+		t.Fatalf("a second attach added clauses: %d -> %d", first, got)
+	}
+}
+
+func criteriaText(t plan.Task) string {
+	var b strings.Builder
+	for _, c := range t.Criteria {
+		b.WriteString("- [" + c.Priority + "] " + c.Text + "\n")
+	}
+	return b.String()
+}

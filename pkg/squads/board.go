@@ -138,3 +138,131 @@ func BriefFor(p *Plan, t plan.Task) string {
 	}
 	return p.Brief(t.Squad)
 }
+
+// ── Contract enforcement ─────────────────────────────────────────────────
+
+// maxContractCriteria bounds how many contract clauses one task carries.
+//
+// plan.MaxCriteria caps a task at eight, and a task's OWN acceptance conditions
+// have first claim on that budget: a worker whose criteria list is entirely
+// contract clauses has been told what the seam is and nothing about its job.
+const maxContractCriteria = 3
+
+// AttachContract turns the frozen interfaces into verifiable acceptance
+// criteria on the tasks that owe or consume them.
+//
+// Without this the contract is present in the prompt and absent from the gates:
+// the seam is stated, and then nothing checks it. A worker that drifts from the
+// spec produces a task the reviewer approves — it did what its description
+// said — and an integration step that fails much later with no obvious owner.
+//
+// As criteria they are judged per task, by the reviewer, at the moment the work
+// is done. The wording differs by side because the obligations differ: a
+// provider must MATCH the spec, a consumer must BUILD AGAINST it and may not
+// have anything to call yet.
+//
+// Returns how many tasks were given at least one contract criterion.
+func AttachContract(p *Plan, tasks []plan.Task) int {
+	if p == nil || len(p.Contract.Interfaces) == 0 {
+		return 0
+	}
+	touched := 0
+	for i := range tasks {
+		squad := strings.TrimSpace(tasks[i].Squad)
+		if squad == "" {
+			continue
+		}
+		// Only implementers are judged against the seam. A tester task's job is
+		// to run the acceptance, not to re-assert the contract.
+		if !isImplementer(tasks[i].Role) {
+			continue
+		}
+		provides, consumes := p.interfacesFor(squad)
+		added := contractCriteria(provides, consumes)
+		// Idempotent: routing runs once per run, but a RESUMED run replays it
+		// over a board that already carries these clauses, and duplicates would
+		// eat the criteria budget a clause at a time until the task's own
+		// conditions were pushed out entirely.
+		added = withoutExisting(tasks[i].Criteria, added)
+		if len(added) == 0 {
+			continue
+		}
+		// The task's own conditions keep their place at the head of the list;
+		// plan.NormalizeCriteria then caps the whole thing at MaxCriteria, so
+		// an over-full task drops contract clauses rather than its own work.
+		tasks[i].Criteria = plan.NormalizeCriteria(append(tasks[i].Criteria, added...))
+		touched++
+	}
+	return touched
+}
+
+// contractCriteria renders the clauses for one squad, provider side first.
+func contractCriteria(provides, consumes []Interface) []plan.Criterion {
+	out := make([]plan.Criterion, 0, maxContractCriteria)
+	for _, in := range provides {
+		if len(out) >= maxContractCriteria {
+			break
+		}
+		out = append(out, plan.Criterion{
+			Text: "Matches the frozen contract for " + in.ID + specSuffix(in) +
+				". Another squad is building against this right now.",
+			Priority: plan.PriorityMust,
+		})
+	}
+	for _, in := range consumes {
+		if len(out) >= maxContractCriteria {
+			break
+		}
+		out = append(out, plan.Criterion{
+			// A consumer criterion must not demand a live endpoint: the
+			// provider may not have written it yet, and failing the consumer
+			// for that would penalize it for being on time.
+			Text: "Calls " + in.ID + specSuffix(in) +
+				" exactly as the frozen contract states, whether or not it exists on disk yet.",
+			Priority: plan.PriorityMust,
+		})
+	}
+	return out
+}
+
+func specSuffix(in Interface) string {
+	spec := strings.TrimSpace(strings.ReplaceAll(in.Spec, "\n", " "))
+	if spec == "" {
+		return ""
+	}
+	return " (" + spec + ")"
+}
+
+// isImplementer reports whether a role writes code.
+func isImplementer(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch role {
+	case "", plan.RoleWorker, plan.RoleCorrector:
+		return true
+	}
+	if i := strings.LastIndex(role, "-"); i >= 0 {
+		switch role[i+1:] {
+		case plan.RoleWorker, plan.RoleCorrector:
+			return true
+		}
+	}
+	return false
+}
+
+// withoutExisting drops clauses the task already carries, matched on text.
+func withoutExisting(have, add []plan.Criterion) []plan.Criterion {
+	if len(have) == 0 {
+		return add
+	}
+	seen := make(map[string]bool, len(have))
+	for _, c := range have {
+		seen[strings.TrimSpace(c.Text)] = true
+	}
+	out := make([]plan.Criterion, 0, len(add))
+	for _, c := range add {
+		if !seen[strings.TrimSpace(c.Text)] {
+			out = append(out, c)
+		}
+	}
+	return out
+}

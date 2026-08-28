@@ -140,6 +140,15 @@ func (o *Orchestrator) routeBoardToSquads(p *squads.Plan, board *plan.Board) {
 	for _, id := range rep.Idle {
 		o.emitWarn("charter", "squad "+id+" was assembled but has no work", "")
 	}
+
+	// Put the frozen seam in front of the reviewer, not just in the prompt.
+	// Without this the contract is stated and then nothing checks it: a worker
+	// that drifts from the spec produces a task the reviewer approves — it did
+	// what its description said — and an integration failure much later with no
+	// obvious owner.
+	if n := squads.AttachContract(p, board.Tasks); n > 0 {
+		o.emit("charter", fmt.Sprintf("contract attached as acceptance criteria on %d task(s)", n), "")
+	}
 }
 
 // reportSquadProgress emits per-squad state and any cross-team stall.

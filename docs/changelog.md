@@ -49,6 +49,22 @@ owes the other teams. It is useless without all three.
   the only thing it will never do is activate a plan it could not validate.
   Full guide: [Squads](squads.md).
 
+### Added — the frozen contract is checked, not just stated
+
+Each interface is attached to the tasks that owe or consume it as a **blocking
+acceptance criterion**, so the seam is judged per task by the reviewer at the
+moment the work is done. Without it the contract lived in the prompt and nothing
+checked it: a worker that drifted from the spec produced a task the reviewer
+approved — it did what its description said — and an integration failure much
+later with no obvious owner.
+
+The wording differs by side because the obligations do. A provider must *match*
+the spec; a consumer must *call it exactly as stated, whether or not it exists on
+disk yet* — failing a consumer because its provider has not finished would
+penalize it for being on time. The task's own conditions keep their place at the
+head of the criteria list, so no worker is handed a list that is all seam and no
+job.
+
 ### Added — per-task specialist routing
 
 The composer picks ONE language specialist per run. That is correct for a

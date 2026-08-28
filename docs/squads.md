@@ -86,10 +86,51 @@ so the seam has to be a file they both read. It is also the cheapest place for a
 human to intervene: fixing one line here is worth more than reviewing either
 half afterwards.
 
-### 3. Tasks are routed to owners
+### 3. Tasks are routed to owners — and to specialists
 
-Each task is stamped with the squad that owns its files. Two kinds stay
-**deliberately unassigned**:
+Each task is stamped with the squad that owns its files, **and staffed with the
+specialist its own files call for**. The composer picks one language specialist
+per run; that is right for a single-language repo and wrong for every task on
+the other side of a mixed one.
+
+```text
+split  routed 5 task(s) to language specialists: go-worker=3 react-worker=2
+split  assigned react-worker — files are react
+```
+
+Precedence: a registered specialist the task already names → a non-implementer
+role left alone → **the language of its own files** → its squad's preferred
+worker → the run default → the generic worker. Files outrank the squad label for
+the same reason the repository outranks a word in the query: an extension is a
+fact, a label can be stale. The reviewer and tester are matched the same way — a
+reviewer judging TypeScript with a Go reviewer's prompt reads the diff for the
+wrong hazards.
+
+### 3b. The contract becomes acceptance criteria
+
+The interfaces are attached to the tasks that owe or consume them, as blocking
+criteria:
+
+```text
+charter  contract attached as acceptance criteria on 5 task(s)
+```
+
+- a **provider** must *match* the frozen spec — another squad is building
+  against it right now;
+- a **consumer** must *call it exactly as stated, whether or not it exists on
+  disk yet* — failing it because the provider has not finished would penalize it
+  for being on time.
+
+Without this the contract is in the prompt and absent from the gates: a worker
+that drifts from the spec produces a task the reviewer approves — it did what
+its description said — and an integration failure much later with no owner.
+
+The task's own conditions keep their place at the head of the list, so a worker
+is never handed a criteria list that is all seam and no job.
+
+### 3c. Which tasks stay unassigned
+
+Two kinds of task stay **deliberately unassigned**:
 
 - **Cross-squad tasks** (the seam itself) — handing `cmd/server/main.go` +
   `web/vite.config.ts` to "frontend" is exactly how a frontend task acquires
@@ -121,6 +162,26 @@ execute  frontend is waiting on backend to deliver "GET /api/todos"
 
 A consumer blocked on an undelivered interface is not something a reviewer can
 fix, and retrying its tasks forever is the wrong response.
+
+---
+
+## When a gate rejects the work 🎫
+
+A failing tester or reviewer does not produce a red notification and a generic
+"fix it" task. It produces a **correction ticket**:
+
+- routed to the specialist whose language actually broke — a TypeScript compile
+  error handed to the plain worker gets a plain worker's guess;
+- carrying the evidence: what broke, the command that found it, the tail of that
+  command's output, the implicated files, and an acceptance that names the
+  command rather than saying "the tester passes";
+- kept with the squad that owns the files, so a backend regression does not land
+  on the frontend's board;
+- **deduplicated** — the same unresolved defect reopens its existing ticket
+  instead of stacking a new one on every gate run, which is what made the board
+  look like it was losing ground.
+
+A repeat correction says which attempt it is and not to repeat the last one.
 
 ---
 

@@ -321,7 +321,36 @@ func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
 		t.Errorf("both squads should own work, got %v (tasks: %s)", bySquad, taskSummary(&res.Board))
 	}
 
-	// 5. The workers were briefed on their own lane and the other team's.
+	// 5. The frozen seam reached the GATES, not just the prompt: each half
+	// carries the contract as a blocking acceptance criterion.
+	byID := map[string]plan.Task{}
+	for _, task := range res.Board.Tasks {
+		byID[task.ID] = task
+	}
+	for id, want := range map[string]string{
+		"T1": "Matches the frozen contract for GET /api/todos",
+		"T2": "Calls GET /api/todos",
+	} {
+		task, ok := byID[id]
+		if !ok {
+			t.Errorf("%s is missing from the board", id)
+			continue
+		}
+		found := false
+		for _, c := range task.Criteria {
+			if strings.Contains(c.Text, want) {
+				found = true
+				if !c.Blocking() {
+					t.Errorf("%s: the contract criterion is not blocking", id)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s carries no contract criterion (%d criteria): %v", id, len(task.Criteria), task.Criteria)
+		}
+	}
+
+	// 6. The workers were briefed on their own lane and the other team's.
 	joined := strings.Join(model.promptsFor("worker"), "\n---\n")
 	for _, want := range []string{"Your squad", "do not edit"} {
 		if !strings.Contains(joined, want) {

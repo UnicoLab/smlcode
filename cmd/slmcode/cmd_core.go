@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/UnicoLab/slmcode/pkg/autoconfig"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -107,6 +108,16 @@ Run ` + "`slmcode config show --all`" + ` to see the full effective surface.`,
 				ws.Config.Model, ws.Config.APIKey, 1500*time.Millisecond)
 			if probe.State == cli.ProbeDown {
 				fmt.Println(cli.Warn("no model server answered at " + ws.Config.Endpoint))
+				// This is the moment auto-configuration is worth the most and
+				// costs the least: the config was written seconds ago from
+				// defaults, so there is nothing of the user's to protect, and
+				// the alternative is sending somebody who just scaffolded a
+				// workspace away to run two more commands. A server IS often
+				// running — on a different port from the default.
+				if adopted := adoptDiscoveredServer(cmd.Context(), ws.Config); adopted {
+					fmt.Println(cli.Info("next: slmcode run -v \"…\"  — agents fill context, plan, and tasks"))
+					return nil
+				}
 				if probe.Remedy != "" {
 					fmt.Println(cli.Dim("  " + probe.Remedy))
 				}
@@ -901,4 +912,52 @@ func boardProgress(slmDir string) func() (int, int) {
 // file that `make ui-react` then overwrote.
 func studioUIIsPlaceholder(uiFS fs.FS) bool {
 	return !server.UIIsBuilt(uiFS)
+}
+
+// adoptDiscoveredServer looks for a model server and writes what it finds.
+//
+// Only ever called when the configured endpoint did NOT answer, so it cannot
+// move a working setup. It also stands down when the user pinned an endpoint
+// themselves: `slmcode init --endpoint X` is a statement about where the server
+// is, and quietly configuring Y instead would be the tool arguing with them.
+//
+// Reports what it did either way. A command that silently rewrites the config
+// it just told you about is one you have to re-read afterwards.
+func adoptDiscoveredServer(ctx context.Context, cfg *config.Config) bool {
+	if flagEndpoint != "" || strings.TrimSpace(os.Getenv("SLMCODE_ENDPOINT")) != "" {
+		return false
+	}
+	fmt.Println(cli.Dim("  looking for one elsewhere…"))
+
+	ctx, cancel := context.WithTimeout(ctx, autoconfig.DefaultProbeTimeout+5*time.Second)
+	defer cancel()
+	res := autoconfig.Discover(ctx, cfg, os.Getenv,
+		autoconfig.HTTPProber(autoconfig.DefaultProbeTimeout))
+	if !res.Found {
+		// More specific than the generic remedy: it distinguishes nothing
+		// listening from a server with no models from a server whose models
+		// cannot write code, and those have different fixes.
+		fmt.Println(cli.Dim("  " + res.NothingFound()))
+		return false
+	}
+
+	choice := res.Choice
+	cfg.Provider = choice.Provider
+	cfg.Endpoint = choice.Endpoint
+	cfg.Model = choice.Model
+	cfg.ActiveStack = ""
+	cfg.Normalize()
+	saveKeys := []string{"provider", "model", "endpoint"}
+	if cfg.ActivePack != "" {
+		saveKeys = append(saveKeys, "active_pack")
+	}
+	if err := cfg.SaveInitial(saveKeys...); err != nil {
+		fmt.Println(cli.Warn("found " + choice.Endpoint + " but could not save: " + err.Error()))
+		return false
+	}
+	fmt.Println(cli.Success("found " + choice.Provider + " at " + choice.Endpoint))
+	cli.KeyVal("model", choice.Model)
+	cli.KeyVal("why", choice.Why)
+	fmt.Println(cli.Dim("  `slmcode configure` to change it, `slmcode config show` to see it"))
+	return true
 }

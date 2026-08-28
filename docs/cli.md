@@ -372,6 +372,26 @@ because the endpoint is down or the configured model is not served. In the
 Studio it is the **Find my model server** panel in Settings, with the same two
 steps: *Look around* changes nothing, *Configure for me* writes.
 
+### It runs itself on `init`
+
+`slmcode init` used to end with "no model server answered" and a pointer at
+`slmcode doctor` — two more commands for somebody who has just scaffolded a
+workspace, when a server is often running on a port that is simply not the
+default. It now looks around and adopts what it finds:
+
+```text
+⚠ no model server answered at http://127.0.0.1:8000/v1
+  looking for one elsewhere…
+✔ found lmstudio at http://127.0.0.1:1234/v1
+  model           Qwen3-Coder-30B-A3B-Instruct-MLX-4bit
+  why             tuned for code (coder), instruction-tuned, 30B, 3B active
+```
+
+Only when the configured endpoint did **not** answer, so it can never move a
+working setup, and never when you pinned `--endpoint` or `SLMCODE_ENDPOINT` —
+that is a statement about where the server is, and configuring something else
+would be the tool arguing with you.
+
 ---
 
 ## `compose`

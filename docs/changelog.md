@@ -331,6 +331,13 @@ because they have different fixes. And it is now the remedy named when a run
 refuses to start because the endpoint is down or the configured model is not
 served, which is where somebody actually needs it.
 
+`slmcode init` runs it for you. It used to end a first run with "no model server
+answered" and a pointer at `slmcode doctor` — two more commands for somebody who
+has just scaffolded a workspace, when a server is often running on a port that
+is simply not the default. It now looks around and adopts what it finds. Only
+when the configured endpoint did not answer, so it can never move a working
+setup, and never when you pinned `--endpoint` or `SLMCODE_ENDPOINT`.
+
 ### Added — correction tickets are legible on the board
 
 A correction ticket looked exactly like planned work: same card, same badges, a

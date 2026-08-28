@@ -13,6 +13,7 @@ import {
   AlertOctagon,
 } from 'lucide-react';
 import clsx from 'clsx';
+import PlanEditor from './PlanEditor';
 import {
   getClarifyPending,
   getPlanPending,
@@ -34,6 +35,7 @@ import type {
   DynamicComposition,
   EscalateAsk,
   ShellAsk,
+  PlanEdits,
 } from '@/types';
 
 // ── HITL type union ──
@@ -168,6 +170,10 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [hitlNotes, setHitlNotes] = useState('');
+  // Edits the user made on the plan card before approving. Held here rather
+  // than inside PlanEditor so the approve action can send them, and reset with
+  // every new ask so one plan's edits can never be applied to the next.
+  const [planEdits, setPlanEdits] = useState<PlanEdits>({});
 
   // ── Clarify-specific state ──
   const [clarifySelections, setClarifySelections] = useState<Record<string, string[]>>({});
@@ -192,6 +198,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
       setSubmitError(null);
       setSyncNotice(null);
       setHitlNotes('');
+      setPlanEdits({});
       setClarifyFreeform({});
       return;
     }
@@ -260,6 +267,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
             setSubmitError(null);
             setSyncNotice(null);
             setHitlNotes('');
+            setPlanEdits({});
             setClarifyFreeform({});
           }
           answeredRef.current = false;
@@ -284,6 +292,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
           answeredRef.current = false;
           answeredKeysRef.current.clear();
           setHitlNotes('');
+          setPlanEdits({});
           setClarifyFreeform({});
           if (expired.length > 0) {
             setSyncNotice(`${expired.map((t) => TYPE_LABELS[t]).join(', ')} expired; default timeout handling is active.`);
@@ -381,7 +390,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
           break;
         }
         case 'plan':
-          await approvePlan(action as 'approve' | 'replan', notes, askId);
+          await approvePlan(action as 'approve' | 'replan', notes, askId, planEdits);
           break;
         case 'continue':
           await answerContinue(action as 'continue' | 'stop' | 'flag_only', askId, notes);
@@ -403,7 +412,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
       setAnswering(false);
       answeredRef.current = false;
     }
-  }, [pending, clarifySelections, clarifyFreeform, hitlNotes]);
+  }, [pending, clarifySelections, clarifyFreeform, hitlNotes, planEdits]);
 
   // ── Toggle clarify selection ──
   const toggleClarifyOption = useCallback((questionId: string, label: string, multiSelect?: boolean) => {
@@ -525,6 +534,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
                   setSubmitError(null);
                   setSyncNotice(null);
                   setHitlNotes('');
+                  setPlanEdits({});
                 }}
                 className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700"
               >
@@ -552,7 +562,18 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
               }
             />
           )}
-          {pending.type === 'plan' && <PlanBody data={pending.data as PlanAsk} />}
+          {pending.type === 'plan' && (
+            <>
+              <PlanBody data={pending.data as PlanAsk} />
+              <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-800">
+                <PlanEditor
+                  ask={pending.data as PlanAsk}
+                  onChange={setPlanEdits}
+                  disabled={answering}
+                />
+              </div>
+            </>
+          )}
           {pending.type === 'continue' && <ContinueBody data={pending.data as ContinueAsk} />}
           {pending.type === 'escalate' && <EscalateBody data={pending.data as EscalateAsk} />}
           {pending.type === 'shell' && <ShellBody data={pending.data as ShellAsk} />}

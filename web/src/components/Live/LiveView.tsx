@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef, useContext, useMemo } from 'react';
 import {
-  Play,
-  Square,
   AlertTriangle,
   Bot,
-  Loader2,
+  CheckCircle2,
   Circle,
+  FolderTree,
+  ListTodo,
+  Loader2,
   PanelRightClose,
   PanelRightOpen,
-  ListTodo,
-  FolderTree,
-  CheckCircle2,
+  Play,
+  Square,
+  Users,
   XCircle,
 } from 'lucide-react';
 import { AppContext } from '@/App';
@@ -37,6 +38,7 @@ import LiveFileInspector from './LiveFileInspector';
 import LiveFeedback from './LiveFeedback';
 import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
+import SquadPanel from './SquadPanel';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
 import RunSetup from './RunSetup';
@@ -76,7 +78,7 @@ const PIPELINE_GROUPS: RailGroup[] = [
   { id: 'finish', label: 'Finish', phases: ['memory', 'done'] },
 ];
 
-type RailTab = 'tasks' | 'files' | 'result';
+type RailTab = 'tasks' | 'teams' | 'files' | 'result';
 
 /** Where the side rail becomes a column instead of an overlay. */
 const WIDE_VIEWPORT = '(min-width: 1024px)';
@@ -622,6 +624,17 @@ export default function LiveView() {
                   icon={<ListTodo size={14} />}
                   label="Tasks"
                 />
+                {/* Teams sits next to Tasks because with two squads running,
+                    "which half is behind" is the question the task list cannot
+                    answer — the aggregate count hides one squad finishing while
+                    the other sits blocked. The tab renders nothing on a
+                    single-stream run, which is most of them. */}
+                <RailTabButton
+                  active={railTab === 'teams'}
+                  onClick={() => setRailTab('teams')}
+                  icon={<Users size={14} />}
+                  label="Teams"
+                />
                 <RailTabButton
                   active={railTab === 'files'}
                   onClick={() => setRailTab('files')}
@@ -655,6 +668,11 @@ export default function LiveView() {
 
               <div className="min-h-0 flex-1 overflow-hidden">
                 {railTab === 'tasks' && <LiveTaskPanel />}
+                {railTab === 'teams' && (
+                  <div className="h-full overflow-auto p-3">
+                    <SquadPanel refreshKey={events.length} />
+                  </div>
+                )}
                 {railTab === 'files' && <LiveFileInspector events={events} running={running} />}
                 {railTab === 'result' && <ResultPanel result={result} />}
               </div>

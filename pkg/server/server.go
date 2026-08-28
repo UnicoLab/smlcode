@@ -422,6 +422,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 	s.mux.HandleFunc("GET /api/pipeline", s.handleGetPipeline)
 	s.mux.HandleFunc("GET /api/composition", s.handleGetComposition)
+	s.mux.HandleFunc("GET /api/squads", s.handleGetSquads)
 	s.mux.HandleFunc("POST /api/composition/preview", s.handlePreviewComposition)
 	s.mux.HandleFunc("PUT /api/pipeline", s.handlePutPipeline)
 	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)

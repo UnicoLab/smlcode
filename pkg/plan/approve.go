@@ -56,15 +56,18 @@ type PlanApproveAsk struct {
 
 // PlanApproveTask is the structured, UI-friendly task preview for validation.
 type PlanApproveTask struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Role        string   `json:"role,omitempty"`
-	Column      string   `json:"column,omitempty"`
-	Priority    int      `json:"priority,omitempty"`
-	DependsOn   []string `json:"depends_on,omitempty"`
-	Files       []string `json:"files,omitempty"`
-	Acceptance  string   `json:"acceptance,omitempty"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Role        string `json:"role,omitempty"`
+	// Squad is the virtual team that owns this task, so the approval card can
+	// show and reassign it. Empty on a single-stream run.
+	Squad      string   `json:"squad,omitempty"`
+	Column     string   `json:"column,omitempty"`
+	Priority   int      `json:"priority,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
+	Files      []string `json:"files,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
 }
 
 // PlanComposition is a compact, UI-friendly dynamic pipeline preview attached
@@ -161,6 +164,7 @@ func BuildPlanApproveAsk(query string, board *Board) PlanApproveAsk {
 			Title:       t.Title,
 			Description: compactPlanText(t.Description, 360),
 			Role:        t.Role,
+			Squad:       t.Squad,
 			Column:      t.Column,
 			Priority:    t.Priority,
 			DependsOn:   append([]string{}, t.DependsOn...),

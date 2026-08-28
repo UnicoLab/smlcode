@@ -20,6 +20,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/permissions"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/session"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
 
@@ -1401,5 +1402,92 @@ func TestPlanApproveRejectsEditsOnAReplan(t *testing.T) {
 		strings.NewReader(`{"ask_id":"`+ask.ID+`","decision":"replan"}`)))
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("plain replan status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// The Studio panel needs the org chart AND its live progress; a stored copy of
+// progress is wrong the moment a wave finishes.
+func TestSquadsEndpointServesTheOrgChartAndProgress(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	sp := squads.Plan{
+		Summary: "Go API + React SPA",
+		Squads: []squads.Squad{
+			{ID: "backend", Name: "Backend", Owns: []string{"cmd/**"}, Acceptance: "go test ./..."},
+			{ID: "frontend", Name: "Frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+		},
+		Contract: squads.Contract{Interfaces: []squads.Interface{
+			{ID: "GET /api/todos", Provider: "backend", Consumers: []string{"frontend"}, Spec: "200 -> []"},
+		}},
+		Integration: squads.Integration{Acceptance: "go test ./... && npm run build"},
+	}
+	sp.Normalize()
+	if err := squads.Save(h.Config.SlmDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(h, nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/api/squads", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("ok=%v body=%s", out["ok"], rec.Body.String())
+	}
+	list, _ := out["squads"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("expected 2 squads, got %d: %s", len(list), rec.Body.String())
+	}
+	first, _ := list[0].(map[string]any)
+	for _, key := range []string{"id", "owns", "acceptance", "total", "done", "blocked", "complete", "stuck"} {
+		if _, ok := first[key]; !ok {
+			t.Errorf("squad view is missing %q: %v", key, first)
+		}
+	}
+	ifaces, _ := out["interfaces"].([]any)
+	if len(ifaces) != 1 {
+		t.Errorf("the contract should be served: %v", out["interfaces"])
+	}
+	integ, _ := out["integration"].(map[string]any)
+	if integ == nil || integ["acceptance"] == "" {
+		t.Errorf("the integration command should be served: %v", out["integration"])
+	}
+}
+
+// The overwhelming majority of runs are single-stream and have no org chart.
+// That is not an error, and the panel hides itself on it.
+func TestSquadsEndpointIsQuietOnASingleStreamRun(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/api/squads", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a missing org chart is not an error: status=%d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ok"] != false {
+		t.Errorf("ok should be false with no plan: %v", out)
 	}
 }

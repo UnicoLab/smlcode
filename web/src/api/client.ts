@@ -50,8 +50,11 @@ import type {
   ReviewRejectResult,
   PendingChange,
   RunTrace,
+  PlanEdits,
+  SquadsView,
 } from '@/types';
 
+import { planEditsEmpty } from '@/types';
 import { authHeaders, withToken } from './session';
 
 const BASE = '/api';
@@ -506,10 +509,20 @@ export async function approvePlan(
   decision: 'approve' | 'replan',
   notes?: string,
   askId?: string,
+  edits?: PlanEdits,
 ): Promise<{ ok: boolean }> {
+  // Edits only travel with an approval. A replan discards the board they refer
+  // to, and the API rejects the pair rather than promising a change that is
+  // about to be thrown away.
+  const withEdits = decision === 'approve' && !planEditsEmpty(edits) ? edits : undefined;
   return request('/plan/approve', {
     method: 'POST',
-    body: JSON.stringify({ decision, notes: notes || undefined, ask_id: askId || undefined }),
+    body: JSON.stringify({
+      decision,
+      notes: notes || undefined,
+      ask_id: askId || undefined,
+      edits: withEdits,
+    }),
   });
 }
 
@@ -684,4 +697,10 @@ export async function getQueryTrace(id: string): Promise<RunTrace> {
 // ── Version update ──
 export async function getUpdateInfo(): Promise<UpdateInfo> {
   return request<UpdateInfo>('/update');
+}
+
+// Squads: GET /api/squads → the virtual-team org chart plus live progress.
+// `ok:false` simply means this run is single-stream, which is most of them.
+export async function getSquads(): Promise<SquadsView> {
+  return request('/squads');
 }

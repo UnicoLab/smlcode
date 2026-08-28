@@ -703,6 +703,16 @@ export interface PlanAsk {
   task_details?: PlanApprovalTask[];
   composition?: DynamicComposition | null;
   validation?: PlanValidation;
+  /** The virtual teams the manager assembled. Absent on a single-stream run. */
+  squads?: PlanSquads | null;
+  /**
+   * Agent ids this run can actually dispatch.
+   *
+   * The role picker offers these rather than a hardcoded list: naming an agent
+   * the harness cannot staff produces a task that never starts, and the only
+   * place that knows the real roster is the harness.
+   */
+  agents?: string[];
   options?: string[];
   timeout_sec?: number;
   on_timeout?: string;
@@ -714,6 +724,8 @@ export interface PlanApprovalTask {
   title: string;
   description?: string;
   role?: string;
+  /** The virtual team that owns this task. Empty on a single-stream run. */
+  squad?: string;
   column?: string;
   priority?: number;
   depends_on?: string[];
@@ -1058,3 +1070,121 @@ export interface RunTrace {
 
 /** Connection state derived from EventSource.readyState plus the health poll. */
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'down';
+
+// ── Virtual dev teams ────────────────────────────────────────────────────
+
+export interface PlanSquads {
+  summary?: string;
+  squads?: PlanSquad[];
+  interfaces?: PlanInterface[];
+  integration?: string;
+}
+
+export interface PlanSquad {
+  id: string;
+  name?: string;
+  charter?: string;
+  owns?: string[];
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  task_count: number;
+}
+
+export interface PlanInterface {
+  id: string;
+  provider: string;
+  consumers?: string[];
+  spec?: string;
+}
+
+// ── Approval-time edits ──────────────────────────────────────────────────
+//
+// Every editable field is optional, and lists carry an explicit `*_set` flag.
+// Sending back only what was touched must not blank the rest, and "clear this"
+// has to stay expressible — a bare `files: []` cannot say which one is meant.
+
+export interface TaskEdit {
+  id: string;
+  title?: string;
+  description?: string;
+  role?: string;
+  squad?: string;
+  acceptance?: string;
+  priority?: number;
+  files?: string[];
+  depends_on?: string[];
+  files_set?: boolean;
+  depends_set?: boolean;
+}
+
+export interface SquadEdit {
+  id: string;
+  name?: string;
+  charter?: string;
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  owns?: string[];
+  owns_set?: boolean;
+  /** Marks a squad the user added rather than edited. */
+  new?: boolean;
+}
+
+export interface PlanEdits {
+  tasks?: TaskEdit[];
+  add_tasks?: PlanApprovalTask[];
+  remove_tasks?: string[];
+  squads?: SquadEdit[];
+  remove_squads?: string[];
+}
+
+/** True when these edits would change nothing — mirrors PlanEdits.Empty in Go. */
+export function planEditsEmpty(e: PlanEdits | null | undefined): boolean {
+  if (!e) return true;
+  return (
+    (e.tasks?.length ?? 0) === 0 &&
+    (e.add_tasks?.length ?? 0) === 0 &&
+    (e.remove_tasks?.length ?? 0) === 0 &&
+    (e.squads?.length ?? 0) === 0 &&
+    (e.remove_squads?.length ?? 0) === 0
+  );
+}
+
+// ── Live squad status (GET /api/squads) ──────────────────────────────────
+
+export interface SquadStatus {
+  id: string;
+  name?: string;
+  charter?: string;
+  owns?: string[];
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  total: number;
+  done: number;
+  blocked: number;
+  in_flight: number;
+  complete: boolean;
+  stuck: boolean;
+}
+
+export interface SquadStall {
+  squad: string;
+  interface: string;
+  provider: string;
+}
+
+export interface SquadsView {
+  ok: boolean;
+  summary?: string;
+  squads?: SquadStatus[];
+  interfaces?: PlanInterface[];
+  stalls?: SquadStall[];
+  integration?: {
+    acceptance?: string;
+    notes?: string[];
+    ready?: boolean;
+    reason?: string;
+  };
+}

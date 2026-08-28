@@ -1661,8 +1661,13 @@ func PricePresetRates(preset, provider string) (prompt, completion float64, ok b
 		name = NormalizeProvider(provider)
 	}
 	switch name {
-	case "local", "omlx", "ollama", "lmstudio", "vllm", "mlx":
-		return 0, 0, true // explicitly free / local
+	case "local", "omlx", "mlx", "ollama", "lmstudio", "vllm", "llamacpp", "llama-cpp", "llama_cpp":
+		// Servers that run on your own hardware: the tokens genuinely cost
+		// nothing. Deliberately NOT IsLocalProvider, which also covers
+		// `litellm` and `custom` — those are gateways that can front a paid
+		// API, and reporting a confident $0 for a real bill is worse than
+		// reporting nothing, which is what the `false` below produces.
+		return 0, 0, true
 	case "openai", "gpt":
 		// Ballpark GPT-4o-mini class ($/MTok) — not model-perfect; override with price_*.
 		return 0.15, 0.60, true

@@ -403,3 +403,24 @@ func TestANormalizedEndpointParses(t *testing.T) {
 		}
 	}
 }
+
+// ── Free means "runs on your hardware", not "local-ish" ──────────────────
+
+func TestAServerOnYourOwnHardwareCostsNothing(t *testing.T) {
+	for _, p := range []string{"local", "omlx", "mlx", "ollama", "lmstudio", "vllm", "llamacpp", "llama-cpp"} {
+		in, out, ok := PricePresetRates("auto", p)
+		if !ok || in != 0 || out != 0 {
+			t.Errorf("PricePresetRates(auto, %q) = %v/%v/%v, want a confident zero", p, in, out, ok)
+		}
+	}
+}
+
+// A gateway can front a paid API. A confident $0 over a real bill is worse than
+// showing nothing, which is what "not configured" produces.
+func TestAGatewayIsNotAssumedFree(t *testing.T) {
+	for _, p := range []string{"litellm", "custom"} {
+		if _, _, ok := PricePresetRates("auto", p); ok {
+			t.Errorf("%q was assumed free, but it can proxy a paid API", p)
+		}
+	}
+}

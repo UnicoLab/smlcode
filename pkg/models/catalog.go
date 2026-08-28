@@ -118,13 +118,17 @@ func ResolveAuth(cfg *config.Config) AuthStatus {
 	return st
 }
 
+// requiresAPIKey reports whether this provider needs a credential.
+//
+// Defers to config.IsLocalProvider, which is the single local-vs-hosted notion
+// in the codebase. It used to keep its own list, and the two had drifted:
+// `llamacpp` (and `local`, and the `llama-cpp`/`llama_cpp` spellings) were
+// local everywhere else and hosted here — so a llama.cpp user, whose server
+// wants no credential at all, got "auth required" and an EMPTY model list from
+// `slmcode agent list`, the Studio's model picker and the find_models tool,
+// because Find fails closed on a missing key.
 func requiresAPIKey(provider string) bool {
-	switch config.NormalizeProvider(provider) {
-	case "omlx", "ollama", "lmstudio", "vllm", "litellm", "custom":
-		return false
-	default:
-		return true
-	}
+	return !config.IsLocalProvider(provider)
 }
 
 // APIKeyEnvFor names the environment variable a provider's key lives in.

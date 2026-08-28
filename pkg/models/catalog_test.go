@@ -81,3 +81,46 @@ func TestFindFiltersQuery(t *testing.T) {
 		t.Fatalf("expected empty, got %v", cat.Models)
 	}
 }
+
+// ── One local-vs-hosted notion, not two ──────────────────────────────────
+//
+// This package kept its own list and it had drifted from config.IsLocalProvider
+// — whose doc comment already claimed pkg/models deferred to it. A llama.cpp
+// user, whose server wants no credential at all, got "auth required" and an
+// EMPTY model list from `slmcode agent list`, the Studio's model picker and the
+// find_models tool, because Find fails closed on a missing key.
+
+func TestEveryLocalProviderIsKeyless(t *testing.T) {
+	for _, p := range []string{
+		"local", "omlx", "mlx", "ollama", "lmstudio", "lm-studio", "lm_studio",
+		"vllm", "litellm", "custom", "llamacpp", "llama-cpp", "llama_cpp",
+	} {
+		if !config.IsLocalProvider(p) {
+			t.Fatalf("fixture is wrong: %q is not local, so this proves nothing", p)
+		}
+		if requiresAPIKey(p) {
+			t.Errorf("%q is a local server and needs no credential, but auth is required", p)
+		}
+	}
+}
+
+func TestEveryHostedProviderNeedsAKey(t *testing.T) {
+	for _, p := range []string{"openai", "openrouter", "groq", "together", "deepseek", "anthropic", "gemini"} {
+		if !requiresAPIKey(p) {
+			t.Errorf("%q is a hosted API and must require a credential", p)
+		}
+	}
+}
+
+// The regression that motivated it: a llama.cpp user with no key still gets
+// their model list.
+func TestALlamaCppUserIsNotLockedOutOfTheirOwnModels(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.Provider = "llamacpp"
+	cfg.APIKey = ""
+
+	st := ResolveAuth(cfg)
+	if st.Required {
+		t.Errorf("auth reported as required for a local llama.cpp server: %+v", st)
+	}
+}

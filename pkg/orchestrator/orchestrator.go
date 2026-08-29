@@ -2543,7 +2543,7 @@ func summarizeWithRepairs(board *plan.Board, pl plan.Plan, repairs *repairLedger
 		}
 	}
 	out := fmt.Sprintf("%s — %d/%d tasks done, %d failed",
-		firstSentence(pl.Summary), done, total, board.FailedCount())
+		runHeadline(pl, board), done, total, board.FailedCount())
 	if line := repairs.line(); line != "" {
 		out += " · " + line
 	}
@@ -2834,4 +2834,50 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "\n...[truncated]"
+}
+
+// runHeadline is the one clean sentence a finished run leads with.
+//
+// pl.Summary is model-authored, and a model that was asked for JSON sometimes
+// puts JSON there. Measured: a run finished with
+//
+//	✔ "assumptions": [ "The REST API will support basic CRUD operations for tasks with — 5/5 tasks done
+//
+// which is the planner's raw object bleeding into the headline. The rest of the
+// line — the counts, the gate verdict — was correct, so the run looked broken
+// while being fine, which is the worst way for a summary to be wrong.
+//
+// Falls back to the board's own query, which is the request in the operator's
+// words and always a truthful description of what the run was for.
+func runHeadline(pl plan.Plan, board *plan.Board) string {
+	summary := strings.TrimSpace(pl.Summary)
+	if summary != "" && !looksLikeRawJSON(summary) {
+		if s := strings.TrimSpace(firstSentence(summary)); s != "" && !looksLikeRawJSON(s) {
+			return s
+		}
+	}
+	if board != nil {
+		if q := strings.TrimSpace(firstSentence(board.Query)); q != "" && !looksLikeRawJSON(q) {
+			return q
+		}
+	}
+	// Same words firstSentence falls back to, so the two paths cannot print a
+	// different "nothing to say".
+	return "Run complete"
+}
+
+// looksLikeRawJSON reports whether a string is a serialized object rather than
+// prose. Deliberately shallow: it only has to catch a model echoing its own
+// contract, not validate JSON.
+func looksLikeRawJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		return true
+	}
+	// A quoted key followed by a colon — `"assumptions": [` — is the shape that
+	// survives a first-sentence cut of a pretty-printed object.
+	return strings.Contains(s, `":`) || strings.Contains(s, `" :`)
 }

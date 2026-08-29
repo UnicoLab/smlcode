@@ -184,13 +184,17 @@ func (o *Orchestrator) finishEvolveRun(ctx context.Context, res *Result, board *
 		o.emitFull("done", stream.KindDebug, "evolve", "", "reflect: "+err.Error(), "", "")
 	}
 	if o.cfg != nil {
-		if merr := evolve.RecordMetrics(o.cfg.Root, rep, ref); merr != nil {
+		// StateRoot, not Root: both of these do their own `<dir>/.slmcode/…`
+		// join, so under worktree isolation Root would put the metrics row and
+		// the derived graph in the sandbox — deleted with it, and swept into
+		// the run's commit on any project that does not git-ignore .slmcode.
+		if merr := evolve.RecordMetrics(o.cfg.StateRoot(), rep, ref); merr != nil {
 			o.emitFull("done", stream.KindDebug, "evolve", "", "metrics: "+merr.Error(), "", "")
 		}
 		// Materialize the edges the records just written already imply. Best
 		// effort by design: the graph is derived data, so losing it costs one
 		// backfill and must never cost a run.
-		if n, gerr := graph.Backfill(o.cfg.Root); gerr != nil {
+		if n, gerr := graph.Backfill(o.cfg.StateRoot()); gerr != nil {
 			o.emitFull("done", stream.KindDebug, "graph", "", "graph backfill: "+gerr.Error(), "", "")
 		} else if n > 0 {
 			o.emitFull("done", stream.KindDebug, "graph", "", "graph: +"+itoa(n)+" edge(s)", "", "")

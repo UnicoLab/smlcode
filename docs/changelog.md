@@ -592,6 +592,147 @@ the failures felt like noise rather than progress:
   they are and not to repeat the last one; and the same unresolved defect
   reopens its existing ticket instead of stacking a new one every gate run,
   which is what made the board look like it was losing ground.
+### Fixed — found by running v0.21.0 on a live 30B
+
+Everything in this subsection was found by driving the harness against a real
+local stack — oMLX serving Qwen3-Coder-30B — rather than by reading the code.
+Each item names the measurement that produced it.
+
+### Fixed — the harness
+
+- **Executable acceptance criteria were discarded before they could run.**
+  `collapseToWorker` rebuilt the surviving task without `Criteria`, so whenever
+  the splitter's tasks collapsed — the common shape on a small model — every
+  criterion the model authored was dropped. Measured: the 30B emitted correct
+  criteria with `go test ./...` as the verify command, and the run reached the
+  reviewer with nothing to check, indistinguishable from a task that passed.
+- **Harness state followed the sandbox under `--isolate worktree`.** Memory,
+  the derived graph and the metrics row take a project root and join
+  `<root>/.slmcode/…` themselves, so they never saw `StateDir`. The isolated
+  run wrote them into the throwaway worktree: an orphan directory survived every
+  run (a late write re-created the directory git had just removed), and
+  `git add -A` swept nine `.slmcode/**` files into the commit merged onto the
+  operator's branch. New `Config.StateRoot()`; the isolated commit now carries
+  only source.
+- **A green test command that ran no tests counted as verification.**
+  `classifySmoke` checked `sr.OK` before the no-tests check, and `go test ./...`
+  on a tree with no `_test.go` files exits **zero** — so the gate's own
+  documented contract ("a 'nothing to run' exit is NoTests, never Green") held
+  only for runners that fail on empty. Measured: a run told "both parts must
+  have tests" wrote none and finished ✔ with `qa_gate green`.
+- **The board could deadlock on an abandoned task.** `runWave` is synchronous,
+  so nothing is in flight at the top of the scheduler loop — yet a task left in
+  `in_progress`/`in_review` still made `AgentWorkRemaining` report work in
+  progress, and no path re-dispatches those columns. Measured: one stranded
+  task, four dependents frozen behind it, ~9 minutes of correct work discarded
+  and reported as a failure with the edit already on disk and compiling.
+  Orphans are now re-queued, bounded by the existing attempt ceiling.
+- **The composer could drop the coordinator.** `applyBudgetClass` is applied to
+  the heuristic composition only, so the class could budget `coord` and the
+  composer silently omit it — 3 live runs out of 3. Coordination is restored
+  because @coordinator acts on the *board*, which does not exist yet when the
+  composer decides.
+- **Per-file specialist routing and the model ladder were both dead by
+  default.** `runner.HasRole` was only wired inside the escalation branch, so
+  on any install without a `model_escalation` ladder — nearly all of them —
+  every feature that asks "is this agent registered?" answered no.
+- **A task's role never reached its language specialist.** `normalizeExecRole`
+  applied `execute.default_role` only to an *empty* role, but `Task.Normalize`
+  fills empty roles with `worker` first, so the chosen specialist was displayed
+  in the composition and never used. Tasks now route to the specialist that owns
+  their files, which is also what makes a mixed Go + React board run on two
+  specialists at once.
+- **Duplicate workers on one file.** Two tasks scoped to the same file cannot
+  share a wave (concurrent workers share one tree), so each cost a full wave and
+  the second opened a file the first had rewritten. Same-file worker tasks now
+  merge, with dependencies rewritten onto the survivor.
+- **Greenfield Go and web paths were dropped.** `isGreenfieldCreatePath`
+  accepted `main.py` but not `main.go`, and knew no `cmd/`, `pkg/` or `web/`.
+  Measured: a full-stack request finished **0 of 7 tasks with nothing on disk**,
+  because every planned path was discarded and a worker forbidden to invent
+  paths had nothing it was allowed to write. After the fix the same request
+  produced a compiling Go backend and a React frontend.
+- **Two prompt few-shot examples were being copied as real work.** The splitter
+  planned "add Sum to calc.go" — verbatim from its own example — on a greenfield
+  request, and the composer's handoff carried `verify with go test ./...` into a
+  React run for the same reason. Both examples are now shapes, not content.
+- **A refusal never said what it refused.** `"npx" can execute arbitrary code`
+  is unanswerable when npx runs a different program every invocation; refusals
+  now quote the command.
+- **`slmcode agent list` showed 20 of 59 agents.** Block-defined agents — every
+  language specialist and both frontend assemblers — were registered by the
+  orchestrator and invisible to the command that lists the roster.
+
+- **`npx tsc --noEmit` was refused.** The bare `tsc` and `eslint` were already
+  builtin-safe, but their npx forms were not — and in a JS/TS project those
+  tools live in `node_modules`, never on PATH, so the npx spelling is the only
+  one that runs. It is the react and shadcn packs' own typecheck and `qa_gate`.
+  Measured: a live assembler run was refused for its own smoke command.
+- **A whitelisted prefix matched past a word boundary.** `npx tsc` also admitted
+  `npx tsc-evil` — any package whose name merely starts the same way — because
+  matching is a plain prefix test. The builtin list already carries trailing
+  spaces (`tsc `, `eslint `, `find `) for exactly this; the npx entries now do
+  too, and the same hole is closed in the `react` and `typescript` quality
+  packs.
+- **A forged criteria header could switch the criteria gate off.** A worker that
+  merely echoed `## Acceptance criteria` — plausible, since the reviewer
+  contract in its own prompt names that heading — suppressed the review-time
+  gate, and with nothing run `CriteriaUnverifiedInOutput` stayed false, which is
+  the value that ALLOWS the reviewer fast path. The section's provenance stamp
+  is now required, so a genuine section is still recognized (and its commands
+  still not re-run) while a typed one is not.
+- **`model_roles` and `model_escalation` were invisible to `doctor`.** It
+  printed "agents inherit stack/global LLM" unconditionally — false as soon as a
+  role is pinned — and validated nothing, so a typo'd model passed at 100/100
+  and failed mid-run at the reviewer. Both are now shown, every model they name
+  is checked against what the endpoint serves, and an unserved one is a
+  readiness finding (measured: 100 → 86) rather than a surprise.
+- **Criteria that could never run.** Told only in the abstract to write a
+  runnable verify command, a live 30B wrote
+  `go test -v ./... | grep -E '(TestX|PASS|FAIL)'`; the sanitizer refuses shell
+  metacharacters, so every criterion on that board came back UNVERIFIED. The
+  splitter now gets the concrete ✓/✗ example, and its own prompt budget — it is
+  paid once per split, like the composer is paid once per run.
+
+- **Correction rounds aimed at the wrong files.** When the QA gate stayed red,
+  the synthesized tester verdict carried the literal string `"qa_gate red"` —
+  and the corrective rewrite scopes its fix by mining file paths out of those
+  failure strings, so a verdict naming no file fell back to "whatever finished
+  most recently". Measured on a greenfield Go build: three correction rounds
+  scoped to `pkg/tasks` while every compiler error was in `cmd/server/main.go`,
+  which none of them was allowed to touch. The gate's own output is now carried
+  through, so the fix is scoped at the file that is actually broken.
+- **Workers wrote against types they had never read.** Rule 1 said "ws_read a
+  file before editing it" — nothing about *using* one. Measured: a worker
+  scoped to `cmd/server/main.go` used `task.Title`, `task.CreatedAt` and
+  `task.UpdatedAt` on a `Task` that a sibling task had defined with three other
+  fields, and the package would not compile. Reads were never scope-limited;
+  the worker simply had no instruction to use them for cross-file APIs.
+
+### Added — frontend assemblers
+
+- **`shadcn` and `untitledui` packs: build React UI by INSTALLING components.**
+  Hand-writing a dialog with focus traps is where a 7–32B model spends its
+  runway; installing a reviewed one and wiring it up is imports, props and
+  layout. Both ship enabled — nothing to install, nothing to apply — with a
+  worker, an assembly reviewer that rejects a component you hand-rolled when the
+  registry already had it, a pipeline and quality gates.
+- **The method is chosen from evidence and announced.** Your request wins first
+  (name a library, or say *from scratch*), then the project's own markers, then
+  greenfield defaults to assembling; an existing app with no markers keeps
+  writing by hand. The run prints which and why.
+- **Scoped shell access.** `npx` stays an executor; five subcommands of two
+  named packages are allowed, matched structurally so `npx shadcn add`,
+  `npx --yes shadcn@latest add` and the legacy `shadcn-ui` name all work. An
+  `add` naming a URL, an `@registry`, or a local path is refused — both CLIs
+  accept those in the same position as a component name, and they resolve to a
+  registry nobody reviewed.
+- The assembler agents carry each CLI's real contract, verified by running them:
+  shadcn's `init` needs an explicit `-b` or it stops on an interactive menu even
+  with `-y`; Untitled UI matches names fuzzily and wrongly (`buttons` installs
+  `app-store-buttons`, and it does not error).
+- See [Frontend: assemble or write](frontend.md).
+
 ## v0.21.0 — 2026-08-27
 
 Adapts the structural ideas from [zeroshot](https://github.com/the-open-engine/zeroshot)'s

@@ -1,0 +1,87 @@
+api_version: blocks/v1
+kind: pipeline
+id: shadcn
+name: shadcn/ui Assembly Pipeline
+description: >-
+  React graph tuned for assembling UI from shadcn/ui — install components with
+  the CLI, wire them into pages, then lint, tsc, test and build.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [shadcn, react, typescript, tailwind, pipeline, assembler]
+icon: "🧩"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - architect
+    - clarify
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Prepare
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: Design
+      steps: [architect, clarify, plan, split]
+    - id: build
+      label: Build
+      steps: [coord, execute, learn]
+    - id: verify
+      label: Verify
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load skills & knowledge packs, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: explorer, when: auto, label: Explore, tip: Find installed components & pages, group: prepare}
+    docs: {agent: docs, when: auto, label: Docs, tip: Read components.json & conventions, group: prepare}
+    architect: {agent: architect, when: auto, label: Architect, tip: Pick which components to install, group: design}
+    clarify: {agent: "", when: auto, label: Clarify, tip: Lock PRD / ask decisions, group: design}
+    plan: {agent: planner, when: always, label: Plan, tip: Write the execution plan, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: shadcn-worker, when: always, label: Assemble, tip: Install components + wire pages, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture lessons mid-run, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Fill placeholders / flag gaps, group: verify}
+    test: {agent: react-tester, when: always, label: Test, tip: Lint + typecheck + test + build, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: shadcn-worker
+    reviewer: shadcn-reviewer
+    corrector: corrector
+    max_waves: 2
+  slots:
+    - id: shadcn-reuse-reminder
+      agent: shadcn-worker
+      title: Install before you write
+      before: execute
+      when: always
+      persist_to: scratch
+      fail_mode: continue
+      input: |
+        Before implementing: the registry probably already has this component.
+          npx shadcn@latest add <name> -y -s      (-y is OFF by default on add)
+        A whole page is often one block: login-01, sidebar-01, dashboard-01.
+        Read what the CLI wrote before importing it, then style at the call
+        site with className — never by editing components/ui.
+        Query:
+        {{query}}

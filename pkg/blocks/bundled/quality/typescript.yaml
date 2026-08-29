@@ -46,10 +46,10 @@ spec:
     - npm run
     - npm ci
     - npm install
-    - npx tsc
-    - npx vitest
-    - npx jest
-    - npx eslint
+    - 'npx tsc '
+    - 'npx vitest '
+    - 'npx jest '
+    - 'npx eslint '
     - npx prettier
     - npx tsx
     - pnpm test

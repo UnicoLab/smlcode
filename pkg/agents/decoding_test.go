@@ -88,6 +88,15 @@ func TestPromptsStayShortEnoughForA32KWindow(t *testing.T) {
 		// turn. The budget above exists because prompts compete with the CODE
 		// for the window; at compose time there is no code in the pack yet.
 		"composer": 2100,
+		// The splitter is paid per SPLIT — once or twice a run — for the same
+		// reason, and it carries the most detailed contract in the file: task
+		// shape, file rules, acceptance, and the criteria sub-contract whose
+		// verify command has to be written bare. Measured: with the bare rule
+		// stated only in the abstract, a live 30B wrote
+		// `go test -v ./... | grep -E '(TestX|PASS|FAIL)'` and every criterion
+		// on the board came back UNVERIFIED — the feature silently proving
+		// nothing. The concrete ✗ example that prevents it is worth its bytes.
+		"splitter": 2000,
 	}
 	for _, spec := range Specs() {
 		limit, ok := limits[spec.ID]

@@ -135,6 +135,16 @@ type Orchestrator struct {
 	decisions []evolve.DecisionRecord
 	// gates accumulates quality-gate outcomes for the RunReport.
 	gates []evolve.GateResult
+	// lastQAFailure is the QA gate's own output from its most recent RED round.
+	//
+	// Kept because the corrective rewrite is driven by the failure STRINGS, and
+	// resolveFailureTargets mines file paths out of them to scope the fix. The
+	// synthesized verdict used to carry the literal "qa_gate red", which names
+	// no file, so the rewrite fell back to "whatever finished most recently"
+	// and could scope a corrective task at files that were not the ones failing
+	// to build. Measured: three correction rounds aimed at pkg/tasks while every
+	// compiler error was in cmd/server/main.go, which none of them could touch.
+	lastQAFailure string
 
 	// projectInstructions is AGENTS.md / CLAUDE.md / PROJECT instructions,
 	// consumed by skillPackFor so they reach the STABLE PREFIX of every pack
@@ -439,7 +449,16 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// Self-improvement engine. A degraded engine is still safe to call, and a
 	// nil one is tolerated everywhere, so failures never stop a run.
 	if o.evolveEnabled() {
-		eng, evErr := evolve.OpenWith(cfg.Root, "", evolve.EngineOptions{
+		// StateRoot, not cfg.Root: memory, the repair-rule store and the bandit
+		// all hang off this path as <dir>/.slmcode/…, and pkg/memory builds
+		// that join itself rather than calling cfg.SlmDir(). Handed cfg.Root,
+		// an isolated run (--isolate worktree) points them at the throwaway
+		// worktree — exactly what cfg.StateDir was set to prevent. The
+		// observable symptoms were a second memory store writing into the
+		// worktree, its last write landing AFTER cleanup and so re-creating the
+		// directory git had just removed, and `git add -A` sweeping that
+		// .slmcode/ into the commit merged onto the operator's branch.
+		eng, evErr := evolve.OpenWith(cfg.StateRoot(), "", evolve.EngineOptions{
 			Deterministic: o.deterministicMode(),
 		})
 		o.evolve = eng

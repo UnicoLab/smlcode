@@ -119,13 +119,15 @@ const PromptTaskSplitter = `Split the query into atomic tasks, each sized for ON
   priority "must" blocks the task; "should" only informs the reviewer.
   verify is the proving command; ONLY these run: go test · pytest ·
   python -m pytest · python -m py_compile · npm test · cargo test · make test.
+  BARE only — a pipe, redirect, && or $( ) makes it UNVERIFIED, proving nothing:
+    "go test ./..." ✓   "go test -run TestX ./..." ✓   "go test | grep X" ✗
   No real command for a condition? Leave verify "" and the reviewer judges it.
-  Never invent a command this project does not have.
 
 A static-web request always gets an index.html (or the named .html) entrypoint task.
 
-OUTPUT — reply with this JSON object and nothing else:
-{"tasks":[{"id":"T1","title":"add Sum to calc.go","description":"exact instructions plus locked constraints","role":"worker","files":["calc.go"],"acceptance":"go test ./... passes","criteria":[{"text":"Sum returns a+b for the table cases","priority":"must","verify":"go test ./..."},{"text":"exported Sum has a doc comment","priority":"should","verify":""}],"depends_on":[]}]}
+OUTPUT — reply with this JSON object and nothing else. Every <…> is a SHAPE to
+fill from THIS request, never text to copy:
+{"tasks":[{"id":"T1","title":"<imperative title for this request>","description":"<instructions + locked constraints>","role":"worker","files":["<real path from the exploration>"],"acceptance":"<runnable command> passes","criteria":[{"text":"<condition this request states>","priority":"must","verify":"<proving command, or empty>"},{"text":"<second condition>","priority":"should","verify":""}],"depends_on":[]}]}
 role is one of: worker, tester, explorer, context.`
 
 const PromptClarifier = `Interviewer for underspecified coding requests. Exploration context is provided.
@@ -189,7 +191,7 @@ phase list, the specialist roster, and the available skills.
 - kind: "inquiry" (read-only) · "task" (implement) · "debug" (cause unknown).
 
 OUTPUT — reply with this JSON object and nothing else:
-{"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"complexity":"standard","handoff":["target only the listed files","verify with go test ./..."],"kind":"task","slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
+{"summary":"one line","phases":[{"id":"context","enabled":true},{"id":"explore","enabled":true},{"id":"plan","enabled":true,"agent":"planner"},{"id":"split","enabled":true,"agent":"splitter"},{"id":"execute","enabled":true,"agent":"worker"},{"id":"test","enabled":true,"agent":"tester"}],"execute":{"default_role":"worker","reviewer":"reviewer","corrector":"corrector","max_waves":2},"complexity":"standard","handoff":["<constraint the workers must honor>","verify with <this project's own test command>"],"kind":"task","slots":[],"strategy":"one sentence","team":[{"role":"worker","skills":["atomic-coding"]}]}`
 
 const PromptManager = `Engineering manager. Split ONE query into squads that build in PARALLEL.
 
@@ -290,7 +292,9 @@ const PromptWorker = `Implement ONE atomic task with the workspace tools.
 ` + AntiWanderCore + `
 
 RULES
-1. ws_read a file before editing it. ` + OneToolPerTurn + `
+1. ws_read a file before editing it, AND before using a type, field or function
+   another file defines — its real shape is on disk, never in your memory.
+   ` + OneToolPerTurn + `
 2. Write real working code — no pass, ..., NotImplemented, bare TODO, or fake
    constant returns. Blocked by a missing secret? finish with status "blocked".
 3. ` + SmokeLine + ` Fix what it reports before finishing.
@@ -309,7 +313,9 @@ const PromptDeepWorker = `Implement ONE multi-step task with the workspace tools
 ` + AntiWanderCore + `
 
 RULES
-1. ws_read a file before editing it. ` + OneToolPerTurn + `
+1. ws_read a file before editing it, AND before using a type, field or function
+   another file defines — its real shape is on disk, never in your memory.
+   ` + OneToolPerTurn + `
 2. Work through the task's checklist in order; record what you completed.
 3. Write real working code — no stubs, no fake returns.
 4. ` + SmokeLine + ` Fix what it reports before finishing.

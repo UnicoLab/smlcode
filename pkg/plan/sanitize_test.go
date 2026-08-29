@@ -88,6 +88,47 @@ func TestReconcileFilesKeepsGreenfieldCreates(t *testing.T) {
 	}
 }
 
+// The Python conventions were all present and the Go and web ones were not, so
+// a greenfield Go or full-stack request lost its create targets here.
+//
+// Measured end to end on a live 30B, before the fix: "create basic HTTP server
+// in main.go" reached the worker with an empty file list, and a worker whose
+// prompt forbids inventing paths had nothing it was permitted to write. The run
+// finished 0/6 tasks with nothing on disk.
+func TestReconcileFilesKeepsGoAndWebGreenfieldCreates(t *testing.T) {
+	root := t.TempDir()
+	for _, claimed := range []string{
+		"main.go",            // the Go entrypoint; main.py was already accepted
+		"cmd/server/main.go", // canonical Go layout
+		"web/src/App.jsx",    // the front-end tree inside a backend repo
+		"index.html",
+		"api/handlers.go",
+		// `pkg/` is as canonical in Go as `src/` is in Python, and a live
+		// composer asked for exactly this path on a greenfield Go request.
+		"pkg/tasks/store.go",
+	} {
+		if got := ReconcileFiles(root, []string{claimed}, nil); len(got) != 1 || got[0] != claimed {
+			t.Errorf("ReconcileFiles(%q) = %v, want it kept as a create target", claimed, got)
+		}
+	}
+}
+
+// The other half: broadening the allowlist must not re-open the fabrication
+// hole. `internal/...` is the shape a model invents when guessing at a layout,
+// and the worker prompt names it explicitly, so it stays rejected.
+func TestReconcileFilesStillRejectsInventedLayouts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "real.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, claimed := range []string{"internal/nope.go", "path/to/file.go", "placeholder.go"} {
+		got := ReconcileFiles(root, []string{claimed}, []string{"real.go"})
+		if len(got) != 1 || got[0] != "real.go" {
+			t.Errorf("ReconcileFiles(%q) = %v, want the discovered file instead", claimed, got)
+		}
+	}
+}
+
 func TestListWorkspaceFilesPrioritizesManifestsAndSkipsGeneratedUI(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
@@ -289,5 +330,83 @@ func TestShouldCollapseSameFile(t *testing.T) {
 	// A single worker must not collapse.
 	if shouldCollapseSameFile([]Task{{ID: "T1", Role: RoleWorker, Files: []string{"index.html"}}}) {
 		t.Fatal("single worker must not collapse")
+	}
+}
+
+// Collapse must not silently disarm executable acceptance. Measured against a
+// live 30B: the splitter emitted criteria with `go test ./...` as the verify
+// command, every task targeted the same file set, and the collapsed survivor
+// reached the reviewer with no criteria at all — so VerifyCriteria ran nothing
+// and "the harness did not check" was indistinguishable from a pass.
+func TestCollapseCarriesCriteria(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Title: "Fix even case", Role: RoleWorker, Files: []string{"stats.go"},
+			Criteria: []Criterion{
+				{ID: "C1", Text: "Median returns the truncated mean for even input", Priority: "must", Verify: "go test ./..."},
+			}},
+		{ID: "T2", Title: "Keep odd case", Role: RoleWorker, Files: []string{"stats.go"},
+			Criteria: []Criterion{
+				// Same command, different condition: the command must not be
+				// the thing that dedupes them.
+				{ID: "C1", Text: "Odd-length input is unchanged", Priority: "should", Verify: "go test ./..."},
+				// An exact repeat of T1's criterion — this one must dedupe.
+				{ID: "C2", Text: "Median returns the truncated mean for even input", Priority: "must", Verify: "go test ./..."},
+			}},
+	}
+	out := collapseToWorker(tasks, nil, "fix Median")
+	if len(out) != 1 {
+		t.Fatalf("expected one collapsed task, got %d", len(out))
+	}
+	got := out[0].Criteria
+	if len(got) != 2 {
+		t.Fatalf("expected 2 criteria after dedupe, got %d: %+v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, c := range got {
+		if c.ID == "" {
+			t.Errorf("criterion has no ID after collapse: %+v", c)
+		}
+		if ids[c.ID] {
+			t.Errorf("duplicate criterion ID %q survived collapse: %+v", c.ID, got)
+		}
+		ids[c.ID] = true
+		if c.Verify != "go test ./..." {
+			t.Errorf("verify command lost: %+v", c)
+		}
+	}
+	// Priority must survive: a demoted "must" is a requirement that ships unmet.
+	if got[0].Priority != PriorityMust {
+		t.Errorf("blocking priority lost: %+v", got[0])
+	}
+}
+
+// A collapse of tasks that carry no criteria must stay exactly as it was —
+// nil, not an empty non-nil slice that would read as "checked nothing".
+func TestCollapseWithoutCriteriaStaysNil(t *testing.T) {
+	out := collapseToWorker([]Task{
+		{ID: "T1", Role: RoleWorker, Files: []string{"a.go"}},
+		{ID: "T2", Role: RoleWorker, Files: []string{"a.go"}},
+	}, nil, "do a thing")
+	if len(out) != 1 {
+		t.Fatalf("expected one collapsed task, got %d", len(out))
+	}
+	if out[0].Criteria != nil {
+		t.Fatalf("expected nil criteria, got %+v", out[0].Criteria)
+	}
+}
+
+// MaxCriteria is the ceiling on the survivor too: a wide split must not smuggle
+// an unbounded checklist onto one task.
+func TestCollapseCapsCriteria(t *testing.T) {
+	var tasks []Task
+	for i := 0; i < MaxCriteria+4; i++ {
+		tasks = append(tasks, Task{
+			ID: "T" + string(rune('1'+i)), Role: RoleWorker, Files: []string{"a.go"},
+			Criteria: []Criterion{{Text: "condition " + string(rune('a'+i)), Verify: "go test ./..."}},
+		})
+	}
+	out := collapseToWorker(tasks, nil, "do a thing")
+	if n := len(out[0].Criteria); n > MaxCriteria {
+		t.Fatalf("collapse carried %d criteria, over the %d cap", n, MaxCriteria)
 	}
 }

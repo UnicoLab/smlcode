@@ -18,6 +18,8 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
+	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 )
 
 // ── Live SLM scenario suite ─────────────────────────────────────────────────
@@ -114,6 +116,18 @@ type slmLiveScenario struct {
 	// oracle is an extra test file written AFTER the run — a check the model
 	// never saw. Empty means none.
 	oracle *slmLiveFile
+	// wantCriteria requires that executable acceptance actually RAN: some task
+	// carries model-authored criteria, and some task's output holds a criteria
+	// evidence section with a real verdict.
+	//
+	// Asserted end-to-end rather than in a unit test because every link in the
+	// chain is a place the feature can go quietly inert — the splitter has to
+	// emit `criteria`, sanitize has to carry them through collapse, the
+	// whitelist has to admit the verify command, and the gate has to run it.
+	// Measured against a live 30B: the model emitted criteria correctly and
+	// collapse dropped them, so the run looked identical to one where the
+	// feature worked. Only the board and the task output can tell those apart.
+	wantCriteria bool
 }
 
 const slmLiveGoMod = "module fixture\n\ngo 1.22\n"
@@ -275,6 +289,10 @@ func TestChunkNonPositiveSize(t *testing.T) {
 			frozen:     []string{"chunk/chunk_test.go", "go.mod"},
 			changed:    []string{"chunk/chunk.go"},
 			greenAfter: true,
+			// A failing test the task must make pass is the shape that gives a
+			// criterion an obvious verify command, so this is where executable
+			// acceptance is cheapest to assert on a real model.
+			wantCriteria: true,
 		},
 
 		// 3 ── existing-codebase-feature ─────────────────────────────────────
@@ -965,6 +983,43 @@ func slmLiveRunScenario(t *testing.T, rep *slmLiveScenarioReport, sc slmLiveScen
 		green, out := slmLiveGoTest(t, root)
 		rep.check(t, "go-test-passes", green, "%s", slmLiveClip(out, 4000))
 	}
+
+	if sc.wantCriteria && res != nil {
+		carried, verified, detail := slmLiveCriteria(res.Board.Tasks)
+		rep.check(t, "criteria-reach-the-board", carried > 0,
+			"no task carried acceptance criteria; %s", detail)
+		rep.check(t, "criteria-are-verified", verified > 0,
+			"criteria were planned but no task output holds a verdict section; %s", detail)
+	}
+}
+
+// slmLiveCriteria reports how many tasks carried criteria and how many had them
+// actually checked, plus a one-line summary for the failure message.
+//
+// "Verified" means the evidence section is present AND names a verdict. The
+// section alone is not enough: FormatCriteriaSection writes one for an
+// all-UNVERIFIED report too, and UNVERIFIED is precisely the state that means
+// nothing ran.
+func slmLiveCriteria(tasks []plan.Task) (carried, verified int, detail string) {
+	var parts []string
+	for _, t := range tasks {
+		if len(t.Criteria) == 0 {
+			continue
+		}
+		carried++
+		hasVerdict := strings.Contains(t.Output, quality.CriteriaSectionHeader) &&
+			(strings.Contains(t.Output, quality.CriterionPassed) ||
+				strings.Contains(t.Output, quality.CriterionFailed) ||
+				strings.Contains(t.Output, quality.CriterionUnverified))
+		if hasVerdict {
+			verified++
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d criteria verdict=%v", t.ID, len(t.Criteria), hasVerdict))
+	}
+	if len(parts) == 0 {
+		return carried, verified, fmt.Sprintf("%d task(s), none with criteria", len(tasks))
+	}
+	return carried, verified, strings.Join(parts, "; ")
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────

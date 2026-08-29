@@ -213,6 +213,13 @@ func isGreenfieldCreatePath(f string) bool {
 		"cargo.toml", "readme.md", "main.py", "conftest.py":
 		return true
 	}
+	// Roots blessed in EVERY repository, greenfield or not. The wider set —
+	// cmd/, pkg/, web/ and friends — is deliberately absent: ReconcileFiles
+	// admits those through `green && looksLikeSourceTarget`, which is the
+	// better rule because it is conditioned on the repository actually being
+	// empty. Blessing them unconditionally here would let a claimed-but-absent
+	// cmd/server/main.go survive in an ESTABLISHED repo, where an unknown path
+	// is far more likely invented than intended.
 	return strings.HasPrefix(f, "src/") || strings.HasPrefix(f, "tests/") ||
 		strings.HasPrefix(f, "test/") || strings.HasPrefix(f, "lib/") ||
 		strings.HasPrefix(f, "app/")

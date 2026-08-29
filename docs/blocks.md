@@ -60,7 +60,7 @@ shareable: true           # marketplace-ready flag (default: true)
 
 ## Predefined Language Packs (Builtin)
 
-SLMCode ships **thirteen** language packs. Each one is a `pack` block composing a pipeline, a
+SLMCode ships **fifteen** packs. Each one is a `pack` block composing a pipeline, a
 quality block and language-aware agents; `slmcode init` picks one automatically (see
 [Detection](#detection-how-a-pack-is-chosen)).
 
@@ -79,8 +79,17 @@ quality block and language-aware agents; `slmcode init` picks one automatically 
 | 🐘 `php` | php | `php-worker` `php-tester` | `vendor/bin/phpunit --colors=never` | `vendor/bin/phpunit --colors=never` |
 | 🕊️ `swift` | swift | `swift-worker` `swift-tester` | `swift build` | `swift test` |
 | ⚙️ `cpp` | cpp | `cpp-worker` `cpp-tester` | `cmake --build build` | `ctest --test-dir build --output-on-failure` |
+| 🧩 `shadcn` | typescript | `shadcn-worker` `shadcn-reviewer` `react-tester` | `npx tsc --noEmit` | `npx tsc --noEmit` |
+| 🎨 `untitledui` | typescript | `untitledui-worker` `untitledui-reviewer` `react-tester` | `npx tsc --noEmit` | `npx tsc --noEmit` |
 
 `slmcode blocks list` prints the live set; this table is a snapshot of it.
+
+!!! tip "shadcn and untitledui are *methods*, not languages"
+    The last two build React UI by **installing** components with the library's own
+    CLI and wiring them up, rather than writing them by hand. You do not have to
+    apply them: both are chosen automatically from the request and the project, and
+    their agents ship registered. Applying one just pins the choice for good.
+    See [Frontend: assemble or write](frontend.md).
 
 Every pack also pins skills (`pin_skills: true`) — always `atomic-coding`, `specialist-worker`
 and `specialist-tester`, plus language-specific ones: `go` adds `go-table-tests` and

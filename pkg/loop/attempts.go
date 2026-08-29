@@ -61,7 +61,7 @@ func (r *Runner) attemptGraph() *graph.Store {
 		return nil
 	}
 	r.attemptGraphOnce.Do(func() {
-		g, err := graph.Open(r.Root)
+		g, err := graph.Open(r.stateRoot())
 		if err != nil || g == nil {
 			if err != nil {
 				r.logf("attempt graph edges disabled: %v", err)

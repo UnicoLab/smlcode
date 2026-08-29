@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"strings"
+
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 )
@@ -102,9 +104,82 @@ func (r *Runner) escalate(base string, t plan.Task) string {
 }
 
 // execAgentFor returns the agent id that should implement a task, accounting
-// for any escalation it has earned.
+// for the language its files are in and for any escalation it has earned.
 func (r *Runner) execAgentFor(t plan.Task) string {
-	return r.escalate(r.normalizeExecRole(t.Role), t)
+	return r.escalate(r.specializeExecRole(r.normalizeExecRole(t.Role), t), t)
+}
+
+// specializeExecRole routes a GENERIC worker task to the specialist that owns
+// its files, leaving every other role untouched.
+//
+// Two things are fixed here, and they are the same thing seen from two ends.
+//
+// The composition names ONE execute.default_role for the whole run, so "a Go
+// backend and a React frontend" put every task on one language specialist. The
+// splitter could not have corrected it either: its contract allows only the
+// generic roles worker/tester/explorer/context, so it has no way to say "this
+// task is the Go one". Routing on files — evidence the splitter already emits
+// and the harness already reconciles against disk — is the missing half.
+//
+// And default_role was reaching almost nothing anyway. normalizeExecRole hands
+// it back only for an EMPTY role, but plan.Task.Normalize fills an empty role
+// with "worker" long before the runner sees the task, so a splitter-authored
+// task always arrived with a role that fell through to the generic worker. The
+// chosen specialist was displayed in the composition and then not used.
+//
+// Deliberately narrow: only a generic worker id is re-routed. A task the
+// composer or an operator deliberately pinned to a named specialist keeps it,
+// and a tester/explorer/context role is never touched. HasRole gates every
+// result, so this can only ever select an agent the factory actually built.
+func (r *Runner) specializeExecRole(role string, t plan.Task) string {
+	if r == nil || !isGenericWorkerRole(role) {
+		return role
+	}
+	// The assembler is checked BEFORE the language specialist, and that order
+	// is what makes the feature work with nothing installed. Language
+	// specialists like react-worker are pack-only — a fresh project registers
+	// none of them — so an assembler that only upgraded an inferred
+	// react-worker would never fire until someone applied the react pack,
+	// which is exactly the setup step this is meant not to need.
+	if a := r.frontendAssemblerFor(t.Files); a != "" {
+		return a
+	}
+	spec := agents.SpecialistForFiles(t.Files, r.HasRole)
+	if spec == "" || spec == role {
+		return role
+	}
+	return spec
+}
+
+// frontendAssemblerFor returns the component-library assembler this run chose,
+// when this task's files are React component files.
+//
+// The language and the METHOD are two different questions and only the first is
+// answerable from a file extension: .tsx says React, never whether this project
+// installs its components or writes them. FrontendAssembler carries the answer
+// to the second, decided once per run from the request and the workspace (see
+// agents.ChooseFrontend), so a task does not re-derive it per file.
+//
+// Gated on React files specifically: a Go or Python task in the same run is not
+// frontend work, and plain .html/.css is neither library's shape.
+func (r *Runner) frontendAssemblerFor(files []string) string {
+	if r.FrontendAssembler == "" || r.HasRole == nil || !r.HasRole(r.FrontendAssembler) {
+		return ""
+	}
+	if !agents.HasReactFiles(files) {
+		return ""
+	}
+	return r.FrontendAssembler
+}
+
+// isGenericWorkerRole reports whether an executor id is the unspecialized
+// worker — the only one file-based routing may replace.
+func isGenericWorkerRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case plan.RoleWorker, "implementer", "deep", "":
+		return true
+	}
+	return false
 }
 
 // correctorIDFor returns the corrector for a task, escalated if earned.

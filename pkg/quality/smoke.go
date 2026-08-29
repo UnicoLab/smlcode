@@ -341,6 +341,14 @@ var safeAcceptancePrefixes = []string{
 	"pytest\t",
 	"go test",
 	"npm test",
+	// `npm run <script>` — lint, typecheck and build are real verifications a
+	// criterion should be allowed to name, and refusing them was why "the
+	// project builds" could only ever come back UNVERIFIED on a JS/TS project.
+	// Safe to admit only because isLongRunningServer refuses the scripts that
+	// never return (dev/start/serve/preview/watch), which share this prefix.
+	"npm run",
+	"yarn run",
+	"pnpm run",
 	"cargo test",
 	"make test",
 }
@@ -493,6 +501,9 @@ func SanitizeAcceptanceCommand(cmd, prefix string) string {
 		return ""
 	}
 	if strings.ContainsAny(cmd, acceptanceShellMeta) {
+		return ""
+	}
+	if isLongRunningServer(cmd) {
 		return ""
 	}
 	for _, r := range cmd {
@@ -964,4 +975,53 @@ func sectionOutput(sr SmokeResult) string {
 		return TruncateOutput(out, MaxSectionOutput)
 	}
 	return FailureExcerpt(out, MaxSectionOutput)
+}
+
+// serverScripts are the package scripts that START A SERVER and never return.
+//
+// `npm run` is whitelisted because `npm run lint` and `npm run typecheck` are
+// exactly the verifications this gate exists to run. `npm run dev` shares that
+// prefix and does not terminate — it serves until something kills it, which for
+// an auto-run acceptance means burning the task's entire timeout and learning
+// nothing. Measured: a live splitter wrote `npm run dev passes` as a tester
+// task's acceptance, which is not a proposition that can pass at all.
+//
+// Matched on the SCRIPT name rather than the runner, so npm/yarn/pnpm/bun all
+// resolve the same way.
+var serverScripts = []string{"dev", "start", "serve", "preview", "watch"}
+
+// isLongRunningServer reports whether a command starts a server instead of
+// verifying something.
+func isLongRunningServer(cmd string) bool {
+	f := strings.Fields(strings.ToLower(strings.TrimSpace(cmd)))
+	if len(f) == 0 {
+		return false
+	}
+	switch f[0] {
+	case "npm", "yarn", "pnpm", "bun":
+		// `npm start` is its own verb; the rest are `<runner> run <script>`.
+		if len(f) >= 2 && f[1] == "start" {
+			return true
+		}
+		if len(f) >= 3 && f[1] == "run" {
+			for _, s := range serverScripts {
+				if f[2] == s {
+					return true
+				}
+			}
+		}
+		// yarn/pnpm/bun allow the bare form: `pnpm dev`.
+		if len(f) >= 2 && f[0] != "npm" {
+			for _, s := range serverScripts {
+				if f[1] == s {
+					return true
+				}
+			}
+		}
+	case "vite", "serve", "http-server", "live-server":
+		return true
+	case "next", "nuxt", "remix", "astro":
+		return len(f) >= 2 && (f[1] == "dev" || f[1] == "start")
+	}
+	return false
 }

@@ -85,17 +85,27 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	// Failure escalation. HasRole is what makes this safe to leave on: it is
 	// consulted before every escalated dispatch, so a role with no registered
 	// ladder simply retries on its base agent exactly as before.
-	if o.factory != nil && o.factory.EscalationRungs() > 0 {
-		// Ask the bandit whether the ladder is worth it for this model family
-		// and language. The arm is only pulled when a ladder EXISTS, so an
-		// install with one model never spends an exploration pull on a choice
-		// it cannot act on.
-		if o.choose(evolve.DecEscalateModel, "on", "off") == "on" {
-			runner.EscalationRungs = o.factory.EscalationRungs()
-			runner.HasRole = o.factory.HasRole
+	if o.factory != nil {
+		// Unconditionally, not only when a ladder exists. HasRole is a pure
+		// lookup — "is this agent registered?" — and three separate features
+		// now ask it: the model ladder, per-file specialist routing, and the
+		// frontend assembler. All three treat a nil HasRole as "prove nothing,
+		// route nothing", so leaving it unset inside the escalation branch
+		// silently disabled the other two on every install without a
+		// model_escalation ladder, which is nearly all of them.
+		runner.HasRole = o.factory.HasRole
+		if o.factory.EscalationRungs() > 0 {
+			// Ask the bandit whether the ladder is worth it for this model
+			// family and language. The arm is only pulled when a ladder
+			// EXISTS, so an install with one model never spends an exploration
+			// pull on a choice it cannot act on.
+			if o.choose(evolve.DecEscalateModel, "on", "off") == "on" {
+				runner.EscalationRungs = o.factory.EscalationRungs()
+			}
 		}
 	}
 	runner.EscalateAfter = o.cfg.EscalateAfter
+	o.chooseFrontendMethod(runner, query)
 
 	runner.Log = func(format string, args ...interface{}) {
 		o.emitFull("execute", stream.KindDebug, "", "", fmt.Sprintf(format, args...), "", "")

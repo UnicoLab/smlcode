@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/UnicoLab/slmcode/pkg/agents"
 )
 
 // Choosing the language specialists for a run.
@@ -27,28 +29,11 @@ import (
 // the query's answer, because there the query knows something the detector
 // does not.
 
-// specialistExtensions maps a worker id to the file extensions that would prove
-// a repository actually contains that language.
-//
-// Only workers whose language has unambiguous extensions appear here. A hint
-// that cannot be corroborated is treated as uncorroborated, which is the safe
-// direction: it defers to the detected project language.
-var specialistExtensions = map[string][]string{
-	"python-worker": {".py"},
-	"go-worker":     {".go"},
-	"rust-worker":   {".rs"},
-	"java-worker":   {".java"},
-	"kotlin-worker": {".kt", ".kts"},
-	"cpp-worker":    {".cpp", ".cc", ".cxx", ".hpp", ".h"},
-	"dotnet-worker": {".cs", ".csproj", ".sln"},
-	"ruby-worker":   {".rb"},
-	"php-worker":    {".php"},
-	"swift-worker":  {".swift"},
-	"ts-worker":     {".ts", ".tsx"},
-	"react-worker":  {".jsx", ".tsx"},
-	"web-worker":    {".html", ".htm", ".css", ".js"},
-	"shell-worker":  {".sh", ".bash"},
-}
+// specialistExtensions is agents.SpecialistExtensions — one table, because the
+// question "which specialist owns this extension" is asked in two places now:
+// here, to decide whether the workspace corroborates a query hint, and in
+// pkg/loop, to route an individual task to the specialist that owns its files.
+var specialistExtensions = agents.SpecialistExtensions
 
 // inventoryHasLanguage reports whether the workspace inventory contains files
 // belonging to a specialist's language.

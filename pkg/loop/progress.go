@@ -204,6 +204,51 @@ func pathsCollide(a, b string) bool {
 // parked task is a terminal state an operator can act on. Every park is
 // announced — a task that silently stops being scheduled is the failure mode
 // this replaces, not an improvement on it.
+// reclaimOrphaned returns tasks a finished wave left mid-flight to ready_to_dev,
+// and reports how many it moved.
+//
+// runWave is SYNCHRONOUS: when it returns, every worker, reviewer and corrector
+// it started has finished. So at the top of RunBoard's loop nothing is actually
+// in flight, and a task still sitting in in_progress or in_review is not busy —
+// it is abandoned. Nothing ever re-dispatches it either, because
+// executableTasksLocked only ever returns ready_to_dev.
+//
+// That combination deadlocks the board: AgentWorkRemaining sees in_review and
+// says "work is in progress", the scheduler finds nothing executable, and the
+// loop idles for 31 rounds waiting on an agent that exited long ago. Every task
+// that depended on the orphan waits with it. Measured on a live run: one task
+// stranded in in_review, four dependents stuck in ready_to_dev, ~9 minutes of
+// real work discarded and reported as a failure — with the actual edit already
+// on disk and compiling.
+//
+// Re-dispatching is bounded by the same ceiling every other dispatch pays:
+// admitWave bumps the attempt count and parks a task that has spent it, so a
+// task that keeps stranding itself lands in to_scope for a human rather than
+// looping forever.
+func (r *Runner) reclaimOrphaned(board *plan.Board) int {
+	if board == nil {
+		return 0
+	}
+	moved := 0
+	for _, t := range board.Tasks {
+		t.Normalize()
+		if t.Column != plan.ColInProgress && t.Column != plan.ColInReview {
+			continue
+		}
+		was := t.Column
+		t.MoveTo(plan.ColReadyToDev)
+		t.Notes = strings.TrimSpace(t.Notes +
+			"\nRECLAIMED: left in " + was + " by a finished wave; re-queued for dispatch.")
+		board.UpdateTask(t)
+		r.logf("%s reclaimed from %s — the wave that owned it has already returned", t.ID, was)
+		moved++
+	}
+	if moved > 0 {
+		r.persist(board)
+	}
+	return moved
+}
+
 func (r *Runner) admitWave(board *plan.Board, wave []plan.Task) []plan.Task {
 	out := make([]plan.Task, 0, len(wave))
 	for _, t := range wave {

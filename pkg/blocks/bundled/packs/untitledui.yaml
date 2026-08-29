@@ -1,0 +1,24 @@
+api_version: blocks/v1
+kind: pack
+id: untitledui
+name: Untitled UI Assembler Pack
+description: >-
+  Build React UI by INSTALLING Untitled UI components with the CLI and wiring
+  them into pages, instead of writing them from scratch. Pipeline, quality gates
+  and an assembler worker + reviewer. Use the `react` pack to hand-write
+  components.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [untitledui, react, typescript, tailwind, pack, assembler, marketplace]
+icon: "🎨"
+shareable: true
+spec:
+  pipeline: untitledui
+  quality: untitledui
+  agents: [untitledui-worker, untitledui-reviewer, react-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker, react-hooks, typescript-strict]
+  pin_skills: true
+  override_tester: react-tester
+  override_worker: untitledui-worker

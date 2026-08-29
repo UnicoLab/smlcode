@@ -229,6 +229,11 @@ type Runner struct {
 	// ReviewerRole / CorrectorRole come from pipeline.execute (defaults reviewer/corrector).
 	ReviewerRole  string
 	CorrectorRole string
+	// FrontendAssembler is the component-library assembler this run chose, or
+	// "" to write React components by hand. Decided once per run by
+	// agents.ChooseFrontend from the request and the workspace, and applied by
+	// assembleFrontend to react tasks only.
+	FrontendAssembler string
 	// DefaultRole comes from pipeline.execute.default_role — the worker agent
 	// used for tasks without an explicit role (e.g. language-specific go-worker).
 	DefaultRole string
@@ -397,6 +402,15 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		ready := scheduleReady(board.ReadyTasks())
 		if len(ready) == 0 {
 			if board.AgentWorkRemaining() {
+				// Nothing is executable, yet the board says work is in
+				// progress. runWave is synchronous, so nothing actually is:
+				// whatever sits in in_progress/in_review was abandoned by a
+				// wave that already returned, and no code path re-dispatches
+				// those columns. Re-queue them and schedule again rather than
+				// idling 31 rounds waiting on an agent that exited.
+				if r.reclaimOrphaned(board) > 0 {
+					continue
+				}
 				idleRounds++
 				if idleRounds > 30 {
 					return r.giveUp(board, ErrIdleTimeout, idleRounds)
@@ -3212,18 +3226,32 @@ var evidentialDiskMarkers = []string{
 // subsequent task a Disk evidence section and a fast-path auto-approval.
 const outOfScopeDirtyMarker = "out-of-scope repo dirt (NOT evidence for this task):"
 
-// hasCriteriaSection reports whether a criteria evidence section is already
-// attached — genuine or forged.
+// hasCriteriaSection reports whether a GENUINE criteria evidence section is
+// already attached — one this process wrote, not one the model typed.
 //
-// Forgery is harmless in this direction and checking for it would be worse:
-// the only thing a match suppresses is a SECOND run of the same commands, and
-// a forged section carries no verdict marker, so CriteriaBlockedInOutput and
-// CriteriaUnverifiedInOutput both stay false and the reviewer simply judges
-// the task on the other gates. Treating a forged header as absent would
-// instead re-run the project's test suite on every review of every task whose
-// worker happened to echo the header — a real cost to defend against nothing.
+// The provenance stamp is what separates them, and it has to be checked here.
+// A match suppresses the review-time criteria gate, so a worker that merely
+// echoes "## Acceptance criteria" — a plausible thing to write, since the
+// reviewer contract in its own prompt names that heading — can switch the gate
+// off. The consequence is not neutral: with no section actually run,
+// CriteriaUnverifiedInOutput stays false, and false is the value that ALLOWS
+// the reviewer fast path (see gateState.fastPath). "Nothing was checked" would
+// read as "nothing needs checking".
+//
+// The cost objection to checking forgery does not apply to a STAMP check: a
+// genuine section always carries the stamp, so it is still recognized and the
+// commands are still not re-run. Only a forged header pays for a real
+// verification, which is the correct place for that cost to land.
 func hasCriteriaSection(output string) bool {
-	return strings.Contains(output, quality.CriteriaSectionHeader)
+	idx := strings.Index(output, quality.CriteriaSectionHeader)
+	if idx < 0 {
+		return false
+	}
+	// The stamp is emitted immediately before the section it vouches for
+	// (quality.StampHarnessSection), so a genuine one always precedes the
+	// header. Its nonce is unguessable to anything that has not seen this
+	// process's own output.
+	return strings.Contains(output[:idx], quality.SectionStamp())
 }
 
 func hasDiskEvidenceSection(output string) bool {

@@ -1,0 +1,104 @@
+api_version: blocks/v1
+kind: quality
+id: untitledui
+name: Untitled UI Assembler Quality Pack
+description: >-
+  React verify pack for projects assembled from Untitled UI — the React quality
+  gates (lint, tsc --noEmit, tests, build) plus the untitledui CLI prefixes the
+  assembler needs to install components.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [untitledui, react, typescript, tailwind, assembler]
+icon: "🎨"
+shareable: true
+spec:
+  detect:
+    # Library-specific markers ONLY. No package.json in `files` and no .tsx in
+    # `extensions`: detection is additive, so either would score every React
+    # project and this pack would outrank `react` on projects that have never
+    # heard of Untitled UI.
+    #
+    # components.json is shared with shadcn, which is why the DEPENDENCY is what
+    # separates them: ContentScore (25) outweighs MarkerScore (12), so each pack
+    # wins on the project that actually carries its dependency regardless of the
+    # shared file or the priority tiebreak.
+    # Verified against a real `untitledui init --vite` scaffold: it writes NO
+    # components.json (that file is optional for this library), so the component
+    # tree is the file marker and the dependency is the content proof.
+    files: [components.json, src/components/base, components/base]
+    contains:
+      package.json: ['"@untitledui/icons"']
+    # Above `react`'s 14 + its 6-point extension tiebreak (this pack lists no
+    # extensions, so it cannot claim a plain React project and cannot earn
+    # them), and one above shadcn so the unambiguous dependency wins on a
+    # project that somehow carries both markers.
+    priority: 23
+  lint:
+    - cmd: npm run lint --if-present
+      label: eslint
+      optional: true
+  typecheck:
+    - cmd: npx tsc --noEmit
+      label: tsc
+      optional: true
+  test:
+    - cmd: npm test --silent
+      label: npm test
+  build:
+    - cmd: npm run build --if-present
+      label: build
+  smoke: npx tsc --noEmit
+  # tsc, not `npm test`. Measured on a real `shadcn init -t vite` scaffold: it
+  # ships dev/build/lint/format/typecheck scripts and NO test script, so
+  # `npm test --silent` exits 1 with EMPTY output — indistinguishable from a
+  # real failure, and a gate that can never go green burns the whole run in
+  # correction loops (observed: 16 minutes, 3 errors, no path to success).
+  #
+  # Typecheck is also the honest gate for assembly work: the components were
+  # tested upstream, and what this run can actually get wrong is whether they
+  # resolve, whether the props match and whether the page compiles. A task that
+  # asks for tests still gets them — `test:` below runs them when a script
+  # exists, and per-task acceptance criteria verify them by name.
+  qa_gate: npx tsc --noEmit
+  safe_prefixes:
+    # The assembler's own toolchain. Scoped to the two untitledui subcommands
+    # that are safe to run unattended: `add` only creates files it does not
+    # already have, and `init` scaffolds a project.
+    #
+    # Deliberately NOT here: `untitledui example` (its -y implies --overwrite,
+    # and every template is PRO anyway), `untitledui upgrade` (rewrites
+    # theme.css, tsconfig.json and package.json), and bare `npx`.
+    - npx untitledui@latest add
+    - npx untitledui@latest init
+    - npx untitledui@0
+    - npm test
+    - npm run
+    - npm ci
+    - npm install
+    - 'npx tsc '
+    - 'npx vitest '
+    - 'npx jest '
+    - 'npx eslint '
+    - pnpm test
+    - pnpm run
+    - pnpm install
+    - yarn test
+    - yarn run
+    - yarn install
+    - bun test
+    - bun run
+    - bun install
+    - node --check
+  tester_hints: |
+    This project ASSEMBLES components from Untitled UI. Verify accordingly:
+    1) npx tsc --noEmit          (the aliases @/components, @/utils/cx must resolve)
+    2) npm run lint --if-present
+    3) npm test --silent
+    4) npm run build --if-present
+    An installed component is already reviewed upstream — do not write tests
+    that re-test the library's own behaviour. Test the PAGE: that it renders,
+    that props are wired, that handlers fire.
+    If `npm test` reports "no tests found", that is a FAIL for a task that
+    asked for tests, not a pass.

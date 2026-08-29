@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -494,9 +495,10 @@ func runDoctor() error {
 	if len(pinned) > 0 {
 		fmt.Println(cli.Warn(fmt.Sprintf("agents pinning LLM (override stack): %s", strings.Join(pinned, ", "))))
 		fmt.Println(cli.Dim("  tip: slmcode stack apply <name> --clear-agent-llm   or   slmcode agent clear-llm <id>"))
-	} else {
+	} else if len(ws.Config.ModelRoles) == 0 && len(ws.Config.ModelEscalation) == 0 {
 		fmt.Println(cli.Success("agents inherit stack/global LLM"))
 	}
+	reportModelRouting(ws.Config)
 	// .slmcode/auth.json holds provider API keys; `slmcode commit` runs
 	// `git add -A`, so an un-ignored .slmcode is a real leak path.
 	if gs := gitignoreStatus(ws.Config.Root, ws.Config.SlmDir()); gs["ok"] != true {
@@ -831,4 +833,72 @@ func providerRejectedAuth(check readiness.Check) bool {
 	}
 	code, _ := strconv.Atoi(m[1])
 	return code == 401 || code == 403
+}
+
+// reportModelRouting shows model_roles / model_escalation and checks that every
+// model they name is actually served.
+//
+// Two things were invisible before. "agents inherit stack/global LLM" was
+// printed unconditionally, which is simply false once model_roles pins a role —
+// the one line an operator reads to learn where their models go said the
+// opposite of the truth. And nothing validated the names: a typo in a pinned
+// model passed doctor at 100/100 and then failed mid-run, at the reviewer, after
+// minutes of real work. The model list is already fetched to answer "is the
+// main model available"; checking three more names against it costs nothing.
+func reportModelRouting(cfg *config.Config) {
+	if cfg == nil || (len(cfg.ModelRoles) == 0 && len(cfg.ModelEscalation) == 0) {
+		return
+	}
+	// Every distinct model the routing config names, in a stable order.
+	wanted := map[string][]string{} // model → the roles/rungs that name it
+	roles := make([]string, 0, len(cfg.ModelRoles))
+	for role := range cfg.ModelRoles {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		m := strings.TrimSpace(cfg.ModelRoles[role])
+		if m != "" {
+			wanted[m] = append(wanted[m], "@"+role)
+		}
+	}
+	for i, m := range cfg.ModelEscalation {
+		if m = strings.TrimSpace(m); m != "" {
+			wanted[m] = append(wanted[m], fmt.Sprintf("escalation rung %d", i+1))
+		}
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	for _, role := range roles {
+		cli.KeyVal("model_role", "@"+role+" → "+cfg.ModelRoles[role])
+	}
+	if len(cfg.ModelEscalation) > 0 {
+		cli.KeyVal("model_escalation", strings.Join(cfg.ModelEscalation, " → "))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	served, err := models.Fetch(ctx, cfg)
+	if err != nil || len(served) == 0 {
+		fmt.Println(cli.Dim("  routed models not verified — the endpoint did not list its models"))
+		return
+	}
+	have := make(map[string]bool, len(served))
+	for _, m := range served {
+		have[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	var missing []string
+	for m, users := range wanted {
+		if !have[strings.ToLower(m)] {
+			missing = append(missing, fmt.Sprintf("%s (%s)", m, strings.Join(users, ", ")))
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		fmt.Println(cli.Warn("routed model not served: " + strings.Join(missing, "; ")))
+		fmt.Println(cli.Dim("  the run will fail when it reaches that role — fix the name or load the model"))
+		return
+	}
+	fmt.Println(cli.Success(fmt.Sprintf("every routed model is served (%d)", len(wanted))))
 }

@@ -691,7 +691,17 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 		// reopen pass would reopen halves that are green by definition, which
 		// is what "every squad passed and the seam is wrong" means.
 		if qaFailed {
-			fake := `{"passed":false,"summary":"qa_gate command still failing","failures":["qa_gate red"]}`
+			// The gate's OWN output, not the literal "qa_gate red". The
+			// corrective rewrite scopes the fix by mining file paths out of
+			// these failure strings (resolveFailureTargets), and "qa_gate red"
+			// names no file — so it fell back to "whatever finished most
+			// recently" and could aim every correction round at files that were
+			// not the ones failing. Measured: three rounds scoped to pkg/tasks
+			// while every compiler error was in cmd/server/main.go, which none
+			// of them was allowed to touch.
+			failJSON, _ := json.Marshal(o.qaFailureLines(6))
+			fake := `{"passed":false,"summary":"qa_gate command still failing","failures":` +
+				string(failJSON) + `}`
 			_ = o.applyTesterFeedback(ctx, query, out.Board, fake)
 		}
 		snap := o.boardStore.Snapshot()
@@ -1331,4 +1341,36 @@ func (o *Orchestrator) runRestaffedTickets(ctx context.Context, query string, bo
 		From: "test", To: "done", Wave: o.waveCounter,
 	})
 	return board, out, false
+}
+
+// qaFailureLines returns the most recent QA gate failure as individual lines,
+// so the corrective rewrite can resolve the files they name.
+//
+// Compiler and test runners print one diagnostic per line, each starting with
+// the path it concerns; splitting is what lets resolveFailureTargets scope the
+// fix at the file that is actually broken. Falls back to the generic marker
+// when the gate recorded nothing, so the caller always has a failure to report.
+func (o *Orchestrator) qaFailureLines(max int) []string {
+	if o == nil {
+		return []string{"qa_gate red"}
+	}
+	o.mu.Lock()
+	raw := o.lastQAFailure
+	o.mu.Unlock()
+	// The verdict is printed LAST by every runner this harness drives, so take
+	// the excerpt that keeps the tail rather than a head cut.
+	raw = quality.FailureExcerpt(strings.TrimSpace(raw), 2000)
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+		if len(out) >= max {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return []string{"qa_gate red"}
+	}
+	return out
 }

@@ -108,8 +108,13 @@ type objectiveGate struct {
 	// A "nothing to run" exit is NoTests, never Green — it verifies nothing and
 	// must not end a run early.
 	Green bool
-	// NoTests is a non-zero exit that means only "the toolchain found nothing
-	// to run", with no real failure hiding among the [no test files] lines.
+	// NoTests means the toolchain found nothing to run, with no real failure
+	// hiding among the [no test files] lines.
+	//
+	// It is NOT only a non-zero exit. `go test ./...` on a tree with no test
+	// files exits ZERO, so a Go project that was asked for tests and got none
+	// reported Green here and the run finished "verified" having executed not
+	// one test. See qaRanNoTests.
 	NoTests bool
 	// Weak marks a syntax-only gate (compileall / py_compile / node --check).
 	// A weak gate may report Green and STILL never end a run early: a syntax
@@ -140,12 +145,62 @@ func classifySmoke(cmd string, sr quality.SmokeResult) objectiveGate {
 		Weak: quality.IsWeakQACommand(cmd)}
 	switch {
 	case !sr.Ran:
+	// Before sr.OK, not after: the vacuous case EXITS ZERO, so a green-first
+	// switch can never reach it. This is the line that decides whether "the
+	// harness ran no tests" is reported as "the harness verified the change".
+	case qaRanNoTests(sr.Output):
+		g.NoTests = true
 	case sr.OK:
 		g.Green = true
 	case qaLooksLikeNoTests(sr.Output):
 		g.NoTests = true
 	}
 	return g
+}
+
+// qaRanNoTests reports whether a test command executed no tests at all.
+//
+// Distinct from qaLooksLikeNoTests, which asks whether a FAILING command failed
+// only because it found nothing (pytest exits 5 on an empty collection). This
+// one is about the success path, which is where the damage is: `go test ./...`
+// on a tree with no _test.go files prints "[no test files]" and exits 0.
+// Measured live — a run asked for "both parts must have tests", wrote none, and
+// finished ✔ with "qa_gate green" because zero tests is a zero exit code.
+//
+// The "no test files" token alone is NOT enough to call a run vacuous: a healthy
+// repository prints one such line per package without tests, right beside the
+// "ok" lines of the packages that do have them. Only a tree where nothing at all
+// executed verifies nothing.
+func qaRanNoTests(output string) bool {
+	if strings.TrimSpace(output) == "" {
+		return false
+	}
+	for _, tok := range realFailureTokens {
+		if strings.Contains(output, tok) {
+			return false
+		}
+	}
+	// Unambiguous: the runner says outright that it collected nothing.
+	if strings.Contains(output, "collected 0 items") || strings.Contains(output, "no tests ran") {
+		return true
+	}
+	if strings.Contains(output, "no test files") || strings.Contains(output, "no Go files") {
+		return !goTestsExecuted(output)
+	}
+	return false
+}
+
+// goTestsExecuted reports whether any Go package actually ran tests.
+func goTestsExecuted(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "ok ") || strings.HasPrefix(l, "ok\t") ||
+			strings.HasPrefix(l, "--- PASS") || strings.HasPrefix(l, "--- FAIL") ||
+			strings.HasPrefix(l, "=== RUN") {
+			return true
+		}
+	}
+	return false
 }
 
 // How often ONE run may spend the objective command on the mid-run "are we
@@ -745,6 +800,11 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 		}
 
 		failText := strings.TrimSpace(sr.Output + "\n" + sr.Summary)
+		// Remember it for the corrective rewrite: it is the only place the
+		// FAILING FILES are named, and the rewrite scopes the fix from them.
+		o.mu.Lock()
+		o.lastQAFailure = failText
+		o.mu.Unlock()
 		// FailureExcerpt, never a head cut: every runner this harness drives
 		// prints its verdict LAST, so head-only truncation handed the reader
 		// collection noise with the assertion removed.

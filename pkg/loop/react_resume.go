@@ -31,6 +31,20 @@ func (r *Runner) slmDir() string {
 	return filepath.Join(r.Root, ".slmcode")
 }
 
+// stateRoot is the directory whose `.slmcode` child holds harness state, for
+// the stores that take a project root and do the join themselves (pkg/graph).
+//
+// Mirrors config.StateRoot: under worktree isolation SlmDir points at the
+// ORIGIN checkout while Root is the sandbox, so a store opened on Root writes
+// state that is deleted with the sandbox.
+func (r *Runner) stateRoot() string {
+	dir := r.slmDir()
+	if dir == "" {
+		return r.Root
+	}
+	return filepath.Dir(dir)
+}
+
 func (r *Runner) loadReact(taskID string) *session.ReactCheckpoint {
 	if r.TurnID == "" || taskID == "" {
 		return nil

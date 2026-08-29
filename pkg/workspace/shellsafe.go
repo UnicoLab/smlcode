@@ -54,8 +54,31 @@ var BuildTestPrefixes = []string{
 	"ctest ", "cmake ",
 	"bash -n", "shellcheck ",
 	"tsc ", "eslint ", "ruff ", "mypy ", "black ", "flake8 ",
+	// The npx forms of the SAME verification tools. `tsc` and `eslint` are
+	// already builtin above, but a JS/TS project almost never has them on PATH
+	// — they live in node_modules, and `npx tsc --noEmit` is how every one of
+	// these packs actually spells it (it is the react and shadcn packs' own
+	// typecheck and qa_gate). Leaving the npx form out made the pack's own
+	// documented command reachable only through a pack-supplied allow entry,
+	// which is one more thing that has to be wired correctly before a
+	// typechecker can run. Measured: a live assembler run was refused for
+	// `npx tsc --noEmit` — its own smoke command.
+	//
+	// These name a FIXED tool, unlike bare `npx`: the package is part of the
+	// prefix, so none of them can be redirected at another program.
+	// Trailing space is load-bearing, and it is why `tsc `/`eslint ` above
+	// carry one too: matching is a plain HasPrefix, so `npx tsc` without it
+	// also admits `npx tsc-evil`, an arbitrary package whose name merely
+	// starts the same way.
+	"npx tsc ", "npx vitest ", "npx jest ", "npx eslint ", "npx prettier ",
 	"gcc ", "g++ ", "clang ", "clang++ ",
 	"uv run pytest", "uv sync", "uv pip",
+
+	// Component-library assembly is NOT a prefix — see IsAssemblerCommand in
+	// assemblersafe.go. `npx shadcn add`, `npx shadcn@latest add` and
+	// `npx --yes shadcn@4.19.0 add` are the same command, and a literal prefix
+	// admits only one of them: measured, a live 30B lost a whole turn to a
+	// refusal for writing the first.
 }
 
 // ExecutorPrefixes can run arbitrary code and therefore require explicit opt-in.
@@ -230,6 +253,13 @@ func IsSafeBash(command string, prefixes []string) bool {
 }
 
 func segmentHasSafePrefix(segment string, prefixes []string) bool {
+	// The component-library installers are matched structurally rather than by
+	// prefix, because the same command has several equally natural spellings.
+	// IsAssemblerCommand returns false for the ones that name a remote
+	// registry, so this cannot become a way past AssemblerFetchesRemoteCode.
+	if IsAssemblerCommand(segment) {
+		return true
+	}
 	for _, p := range prefixes {
 		if p == "" {
 			continue
@@ -287,6 +317,14 @@ func GuardShellWhitelist(command string, extra []string) (refuse string, blocked
 	if reason, unsafe := UnsafeShellSyntax(command); unsafe {
 		return reason, true
 	}
+	// Before the whitelist, not after: the install prefix IS whitelisted, so a
+	// check that ran later would never see the command at all. This is the one
+	// refusal that applies to a command the allow-list already admits.
+	for _, seg := range splitCommandChain(command) {
+		if reason, blocked := AssemblerFetchesRemoteCode(strings.TrimSpace(seg)); blocked {
+			return reason, true
+		}
+	}
 	prefixes := SafePrefixes(extra)
 	if IsSafeBash(command, prefixes) {
 		return "", false
@@ -326,22 +364,39 @@ func GuardShellWhitelist(command string, extra []string) (refuse string, blocked
 	}
 	switch ClassifySegment(offender) {
 	case "executor":
+		// The refused COMMAND, not only the binary. A message that says `"npx"
+		// can execute arbitrary code` is unanswerable: npx runs a different
+		// program per invocation, so the model cannot tell which spelling was
+		// rejected and neither can an operator reading the log. Diagnosing a
+		// real refusal here took a full extra run purely because the text never
+		// said what had been refused.
 		return fmt.Sprintf(
 			"shell refused — %q can execute arbitrary code, so it needs explicit operator approval "+
-				"(add it to shell_allow / SLMCODE_BASH_ALLOW).\n"+
+				"(add it to shell_allow / SLMCODE_BASH_ALLOW).\nRefused command: %s\n"+
 				"For verification use an allowed runner instead: `go test ./pkg/x -short`, "+
-				"`python -m pytest -q`, `python -m py_compile <file>`, `node --check <file>`.", name), true
+				"`python -m pytest -q`, `python -m py_compile <file>`, `node --check <file>`.",
+			name, clipCommand(offender)), true
 	case "mutator":
 		return fmt.Sprintf(
 			"shell refused — %q modifies files outside the tool layer, so edits cannot be "+
-				"checkpointed, reviewed or reverted.\n"+
+				"checkpointed, reviewed or reverted.\nRefused command: "+clipCommand(offender)+"\n"+
 				"Use ws_edit / ws_patch to change a file, ws_write to create one, "+
 				"ws_mv to rename, ws_delete to remove.", name), true
 	}
 	return fmt.Sprintf(
 		"shell whitelist: %q is not an allowed command. Use an allowed verification command "+
 			"(go test / go vet / pytest / python -m py_compile / node --check / npm test), "+
-			"or make the change with ws_edit / ws_write / ws_patch.",
-		name,
+			"or make the change with ws_edit / ws_write / ws_patch.\nRefused command: %s",
+		name, clipCommand(offender),
 	), true
+}
+
+// clipCommand bounds a refused command quoted back into a prompt or a log.
+func clipCommand(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	const max = 200
+	if len(cmd) <= max {
+		return cmd
+	}
+	return cmd[:max] + "…"
 }

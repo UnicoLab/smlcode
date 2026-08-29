@@ -772,6 +772,24 @@ func (c *Config) SlmDir() string {
 	}
 	return filepath.Join(c.Root, DirName)
 }
+
+// StateRoot is the directory whose `.slmcode` child is the state directory.
+//
+// It exists for the subsystems that build their own `<dir>/.slmcode/…` path
+// instead of calling SlmDir — pkg/memory, pkg/graph and evolve's metrics all
+// take a PROJECT root and do the join themselves. Handed Root, those three
+// follow the run into an isolated worktree and write state that is deleted
+// with it; handed StateRoot they land in the origin like everything that goes
+// through SlmDir.
+//
+// With StateDir unset this is exactly Root, so nothing moves for a normal run.
+func (c *Config) StateRoot() string {
+	if strings.TrimSpace(c.StateDir) == "" {
+		return c.Root
+	}
+	return filepath.Dir(c.SlmDir())
+}
+
 func (c *Config) ConfigPath() string { return filepath.Join(c.SlmDir(), "config.yaml") }
 func (c *Config) SkillsDir() string  { return filepath.Join(c.SlmDir(), "skills") }
 func (c *Config) AgentsDir() string  { return filepath.Join(c.SlmDir(), "agents") }

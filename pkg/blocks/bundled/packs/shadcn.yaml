@@ -1,0 +1,23 @@
+api_version: blocks/v1
+kind: pack
+id: shadcn
+name: shadcn/ui Assembler Pack
+description: >-
+  Build React UI by INSTALLING shadcn/ui components with the CLI and wiring them
+  into pages, instead of writing them from scratch. Pipeline, quality gates and
+  an assembler worker + reviewer. Use the `react` pack to hand-write components.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [shadcn, react, typescript, tailwind, pack, assembler, marketplace]
+icon: "🧩"
+shareable: true
+spec:
+  pipeline: shadcn
+  quality: shadcn
+  agents: [shadcn-worker, shadcn-reviewer, react-tester]
+  skills: [atomic-coding, specialist-tester, specialist-worker, react-hooks, typescript-strict]
+  pin_skills: true
+  override_tester: react-tester
+  override_worker: shadcn-worker

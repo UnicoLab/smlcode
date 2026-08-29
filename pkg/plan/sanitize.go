@@ -126,11 +126,132 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 	// A splitter that emits T1..T6 all editing index.html causes endless
 	// "old_str not found" correction loops (each worker's context is stale after
 	// the previous edit) — one worker on one self-contained file is far cheaper.
+	tasks = mergeSameFileWorkers(tasks)
 	if shouldCollapseSameFile(tasks) {
 		tasks = collapseToWorker(tasks, nil, query)
 	}
 	tasks = EnsureGreenfieldHarness(tasks, query)
 	return EnsureTesterTask(tasks, query)
+}
+
+// mergeSameFileWorkers folds worker tasks that target the SAME file set into
+// one, rewriting every dependency that pointed at a task it absorbed.
+//
+// shouldCollapseSameFile already handles the all-or-nothing case: EVERY worker
+// on one file set collapses to a single task. What it cannot see is the far
+// more common shape, where only SOME of them overlap. Measured on a live run:
+// "Render task list in App.tsx with Card, Badge and Delete Button" and "Import
+// and implement shadcn components in App.tsx" — one job, split in two, both
+// scoped to src/App.tsx — alongside a third worker on a different file, so the
+// all-or-nothing rule declined and both duplicates survived.
+//
+// Two workers on one file is not merely wasteful. They cannot run in the same
+// wave (admitDisjoint refuses to schedule them together, because concurrent
+// workers share one working tree), so each costs a full wave of its own, and
+// the second opens a file the first has already rewritten — which is exactly
+// the stale-context "old_str not found" correction loop this package keeps
+// trying to avoid.
+//
+// Only worker/deep roles merge. A tester or reviewer on the same file is a
+// different job on the same subject, and merging those would delete the
+// verification step.
+func mergeSameFileWorkers(tasks []Task) []Task {
+	if len(tasks) < 2 {
+		return tasks
+	}
+	// Two keys reach the same survivor, because one alone is wrong in a
+	// different direction each time. The PRIMARY file catches the common live
+	// shape — five workers all rewriting src/App.tsx with different tails of
+	// components appended. The whole SET catches the same job written with its
+	// files in another order, where the primaries differ but the work does not.
+	byPrimary := map[string]int{}
+	bySet := map[string]int{}
+	// absorbed task id → the id that absorbed it, for dependency rewriting.
+	absorbed := map[string]string{}
+	out := make([]Task, 0, len(tasks))
+	for _, t := range tasks {
+		t.Normalize()
+		if (t.Role != RoleWorker && t.Role != "deep") || len(t.Files) == 0 {
+			out = append(out, t)
+			continue
+		}
+		pk, sk := primaryFileKey(t.Files), fileSetKey(t.Files)
+		idx, seen := bySet[sk]
+		if !seen {
+			idx, seen = byPrimary[pk]
+		}
+		if !seen {
+			byPrimary[pk] = len(out)
+			bySet[sk] = len(out)
+			out = append(out, t)
+			continue
+		}
+		into := &out[idx]
+		absorbed[t.ID] = into.ID
+		into.Description = strings.TrimSpace(into.Description + "\n\nAlso, in the same pass:\n" +
+			strings.TrimSpace(firstNonEmpty(t.Description, t.Title)))
+		into.Criteria = mergeCriteria([]Task{*into, t})
+		into.DependsOn = uniq(append(into.DependsOn, t.DependsOn...))
+		if strings.TrimSpace(into.Acceptance) == "" {
+			into.Acceptance = t.Acceptance
+		}
+	}
+	if len(absorbed) == 0 {
+		return tasks
+	}
+	// Rewrite dependencies onto the surviving task, and drop the self-edges
+	// that creates when a task depended on one of its own absorbers.
+	for i := range out {
+		if len(out[i].DependsOn) == 0 {
+			continue
+		}
+		deps := make([]string, 0, len(out[i].DependsOn))
+		for _, d := range out[i].DependsOn {
+			if to, ok := absorbed[d]; ok {
+				d = to
+			}
+			if d != out[i].ID {
+				deps = append(deps, d)
+			}
+		}
+		out[i].DependsOn = uniq(deps)
+	}
+	return out
+}
+
+// primaryFileKey identifies the file a worker task is really about.
+//
+// Keyed on the FIRST file, not the whole set, because the whole set almost
+// never repeats. Measured on a live board: five workers all editing
+// src/App.tsx, listing it first every time, but each carrying a different tail
+// of components it happened to mention — six files, three, one, two, two. As
+// exact sets those are five distinct jobs; as work they are one file rewritten
+// five times.
+//
+// That shape is the expensive one. Workers sharing a file cannot run in the
+// same wave (admitDisjoint refuses, because they share one working tree), so
+// each pays a full wave, and every worker after the first opens a file the
+// previous one has already rewritten — the stale-context "old_str not found"
+// loop. One worker per file is the position this package already takes in
+// shouldCollapseSameFile; this makes it reachable when the tails differ.
+// fileSetKey renders a task's file set order-independently.
+func fileSetKey(files []string) string {
+	cur := make([]string, 0, len(files))
+	for _, f := range files {
+		cur = append(cur, strings.ToLower(strings.TrimSpace(filepath.ToSlash(f))))
+	}
+	sort.Strings(cur)
+	return strings.Join(cur, "\x00")
+}
+
+func primaryFileKey(files []string) string {
+	for _, f := range files {
+		f = strings.ToLower(strings.TrimSpace(filepath.ToSlash(f)))
+		if f != "" {
+			return f
+		}
+	}
+	return ""
 }
 
 // shouldCollapseSameFile reports whether every worker/deep task targets the exact
@@ -514,6 +635,7 @@ func collapseToWorker(tasks []Task, known []string, query string) []Task {
 		files = append(files, t.Files...)
 	}
 	files = uniq(files)
+	criteria := mergeCriteria(tasks)
 	desc := "Complete the user request in one shot. Use workspace tools (ws_read/ws_edit/ws_write). Stay minimal.\n" +
 		"ONLY edit files that exist — never invent paths like internal/... unless listed below.\n\nRequest:\n" + query
 	if len(files) > 0 {
@@ -527,7 +649,44 @@ func collapseToWorker(tasks []Task, known []string, query string) []Task {
 		Column:      ColReadyToDev,
 		Files:       files,
 		Acceptance:  "Change matches the request; keep scope tiny; target files must exist and be edited via tools",
+		Criteria:    criteria,
 	}}
+}
+
+// mergeCriteria carries the collapsed tasks' acceptance criteria onto the one
+// task that replaces them.
+//
+// Collapse merges tasks that describe the SAME work — either a request small
+// enough for one worker, or a pile of tasks all editing one file set — so
+// their criteria all speak about that work and belong on the survivor. Without
+// this, every criterion the splitter authored is discarded here, silently:
+// quality.VerifyCriteria has nothing to run, the reviewer sees no "## Acceptance
+// criteria" rows, and a task whose stated condition was never checked reads
+// exactly like one that passed. That is the failure UNVERIFIED exists to make
+// visible, reintroduced one layer above it.
+//
+// Duplicates are dropped on (text, verify) because collapsed tasks routinely
+// repeat the project's one test command; NormalizeCriteria then re-IDs the
+// survivors and enforces MaxCriteria, so a wide split cannot smuggle in an
+// unbounded checklist.
+func mergeCriteria(tasks []Task) []Criterion {
+	var out []Criterion
+	seen := map[string]bool{}
+	for _, t := range tasks {
+		for _, c := range t.Criteria {
+			key := strings.ToLower(strings.TrimSpace(c.Text)) + "\x00" +
+				strings.ToLower(strings.TrimSpace(c.Verify))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			// Drop the incoming ID: it was unique per source task, so two
+			// tasks' "C1" would collide on the survivor.
+			c.ID = ""
+			out = append(out, c)
+		}
+	}
+	return NormalizeCriteria(out)
 }
 
 func uniq(in []string) []string {

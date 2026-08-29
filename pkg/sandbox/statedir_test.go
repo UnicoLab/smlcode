@@ -52,6 +52,37 @@ func TestBlankStateDirIsIgnored(t *testing.T) {
 	}
 }
 
+// The other half of the contract, for the stores that never call SlmDir.
+//
+// pkg/memory, pkg/graph and evolve's metrics writer all take a PROJECT root and
+// join `<root>/.slmcode/…` themselves, so SlmDir following StateDir does
+// nothing for them — they follow whatever root they are handed. Measured on a
+// live isolated run: handed cfg.Root they wrote memory, the derived graph and
+// the metrics row into the worktree, where `git add -A` swept them into the
+// commit merged onto the operator's branch and cleanup then deleted the rest.
+func TestStateRootPointsAtTheOriginUnderIsolation(t *testing.T) {
+	cfg := &config.Config{Root: "/tmp/worktree-xyz", StateDir: "/tmp/project/.slmcode"}
+	if got := cfg.StateRoot(); got != "/tmp/project" {
+		t.Fatalf("StateRoot = %q, want /tmp/project — the checkout that owns the state", got)
+	}
+	// The join those stores perform must land inside the pinned state dir.
+	got := filepath.Join(cfg.StateRoot(), config.DirName, "memory")
+	if want := filepath.Join(cfg.SlmDir(), "memory"); got != want {
+		t.Fatalf("store path %q does not agree with SlmDir %q", got, want)
+	}
+}
+
+// With no StateDir — every non-isolated run — StateRoot must be Root exactly,
+// or this relocates state for everybody.
+func TestStateRootIsRootWithoutStateDir(t *testing.T) {
+	for _, sd := range []string{"", "   "} {
+		cfg := &config.Config{Root: "/tmp/project", StateDir: sd}
+		if got := cfg.StateRoot(); got != "/tmp/project" {
+			t.Errorf("StateRoot = %q with StateDir=%q, want /tmp/project", got, sd)
+		}
+	}
+}
+
 func TestIsolatedRunKeepsStateInTheOriginCheckout(t *testing.T) {
 	// End to end against a real worktree: state written during an "isolated
 	// run" lands in the operator's checkout and survives the sandbox being

@@ -1,0 +1,100 @@
+api_version: blocks/v1
+kind: quality
+id: shadcn
+name: shadcn/ui Assembler Quality Pack
+description: >-
+  React verify pack for projects assembled from shadcn/ui — the React quality
+  gates (lint, tsc --noEmit, tests, build) plus the shadcn CLI prefixes the
+  assembler needs to install components.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [shadcn, react, typescript, tailwind, assembler]
+icon: "🧩"
+shareable: true
+spec:
+  detect:
+    # Library-specific markers ONLY. No package.json in `files` and no .tsx in
+    # `extensions`: detection is additive, so either would score every React
+    # project and this pack would outrank `react` and `typescript` on projects
+    # that have never heard of shadcn.
+    files: [components.json]
+    contains:
+      package.json: ['"class-variance-authority"']
+    # 22, not 18. The arithmetic matters: `react` also matches this project and
+    # scores 12 (package.json) + 25 ("react") + 6 (ExtScore 2 × MaxExtHits 3)
+    # + 14 = 57. This pack lists no `extensions` — deliberately, so it cannot
+    # claim a plain React project — and therefore forfeits that 6-point
+    # tiebreak, so it needs a priority above react's 14 + 6 to win on a project
+    # that is genuinely shadcn. At 18 it lost by two and every real shadcn
+    # scaffold was detected as plain `react`.
+    priority: 22
+  lint:
+    - cmd: npm run lint --if-present
+      label: eslint
+      optional: true
+  typecheck:
+    - cmd: npx tsc --noEmit
+      label: tsc
+      optional: true
+  test:
+    - cmd: npm test --silent
+      label: npm test
+  build:
+    - cmd: npm run build --if-present
+      label: build
+  smoke: npx tsc --noEmit
+  # tsc, not `npm test`. Measured on a real `shadcn init -t vite` scaffold: it
+  # ships dev/build/lint/format/typecheck scripts and NO test script, so
+  # `npm test --silent` exits 1 with EMPTY output — indistinguishable from a
+  # real failure, and a gate that can never go green burns the whole run in
+  # correction loops (observed: 16 minutes, 3 errors, no path to success).
+  #
+  # Typecheck is also the honest gate for assembly work: the components were
+  # tested upstream, and what this run can actually get wrong is whether they
+  # resolve, whether the props match and whether the page compiles. A task that
+  # asks for tests still gets them — `test:` below runs them when a script
+  # exists, and per-task acceptance criteria verify them by name.
+  qa_gate: npx tsc --noEmit
+  safe_prefixes:
+    # The assembler's own toolchain, scoped to the two subcommands that are
+    # safe unattended. A separate guard refuses an `add` that names a URL or a
+    # third-party @registry, so this cannot become "fetch and write arbitrary
+    # code from anywhere" — see pkg/workspace/shellsafe.go.
+    #
+    # Deliberately NOT here: `shadcn eject` (irreversible), `shadcn migrate`
+    # (rewrites config and every component), and bare `npx`.
+    - npx shadcn@latest add
+    - npx shadcn@latest init
+    - npx shadcn@latest info
+    - npx shadcn@4
+    - npm test
+    - npm run
+    - npm ci
+    - npm install
+    - 'npx tsc '
+    - 'npx vitest '
+    - 'npx jest '
+    - 'npx eslint '
+    - pnpm test
+    - pnpm run
+    - pnpm install
+    - yarn test
+    - yarn run
+    - yarn install
+    - bun test
+    - bun run
+    - bun install
+    - node --check
+  tester_hints: |
+    This project ASSEMBLES components from shadcn/ui. Verify accordingly:
+    1) npx tsc --noEmit          (the @/components and @/lib/utils aliases must resolve)
+    2) npm run lint --if-present
+    3) npm test --silent
+    4) npm run build --if-present
+    An installed component is already reviewed upstream — do not write tests
+    that re-test the library's own behaviour. Test the PAGE: that it renders,
+    that props are wired, that handlers fire.
+    If `npm test` reports "no tests found", that is a FAIL for a task that
+    asked for tests, not a pass.

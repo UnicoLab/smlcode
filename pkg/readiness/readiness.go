@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -274,6 +275,19 @@ func ProbeProvider(ctx context.Context, cfg *config.Config) Check {
 		return check
 	}
 	if modelListed(modelID, names) {
+		// The main model is served. Every model the ROUTING config names has to
+		// be too: model_roles pins a role to a model and model_escalation names
+		// the rungs a failing task climbs to, and neither is exercised until a
+		// run reaches that role — which is minutes in, after real work. A typo
+		// there used to pass readiness at 100/100 and fail at the reviewer.
+		if missing := unservedRoutedModels(cfg, names); len(missing) > 0 {
+			check.Message = fmt.Sprintf("%s routed model not served: %s", provider, strings.Join(missing, "; "))
+			check.FixLabel = "Fix model_roles / model_escalation"
+			check.FixHint = "Every model named by model_roles or model_escalation must be served by the endpoint — " +
+				"correct the name or load the model."
+			check.Details["unserved_routed_models"] = missing
+			return check
+		}
 		check.OK = true
 		check.Message = fmt.Sprintf("%s model %q available (%d listed)", provider, modelID, len(names))
 		return check
@@ -432,4 +446,36 @@ func compactionCheck(cfg *config.Config) Check {
 		FixPatch: fixPatchIf(!cfg.ContextCompact || !cfg.ReactCompact,
 			"context_compact", true, "react_compact", true, "react_compact_at_percent", 80),
 	}
+}
+
+// unservedRoutedModels returns the model_roles / model_escalation entries the
+// endpoint does not serve, each labeled with what names it.
+//
+// Sorted, so the message is stable across runs rather than following Go's map
+// iteration order.
+func unservedRoutedModels(cfg *config.Config, served []string) []string {
+	if cfg == nil {
+		return nil
+	}
+	users := map[string][]string{}
+	for role, model := range cfg.ModelRoles {
+		if m := strings.TrimSpace(model); m != "" {
+			users[m] = append(users[m], "@"+strings.TrimSpace(role))
+		}
+	}
+	for i, model := range cfg.ModelEscalation {
+		if m := strings.TrimSpace(model); m != "" {
+			users[m] = append(users[m], fmt.Sprintf("escalation rung %d", i+1))
+		}
+	}
+	var missing []string
+	for model, who := range users {
+		if modelListed(model, served) {
+			continue
+		}
+		sort.Strings(who)
+		missing = append(missing, fmt.Sprintf("%s (%s)", model, strings.Join(who, ", ")))
+	}
+	sort.Strings(missing)
+	return missing
 }

@@ -276,6 +276,7 @@ func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, que
 		}
 	}
 	ensureCriticalComposition(comp, workerHint, testerHint)
+	restoreClassCoordination(comp)
 	orderCompositionPhases(comp)
 	lang := ""
 	if o != nil && o.cfg != nil {
@@ -402,7 +403,7 @@ func ensureCompositionHandoff(comp *composer.Composition, query string, inventor
 		}
 	}
 	if (workerHint != "" || testerHint != "") && !handoffMentions(handoff, "implementation") && !handoffMentions(handoff, "verification") {
-		add("Use " + valueOr(workerHint, "worker") + " for implementation and " + valueOr(testerHint, "tester") + " for verification")
+		add(specialistHandoffLine(query, workerHint, testerHint))
 	}
 	if cmd := verificationHintForLang(lang); cmd != "" && !handoffMentions(handoff, "verify") {
 		add("Verify with " + cmd)
@@ -717,6 +718,41 @@ func heuristicComposition(query string, inventory []string, lang, exploreOut, ar
 // one-file addition from a subsystem is not a license to trim that subsystem's
 // pipeline. Under-provisioning is how a budget class turns into a correctness
 // regression, so the ambiguous case pays full price.
+// restoreClassCoordination re-adds the coord phase when the budget class bought
+// it and the composer LLM left it out.
+//
+// applyBudgetClass does this for the heuristic composition and is deliberately
+// not applied to the LLM one — the whole point of paying for the composer is
+// that its judgement about phases wins. Coordination is the one exception, and
+// for a structural reason rather than a preference: every other optional phase
+// is breadth the composer can see it does not need, but @coordinator acts on
+// the BOARD, which does not exist yet when the composer runs. Trading it away
+// is a decision made without the evidence the decision depends on.
+//
+// Measured across three live full-stack runs on a 30B: standard:task every
+// time, coord in the class both times it was budgeted, and dropped by the
+// composer in 3 of 3. The board then executed with no dependency-aware
+// promotion at all. Only coord is restored — the rest of the profile stays the
+// composer's call, so this cannot silently re-inflate a pipeline it trimmed.
+func restoreClassCoordination(comp *composer.Composition) {
+	if comp == nil {
+		return
+	}
+	if !comp.Profile().PhaseSet()["coord"] {
+		return
+	}
+	for _, p := range comp.Phases {
+		if p.ID == "coord" {
+			return
+		}
+	}
+	def := pipeline.Default()
+	comp.Phases = append(comp.Phases, composer.PhaseChoice{
+		ID: "coord", Agent: def.Phases["coord"].Agent,
+		Enabled: true, When: pipeline.WhenAuto,
+	})
+}
+
 func applyBudgetClass(comp *composer.Composition, query string) {
 	if comp == nil {
 		return
@@ -892,7 +928,7 @@ func heuristicHandoff(query string, targets []string, lang, worker, tester strin
 	} else {
 		out = append(out, "No exact target files found; explorer/splitter must use existing paths only")
 	}
-	out = append(out, "Use "+valueOr(worker, "worker")+" for implementation and "+valueOr(tester, "tester")+" for verification")
+	out = append(out, specialistHandoffLine(query, worker, tester))
 	if cmd := verificationHintForLang(lang); cmd != "" {
 		out = append(out, "Verify with "+cmd)
 	}
@@ -914,6 +950,85 @@ func containsAny(s string, needles ...string) bool {
 // queryLanguageSpecialists maps query keywords to the language-specific
 // worker/tester pair, or ("","") when the query language is not clearly known.
 // The generic worker/tester + project-language hint remain the safe fallback.
+// specialistHandoffLine tells the workers who owns the implementation.
+//
+// For a single-language request that is one named pair, exactly as before. For
+// a request that names two — the full-stack case — naming one pair is worse
+// than saying nothing: the run that produced this fix was handed "Use
+// react-worker for implementation" and "verify with go test ./..." in the same
+// contract, which is the self-contradiction pkg/orchestrator/langpick.go was
+// written to end, reappearing in the greenfield case it does not cover.
+//
+// What the workers are told now matches what actually happens: each task is
+// dispatched to the specialist that owns ITS files (pkg/loop's
+// specializeExecRole), so the contract describes the rule rather than a single
+// owner that only one half of the board would recognize.
+func specialistHandoffLine(query, worker, tester string) string {
+	if named := queryLanguagesNamed(query); len(named) > 1 {
+		return "Multi-language request: each task goes to the specialist that owns its files (" +
+			strings.Join(named, ", ") + "); verify each part with its own toolchain"
+	}
+	return "Use " + valueOr(worker, "worker") + " for implementation and " +
+		valueOr(tester, "tester") + " for verification"
+}
+
+// languageKeywords is the same evidence queryLanguageSpecialists switches on,
+// as data rather than control flow, so a query can be asked which languages it
+// names RATHER than only which one it names first.
+//
+// It is a separate table on purpose. queryLanguageSpecialists' switch order is
+// pinned by langpick_test.go and by the precedence rules in langpick.go, and
+// reordering it to serve this question would change which single specialist a
+// single-language query resolves to. This one answers a different question and
+// is allowed to be exhaustive.
+var languageKeywords = []struct {
+	worker   string
+	keywords []string
+}{
+	{"go-worker", []string{"golang", "go.mod", "net/http", " go ", "go rest", "go backend"}},
+	{"python-worker", []string{"python", "pytest", "fastapi", "django", "flask"}},
+	{"rust-worker", []string{"rust", "cargo"}},
+	{"java-worker", []string{"maven", "gradle", "spring boot"}},
+	{"kotlin-worker", []string{"kotlin", "ktor"}},
+	{"cpp-worker", []string{"c++", "cpp", "cmake"}},
+	{"dotnet-worker", []string{"c#", "csharp", ".net", "dotnet", "blazor"}},
+	{"ruby-worker", []string{"ruby", "rails", "rspec"}},
+	{"php-worker", []string{"php", "laravel", "symfony"}},
+	{"swift-worker", []string{"swift", "xcode"}},
+	{"react-worker", []string{"react", "next.js", "nextjs", "jsx", "tsx"}},
+	{"ts-worker", []string{"typescript", "ts-node", "deno", "node.js", "nodejs"}},
+	{"web-worker", []string{"html", "css", "vanilla js"}},
+	{"shell-worker", []string{"bash", "shell script"}},
+}
+
+// queryLanguagesNamed returns every language specialist the query names, in
+// table order.
+//
+// A full-stack request names two, and before per-file routing existed the
+// harness could only act on one of them: "a Go backend and a React frontend"
+// assembled a React-only team whose handoff then told it to verify with
+// `go test ./...`. The team is now decided per task from its files, so this is
+// used to tell the workers that, instead of naming one owner for the run.
+func queryLanguagesNamed(query string) []string {
+	q := strings.ToLower(query)
+	// Pad so a bare " go " keyword cannot match inside "django" or "logo".
+	padded := " " + q + " "
+	var out []string
+	for _, lang := range languageKeywords {
+		for _, kw := range lang.keywords {
+			hit := strings.Contains(q, kw)
+			if strings.HasPrefix(kw, " ") || strings.HasSuffix(kw, " ") {
+				hit = strings.Contains(padded, kw)
+			}
+			if hit {
+				out = append(out, lang.worker)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func queryLanguageSpecialists(query string) (worker, tester string) {
 	q := strings.ToLower(query)
 	switch {

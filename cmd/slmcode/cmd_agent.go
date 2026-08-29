@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/cli"
 	"github.com/UnicoLab/slmcode/pkg/config"
 )
@@ -150,6 +151,14 @@ func agentList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	custom, _ := cli.LoadProjectCustoms(ws.Config.AgentsDir())
+	// Block-defined agents too, exactly as the orchestrator registers them.
+	// Without this the list shows only the ~20 built-ins and whatever is on
+	// disk under .slmcode/agents, while a run happily dispatches to go-worker,
+	// react-tester or shadcn-worker — agents this command told the operator do
+	// not exist. `slmcode agent list` is the roster; a roster that omits every
+	// language specialist and both frontend assemblers is how an operator
+	// concludes a feature is missing when it is merely undisplayed.
+	custom = append(custom, blockAgentSpecs(ws.Config.Root, custom)...)
 	cli.Header("Agents")
 	if ws.Config.ActiveStack != "" {
 		cli.KeyVal("active_stack", ws.Config.ActiveStack)
@@ -186,4 +195,32 @@ func applyAgentFields(c *agents.CustomSpec, fields map[string]string) {
 			c.Skills = skills
 		}
 	}
+}
+
+// blockAgentSpecs returns the agent blocks the registry would register, minus
+// any id already present on disk — on-disk definitions win, the same precedence
+// the factory applies via ExtraCustoms.
+func blockAgentSpecs(root string, have []agents.CustomSpec) []agents.CustomSpec {
+	reg, err := blocks.Load(root)
+	if err != nil || reg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, c := range have {
+		seen[strings.ToLower(strings.TrimSpace(c.ID))] = true
+	}
+	var out []agents.CustomSpec
+	for _, ab := range reg.Agents {
+		spec := ab.Spec
+		if err := agents.NormalizeCustom(&spec); err != nil {
+			continue
+		}
+		id := strings.ToLower(strings.TrimSpace(spec.ID))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, spec)
+	}
+	return out
 }

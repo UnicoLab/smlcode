@@ -81,8 +81,44 @@ func isImplementerRole(role string) bool { return IsImplementerRole(role) }
 // while the gate parses for {"passed":…,"failures":…}, so a passing
 // verification reads as a malformed one and the run rewrites a plan that was
 // fine.
+// EscalationSuffix separates a base role id from its rung number.
+//
+// '@' is deliberate: it appears in no built-in or custom role id, and — unlike
+// '-' — it cannot collide with a legitimately hyphenated name such as
+// reviewer-strict or go-tester.
+//
+// It lives here, below agents, because the role PREDICATES live here: a
+// predicate that did not strip the rung was wrong for every escalated task, and
+// leaving each caller to remember to strip it first is how the bug keeps coming
+// back. agents.EscalationSuffix aliases this.
+const EscalationSuffix = "@esc"
+
+// baseRoleID drops a trailing escalation rung: "go-worker@esc2" → "go-worker".
+//
+// A rung must be a positive integer, so a role that legitimately contains the
+// separator keeps its whole name.
+func baseRoleID(id string) string {
+	i := strings.LastIndex(id, EscalationSuffix)
+	if i < 0 {
+		return id
+	}
+	rung := id[i+len(EscalationSuffix):]
+	if rung == "" {
+		return id
+	}
+	for _, c := range rung {
+		if c < '0' || c > '9' {
+			return id
+		}
+	}
+	if strings.TrimLeft(rung, "0") == "" {
+		return id
+	}
+	return id[:i]
+}
+
 func IsTesterRole(role string) bool {
-	role = strings.ToLower(strings.TrimSpace(role))
+	role = baseRoleID(strings.ToLower(strings.TrimSpace(role)))
 	if role == RoleTester {
 		return true
 	}
@@ -101,7 +137,7 @@ func IsTesterRole(role string) bool {
 // says that task has no implementer — and whatever the check was gating
 // silently stops happening for every task on a squad run, which is all of them.
 func IsImplementerRole(role string) bool {
-	role = strings.ToLower(strings.TrimSpace(role))
+	role = baseRoleID(strings.ToLower(strings.TrimSpace(role)))
 	switch role {
 	case "", RoleWorker, RoleCorrector:
 		return true

@@ -145,7 +145,9 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 
 	// Claimed-files gate. Re-run after EVERY corrector pass: a corrector that
 	// hallucinates files_changed after a rejection used to go un-regated.
-	if r.ClaimsGate && role != plan.RoleTester && role != plan.RoleExplorer {
+	// Suffix-aware: a routed `go-tester` is a tester, and an exact match here
+	// subjected it to a gate testers are deliberately exempt from.
+	if r.ClaimsGate && !plan.IsTesterRole(role) && role != plan.RoleExplorer {
 		if issues := quality.CheckClaimedFiles(r.Root, *t); len(issues) > 0 {
 			section := quality.FormatClaimsSection(issues)
 			t.Output = appendHarnessSection(t.Output, section)

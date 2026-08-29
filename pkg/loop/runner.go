@@ -1661,7 +1661,7 @@ func (g gateState) fastPath(role string) bool {
 	if g.criteriaOpen {
 		return false
 	}
-	return role != plan.RoleTester && !g.blocking() &&
+	return !plan.IsTesterRole(role) && !g.blocking() &&
 		(g.satisfied || g.diskWrite || g.diskSection) && g.scopeWhy == ""
 }
 
@@ -2130,7 +2130,7 @@ func reviewVerdictLine(review plan.ReviewResult) string {
 // runs the tester + evidence gates.
 func (r *Runner) applyHardGates(current *plan.Task, review plan.ReviewResult, g gateState,
 	baseline map[string]string) plan.ReviewResult {
-	if review.Approved && g.blocking() && current.Role != plan.RoleTester && !g.renameDisk {
+	if review.Approved && g.blocking() && !plan.IsTesterRole(current.Role) && !g.renameDisk {
 		summary, issue := g.rejectReason()
 		review.Approved = false
 		review.Score = 20

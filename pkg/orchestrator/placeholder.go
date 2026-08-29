@@ -102,7 +102,8 @@ func reopenPlaceholderTasks(board *plan.Board, gaps []quality.PreciseGap) {
 	for i := range board.Tasks {
 		t := &board.Tasks[i]
 		t.Normalize()
-		if t.Role != plan.RoleWorker && t.Role != plan.RoleCorrector && t.Role != "deep" &&
+		// Suffix-aware: a routed `go-worker` is the implementer this annotates.
+		if !plan.IsImplementerRole(t.Role) && t.Role != "deep" &&
 			t.Role != plan.RolePlaceholder {
 			continue
 		}

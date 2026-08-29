@@ -2419,7 +2419,7 @@ func (o *Orchestrator) formatWorkerPrompt(query string, t plan.Task) string {
 		return base
 	}
 	var extras strings.Builder
-	if o.cfg.ThinkingBudget && t.Role != plan.RoleTester {
+	if o.cfg.ThinkingBudget && !plan.IsTesterRole(t.Role) {
 		extras.WriteString(quality.ThinkingBudgetNudge(true))
 	}
 	if o.cfg.FinalizeWarn {

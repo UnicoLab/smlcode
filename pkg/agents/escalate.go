@@ -44,7 +44,7 @@ import (
 // '@' is deliberate: it appears in no built-in or custom role id, and — unlike
 // '-' — it cannot collide with a legitimately hyphenated name such as
 // reviewer-strict or go-tester.
-const EscalationSuffix = "@esc"
+const EscalationSuffix = plan.EscalationSuffix
 
 // MaxEscalationRungs bounds how many ladder steps may be registered.
 //

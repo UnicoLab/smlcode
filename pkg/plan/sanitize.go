@@ -299,7 +299,8 @@ func ensureHTMLEntrypoint(tasks []Task, query string) []Task {
 		return tasks
 	}
 	for i := range tasks {
-		if tasks[i].Role == RoleWorker || tasks[i].Role == "deep" {
+		// Suffix-aware: a react-worker is the implementer this attaches to.
+		if IsImplementerRole(tasks[i].Role) || tasks[i].Role == "deep" {
 			tasks[i].Files = uniq(append([]string{"index.html"}, tasks[i].Files...))
 			return tasks
 		}

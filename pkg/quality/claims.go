@@ -22,7 +22,11 @@ func CheckClaimedFiles(root string, t plan.Task) []ClaimIssue {
 	if root == "" {
 		return nil
 	}
-	claimed := extractClaimedPaths(t.Output)
+	// Only what the MODEL claimed. The harness appends its own stamped
+	// sections to this same string before this gate runs, and the loose parser
+	// matches any quoted source path anywhere in it — so without this the gate
+	// convicts a worker of hallucinating a path the harness itself printed.
+	claimed := extractClaimedPaths(StripHarnessSections(t.Output))
 	if len(claimed) == 0 {
 		return nil
 	}

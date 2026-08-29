@@ -60,8 +60,21 @@ func (w *Workspace) persistTodos(rendered string) {
 }
 
 // scratchDir is the only agent-writable location under .slmcode/.
+//
+// Keyed on SlmDir rather than Root, because under `--isolate worktree` those
+// are different directories on purpose: the WORK happens in a throwaway
+// checkout and the harness's STATE stays in the operator's. Derived from Root,
+// the TODO file landed in the sandbox, where `git add -A` swept it into the
+// commit merged onto the operator's branch — measured, a .slmcode/scratch/TODO.md
+// in a commit that should have held one source file.
 func (w *Workspace) scratchDir() string {
-	if w == nil || w.Root == "" {
+	if w == nil {
+		return ""
+	}
+	if dir := strings.TrimSpace(w.SlmDir); dir != "" {
+		return filepath.Join(dir, "scratch")
+	}
+	if w.Root == "" {
 		return ""
 	}
 	return filepath.Join(w.Root, filepath.FromSlash(ScratchDir))

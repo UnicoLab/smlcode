@@ -245,7 +245,9 @@ func reopenForContinue(board *plan.Board, gaps []quality.PreciseGap) {
 			strings.Contains(blob, "qa_gate") || strings.Contains(blob, "review rejected") ||
 			strings.Contains(blob, "timeout") || strings.Contains(blob, "timed out") ||
 			strings.Contains(blob, "deadline") {
-			if t.Role == plan.RoleWorker || t.Role == plan.RoleCorrector || t.Role == "deep" ||
+			// Suffix-aware, or "continue" silently declines to reopen exactly
+			// the exhausted tasks a squad run produces — all of them routed.
+			if plan.IsImplementerRole(t.Role) || t.Role == "deep" ||
 				plan.IsTesterRole(t.Role) || t.Role == plan.RolePlaceholder {
 				t.Error = ""
 				t.Notes = strings.TrimSpace(t.Notes + "\nREOPENED: continue wave after exhausted retries")

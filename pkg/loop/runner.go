@@ -1369,7 +1369,9 @@ func (r *Runner) wantCritique(role string) bool {
 		return false
 	}
 	role = baseRole(role)
-	return role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector
+	// Suffix-aware: a routed `go-worker` is a worker, and an exact match here
+	// silently switched self-critique off for every task on a squad run.
+	return plan.IsImplementerRole(role) || role == "deep"
 }
 
 // handleTaskCancel checkpoints a canceled task's ReAct conversation.

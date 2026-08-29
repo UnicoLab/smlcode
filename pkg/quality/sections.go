@@ -73,6 +73,15 @@ func StripHarnessSections(s string) string {
 			cut = i
 		}
 	}
+	// The genuine provenance stamp also ends the model's text, and it does so
+	// for sections this list has not been taught yet — the header list is a
+	// registry somebody must remember to update, while the stamp is minted by
+	// the append itself. Never sectionStampRe: a model that could end this
+	// region by writing its own stamp could hide the rest of its output from
+	// every gate that reads it.
+	if i := strings.Index(s, SectionStamp()); i >= 0 && (cut < 0 || i < cut) {
+		cut = i
+	}
 	if cut >= 0 {
 		s = s[:cut]
 	}

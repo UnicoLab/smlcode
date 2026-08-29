@@ -212,9 +212,16 @@ func VerifyCriteria(ctx context.Context, root string, t plan.Task,
 				continue
 			}
 			rep.Ran = true
-			if sr.OK {
+			switch {
+			case sr.OK:
 				out.Verdict = CriterionPassed
-			} else {
+			case ToolingMissing(safe, sr.Output):
+				// The checker never ran, so it said nothing about the code.
+				// Scoring this FAILED blamed the worker for the machine and
+				// sent correctors to rewrite code that was never at fault.
+				out.Reason = "verify command could not run — tooling is not installed here"
+				out.Output = truncateCriterionOutput(sr.Output)
+			default:
 				out.Verdict = CriterionFailed
 				out.Output = truncateCriterionOutput(sr.Output)
 			}

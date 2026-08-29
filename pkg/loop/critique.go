@@ -96,7 +96,19 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 		ar := quality.RunAcceptanceSmokeWithPolicy(ctx, r.Root, t.Acceptance, r.Timeout,
 			quality.NormalizeBootstrapPolicy(r.BootstrapDeps))
 		r.recordSmokeTool(ar, started)
-		if ar.Ran {
+		// A command that could not be LAUNCHED proves nothing about the code.
+		// Treated as a failure it blamed the worker for the machine: measured,
+		// `python -m pytest -q` on a host with no pytest rejected a correct
+		// task, the corrector rewrote correct code, and the task escalated for
+		// human review with the dependency still missing.
+		if ar.Ran && quality.ToolingMissing(ar.Command, ar.Output) {
+			if opt.verbose {
+				r.logf("%s acceptance smoke UNVERIFIED — tooling missing: %s", t.ID, ar.Command)
+				r.fireLevel(stream.KindAgentEnd, "qa", t.ID,
+					"acceptance smoke could not run — tooling is not installed here",
+					scope, truncate(ar.Output, 800), stream.LevelWarn)
+			}
+		} else if ar.Ran {
 			if sec := quality.FormatAcceptanceSection(ar); sec != "" {
 				t.Output = appendHarnessSection(t.Output, sec)
 			}
@@ -193,7 +205,13 @@ func (r *Runner) knowledgeConflictSection(t plan.Task) string {
 // acceptanceSmokeRole reports whether a role's output should be acceptance-smoked.
 func acceptanceSmokeRole(role string) bool {
 	role = baseRole(role)
-	return role == plan.RoleWorker || role == "deep" || role == plan.RoleCorrector
+	// A LANGUAGE SPECIALIST is a worker. Once tasks began being staffed from
+	// their own files, a Go task arrives with role "go-worker" and an exact
+	// match answered no — silently switching the acceptance-criteria gate off
+	// for every routed task. Measured: a board whose criteria were emitted
+	// correctly, with runnable bare verify commands, and never verified once,
+	// because the role that would have run them had a language in front of it.
+	return plan.IsImplementerRole(role) || role == "deep"
 }
 
 // outputWeak reports whether a worker output still needs correction.

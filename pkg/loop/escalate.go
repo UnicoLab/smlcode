@@ -132,7 +132,7 @@ func (r *Runner) execAgentFor(t plan.Task) string {
 // and a tester/explorer/context role is never touched. HasRole gates every
 // result, so this can only ever select an agent the factory actually built.
 func (r *Runner) specializeExecRole(role string, t plan.Task) string {
-	if r == nil || !isGenericWorkerRole(role) {
+	if r == nil {
 		return role
 	}
 	// The assembler is checked BEFORE the language specialist, and that order
@@ -141,14 +141,45 @@ func (r *Runner) specializeExecRole(role string, t plan.Task) string {
 	// none of them — so an assembler that only upgraded an inferred
 	// react-worker would never fire until someone applied the react pack,
 	// which is exactly the setup step this is meant not to need.
-	if a := r.frontendAssemblerFor(t.Files); a != "" {
-		return a
+	//
+	// It also supersedes a frontend specialist the board ALREADY carries.
+	// Per-task routing staffs a task from its own file extensions before this
+	// runs, so a .tsx task arrives as `react-worker` and a guard that accepted
+	// only the generic `worker` skipped the assembler entirely. Measured on a
+	// live shadcn run: the harness announced
+	//
+	//   · init frontend: shadcn-worker — the request named shadcn/ui
+	//
+	// and then executed the task as @react-worker — the dedicated assembler,
+	// whose whole purpose is to REUSE published components instead of writing
+	// them, was chosen and never used.
+	if isGenericWorkerRole(role) || assemblerSupersedes(role) {
+		if a := r.frontendAssemblerFor(t.Files); a != "" && a != role {
+			return a
+		}
+	}
+	if !isGenericWorkerRole(role) {
+		return role
 	}
 	spec := agents.SpecialistForFiles(t.Files, r.HasRole)
 	if spec == "" || spec == role {
 		return role
 	}
 	return spec
+}
+
+// assemblerSupersedes reports whether role is a frontend implementer that a
+// chosen assembler is the more specific version of.
+//
+// Only these: an assembler is a React-component specialist, so it may replace
+// the generic React/TypeScript worker that routing inferred from a .tsx path
+// and nothing else. A go-worker or a tester keeps its own role.
+func assemblerSupersedes(role string) bool {
+	switch baseRole(strings.ToLower(strings.TrimSpace(role))) {
+	case "react-worker", "ts-worker", "typescript-worker", "vue-worker", "svelte-worker":
+		return true
+	}
+	return false
 }
 
 // frontendAssemblerFor returns the component-library assembler this run chose,

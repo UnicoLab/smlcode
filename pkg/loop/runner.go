@@ -843,6 +843,12 @@ func (r *Runner) taskInputFor(board *plan.Board, t plan.Task) string {
 	if brief := r.sharedBriefSection(board, t); brief != "" {
 		prompt += brief
 	}
+	// Right after the brief, which names the sibling tasks: this says what
+	// those siblings actually DEFINED, which is the part a worker otherwise
+	// has to guess at.
+	if api := r.siblingAPISection(board, t); api != "" {
+		prompt += api
+	}
 	if lessons := r.adaptiveLessonsSection(); lessons != "" {
 		prompt += lessons
 	}

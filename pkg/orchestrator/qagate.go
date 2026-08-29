@@ -564,6 +564,9 @@ func (o *Orchestrator) probeObjective(ctx context.Context, point objectiveProbeP
 	blocked := objectiveBlocker(board, testerRejected)
 	if point == probeBetweenWaves {
 		blocked = betweenWavesBlocker(board, testerRejected)
+		if blocked == "" {
+			blocked = unbuiltDeliverable(o.cfg.Root, board.Query, board)
+		}
 	}
 	if blocked != "" {
 		return g, false
@@ -1274,4 +1277,59 @@ func (o *Orchestrator) emitShellPolicyNotice() {
 		msg += " Currently allowed: " + strings.Join(o.cfg.ShellAllow, ", ") + "."
 	}
 	o.emitWarn("init", msg, "")
+}
+
+// unbuiltDeliverable names a file THE REQUEST ITSELF asked for that is not on
+// disk, or "".
+//
+// "The objective command is green" and "the request was built" are different
+// claims, and between waves they come apart in one specific way: a run whose
+// only finished package happens to test clean looks identical to a finished
+// run. Measured — the request said "a Go REST backend in cmd/server/main.go",
+// the board planned it, the wave that would have written it never ran, and
+// `go test ./...` went green over pkg/tasks alone. The verdict was ✔ with the
+// server absent and the task reported merely as "not executed".
+//
+// Deliberately keyed on paths the QUERY names, not on every task's focus file.
+// A planner's own intermediate targets are guesses that a green objective may
+// legitimately make redundant — that is what the early stop is FOR, and
+// blocking on those would switch it off entirely. A path the person typed is
+// not a guess; it is the deliverable, and disk is the authority on whether it
+// exists, exactly as it is for a claimed edit.
+//
+// Blocking only defers to the ordinary finish path, which still reports
+// honestly. It never turns a good run into a failure.
+func unbuiltDeliverable(root, query string, board *plan.Board) string {
+	if strings.TrimSpace(root) == "" || board == nil {
+		return ""
+	}
+	if strings.TrimSpace(query) == "" {
+		query = board.Query
+	}
+	named := plan.ExtractFilePaths(query)
+	if len(named) == 0 {
+		return ""
+	}
+	// Only paths some unfinished task actually owns: a file the request
+	// mentions in passing but nothing was planned for is not this run's debt.
+	owed := map[string]bool{}
+	for _, t := range board.Tasks {
+		t.Normalize()
+		if t.Column == plan.ColDone {
+			continue
+		}
+		for _, f := range t.Files {
+			owed[filepath.ToSlash(strings.TrimSpace(f))] = true
+		}
+	}
+	for _, f := range named {
+		f = filepath.ToSlash(strings.TrimSpace(f))
+		if f == "" || filepath.IsAbs(f) || strings.Contains(f, "..") || !owed[f] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(f))); err != nil {
+			return "the request named " + f + ", and it does not exist yet"
+		}
+	}
+	return ""
 }

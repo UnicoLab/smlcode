@@ -107,3 +107,44 @@ func TestReclaimIsNilSafe(t *testing.T) {
 		t.Fatalf("reclaimed %d from a nil board", moved)
 	}
 }
+
+// Agent work waiting BEHIND A HUMAN is not agent work in progress.
+//
+// Only `done` satisfies a dependency, so a task in ready_to_dev whose
+// dependency is parked in to_scope can never become executable. But
+// AgentWorkRemaining counts ready_to_dev, so it short-circuited the
+// human-backlog branch and the loop idled 31 rounds before reporting a
+// hand-back as ErrIdleTimeout — a failure.
+//
+// Measured on a live greenfield build: T1 and T3 parked by the attempt ceiling,
+// T4 and T5 queued behind them, and the run reported
+// "gave up ... idle while agent work still in progress" over a board that was
+// simply owed to a human.
+func TestWorkQueuedBehindAHumanIsNotAgentProgress(t *testing.T) {
+	b := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: plan.RoleWorker, Column: plan.ColToScope, Title: "parked by the ceiling"},
+		{ID: "T3", Role: plan.RoleWorker, Column: plan.ColToScope, Title: "also parked"},
+		{ID: "T4", Role: plan.RoleWorker, Column: plan.ColReadyToDev, DependsOn: []string{"T3"}},
+		{ID: "T5", Role: plan.RoleTester, Column: plan.ColReadyToDev, DependsOn: []string{"T1", "T3", "T4"}},
+	}}
+	for i := range b.Tasks {
+		b.Tasks[i].Normalize()
+	}
+
+	// The shape: nothing executable, yet the board claims work remains.
+	if len(b.ReadyTasks()) != 0 {
+		t.Fatal("fixture is wrong: something is executable")
+	}
+	if !b.AgentWorkRemaining() {
+		t.Fatal("fixture is wrong: ready_to_dev must make this look like agent work")
+	}
+	// Reclaim cannot help — nothing is mid-flight.
+	if moved := (&Runner{}).reclaimOrphaned(b); moved != 0 {
+		t.Fatalf("reclaimed %d, want 0 — nothing is in_progress/in_review", moved)
+	}
+	// So the honest reading is the human backlog, which the loop now checks
+	// before spending 31 idle rounds on a failure verdict.
+	if !b.HumanBacklogRemaining() {
+		t.Fatal("the parked tasks must register as human backlog")
+	}
+}

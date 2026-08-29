@@ -401,16 +401,27 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 
 		ready := scheduleReady(board.ReadyTasks())
 		if len(ready) == 0 {
-			if board.AgentWorkRemaining() {
-				// Nothing is executable, yet the board says work is in
-				// progress. runWave is synchronous, so nothing actually is:
-				// whatever sits in in_progress/in_review was abandoned by a
-				// wave that already returned, and no code path re-dispatches
-				// those columns. Re-queue them and schedule again rather than
-				// idling 31 rounds waiting on an agent that exited.
-				if r.reclaimOrphaned(board) > 0 {
-					continue
-				}
+			// Nothing is executable, yet the board says work is in progress.
+			// runWave is synchronous, so nothing actually is: whatever sits in
+			// in_progress/in_review was abandoned by a wave that already
+			// returned, and no code path re-dispatches those columns. Re-queue
+			// them and schedule again rather than idling 31 rounds waiting on
+			// an agent that exited.
+			if board.AgentWorkRemaining() && r.reclaimOrphaned(board) > 0 {
+				continue
+			}
+			// Agent work that is waiting BEHIND A HUMAN is not agent work in
+			// progress. A task in ready_to_dev whose dependency is parked in
+			// to_scope can never become executable — only `done` satisfies a
+			// dependency — but AgentWorkRemaining counts ready_to_dev, so it
+			// short-circuited the human-backlog branch below and the loop idled
+			// 31 rounds before reporting a hand-back as a FAILURE.
+			//
+			// Measured: T1 and T3 parked by the attempt ceiling, T4 and T5
+			// queued behind them, the run reported as "gave up ... idle while
+			// agent work still in progress" with the board simply owed to a
+			// human.
+			if board.AgentWorkRemaining() && !board.HumanBacklogRemaining() {
 				idleRounds++
 				if idleRounds > 30 {
 					return r.giveUp(board, ErrIdleTimeout, idleRounds)

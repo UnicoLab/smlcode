@@ -123,9 +123,45 @@ Other targets worth knowing:
 | `make tidy` | `go mod tidy` — rewrites `go.mod`/`go.sum`; needs the module proxy |
 | `make e2e` | offline e2e (`test/e2e/`) + `scripts/e2e_prime_smoke.sh` |
 | `RUN_E2E=1 make e2e` | additionally runs `TestLiveOMLX` / `TestIsolatedMultiAgent` against a live model |
+| `test/live/sweep.sh` | the live end-to-end sweep — a real model, real projects, objective assertions (see below) |
 | `make govulncheck` | vulnerability scan |
 | `make docs-build` | strict MkDocs build |
 | `make docs-serve` | docs at <http://127.0.0.1:8000> |
+
+## `test/live/sweep.sh` — the proof `go test` cannot give
+
+The unit suite and the fakemodel e2e tests prove the harness's LOGIC. They
+cannot prove the thing that actually breaks, which is a run that is not doing
+the work still looking like a run that is.
+
+Every defect this sweep exists to catch was invisible to `make check` and
+obvious within one live run: acceptance criteria planned and never verified
+because routing had renamed the role that verifies them; a green gate over an
+absent deliverable; `✔ 2/2 tasks done` on a request whose React half was never
+built and whose task had been dropped from the board; a frontend assembler
+announced and never dispatched to; a worker convicted of hallucinating a path
+the harness itself had printed.
+
+So the rule is: **every assertion is an objective outcome** — a file on disk, a
+compiler's exit code, git state. The harness's own success line is never the
+assertion, because in each of those cases the self-report was the thing that
+was wrong.
+
+```bash
+go build -o bin/slmcode ./cmd/slmcode
+test/live/sweep.sh          # all scenarios
+test/live/sweep.sh 1 4      # just these two
+```
+
+It builds its own fixtures under `$SWEEP_WORK` (default `$TMPDIR/slmcode-live-sweep`)
+and leaves the logs there. Scenarios 5 and 6 need `npx` and network access for
+the component CLIs, and skip cleanly without them.
+
+It is not part of `make check` and should not be: it needs a configured
+provider, it takes tens of minutes on a local model, and a slow or loaded
+machine makes runs time out in ways that look like defects and are not. Run it
+before a release, and after any change to the gates, the board, routing or the
+early stop.
 
 ## The lint ratchet — done, and it stays done
 

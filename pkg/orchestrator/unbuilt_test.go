@@ -45,16 +45,18 @@ func TestRequestNamedDeliverableBlocksTheEarlyStop(t *testing.T) {
 	}
 }
 
-// Once it exists, the objective being green is a meaningful answer again.
+// Once EVERY named deliverable exists, the objective being green is a
+// meaningful answer again.
 func TestBuiltDeliverableDoesNotBlock(t *testing.T) {
 	root := t.TempDir()
 	touch(t, root, "cmd/server/main.go")
 	touch(t, root, "pkg/tasks/store.go")
+	touch(t, root, "pkg/tasks/store_test.go")
 	board := &plan.Board{Query: buildRequest, Tasks: []plan.Task{
 		{ID: "T1", Column: plan.ColReadyToDev, Files: []string{"cmd/server/main.go"}},
 	}}
 	if got := unbuiltDeliverable(root, board.Query, board); got != "" {
-		t.Fatalf("blocked with the file present: %q", got)
+		t.Fatalf("blocked with every named file present: %q", got)
 	}
 }
 
@@ -73,27 +75,95 @@ func TestPlannerGuessesDoNotBlock(t *testing.T) {
 	}
 }
 
-// A file the request mentions that nothing was planned for is not this run's
-// debt — the board never undertook to build it.
-func TestUnplannedMentionDoesNotBlock(t *testing.T) {
+// A DOCUMENT the request refers to is context, not a deliverable — the board
+// never undertook to build it and it must not block.
+func TestUnplannedDocumentMentionDoesNotBlock(t *testing.T) {
 	root := t.TempDir()
 	board := &plan.Board{
 		Query: "the behavior is described in docs/design.md — implement it in api.go",
 		Tasks: []plan.Task{{ID: "T1", Column: plan.ColDone, Files: []string{"api.go"}}},
 	}
+	touch(t, root, "api.go")
 	if got := unbuiltDeliverable(root, board.Query, board); got != "" {
-		t.Fatalf("an unplanned mention blocked the early stop: %q", got)
+		t.Fatalf("a referenced document blocked the early stop: %q", got)
 	}
 }
 
-// A finished task's file is not owed, whatever the request said.
+// The measured failure this widening exists for.
+//
+// A full-stack request named a Go server, a Go store, Go tests AND
+// web/src/TaskList.tsx. The board planned the Go half, the frontend task was
+// dropped, and because NO task owned the .tsx the guard found nothing owed:
+//
+//	✔ … — 2/2 tasks done, 0 failed (objective met between waves —
+//	  1 task(s) not executed)
+//
+// go build and go test were genuinely green and half the request did not exist.
+func TestNamedSourceTargetNothingPlannedStillBlocks(t *testing.T) {
+	root := t.TempDir()
+	touch(t, root, "cmd/server/main.go")
+	touch(t, root, "pkg/tasks/store.go")
+	// web/src/TaskList.tsx deliberately absent AND owned by no task.
+
+	board := &plan.Board{
+		Query: "a Go HTTP server in cmd/server/main.go with an in-memory store in " +
+			"pkg/tasks/store.go, plus a React task list component in web/src/TaskList.tsx",
+		Tasks: []plan.Task{
+			{ID: "T1", Column: plan.ColDone, Files: []string{"cmd/server/main.go"}},
+			{ID: "T2", Column: plan.ColDone, Files: []string{"pkg/tasks/store.go"}},
+		},
+	}
+	got := unbuiltDeliverable(root, board.Query, board)
+	if got == "" {
+		t.Fatal("a named source deliverable that nothing planned did not block the early stop")
+	}
+	if !strings.Contains(got, "web/src/TaskList.tsx") {
+		t.Errorf("the blocker does not name the missing file: %q", got)
+	}
+}
+
+// Once the board DID build it, an unplanned-but-present path is not debt.
+func TestNamedSourceTargetOnDiskDoesNotBlock(t *testing.T) {
+	root := t.TempDir()
+	touch(t, root, "web/src/TaskList.tsx")
+	board := &plan.Board{
+		Query: "plus a React task list component in web/src/TaskList.tsx",
+		Tasks: []plan.Task{{ID: "T1", Column: plan.ColDone, Files: []string{"other.go"}}},
+	}
+	if got := unbuiltDeliverable(root, board.Query, board); got != "" {
+		t.Fatalf("a file that exists blocked the early stop: %q", got)
+	}
+}
+
+// A finished task's own file is not owed — this guard is about work still
+// outstanding, and a done task is the board saying it is not.
+//
+// (Whether that task TOLD THE TRUTH about writing the file is a different
+// question, and the claims and disk-evidence gates are the ones that ask it.)
 func TestDoneTaskIsNotOwed(t *testing.T) {
 	root := t.TempDir()
-	board := &plan.Board{Query: buildRequest, Tasks: []plan.Task{
-		{ID: "T1", Column: plan.ColDone, Files: []string{"cmd/server/main.go"}},
-	}}
+	board := &plan.Board{
+		Query: "Build a Go REST backend in cmd/server/main.go.",
+		Tasks: []plan.Task{{ID: "T1", Column: plan.ColDone, Files: []string{"cmd/server/main.go"}}},
+	}
 	if got := unbuiltDeliverable(root, board.Query, board); got != "" {
 		t.Fatalf("a done task blocked the early stop: %q", got)
+	}
+}
+
+// The narrowing that keeps the widened rule honest: a DOCUMENT the request
+// refers to is input, and its absence says nothing about whether the run built
+// what it was asked to build.
+func TestNamedDocumentIsNotADeliverable(t *testing.T) {
+	for _, f := range []string{"docs/design.md", "notes.txt", "config.yaml", "data.json"} {
+		if namedCodeDeliverable(f) {
+			t.Errorf("%q counted as a code deliverable", f)
+		}
+	}
+	for _, f := range []string{"web/src/TaskList.tsx", "pkg/tasks/store.go", "app/main.py"} {
+		if !namedCodeDeliverable(f) {
+			t.Errorf("%q is not counted as a code deliverable", f)
+		}
 	}
 }
 

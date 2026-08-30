@@ -1310,21 +1310,46 @@ func unbuiltDeliverable(root, query string, board *plan.Board) string {
 	if len(named) == 0 {
 		return ""
 	}
-	// Only paths some unfinished task actually owns: a file the request
-	// mentions in passing but nothing was planned for is not this run's debt.
+	// Paths an unfinished task owns, and paths NO task owns at all.
+	//
+	// The first is the obvious debt. The second is the one that cost a whole
+	// half of a run: keying only on ownership meant that when the board never
+	// planned a named deliverable — or planned it and dropped it — nothing
+	// owed it, so nothing blocked, and the early stop reported success.
+	//
+	// Measured on a live full-stack request naming a Go server, a Go store,
+	// Go tests AND web/src/TaskList.tsx:
+	//
+	//   ✔ … — 2/2 tasks done, 0 failed (objective met between waves —
+	//     1 task(s) not executed)
+	//
+	// go build and go test were genuinely green, the React half did not exist,
+	// and the task that would have written it was no longer on the board.
+	//
+	// An unowned path must be a SOURCE target to count, which is what keeps
+	// "the behavior is described in docs/design.md" from blocking: a document
+	// the request refers to is not a file the request asked for.
 	owed := map[string]bool{}
+	planned := map[string]bool{}
 	for _, t := range board.Tasks {
 		t.Normalize()
-		if t.Column == plan.ColDone {
-			continue
-		}
 		for _, f := range t.Files {
-			owed[filepath.ToSlash(strings.TrimSpace(f))] = true
+			key := filepath.ToSlash(strings.TrimSpace(f))
+			planned[key] = true
+			if t.Column != plan.ColDone {
+				owed[key] = true
+			}
 		}
 	}
 	for _, f := range named {
 		f = filepath.ToSlash(strings.TrimSpace(f))
-		if f == "" || filepath.IsAbs(f) || strings.Contains(f, "..") || !owed[f] {
+		if f == "" || filepath.IsAbs(f) || strings.Contains(f, "..") {
+			continue
+		}
+		switch {
+		case owed[f]:
+		case !planned[f] && namedCodeDeliverable(f):
+		default:
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(f))); err != nil {
@@ -1332,4 +1357,21 @@ func unbuiltDeliverable(root, query string, board *plan.Board) string {
 		}
 	}
 	return ""
+}
+
+// namedCodeDeliverable reports whether a path the request named is CODE the run
+// was asked to write, as opposed to something it was asked to read.
+//
+// Deliberately narrower than plan's greenfield set, which counts .md, .json and
+// .yaml as creatable: "the behavior is described in docs/design.md" names a
+// document as INPUT, and blocking a run because a design note it read is not on
+// disk would be nonsense. A .tsx a request asks for is a different claim.
+func namedCodeDeliverable(f string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(f))) {
+	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+		".vue", ".svelte", ".rs", ".java", ".kt", ".rb", ".php", ".swift",
+		".cs", ".c", ".h", ".cc", ".cpp", ".hpp":
+		return true
+	}
+	return false
 }

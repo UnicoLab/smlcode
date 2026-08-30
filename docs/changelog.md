@@ -1,9 +1,35 @@
 # Changelog
 
-## Unreleased
+## v0.22.0 — 2026-08-30
 
 Two virtual dev teams, per-task specialist routing, greenfield scaffolding that
 works, and defects that arrive as tickets instead of alarms.
+
+### Breaking behaviour changes
+
+Nothing here changes a flag, a config key or an API shape. What changes is what
+a run DOES, and the wall clock is where you will notice it first.
+
+- **Runs stop early less often.** The early-stop guard now also refuses when the
+  request names code that is missing from disk and that no task owns. A run that
+  used to finish the moment the objective command went green will keep going
+  until everything the request named exists — which is the point, because the
+  alternative was `✔` over a half-built request. Expect longer runs on requests
+  that name several deliverables.
+- **More verification actually executes.** Acceptance criteria, self-critique
+  and the continue-run reopen filter had been silently skipped for every
+  language-routed task, which on a squad run is every task. They now run. That
+  is more model calls per task, and more tasks that correctly fail a gate they
+  were previously waved through.
+- **A verification command that cannot start no longer fails the task.** A
+  missing `pytest` or `vitest` reads as UNVERIFIED rather than as broken code,
+  so tasks that used to burn their retry budget rewriting correct source now
+  finish and say the check could not run. Install the runner to get the check.
+- **Frontend work routes to the assembler when one is chosen.** A `.tsx` task
+  that previously ran as `react-worker` now runs as `shadcn-worker` or
+  `untitledui-worker` where the request or the project selects one. To keep
+  hand-written components, say so in the request — see
+  [Frontend: assemble or write](frontend.md).
 
 ### Added — Squads: parallel virtual dev teams
 
@@ -732,6 +758,111 @@ Each item names the measurement that produced it.
   with `-y`; Untitled UI matches names fuzzily and wrongly (`buttons` installs
   `app-store-buttons`, and it does not error).
 - See [Frontend: assemble or write](frontend.md).
+
+### Fixed — a run that was not doing the work still looked like one that was
+
+A second live series against the same stack, after the fixes above were in. The
+theme is narrower than "bugs": in every case the harness's own report was the
+part that was wrong, and every objective signal it held was true.
+
+- **Per-task routing switched verification off.** Once a task is staffed from
+  its own files, a Go task arrives as `go-worker` — and four private copies of
+  "is this an implementer" compared the id for EQUALITY, so each answered no and
+  quietly did not run. On a squad run that is every task. It took out the
+  acceptance-criteria gate, worker self-critique, the continue-run reopen filter
+  and the placeholder-gap annotator. Measured: a board whose criteria were
+  emitted correctly, with runnable bare verify commands, and never verified
+  once. All four now call `plan.IsImplementerRole`, whose own doc comment had
+  already warned that every private copy has had this bug.
+- **The claims gate read the harness's own text as the model's.** `runGates`
+  appends stamped evidence to `Task.Output`, and `CheckClaimedFiles` re-parsed
+  that same string — whose loose parser matches any quoted `*.go` token
+  anywhere in it. Measured, on a task that had done nothing wrong: the worker
+  wrote `cmd/server/main.go`, `go vet ./cmd/server` passed on it, the worker
+  truthfully reported `files_changed ["cmd/server/main.go"]`, and the gate
+  flagged a hallucinated path — the reviewer rejected on that evidence and the
+  task escalated to `to_scope` twice before being reported as needing a human.
+  The gate now reads `StripHarnessSections`, which six other callers already
+  used for this; that helper also learned to cut at the genuine provenance
+  stamp rather than only at a registered header, so a section nobody remembered
+  to register still ends the model's region. Never the stamp regex — a model
+  able to end that region by writing its own stamp could hide the rest of its
+  output from every gate that reads it.
+- **A missing test runner was scored as broken code.** `RunSmoke` reports
+  Ran/OK, so a non-zero exit is a non-zero exit: `python -m pytest -q` on a
+  machine with no pytest scored exactly like a suite that ran and found a bug.
+  Measured: the worker wrote the file it was asked for, the smoke failed with
+  "No module named pytest", the reviewer rejected, the corrector rewrote correct
+  code, the smoke failed identically, and the task escalated — a whole retry
+  budget spent fixing a missing dependency by editing source. New
+  `quality.ToolingMissing`, narrow on purpose: only the command's OWN entrypoint
+  counts, so "No module named pytest" for `python -m pytest` is absent tooling
+  while "No module named myapp" from that same command is the code under test
+  failing to import, which is the exact fault the check exists to find. `npm run
+  test` names a package.json SCRIPT and is not treated as a program either. The
+  tool name must appear as a whole token, which its own test caught:
+  `load.go:8: … no such file or directory` contains "go" beside a launcher
+  error, and a genuine missing-fixture failure would have been excused as an
+  absent Go toolchain.
+- **An escalated role stopped matching the predicates that gate it.**
+  `IsTesterRole` and `IsImplementerRole` compared roles that still carried their
+  rung, so `go-worker@esc2` was not a worker and `go-tester@esc1` was not a
+  tester — the harness was wrong for exactly the tasks that had had the most
+  trouble. The strip moved INTO the predicates and `EscalationSuffix` moved down
+  to `pkg/plan` with them (`agents.EscalationSuffix` aliases it). Four more
+  exact `!= RoleTester` comparisons went through the predicate at the same
+  time, each a gate testers are deliberately exempt from.
+- **The chosen frontend assembler was announced and never dispatched to.**
+  `specializeExecRole` upgraded a task to the shadcn/Untitled UI assembler only
+  when the role was the GENERIC worker — but per-task routing staffs a `.tsx`
+  task as `react-worker` first, so the guard skipped it. Measured on a live
+  shadcn run: `· init frontend: shadcn-worker — the request named shadcn/ui`,
+  then `▸ @react-worker …`. The run still installed the component, because the
+  query said to and the CLI is allowed — so the failure was invisible from the
+  outcome, and a request that did not spell out "install it" would have got
+  hand-written components. The assembler now also supersedes the frontend
+  specialist the board already carries.
+- **`✔` over a half-built request when the board dropped the task.** The
+  early-stop guard blocked only for a path an unfinished task OWNED, which
+  misses the case that costs the most: the board never planning a named
+  deliverable, or planning it and dropping it. Measured on a request naming a Go
+  server, a Go store, Go tests AND `web/src/TaskList.tsx`:
+  `✔ … 2/2 tasks done, 0 failed (objective met between waves — 1 task(s) not
+  executed)`, three files changed, all Go. `go build` and `go test` were
+  genuinely green over the Go half; the React half did not exist and its task
+  was no longer on the board. The guard now also refuses when the request names
+  CODE that is on no task's file list and not on disk — code specifically, so
+  "the behavior is described in `docs/design.md`" still names a document as
+  input and does not block.
+- **Work queued behind a human was reported as a failed run**, and **the run
+  headline could be raw planner JSON** — two more cases of a correct run
+  reporting itself wrongly.
+- **`.slmcode/scratch/TODO.md` rode into an isolated run's commit.**
+  `persistTodos` derived its path from `Root`, so under `--isolate worktree` the
+  checklist landed in the throwaway checkout where `git add -A` swept it into
+  the commit merged back. Keyed on `SlmDir` now, which the workspace already
+  carried — the same bug class as the memory, graph and metrics directories, in
+  a subsystem that had not been taught it yet.
+
+### Added — `test/live/sweep.sh`, the proof `go test` cannot give
+
+The unit suite and the fakemodel e2e tests prove the harness's logic. Every
+defect in the two subsections above was invisible to `make check` and obvious
+within one live run, so the sweep that found them is now in the tree instead of
+dying with a scratch directory.
+
+Six scenarios — bug fix with scope respected and criteria verified, worktree
+isolation, greenfield, multi-language squads, and both frontend assemblers —
+each building its own fixture, so there is nothing to set up. **Every assertion
+is an objective outcome**: a file on disk, a compiler's exit code, git state.
+The harness's own success line is never the assertion, because in every defect
+above the self-report was the thing that was wrong.
+
+Deliberately not part of `make check`: it needs a configured provider, takes
+tens of minutes on a local model, and on a loaded machine runs time out in ways
+that look like defects and are not — measured, at load 42 a scenario that
+passes in minutes stalled for 40 with seven timeouts. See
+[CONTRIBUTING](https://github.com/UnicoLab/smlcode/blob/main/CONTRIBUTING.md).
 
 ## v0.21.0 — 2026-08-27
 

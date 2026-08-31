@@ -158,3 +158,68 @@ func TestMergeSkipsTasksWithoutFiles(t *testing.T) {
 		t.Fatalf("got %d tasks, want 2 — unknown scope is not a shared scope", len(out))
 	}
 }
+
+// The board a live 30B produced for one small full-stack change: FOUR tester
+// tasks over the same two files. Four full model rounds for one answer, on a
+// budget that then ran out with seven of eight tasks never dispatched.
+// Verification is idempotent — running it three times buys nothing.
+func TestMergeFoldsDuplicateTesters(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Role: RoleWorker, Files: []string{"cmd/server/main.go"}, Title: "serve the API"},
+		{ID: "T3", Role: RoleTester, Files: []string{"cmd/server/main.go"}, Title: "verify the API"},
+		{ID: "T6", Role: "go-tester", Files: []string{"cmd/server/main.go", "internal/todo/todo.go"},
+			Title: "verify the handler and the store"},
+		{ID: "T7", Role: RoleTester, Files: []string{"cmd/server/main.go", "internal/todo/todo.go"},
+			Title: "run the tests"},
+	}
+
+	out := mergeSameFileWorkers(tasks)
+
+	if len(out) != 2 {
+		t.Fatalf("got %d tasks, want 2 (three testers fold into one, the worker stands): %+v", len(out), out)
+	}
+	var tester *Task
+	for i := range out {
+		if IsTesterRole(out[i].Role) {
+			tester = &out[i]
+		}
+	}
+	if tester == nil {
+		t.Fatal("the tester disappeared — verification must survive the merge")
+	}
+	// Scope is UNIONED, not narrowed: folding a tester over two files into one
+	// over one file silently stops verifying the second.
+	if len(tester.Files) != 2 {
+		t.Fatalf("merged tester files = %v, want both files still covered", tester.Files)
+	}
+}
+
+// An implementer WRITES a file and a tester PROVES it. They answer different
+// contracts, and a survivor carrying both would be handed a shape it cannot
+// produce.
+func TestMergeNeverFoldsAWorkerIntoATester(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Role: RoleWorker, Files: []string{"cmd/main.go"}, Title: "write it"},
+		{ID: "T2", Role: RoleTester, Files: []string{"cmd/main.go"}, Title: "prove it"},
+	}
+	out := mergeSameFileWorkers(tasks)
+	if len(out) != 2 {
+		t.Fatalf("got %d tasks, want both — writing and proving are different jobs: %+v", len(out), out)
+	}
+}
+
+// A merged implementer must be ALLOWED to write every file its own merged
+// description now tells it to change, or the wave denies it at the tool layer.
+func TestMergeUnionsTheImplementerScope(t *testing.T) {
+	tasks := []Task{
+		{ID: "T1", Role: RoleWorker, Files: []string{"src/App.tsx"}, Title: "render the list"},
+		{ID: "T2", Role: RoleWorker, Files: []string{"src/App.tsx", "src/Todos.tsx"}, Title: "extract a component"},
+	}
+	out := mergeSameFileWorkers(tasks)
+	if len(out) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(out))
+	}
+	if len(out[0].Files) != 2 {
+		t.Fatalf("files = %v — the survivor must keep the absorbed task's scope", out[0].Files)
+	}
+}

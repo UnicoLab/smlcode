@@ -269,6 +269,35 @@ Never weaken an assertion to make a run green. `--keep` retains each workspace s
 you can open what the model actually wrote; `--json` gives per-scenario wall time,
 LLM calls, token counts and per-role latency.
 
+### The teams suite 👥
+
+`TestTeamsLive` is the same idea for the [team path](squads.md): a Go + React
+fixture, a request that genuinely has two halves, and a real local model.
+
+```bash
+RUN_E2E=1 go test ./test/e2e/ -run TestTeamsLive -timeout 60m -v
+RUN_E2E=1 SLMCODE_MODEL=Qwen3-Coder-Next-MLX-4bit go test ./test/e2e/ -run TestTeamsLive -timeout 60m -v
+```
+
+Its assertions are split by **who is responsible**, which is what keeps it a
+harness test rather than a model-quality gate:
+
+| Asserted strictly | Asserted leniently |
+|---|---|
+| the library preselected both halves, deterministically | how many interface clauses the model froze |
+| the composed plan validates, and ownership covers both halves | how many tasks landed in a lane — that depends on whether the splitter produced file-disjoint work |
+| **every task stamped with a team is one that team owns every file of** | whether the harness reported overall success |
+
+That middle row is the one worth keeping: the wave's write deny list is derived
+from the stamp, so a violation is a task refused at the tool layer *on its own
+declared target* — work that can never complete, for a reason nothing in the log
+explains. It caught exactly that, twice.
+
+When the run does not succeed the suite dumps the **harness event stream**, so a
+board that ends with work undone says which round it stopped on. Without it a
+failed live run is undiagnosable: the board says a task never left
+`ready_to_dev` and nothing anywhere says why.
+
 ---
 
 ## Feature matrix 🧪

@@ -66,6 +66,7 @@ func (o *Orchestrator) runPlanApprovalDecision(ctx context.Context, query string
 	ask.Squads = o.squadsAskView(board)
 	ask.Agents = o.staffableAgents()
 	ask.Managers = o.manageableAgents()
+	ask.Library = o.libraryAskView()
 	timeout := o.cfg.PlanApproveTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute

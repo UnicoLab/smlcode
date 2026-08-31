@@ -165,6 +165,15 @@ func (p *Plan) Validate() Problems {
 	return out
 }
 
+// GlobsIntersect reports whether two ownership patterns can claim a common path.
+//
+// Exported because the team library has to answer the SAME question one step
+// earlier: it resolves an overlap by dropping the weaker claimant, where
+// Validate can only reject the whole plan. Two implementations of "do these
+// globs collide" would eventually disagree, and the disagreement's symptom is a
+// lost edit — the exact failure the rule exists to prevent.
+func GlobsIntersect(a, b string) bool { return globsIntersect(a, b) }
+
 // globsIntersect reports whether two ownership patterns can match a common path.
 //
 // Exact glob intersection is undecidable in general for these patterns, so this

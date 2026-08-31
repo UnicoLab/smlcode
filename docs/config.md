@@ -72,6 +72,9 @@ never persisted for exactly that last reason. Older files are migrated forward o
 | `specialist` | — | Role id when `mode: specialist` |
 | `dynamic_pipeline` | `true` | Run the composer to assemble a task-specific pipeline first |
 | `pinned_skills` | — | Always loaded, in addition to `@skill:` refs and matching |
+| `squads` | `true` | Split a two-domain query into [teams](squads.md) that build in parallel behind a frozen contract |
+| `team_library` | `true` | Preselect teams from the saved library before asking a model — no model call, so none of the ways a small one fails at it |
+| `teams` | — | Team ids pinned for the run, whatever the query says (`--team` writes this) |
 | `max_parallel` | measured, else `2` local / `4` hosted | Concurrent tasks per wave — see [below](#max_parallel-is-measured-not-guessed) |
 | `max_retries` | `4` | Review/correct retries before escalate |
 | `think_passes` | `1` | 2+ enables speculative digs |

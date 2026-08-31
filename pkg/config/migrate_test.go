@@ -117,3 +117,34 @@ func TestLoadKeepsGoingPastOneBadKey(t *testing.T) {
 		t.Fatal("the bad key must be reported")
 	}
 }
+
+// A key a project's config predates must keep its default, not fall to the
+// zero value. `team_library: false` is not something anybody wrote — it is what
+// a missing key would silently become — and the whole team library would be
+// off for every workspace configured before it existed.
+func TestAConfigWrittenBeforeAKeyExistedKeepsItsDefault(t *testing.T) {
+	isolateHome(t)
+	root := writeProject(t, "model: some-model\nsquads: true\n")
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TeamLibrary {
+		t.Fatal("team_library defaulted to false — every pre-existing project would " +
+			"silently stop preselecting teams from the library")
+	}
+	if !cfg.Squads {
+		t.Fatal("squads=true was in the file")
+	}
+
+	// And an explicit false is still honored, or the default would be an
+	// override rather than a default.
+	off := writeProject(t, "team_library: false\n")
+	cfg, err = Load(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TeamLibrary {
+		t.Fatal("an explicit team_library: false was ignored")
+	}
+}

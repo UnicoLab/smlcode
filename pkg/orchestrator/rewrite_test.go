@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 )
 
 func TestRewriteBoardFromTesterReopensAndAdds(t *testing.T) {
@@ -161,5 +162,51 @@ func TestParseTesterDrivesRewriteFlag(t *testing.T) {
 	}
 	if !plan.TesterFailed(`{}`) {
 		t.Fatal("empty object must fail")
+	}
+}
+
+// A correction ticket that straddles two teams must stay UNASSIGNED.
+//
+// This was measured against a live 30B, and the symptom looked nothing like the
+// cause: a ticket naming `web/src/App.tsx` and `cmd/server/main.go` was stamped
+// `frontend` (the first board task sharing a filename), and the wave's write
+// deny list — derived from the task's squad — then refused every attempt to
+// touch `cmd/`. The ticket sat in ready_to_dev for the whole run, which reads
+// as a stalled harness rather than a misrouted ticket.
+func TestCorrectionTicketOnTheSeamStaysUnassigned(t *testing.T) {
+	sq := &squads.Plan{Squads: []squads.Squad{
+		{ID: "backend", Owns: []string{"cmd/**"}, Acceptance: "go test ./..."},
+		{ID: "frontend", Owns: []string{"web/**"}, Acceptance: "npm run build"},
+	}}
+	board := plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Squad: "frontend", Files: []string{"web/src/App.tsx"}},
+		{ID: "T2", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+	}}
+
+	if got := correctionSquad(sq, board, []string{"web/src/App.tsx", "cmd/server/main.go"}); got != "" {
+		t.Fatalf("straddling ticket = %q — it belongs to both halves, and stamping one "+
+			"denies it write access to the other's files", got)
+	}
+	// A defect entirely inside one team's territory still lands there.
+	if got := correctionSquad(sq, board, []string{"cmd/server/main.go"}); got != "backend" {
+		t.Fatalf("in-lane ticket = %q, want backend", got)
+	}
+	// A file nobody owns cannot narrow the defect to a team.
+	if got := correctionSquad(sq, board, []string{"Makefile"}); got != "" {
+		t.Fatalf("unowned ticket = %q, want unassigned", got)
+	}
+}
+
+// Without an org chart there is no ownership to consult, and the board scan is
+// the only signal there is.
+func TestCorrectionTicketFallsBackToTheBoardWithoutAnOrgChart(t *testing.T) {
+	board := plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Squad: "frontend", Files: []string{"web/src/App.tsx"}},
+	}}
+	if got := correctionSquad(nil, board, []string{"web/src/App.tsx"}); got != "frontend" {
+		t.Fatalf("fallback = %q, want frontend", got)
+	}
+	if got := correctionSquad(nil, plan.Board{}, []string{"x.go"}); got != "" {
+		t.Fatalf("empty board = %q", got)
 	}
 }

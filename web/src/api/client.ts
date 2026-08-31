@@ -50,7 +50,9 @@ import type {
   RunTrace,
   PlanEdits,
   SquadsView,
-  SquadEdit,
+  TeamsLibrary,
+  TeamSpec,
+  TeamPreselect,
   ConfigureResult,
 } from '@/types';
 
@@ -755,11 +757,76 @@ export async function getSquads(): Promise<SquadsView> {
  * the body so the page can show them rather than a bare failure.
  */
 export async function patchSquads(
-  squads: SquadEdit[],
-  removeSquads?: string[],
+  edits: PlanEdits,
 ): Promise<{ ok: boolean; summary?: string; problems?: string[] }> {
   return request('/squads', {
     method: 'PATCH',
-    body: JSON.stringify({ squads, remove_squads: removeSquads }),
+    body: JSON.stringify(edits),
+  });
+}
+
+// ── The team library ─────────────────────────────────────────────────────
+//
+// Separate from /squads on purpose: /squads reports on the teams of the
+// CURRENT RUN and is empty without one, while the library exists whether or not
+// anything is running. Conflating them is what made the Teams page look broken.
+
+// GET /api/teams → the library, plus the rosters needed to edit it.
+export async function getTeams(query?: string): Promise<TeamsLibrary> {
+  const q = query?.trim() ? `?query=${encodeURIComponent(query.trim())}` : '';
+  return request<TeamsLibrary>(`/teams${q}`);
+}
+
+// POST /api/teams → create a team (writes .slmcode/blocks/teams/<id>.yaml).
+export async function createTeam(team: TeamSpec): Promise<TeamSpec> {
+  return request<TeamSpec>('/teams', { method: 'POST', body: JSON.stringify(team) });
+}
+
+// PUT /api/teams/{id} → update, or write a project override over a builtin.
+export async function updateTeam(id: string, team: TeamSpec): Promise<TeamSpec> {
+  return request<TeamSpec>(`/teams/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(team),
+  });
+}
+
+// DELETE /api/teams/{id} → remove a project team, or an override over a builtin.
+export async function deleteTeam(id: string): Promise<{ ok: boolean; removed_file?: boolean }> {
+  return request(`/teams/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * POST /api/teams/preselect previews the teams a query would run with.
+ *
+ * The same code path the run takes, so the preview cannot drift from the
+ * decision — a preview computed a second way is one that eventually lies.
+ */
+export async function preselectTeams(query: string, pinned?: string[]): Promise<TeamPreselect> {
+  return request<TeamPreselect>('/teams/preselect', {
+    method: 'POST',
+    body: JSON.stringify({ query, pinned }),
+  });
+}
+
+/**
+ * POST /api/teams/activate composes a squad plan from library teams and saves it.
+ *
+ * A 422 means the org chart cannot run — overlapping ownership, most often —
+ * and the problems come back in the body so the page can show them.
+ */
+export async function activateTeams(
+  teams: string[],
+  summary?: string,
+): Promise<{
+  ok: boolean;
+  summary?: string;
+  teams?: string[];
+  staffing?: string[];
+  /** Ids that resolved to nothing and were dropped rather than failing the request. */
+  unknown?: string[];
+}> {
+  return request('/teams/activate', {
+    method: 'POST',
+    body: JSON.stringify({ teams, summary }),
   });
 }

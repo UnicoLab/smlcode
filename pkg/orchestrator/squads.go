@@ -38,6 +38,17 @@ func (o *Orchestrator) assembleSquads(ctx context.Context, query string, invento
 		return nil
 	}
 
+	// The saved library answers first. Which teams a request involves is a
+	// question about the query text and the files on disk, and answering it
+	// deterministically removes the whole class of failures a small model has
+	// here — overlapping globs, unregistered worker ids, unparsable JSON —
+	// from a decision that everything downstream is derived from.
+	if o.cfg.TeamLibrary {
+		if p := o.teamsFromLibrary(ctx, query, inventory, exploreOut, archOut); p != nil {
+			return p
+		}
+	}
+
 	o.emitAgent("charter", squadRoleID, "", "assembling parallel squads", "", "")
 
 	input := o.buildSquadPrompt(query, inventory, exploreOut, archOut)
@@ -338,7 +349,9 @@ func (o *Orchestrator) routeBoardToSpecialists(board *plan.Board) {
 		DefaultWorker:   o.Pipeline().Execute.DefaultRole,
 		DefaultReviewer: o.Pipeline().Execute.Reviewer,
 		DefaultTester:   o.Pipeline().Execute.Corrector,
-		SquadWorker:     o.squadWorkerLookup(),
+		SquadWorker:     o.squadSeatLookup(func(s squads.Squad) string { return s.Worker }),
+		SquadReviewer:   o.squadSeatLookup(func(s squads.Squad) string { return s.Reviewer }),
+		SquadTester:     o.squadSeatLookup(func(s squads.Squad) string { return s.Tester }),
 	}
 	tally, byTask := plan.RouteBoard(board.Tasks, policy)
 
@@ -366,18 +379,22 @@ func (o *Orchestrator) routeBoardToSpecialists(board *plan.Board) {
 	}
 }
 
-// squadWorkerLookup exposes the manager's per-squad worker choice to routing.
-func (o *Orchestrator) squadWorkerLookup() func(string) string {
+// squadSeatLookup exposes one per-squad staffing choice to routing.
+//
+// One helper for all three seats rather than three near-identical ones: they
+// differ only in which field they read, and a copy is where the fourth seat
+// would silently be forgotten.
+func (o *Orchestrator) squadSeatLookup(seat func(squads.Squad) string) func(string) string {
 	if o == nil || o.squadPlan == nil {
 		return nil
 	}
-	plan := o.squadPlan
+	p := o.squadPlan
 	return func(id string) string {
-		s, ok := plan.Squad(id)
+		s, ok := p.Squad(id)
 		if !ok {
 			return ""
 		}
-		return s.Worker
+		return seat(s)
 	}
 }
 
@@ -402,7 +419,8 @@ func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
 		view.Squads = append(view.Squads, plan.PlanSquad{
 			ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: s.Owns,
 			Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer,
-			Manager: s.Manager, TaskCount: counts[s.ID],
+			Tester: s.Tester, Manager: s.Manager, Agents: s.Agents, Skills: s.Skills,
+			TaskCount: counts[s.ID],
 		})
 	}
 	for _, in := range o.squadPlan.Contract.Interfaces {
@@ -472,8 +490,8 @@ func (o *Orchestrator) applyPlanEdits(board *plan.Board, edits *plan.PlanEdits) 
 		}
 	}
 
-	if len(edits.Squads) > 0 || len(edits.RemoveSquads) > 0 {
-		if probs := squads.ApplyEdits(o.squadPlan, edits.Squads, edits.RemoveSquads); probs.Errors() {
+	if edits.TouchesSquads() {
+		if probs := squads.ApplyPlanEdits(o.squadPlan, *edits); probs.Errors() {
 			// Refused whole. Say so loudly: the user believes they fixed the
 			// org chart, and running the model's version without telling them
 			// is the worst of the three options.

@@ -1,0 +1,35 @@
+api_version: blocks/v1
+kind: team
+id: backend-go
+name: Backend · Go
+description: >-
+  The Go half of a service: handlers, domain code and their tests, proven by
+  `go build ./... && go test ./...` before anything else looks at it.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: go
+tags: [backend, go, team]
+icon: "🐹"
+shareable: true
+spec:
+  id: backend-go
+  name: Backend · Go
+  charter: >-
+    Own the Go service: HTTP handlers, domain types and their tests. Serve the
+    interfaces the contract lists; never edit another team's files.
+  owns:
+    - cmd/**
+    - internal/**
+    - pkg/**
+    - go.mod
+    - go.sum
+  acceptance: go build ./... && go test ./...
+  worker: go-worker
+  reviewer: go-reviewer
+  tester: go-tester
+  skills: [go-table-tests, go-concurrency]
+  match:
+    keywords: [backend, api, server, endpoint, handler, go, golang, grpc, microservice]
+    files: [go.mod]
+    extensions: [.go]

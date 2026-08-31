@@ -17,6 +17,13 @@ export interface Task {
   description: string;
   role: string;
   assignee: string;
+  /**
+   * The virtual team that owns this task. Empty on a single-stream run, and
+   * empty for a task that STRADDLES two teams — the seam belongs to both
+   * halves, and stamping one is how a frontend task acquires permission to
+   * rewrite the API.
+   */
+  squad?: string;
   column: string;
   status: string;
   priority: number;
@@ -540,6 +547,12 @@ export interface PipelineConfig {
   groups: GroupMeta[];
   execute: ExecuteLoop;
   slots: Slot[];
+  /**
+   * Teams attached to this pipeline — used on every run of it, whatever the
+   * query says. A pipeline is a shape of work, and for most shapes the shape
+   * implies the org chart.
+   */
+  teams?: string[];
 }
 
 export interface PipelineView {
@@ -767,10 +780,32 @@ export interface PlanAsk {
    * has already been spent.
    */
   managers?: string[];
+  /**
+   * The saved team library, so the approval editor can ADD a team the run did
+   * not select rather than only edit the ones it did.
+   */
+  library?: PlanLibraryTeam[];
   options?: string[];
   timeout_sec?: number;
   on_timeout?: string;
   created_at?: string;
+}
+
+/** One team the library offers at approval time. */
+export interface PlanLibraryTeam {
+  id: string;
+  name?: string;
+  charter?: string;
+  owns?: string[];
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  tester?: string;
+  manager?: string;
+  agents?: string[];
+  skills?: string[];
+  /** True when this team is already in the run's org chart. */
+  on_run?: boolean;
 }
 
 export interface PlanApprovalTask {
@@ -1142,8 +1177,12 @@ export interface PlanSquad {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  tester?: string;
   /** The agent that triages this team's rejected work. */
   manager?: string;
+  /** The team's open roster beyond the named seats. */
+  agents?: string[];
+  skills?: string[];
   task_count: number;
 }
 
@@ -1181,10 +1220,32 @@ export interface SquadEdit {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  tester?: string;
   manager?: string;
   owns?: string[];
   owns_set?: boolean;
+  agents?: string[];
+  agents_set?: boolean;
+  skills?: string[];
+  skills_set?: boolean;
   /** Marks a squad the user added rather than edited. */
+  new?: boolean;
+}
+
+/**
+ * InterfaceEdit changes one clause of the frozen contract.
+ *
+ * An interface id IS its name — a route, an exported symbol — so correcting a
+ * wrong one is a `rename`, not a delete plus an add: the latter loses the spec
+ * the user did not want to retype.
+ */
+export interface InterfaceEdit {
+  id: string;
+  provider?: string;
+  spec?: string;
+  rename?: string;
+  consumers?: string[];
+  consumers_set?: boolean;
   new?: boolean;
 }
 
@@ -1194,6 +1255,8 @@ export interface PlanEdits {
   remove_tasks?: string[];
   squads?: SquadEdit[];
   remove_squads?: string[];
+  interfaces?: InterfaceEdit[];
+  remove_interfaces?: string[];
 }
 
 /** True when these edits would change nothing — mirrors PlanEdits.Empty in Go. */
@@ -1204,7 +1267,9 @@ export function planEditsEmpty(e: PlanEdits | null | undefined): boolean {
     (e.add_tasks?.length ?? 0) === 0 &&
     (e.remove_tasks?.length ?? 0) === 0 &&
     (e.squads?.length ?? 0) === 0 &&
-    (e.remove_squads?.length ?? 0) === 0
+    (e.remove_squads?.length ?? 0) === 0 &&
+    (e.interfaces?.length ?? 0) === 0 &&
+    (e.remove_interfaces?.length ?? 0) === 0
   );
 }
 
@@ -1218,14 +1283,33 @@ export interface SquadStatus {
   acceptance?: string;
   worker?: string;
   reviewer?: string;
+  tester?: string;
   /** The agent that triages this team's rejected work. */
   manager?: string;
+  /** The team's open roster beyond the named seats. */
+  agents?: string[];
+  skills?: string[];
   total: number;
   done: number;
   blocked: number;
   in_flight: number;
   complete: boolean;
   stuck: boolean;
+}
+
+/**
+ * One team's acceptance result: did its half prove itself, alone?
+ *
+ * `ran: false` is UNVERIFIED, not failed — a missing `npm` or an uninstalled
+ * `node_modules` is a fact about the machine, and painting a team red for it is
+ * how a working run looks broken.
+ */
+export interface TeamGate {
+  team: string;
+  command?: string;
+  ran: boolean;
+  ok: boolean;
+  summary?: string;
 }
 
 export interface SquadStall {
@@ -1242,10 +1326,113 @@ export interface SquadsView {
   stalls?: SquadStall[];
   /** Agents eligible to manage a team — see PlanAsk.managers. */
   managers?: string[];
+  /**
+   * task id → team id, for views that have a task id and no ownership.
+   *
+   * Derived on the server because the client's only other source is the event
+   * stream, which carries a task id and nothing about who owns it — and a team
+   * badge guessed from a filename would eventually land on the wrong half.
+   */
+  task_teams?: Record<string, string>;
+  /** Per-team acceptance results for this run — see TeamGate. */
+  gates?: TeamGate[];
   integration?: {
     acceptance?: string;
     notes?: string[];
     ready?: boolean;
     reason?: string;
   };
+}
+
+// ── The team library (GET/POST/PUT/DELETE /api/teams) ────────────────────
+//
+// /api/squads reports on the teams of the CURRENT RUN, which is why the Teams
+// page used to be empty most of the time — it was reporting on something that
+// only exists while a run has teams. The library is the other half: teams the
+// user authored, which exist whether or not anything is running.
+
+/** The deterministic evidence that selects a team for a request. */
+export interface TeamMatch {
+  /** Matched against the query on word boundaries — "api" must not hit "rapids". */
+  keywords?: string[];
+  /** Marker paths or globs looked for in the workspace ("go.mod", "web/package.json"). */
+  files?: string[];
+  /** File suffixes whose presence is evidence (".go", ".tsx"). */
+  extensions?: string[];
+  /**
+   * Tiebreak between equally-matched teams. NEGATIVE opts the team out of
+   * automatic selection entirely while leaving it selectable by hand — the
+   * escape hatch for a team only its author can place.
+   */
+  priority?: number;
+}
+
+export interface TeamSpec {
+  id: string;
+  name?: string;
+  charter?: string;
+  owns?: string[];
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  tester?: string;
+  manager?: string;
+  /**
+   * The team's open roster — every agent on it beyond the named seats, in
+   * whatever number its author chose. Offered first for this team's tasks, and
+   * listed first when its project manager decides who takes a rejected delivery.
+   */
+  agents?: string[];
+  skills?: string[];
+  match?: TeamMatch;
+  description?: string;
+  icon?: string;
+  tags?: string[];
+  language?: string;
+  /** Where discovery found it: builtin | user | project | extra. */
+  source?: string;
+  path?: string;
+  /**
+   * True for a team shipped inside the binary. Editing one writes a project
+   * override; there is no file to delete until it has been edited.
+   */
+  builtin?: boolean;
+}
+
+/** Why one team scored what it scored — see teams.Evidence in Go. */
+export interface TeamEvidence {
+  team_id: string;
+  score: number;
+  reasons?: string[];
+  selected: boolean;
+  /** The team that took a path this one also claimed. */
+  conflict?: string;
+  /** True for a team chosen by hand rather than one that scored. */
+  pinned?: boolean;
+}
+
+export interface TeamPreselect {
+  query?: string;
+  selected?: string[];
+  evidence?: TeamEvidence[];
+  /** False means fewer than two teams — the request runs as a single stream. */
+  enabled?: boolean;
+  problems?: string[];
+  /** Staffing the harness cannot dispatch, cleared with a reason. */
+  staffing?: string[];
+  pinned?: string[];
+}
+
+export interface TeamsLibrary {
+  ok: boolean;
+  teams?: TeamSpec[];
+  /** Agent ids this harness can actually dispatch. */
+  agents?: string[];
+  /** The narrower roster eligible to be a team's project manager. */
+  managers?: string[];
+  library_enabled?: boolean;
+  squads_enabled?: boolean;
+  pinned?: string[];
+  pipeline_teams?: string[];
+  preselect?: TeamPreselect | null;
 }

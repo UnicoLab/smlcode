@@ -179,6 +179,10 @@ func TestThreeTeamsThreeLanguagesOneApplication(t *testing.T) {
 	cfg.StructuredDecoding = "off"
 	cfg.DynamicPipeline = false
 	cfg.Squads = true
+	// Three teams for three languages is an org chart only the MANAGER can
+	// produce: the shipped library has no `data` team, and preselecting two of
+	// the three would test something narrower than what this covers.
+	cfg.TeamLibrary = false
 	cfg.ClarifyMode = "off"
 	cfg.PlanApprove = "auto"
 	cfg.ContinueAsk = "off"

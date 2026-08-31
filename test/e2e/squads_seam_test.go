@@ -236,7 +236,11 @@ func TestABrokenSeamBecomesATicketTheProviderOwns(t *testing.T) {
 	if ticket == nil {
 		t.Fatalf("no integration ticket on the board; tasks=%s", taskSummary(&res.Board))
 	}
-	if ticket.Squad != "backend" {
+	// backend-go, not backend: the LIBRARY named the teams and the model wrote
+	// `backend` in its contract. That the seam owner still resolves to the real
+	// team is the point — a provider reference that missed by a suffix would
+	// leave the ticket on nobody.
+	if ticket.Squad != "backend-go" {
 		t.Errorf("ticket squad = %q, want the team that provides the broken interface", ticket.Squad)
 	}
 	// A .go file means the Go specialist, not a generic worker.

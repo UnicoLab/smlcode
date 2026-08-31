@@ -161,7 +161,7 @@ export default function AgentManager() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <div className="mx-auto w-full max-w-[120rem] space-y-6 p-4 2xl:p-8">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -420,7 +420,7 @@ export default function AgentManager() {
         )}
 
         {/* Agent list */}
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
           {agents.map((agent) => (
             <div
               key={agent.id}

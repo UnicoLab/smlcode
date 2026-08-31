@@ -29,8 +29,16 @@ type RoutePolicy struct {
 	// does not exist fails to dispatch, which is worse than a slightly less apt
 	// specialist doing the work, so every candidate is checked.
 	Available func(string) bool
-	// SquadWorker returns a squad's preferred worker id, or "".
-	SquadWorker func(squadID string) string
+	// SquadWorker / SquadReviewer / SquadTester return a squad's preferred
+	// agent for that seat, or "".
+	//
+	// All three exist for the same reason: every one of them is editable on the
+	// approval card and on the Teams page, and a seat the UI offers and routing
+	// ignores is worse than one the UI never showed — the user sets it, nothing
+	// changes, and nothing says why.
+	SquadWorker   func(squadID string) string
+	SquadReviewer func(squadID string) string
+	SquadTester   func(squadID string) string
 	// DefaultWorker is the run-level pick, used when a task's files say nothing.
 	DefaultWorker string
 	// DefaultReviewer / DefaultTester are the run-level equivalents.
@@ -235,10 +243,29 @@ func (p RoutePolicy) reviewerFor(t Task, lang string) string {
 			return id
 		}
 	}
+	// The squad's own choice, one rung below the language of the files — the
+	// same order the worker rungs use, and for the same reason: a squad label
+	// can be stale about a file, an extension cannot.
+	if id := p.squadSeat(t, p.SquadReviewer); id != "" {
+		return id
+	}
 	if p.has(p.DefaultReviewer) {
 		return p.DefaultReviewer
 	}
 	return ""
+}
+
+// squadSeat resolves one of the squad staffing lookups, checking that whatever
+// it names can actually be dispatched.
+func (p RoutePolicy) squadSeat(t Task, lookup func(string) string) string {
+	if t.Squad == "" || lookup == nil {
+		return ""
+	}
+	id := strings.TrimSpace(lookup(t.Squad))
+	if !p.has(id) {
+		return ""
+	}
+	return id
 }
 
 // testerFor picks a language-matched tester when one exists.
@@ -250,6 +277,9 @@ func (p RoutePolicy) testerFor(t Task, lang string) string {
 		if id := lang + "-tester"; p.has(id) {
 			return id
 		}
+	}
+	if id := p.squadSeat(t, p.SquadTester); id != "" {
+		return id
 	}
 	if p.has(p.DefaultTester) {
 		return p.DefaultTester

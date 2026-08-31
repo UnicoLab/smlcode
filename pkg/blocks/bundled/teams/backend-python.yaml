@@ -1,0 +1,33 @@
+api_version: blocks/v1
+kind: team
+id: backend-python
+name: Backend · Python
+description: >-
+  The Python service half — FastAPI/Django/Flask routes, models and their
+  pytest suite.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: python
+tags: [backend, python, team]
+icon: "🐍"
+shareable: true
+spec:
+  id: backend-python
+  name: Backend · Python
+  charter: >-
+    Own the Python service: routes, models, migrations and their tests. Serve
+    the interfaces the contract lists; never edit another team's files.
+  owns:
+    - api/**
+    - app/**
+    - pyproject.toml
+    - requirements.txt
+  acceptance: python -m pytest -q
+  worker: python-worker
+  reviewer: python-reviewer
+  tester: python-tester
+  match:
+    keywords: [python, fastapi, django, flask, pydantic, sqlalchemy, celery]
+    files: [pyproject.toml, requirements.txt, setup.py, manage.py]
+    extensions: [.py]

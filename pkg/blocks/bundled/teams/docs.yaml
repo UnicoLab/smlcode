@@ -1,0 +1,37 @@
+api_version: blocks/v1
+kind: team
+id: docs
+name: Docs
+description: >-
+  Prose that ships with the code — README, guides, reference pages. Runs beside
+  the build teams instead of after them, because docs written from the finished
+  diff are the ones nobody writes.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [docs, writing, team]
+icon: "📚"
+shareable: true
+spec:
+  id: docs
+  name: Docs
+  charter: >-
+    Own the prose: README, guides and reference pages. Document the interfaces
+    the contract froze, exactly as it states them — never edit code to match
+    what you wrote.
+  owns:
+    - docs/**
+    - README.md
+    - CHANGELOG.md
+  # No acceptance command on purpose: there is no build that proves prose. The
+  # plan will warn, and the warning is honest — a docs break surfaces at review,
+  # not at a gate.
+  acceptance: ""
+  match:
+    keywords: [docs, documentation, readme, guide, tutorial, changelog]
+    files: [docs, mkdocs.yml]
+    # Negative priority keeps docs OUT of automatic selection while leaving it
+    # one click away. A request that touches docs incidentally — nearly all of
+    # them — should not spawn a second team and pay the contract overhead to
+    # write one paragraph.
+    priority: -1

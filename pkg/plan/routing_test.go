@@ -233,3 +233,62 @@ func TestGenericCorrectorIsRoutedByLanguage(t *testing.T) {
 		t.Fatalf("Role = %q (%s), want react-worker", got.Role, got.Reason)
 	}
 }
+
+// A team's reviewer and tester have to reach the loop, not just the org chart.
+// They are editable on the approval card and on the Teams page, and a seat the
+// UI offers and routing ignores is the worst kind of dead control: the user
+// sets it, nothing changes, and nothing says why.
+func TestSquadReviewerAndTesterReachTheLoop(t *testing.T) {
+	registered := map[string]bool{
+		"worker": true, "reviewer": true, "tester": true,
+		"backend-reviewer": true, "backend-tester": true,
+	}
+	p := RoutePolicy{
+		Available:       func(id string) bool { return registered[id] },
+		DefaultWorker:   "worker",
+		DefaultReviewer: "reviewer",
+		DefaultTester:   "tester",
+		SquadReviewer:   func(id string) string { return map[string]string{"backend": "backend-reviewer"}[id] },
+		SquadTester:     func(id string) string { return map[string]string{"backend": "backend-tester"}[id] },
+	}
+
+	// A file type with no language pack registered: the squad's choice is the
+	// next rung down, and it is the one that answers.
+	got := RouteTask(Task{ID: "T1", Squad: "backend", Files: []string{"Makefile"}}, p)
+	if got.Reviewer != "backend-reviewer" {
+		t.Errorf("reviewer = %q, want the team's own", got.Reviewer)
+	}
+	if got.Tester != "backend-tester" {
+		t.Errorf("tester = %q, want the team's own", got.Tester)
+	}
+
+	// A task on no team falls through to the run defaults.
+	got = RouteTask(Task{ID: "T2", Files: []string{"Makefile"}}, p)
+	if got.Reviewer != "reviewer" || got.Tester != "tester" {
+		t.Errorf("unassigned task: reviewer=%q tester=%q", got.Reviewer, got.Tester)
+	}
+
+	// A team naming an agent the harness cannot dispatch falls through rather
+	// than producing a task nothing can review.
+	p.SquadReviewer = func(string) string { return "uninstalled-reviewer" }
+	got = RouteTask(Task{ID: "T3", Squad: "backend", Files: []string{"Makefile"}}, p)
+	if got.Reviewer != "reviewer" {
+		t.Errorf("reviewer = %q, want the run default when the team names a ghost", got.Reviewer)
+	}
+}
+
+// The language of a task's own files still outranks its team, the same way it
+// outranks the team's worker: a squad label can be stale about a file, an
+// extension cannot.
+func TestFileLanguageOutranksTheTeamsReviewer(t *testing.T) {
+	registered := map[string]bool{"worker": true, "reviewer": true, "go-reviewer": true, "backend-reviewer": true}
+	p := RoutePolicy{
+		Available:       func(id string) bool { return registered[id] },
+		DefaultReviewer: "reviewer",
+		SquadReviewer:   func(string) string { return "backend-reviewer" },
+	}
+	got := RouteTask(Task{ID: "T1", Squad: "backend", Files: []string{"cmd/main.go"}}, p)
+	if got.Reviewer != "go-reviewer" {
+		t.Errorf("reviewer = %q, want the language specialist", got.Reviewer)
+	}
+}

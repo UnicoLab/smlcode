@@ -253,6 +253,25 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 		o.emitWarn("split", fmt.Sprintf("%d task(s) moved to to_scope — %s", unscoped, unscopedTaskNote), "")
 	}
 
+	// Dedupe AGAIN, now that files are final.
+	//
+	// Identity is the file set, and the loop above just rewrote every file set:
+	// reconciliation prunes paths that do not resolve and adds what discovery
+	// found. Two tasks the sanitizer legitimately declined to merge can be
+	// identical by the time they reach the board — measured on a live 30B, two
+	// workers on `web/src/App.tsx` and three testers over the same two files.
+	//
+	// On a local model this is not tidiness. Each duplicate is a full
+	// worker→review→test round, they cannot even run in the same wave because
+	// their files collide, and the run that produced them spent its whole
+	// budget finishing one task out of eight.
+	if merged := plan.MergeDuplicateTasks(tasks); len(merged) < len(tasks) {
+		o.emit("split", fmt.Sprintf("folded %d duplicate task(s) targeting the same files — "+
+			"each would have been a separate worker/review/test round on the same work",
+			len(tasks)-len(merged)), "")
+		tasks = merged
+	}
+
 	if len(tasks) > 8 {
 		o.emit("split", fmt.Sprintf("capping tasks %d -> 8 for SLM efficiency (preserving harness/tester)", len(tasks)), "")
 		tasks = plan.CapTasksPreserveHarness(tasks, 8)

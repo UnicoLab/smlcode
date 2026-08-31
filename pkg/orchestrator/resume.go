@@ -676,7 +676,16 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	// Squad integration runs BEFORE the QA gate: it is the more specific
 	// question ("do the two halves fit?") and its failure output names the seam,
 	// which is far more useful than the generic gate's when both are red.
-	integrationFailed := o.runSquadIntegration(ctx, out.Board)
+	// Each half proves itself BEFORE the halves are joined. Out of order, an
+	// integration failure caused by one team's own broken build is reported as
+	// a wrong seam — the most expensive misattribution this design can make,
+	// because the seam is the thing everyone then goes and re-reads.
+	redTeams := o.runTeamAcceptance(ctx, out.Board)
+	integrationFailed := len(redTeams) == 0 && o.runSquadIntegration(ctx, out.Board)
+	if len(redTeams) > 0 {
+		o.emitWarn("integrate", "integration skipped — "+strings.Join(redTeams, ", ")+
+			" did not pass their own acceptance, and joining a known-broken half tests nothing", "")
+	}
 
 	out.QACmd = o.qaCommand()
 	qaFailed := o.runQAGate(ctx, query, out.Board)

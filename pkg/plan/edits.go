@@ -48,6 +48,30 @@ type PlanEdits struct {
 	// travel here so one answer carries the whole edit.
 	Squads       []SquadEdit `json:"squads,omitempty"`
 	RemoveSquads []string    `json:"remove_squads,omitempty"`
+	// Interfaces edit the frozen contract — the one artifact a two-team run
+	// cannot recover from getting wrong, because both halves build against it
+	// and neither can ask the other later. A user who can see that the route is
+	// `/api/todos` and the model wrote `/todos` must be able to fix that here;
+	// the alternative is approving a plan they know is wrong, or replanning the
+	// whole board over one string.
+	Interfaces       []InterfaceEdit `json:"interfaces,omitempty"`
+	RemoveInterfaces []string        `json:"remove_interfaces,omitempty"`
+}
+
+// InterfaceEdit changes one clause of the frozen contract. Nil fields are
+// untouched; New marks a clause the user added rather than edited.
+type InterfaceEdit struct {
+	ID       string  `json:"id"`
+	Provider *string `json:"provider,omitempty"`
+	Spec     *string `json:"spec,omitempty"`
+	// Rename moves the clause to a new id — an interface id IS its name (a
+	// route, a symbol), so correcting a wrong route means renaming.
+	Rename    *string  `json:"rename,omitempty"`
+	Consumers []string `json:"consumers,omitempty"`
+	// ConsumersSet distinguishes "not provided" from "cleared", the same way
+	// FilesSet does for a task.
+	ConsumersSet bool `json:"consumers_set,omitempty"`
+	New          bool `json:"new,omitempty"`
 }
 
 // SquadEdit changes one virtual team. Nil fields are untouched.
@@ -58,10 +82,18 @@ type SquadEdit struct {
 	Acceptance *string `json:"acceptance,omitempty"`
 	Worker     *string `json:"worker,omitempty"`
 	Reviewer   *string `json:"reviewer,omitempty"`
+	Tester     *string `json:"tester,omitempty"`
 	// Manager is the agent that triages this team's rejected work.
 	Manager *string  `json:"manager,omitempty"`
 	Owns    []string `json:"owns,omitempty"`
 	OwnsSet bool     `json:"owns_set,omitempty"`
+	// Agents is the team's open roster — as many as its author wants. Paired
+	// with AgentsSet for the same reason Owns is: a bare empty list cannot say
+	// whether the user cleared it or never opened the field.
+	Agents    []string `json:"agents,omitempty"`
+	AgentsSet bool     `json:"agents_set,omitempty"`
+	Skills    []string `json:"skills,omitempty"`
+	SkillsSet bool     `json:"skills_set,omitempty"`
 	// New marks a squad the user added rather than edited.
 	New bool `json:"new,omitempty"`
 }
@@ -69,7 +101,14 @@ type SquadEdit struct {
 // Empty reports whether these edits would change nothing.
 func (e PlanEdits) Empty() bool {
 	return len(e.Tasks) == 0 && len(e.AddTasks) == 0 && len(e.RemoveTasks) == 0 &&
-		len(e.Squads) == 0 && len(e.RemoveSquads) == 0
+		len(e.Squads) == 0 && len(e.RemoveSquads) == 0 &&
+		len(e.Interfaces) == 0 && len(e.RemoveInterfaces) == 0
+}
+
+// TouchesSquads reports whether the org chart or the contract is edited.
+func (e PlanEdits) TouchesSquads() bool {
+	return len(e.Squads) > 0 || len(e.RemoveSquads) > 0 ||
+		len(e.Interfaces) > 0 || len(e.RemoveInterfaces) > 0
 }
 
 // ApplyTaskEdits applies the task half of the edits to a board.
@@ -137,7 +176,19 @@ func ApplyTaskEdits(board *Board, edits PlanEdits, roleExists func(string) bool)
 		board.Tasks[i] = t
 	}
 
+	// A new task's incoming ID is a CLIENT REFERENCE, never a board id.
+	//
+	// The editor has to name a task before the board has assigned it one — that
+	// is the only way "this existing task now waits on the task I just added"
+	// can be expressed at all. Treating that placeholder as a real id would be
+	// worse than useless: AddTask REPLACES a task whose id matches, so a client
+	// that happened to send "T2" would silently overwrite the board's T2.
+	// So the placeholder is stripped, the board assigns the id, and every
+	// dependency that named the placeholder is rewritten to it.
+	assigned := map[string]string{}
 	for _, nt := range edits.AddTasks {
+		ref := strings.ToUpper(strings.TrimSpace(nt.ID))
+		nt.ID = ""
 		nt.Title = strings.TrimSpace(nt.Title)
 		if nt.Title == "" {
 			problems = append(problems, "a new task with no title was ignored")
@@ -157,13 +208,47 @@ func ApplyTaskEdits(board *Board, edits PlanEdits, roleExists func(string) bool)
 			nt.Column = ColReadyToDev
 		}
 		nt.Normalize()
-		board.AddTask(nt)
+		added := board.AddTask(nt)
+		if ref != "" && ref != strings.ToUpper(added.ID) {
+			assigned[ref] = added.ID
+		}
+	}
+	if len(assigned) > 0 {
+		resolveNewDeps(board, assigned)
 	}
 
 	if len(edits.RemoveTasks) > 0 {
 		problems = append(problems, removeTasks(board, edits.RemoveTasks)...)
 	}
 	return problems
+}
+
+// resolveNewDeps rewrites dependencies that named a not-yet-created task.
+//
+// Without this, "make T1 wait on the task I just added" leaves T1 depending on
+// a placeholder id no task carries — and the board's blocked-propagation parks
+// T1 forever waiting on something that will never arrive, which looks exactly
+// like the harness hanging.
+func resolveNewDeps(board *Board, assigned map[string]string) {
+	for i := range board.Tasks {
+		deps := board.Tasks[i].DependsOn
+		if len(deps) == 0 {
+			continue
+		}
+		changed := false
+		next := make([]string, 0, len(deps))
+		for _, d := range deps {
+			if real, ok := assigned[strings.ToUpper(strings.TrimSpace(d))]; ok {
+				next = append(next, real)
+				changed = true
+				continue
+			}
+			next = append(next, d)
+		}
+		if changed {
+			board.Tasks[i].DependsOn = cleanEditList(next)
+		}
+	}
 }
 
 // removeTasks deletes tasks and repairs the dependencies that named them.

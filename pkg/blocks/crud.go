@@ -22,6 +22,8 @@ func NormalizeKind(kind string) string {
 		return KindQuality
 	case KindPack, "packs":
 		return KindPack
+	case KindTeam, "teams":
+		return KindTeam
 	default:
 		return ""
 	}
@@ -29,7 +31,7 @@ func NormalizeKind(kind string) string {
 
 // Save persists a block to the project blocks dir as <id>.yaml.
 // block must be a pointer to *PipelineBlock, *AgentBlock, *QualityBlock,
-// or *PackBlock. The block is Normalize()d and Validate()d first, and the
+// *PackBlock, or *TeamBlock. The block is Normalize()d and Validate()d first, and the
 // returned path is absolute.
 func Save(projectRoot string, block any) (string, error) {
 	kind, id, err := normalizeAndValidate(block)
@@ -91,7 +93,7 @@ func Delete(projectRoot, kind, id string) (bool, error) {
 
 // ParseAndValidateBlock decodes raw YAML bytes into a typed, normalized and
 // validated block of the given kind. Returns *PipelineBlock, *AgentBlock,
-// *QualityBlock, or *PackBlock.
+// *QualityBlock, *PackBlock, or *TeamBlock.
 func ParseAndValidateBlock(kind string, data []byte) (any, error) {
 	kind = NormalizeKind(kind)
 	if kind == "" {
@@ -119,6 +121,12 @@ func ParseAndValidateBlock(kind string, data []byte) (any, error) {
 		block = &b
 	case KindPack:
 		var b PackBlock
+		if err := yaml.Unmarshal(data, &b); err != nil {
+			return nil, err
+		}
+		block = &b
+	case KindTeam:
+		var b TeamBlock
 		if err := yaml.Unmarshal(data, &b); err != nil {
 			return nil, err
 		}
@@ -173,8 +181,20 @@ func normalizeAndValidate(block any) (string, string, error) {
 			return "", "", err
 		}
 		return b.Kind, b.ID, nil
+	case *TeamBlock:
+		if b == nil {
+			return "", "", fmt.Errorf("nil team block")
+		}
+		b.Normalize()
+		if err := b.Validate(); err != nil {
+			return "", "", err
+		}
+		if b.Spec.ID != b.ID {
+			return "", "", fmt.Errorf("team block id %q does not match spec.id %q", b.ID, b.Spec.ID)
+		}
+		return b.Kind, b.ID, nil
 	default:
-		return "", "", fmt.Errorf("unsupported block type %T (want *PipelineBlock, *AgentBlock, *QualityBlock, or *PackBlock)", block)
+		return "", "", fmt.Errorf("unsupported block type %T (want *PipelineBlock, *AgentBlock, *QualityBlock, *PackBlock, or *TeamBlock)", block)
 	}
 }
 
@@ -193,6 +213,9 @@ func isBuiltinBlock(reg *Registry, kind, id string) bool {
 		return ok && b.Source == SourceBuiltin
 	case KindPack:
 		b, ok := reg.GetPack(id)
+		return ok && b.Source == SourceBuiltin
+	case KindTeam:
+		b, ok := reg.GetTeam(id)
 		return ok && b.Source == SourceBuiltin
 	default:
 		return false

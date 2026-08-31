@@ -50,7 +50,10 @@ func (s *Server) handleGetSquads(w http.ResponseWriter, _ *http.Request) {
 			"acceptance": sq.Acceptance,
 			"worker":     sq.Worker,
 			"reviewer":   sq.Reviewer,
+			"tester":     sq.Tester,
 			"manager":    sq.Manager,
+			"agents":     sq.Agents,
+			"skills":     sq.Skills,
 			"total":      st.Total,
 			"done":       st.Done,
 			"blocked":    st.Blocked,
@@ -76,11 +79,37 @@ func (s *Server) handleGetSquads(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// task → team, so a live view can name the team behind the task an agent is
+	// working on right now. Derived here rather than in the client: the client
+	// has the event stream, which carries a task id and no ownership at all,
+	// and a UI guessing a team from a filename would eventually guess wrong —
+	// a badge on the wrong half is worse than no badge.
+	taskTeams := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		if t.Squad != "" {
+			taskTeams[t.ID] = t.Squad
+		}
+	}
+
+	// Per-team acceptance results for this run, so "green" on screen means the
+	// half was PROVED rather than assumed from task status.
+	gates := make([]map[string]interface{}, 0)
+	if o := s.orch(); o != nil {
+		for _, g := range o.TeamGates() {
+			gates = append(gates, map[string]interface{}{
+				"team": g.Team, "command": g.Command,
+				"ran": g.Ran, "ok": g.OK, "summary": g.Summary,
+			})
+		}
+	}
+
 	gate := squads.ReadyForIntegration(&p, tasks)
 	writeJSON(w, map[string]interface{}{
 		"ok":         true,
 		"summary":    p.Summary,
 		"squads":     out,
+		"task_teams": taskTeams,
+		"gates":      gates,
 		"interfaces": interfaces,
 		"stalls":     stalls,
 		"managers":   s.triageCapableAgents(),
@@ -119,15 +148,15 @@ func (s *Server) boardTasks() []plan.Task {
 // exactly as it was. A half-applied org chart is worse than the one it
 // replaced, because the user believes they fixed it.
 func (s *Server) handlePatchSquads(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Squads       []plan.SquadEdit `json:"squads"`
-		RemoveSquads []string         `json:"remove_squads"`
-	}
+	// The full PlanEdits shape, not just its squad fields: the Teams page edits
+	// the frozen contract too, and a second wire format for the same edit is a
+	// second place for the two halves to drift apart.
+	var body plan.PlanEdits
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if len(body.Squads) == 0 && len(body.RemoveSquads) == 0 {
+	if !body.TouchesSquads() {
 		http.Error(w, "no edits", http.StatusBadRequest)
 		return
 	}
@@ -142,7 +171,7 @@ func (s *Server) handlePatchSquads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if probs := squads.ApplyEdits(&p, body.Squads, body.RemoveSquads); probs.Errors() {
+	if probs := squads.ApplyPlanEdits(&p, body); probs.Errors() {
 		// 422, not 400: the request was well-formed and the harness understood
 		// it — it is the resulting org chart that cannot be run, and the client
 		// needs the reasons to show the user.

@@ -227,6 +227,7 @@ func runCmd() *cobra.Command {
 			mode, _ := cmd.Flags().GetString("mode")
 			agent, _ := cmd.Flags().GetString("agent")
 			pinSkills, _ := cmd.Flags().GetStringSlice("skill")
+			pinTeams, _ := cmd.Flags().GetStringSlice("team")
 			dynamic, _ := cmd.Flags().GetBool("dynamic")
 			noDynamic, _ := cmd.Flags().GetBool("no-dynamic")
 			if mode != "" {
@@ -246,6 +247,12 @@ func runCmd() *cobra.Command {
 				for _, s := range pinSkills {
 					query += " @skill:" + s
 				}
+			}
+			// An explicit team choice is an instruction, not a hypothesis: it
+			// is used regardless of what the query text and the workspace
+			// would otherwise have scored.
+			if len(pinTeams) > 0 {
+				h.Config.Teams = append(append([]string{}, h.Config.Teams...), pinTeams...)
 			}
 
 			// Pre-flight #1, and it costs nothing: resolve every human-in-the-
@@ -387,6 +394,7 @@ func runCmd() *cobra.Command {
 	cmd.Flags().Bool("dynamic", false, "run the composer specialist to assemble a task-specific pipeline (default: on)")
 	cmd.Flags().Bool("no-dynamic", false, "disable the dynamic pipeline (use the static pipeline)")
 	cmd.Flags().StringSlice("skill", nil, "pin/load skill by name (repeatable); also accepts @skill:name in query")
+	cmd.Flags().StringSlice("team", nil, "run with this team from the library, whatever the query says (repeatable); see `slmcode block list --kind team`")
 	registerDeliveryFlags(cmd)
 	registerIsolationFlags(cmd)
 	return cmd

@@ -237,3 +237,42 @@ func TestPathsInIsQuietOnOutputWithNoPaths(t *testing.T) {
 		}
 	}
 }
+
+// The whole team, not just two seats. A per-team manager beats a run-wide one
+// precisely because it sees the team's OWN people first — and a team is however
+// many people its author put on it, not the four seats the harness dispatches.
+func TestStaffingForListsTheWholeRosterSeatsFirst(t *testing.T) {
+	p := &Plan{Squads: []Squad{{
+		ID: "backend", Owns: []string{"cmd/**"},
+		Worker: "go-worker", Reviewer: "go-reviewer", Tester: "go-tester",
+		Manager: "backend-triage",
+		Agents:  []string{"go-corrector", "deep", "go-worker"},
+	}}}
+
+	staff := StaffingFor(p, "backend")
+
+	if staff.Manager != "backend-triage" {
+		t.Fatalf("manager=%q", staff.Manager)
+	}
+	want := []string{"go-worker", "go-reviewer", "go-tester", "go-corrector", "deep"}
+	if len(staff.Members) != len(want) {
+		t.Fatalf("members=%v, want %v", staff.Members, want)
+	}
+	for i, id := range want {
+		if staff.Members[i] != id {
+			t.Fatalf("members[%d]=%q, want %q (seats first, then the roster in its author's order)",
+				i, staff.Members[i], id)
+		}
+	}
+
+	// And that ordering is what the triage roster inherits: the team's people
+	// first, everybody else still reachable behind them.
+	roster := []string{"corrector", "deep", "go-corrector", "go-worker", "react-worker"}
+	got := Colleagues(p, "backend", roster)
+	if got[0] != "go-worker" || got[1] != "go-corrector" || got[2] != "deep" {
+		t.Fatalf("colleagues=%v — the team leads", got)
+	}
+	if len(got) != len(roster) {
+		t.Fatalf("colleagues=%v — nobody may be removed, only reordered", got)
+	}
+}

@@ -353,6 +353,21 @@ type Config struct {
 	// is cheap next to the sequential build it removes, and the contract it
 	// freezes is what stops the halves from not fitting together.
 	Squads bool `yaml:"squads" json:"squads"`
+	// TeamLibrary preselects teams from the saved library (pkg/teams, block
+	// kind "team") before falling back to the manager specialist.
+	//
+	// On by default, and the default that matters most for a small model:
+	// "which teams does this request involve" is answered from the query text,
+	// the marker files and the extensions already on disk, with no model call
+	// and therefore none of the ways a 7–32B model fails at it — overlapping
+	// globs, unregistered worker ids, JSON that will not parse. The model is
+	// still asked for the CONTRACT, which is the part that genuinely needs
+	// judgment. Turn this off to go back to model-assembled teams.
+	TeamLibrary bool `yaml:"team_library" json:"team_library"`
+	// Teams pins team ids for the run, bypassing preselection for them. This
+	// is what "run this with the backend and frontend teams" sets; the Studio
+	// run setup and `--team` write it.
+	Teams []string `yaml:"teams,omitempty" json:"teams,omitempty"`
 	// PinnedSkills are always loaded (in addition to @skill: refs / matching).
 	PinnedSkills []string `yaml:"pinned_skills" json:"pinned_skills"`
 
@@ -664,6 +679,7 @@ func Default(root string) *Config {
 		// via config `dynamic_pipeline: false` or `slmcode run --no-dynamic`.
 		DynamicPipeline: true,
 		Squads:          true,
+		TeamLibrary:     true,
 		Temperature:     0.2,
 		MaxTokens:       4096,
 		MaxRetries:      DefaultMaxRetries,
@@ -1262,6 +1278,8 @@ type Patch struct {
 	Specialist             *string                  `json:"specialist,omitempty"`
 	DynamicPipeline        *bool                    `json:"dynamic_pipeline,omitempty"`
 	Squads                 *bool                    `json:"squads,omitempty"`
+	TeamLibrary            *bool                    `json:"team_library,omitempty"`
+	Teams                  []string                 `json:"teams,omitempty"`
 	PinnedSkills           *[]string                `json:"pinned_skills,omitempty"`
 	Temperature            *float64                 `json:"temperature,omitempty"`
 	MaxTokens              *int                     `json:"max_tokens,omitempty"`
@@ -1390,6 +1408,12 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.DynamicPipeline != nil {
 		c.DynamicPipeline = *p.DynamicPipeline
+	}
+	if p.TeamLibrary != nil {
+		c.TeamLibrary = *p.TeamLibrary
+	}
+	if p.Teams != nil {
+		c.Teams = p.Teams
 	}
 	if p.Squads != nil {
 		c.Squads = *p.Squads

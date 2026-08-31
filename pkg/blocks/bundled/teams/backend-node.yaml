@@ -1,0 +1,32 @@
+api_version: blocks/v1
+kind: team
+id: backend-node
+name: Backend · Node
+description: >-
+  The TypeScript/Node service half — routes, services and their test suite,
+  built and typechecked on its own.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [backend, node, typescript, team]
+icon: "🟩"
+shareable: true
+spec:
+  id: backend-node
+  name: Backend · Node
+  charter: >-
+    Own the Node service: routes, services, schemas and their tests. Serve the
+    interfaces the contract lists; never edit another team's files.
+  owns:
+    - server/**
+    - services/**
+    - src/server/**
+  acceptance: npm test
+  worker: ts-worker
+  reviewer: ts-reviewer
+  tester: ts-tester
+  match:
+    keywords: [node, express, nestjs, fastify, trpc, prisma]
+    files: [server/package.json, services/package.json]
+    extensions: [.ts]

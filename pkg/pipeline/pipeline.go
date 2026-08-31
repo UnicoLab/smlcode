@@ -115,7 +115,22 @@ type Config struct {
 	Order   []string             `yaml:"order,omitempty" json:"order,omitempty"` // display + progress order
 	Groups  []GroupMeta          `yaml:"groups,omitempty" json:"groups,omitempty"`
 	Execute ExecuteLoop          `yaml:"execute,omitempty" json:"execute,omitempty"`
-	Slots   []Slot               `yaml:"slots,omitempty" json:"slots,omitempty"`
+	// Teams attaches virtual development teams (block kind "team") to this
+	// pipeline.
+	//
+	// A pipeline is a shape of work, and for most shapes the shape implies the
+	// org chart: a "fullstack" pipeline is one that always has a backend half
+	// and a frontend half, whatever today's query says. Naming them here means
+	// the run does not have to rediscover that from the query text — and, more
+	// usefully, means a team the query would never have hinted at (infra, docs)
+	// is still on the run because the pipeline says it belongs there.
+	//
+	// Ids that no longer resolve are dropped with a warning rather than failing
+	// the pipeline: a shared preset outlives the library it was written
+	// against, and a pipeline that refuses to load is a worse answer than one
+	// that runs with one fewer team.
+	Teams []string `yaml:"teams,omitempty" json:"teams,omitempty"`
+	Slots []Slot   `yaml:"slots,omitempty" json:"slots,omitempty"`
 }
 
 // Path returns <slmDir>/pipeline.yaml.
@@ -284,6 +299,21 @@ func (c *Config) Normalize() {
 		if s.Title == "" {
 			s.Title = s.ID
 		}
+	}
+	// Team ids are slugs like block ids. Deduped and lowercased here so a
+	// hand-written preset and one saved from Studio produce the same run.
+	if len(c.Teams) > 0 {
+		seen := map[string]bool{}
+		kept := make([]string, 0, len(c.Teams))
+		for _, id := range c.Teams {
+			id = strings.ToLower(strings.TrimSpace(id))
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			kept = append(kept, id)
+		}
+		c.Teams = kept
 	}
 }
 

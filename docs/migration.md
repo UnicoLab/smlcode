@@ -172,10 +172,50 @@ project predates it, since `slmcode commit` runs `git add -A`.
 
 ---
 
+## 6. Teams come from a library, and each half proves itself
+
+**Before:** the `manager` specialist invented an org chart from the query on
+every run, and a squad's acceptance command was written into the contract but
+never executed.
+
+**Now:** teams are [blocks](blocks.md) (`kind: team`), preselected from the query
+text and the files on disk with no model call, and each team's acceptance
+command runs once its lane finishes.
+
+Two things existing scripts may notice:
+
+- **A task's `squad` is a library id.** `backend-go`, not `backend`. If you grep
+  `board.json` or event lines for a squad name, stop assuming the model's
+  wording. The library ids are stable and yours to change —
+  `slmcode blocks show team backend-go`.
+- **More shell commands run per run**, one per team with work. A command that
+  cannot start (no `npm`, no `node_modules`) is reported UNVERIFIED and fails
+  nothing; one that runs and fails raises a ticket in that team's lane.
+
+To go back to model-assembled teams:
+
+```bash
+slmcode config set team_library false
+```
+
+To turn teams off entirely, as before:
+
+```bash
+slmcode config set squads false
+```
+
+See [Teams](squads.md) for the library, the matching rules, and what a team
+carries.
+
+---
+
 ## Smaller changes worth knowing
 
 | Change | Impact |
 |---|---|
+| A browser refresh on any page other than `/` used to 404 | `/board`, `/teams` and `/settings` now serve the SPA shell on a navigation. A missing *asset* still 404s. |
+| The plan-approval card carries up to 60 structured tasks (was 20) | A larger SSE payload, and a longer card in the terminal. The card says how many it is showing when the board is bigger. |
+| A correction ticket that straddles two teams stays unassigned | It used to land on whichever half appeared first on the board — and was then denied write access to the other half's files. |
 | The context pack is budgeted in **tokens**, not bytes | If no `model_profiles` entry matches your model, the pack falls back to `max_context_kb` (16 KB ≈ 4K tokens) regardless of the real window. Set `context_limit` for your model. |
 | `ws_edit` refuses an empty `old_str` | It used to silently prepend `new_str` and report success. |
 | An edit that breaks a previously-parsing file is **reverted** | Set `disable_syntax_check: true` to opt out. |

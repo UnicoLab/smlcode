@@ -120,6 +120,10 @@ type Orchestrator struct {
 	// single-stream run. Set by the manager phase before plan/split; read by
 	// the board router, the execute loop and the between-wave report.
 	squadPlan *squads.Plan
+	// teamGates holds each team's acceptance result for THIS run. Run state,
+	// never written into squads.json — that file is the org chart the next run
+	// inherits, not a record of what this one proved.
+	teamGates teamGates
 
 	// workspace / repoMap / tracker come from the tool layer so the
 	// orchestrator can reset the per-task loop guard and seed focus discovery.
@@ -2070,6 +2074,26 @@ func (o *Orchestrator) persistBoard(board *plan.Board) {
 	if board == nil {
 		return
 	}
+	// A stamp that names the WRONG team is corrected here, at the one place
+	// every writer passes through.
+	//
+	// Repairing only before the wave fence was not enough: a task's files also
+	// grow after it runs — a worker reports what it actually touched, a reopen
+	// widens a task to the paths a tester named — and the stamp does not move
+	// with them. Measured on a live 30B: a `frontend-react` task reached done
+	// holding `cmd/server/main.go`, which the backend owns.
+	//
+	// Retarget, not repair: a task whose files transiently STRADDLE two teams
+	// keeps its stamp here and only loses it at the fence, where the stamp
+	// becomes a write permission. Clearing at every save throws away routing
+	// the plan established for a condition that resolves before dispatch.
+	if o.squadPlan != nil {
+		if fixed := squads.RetargetAssignments(o.squadPlan, board.Tasks); len(fixed) > 0 {
+			o.emitWarn("execute", fmt.Sprintf(
+				"re-assigned %s — their files moved out of the team they were stamped with",
+				strings.Join(limitList(fixed, 5), ", ")), "")
+		}
+	}
 	if turn := o.turn(); turn != nil {
 		if board.QueryID == "" {
 			board.QueryID = turn.ID
@@ -2773,6 +2797,10 @@ func (o *Orchestrator) buildSplitterPrompt(query, splitAgent, planOut string, pr
 		prompt += block
 	}
 	prompt += projectLanguageGuidance(o.cfg.Root)
+	// The org chart already exists at this point. A splitter that has not seen
+	// it produces tasks that straddle both teams — every one then correctly
+	// unassigned, and the whole parallel build silently does not happen.
+	prompt += o.splitGuidance()
 	prompt += "\n\nFresh task list for THIS query. STRICT JSON tasks."
 	if o.cfg.ThinkPasses >= 2 {
 		prompt += "\nPrefer <=5 tiny tasks with files + acceptance. Tester when code changes."

@@ -51,11 +51,35 @@ type PlanApproveAsk struct {
 	// Managers lists the agents that can be a team's project manager — the
 	// ones that answer the triage contract. A narrower list than Agents on
 	// purpose: an agent that cannot answer it is refused after a model call.
-	Managers  []string `json:"managers,omitempty"`
-	Options   []string `json:"options,omitempty"`
-	TimeoutS  int      `json:"timeout_sec,omitempty"`
-	OnTimeout string   `json:"on_timeout,omitempty"` // "approve"
-	CreatedAt string   `json:"created_at"`
+	Managers []string `json:"managers,omitempty"`
+	// Library is the saved team library, so the approval UI can ADD a team the
+	// run did not select rather than only edit the ones it did. Without it the
+	// only way to put the docs team on a run that did not match it is to cancel,
+	// edit config, and replan.
+	Library   []PlanLibraryTeam `json:"library,omitempty"`
+	Options   []string          `json:"options,omitempty"`
+	TimeoutS  int               `json:"timeout_sec,omitempty"`
+	OnTimeout string            `json:"on_timeout,omitempty"` // "approve"
+	CreatedAt string            `json:"created_at"`
+}
+
+// PlanLibraryTeam is one team offered by the library at approval time.
+type PlanLibraryTeam struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name,omitempty"`
+	Charter    string   `json:"charter,omitempty"`
+	Owns       []string `json:"owns,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
+	Worker     string   `json:"worker,omitempty"`
+	Reviewer   string   `json:"reviewer,omitempty"`
+	Tester     string   `json:"tester,omitempty"`
+	Manager    string   `json:"manager,omitempty"`
+	Agents     []string `json:"agents,omitempty"`
+	Skills     []string `json:"skills,omitempty"`
+	// OnRun is true for a team already in this run's org chart. The UI offers
+	// the rest; offering one that is already there would produce an edit the
+	// harness reads as "add a duplicate".
+	OnRun bool `json:"on_run,omitempty"`
 }
 
 // PlanApproveTask is the structured, UI-friendly task preview for validation.
@@ -132,6 +156,16 @@ type PlanApproveAnswer struct {
 	AnsweredAt string     `json:"answered_at,omitempty"`
 }
 
+// maxEditableTasks bounds the structured task list on the approval card.
+//
+// A bound has to exist — the card is rendered in a terminal, mirrored to a file
+// and pushed down an SSE stream, and an unbounded board makes all three
+// unpleasant. It is deliberately far above the old value: the card is the only
+// place a plan can be corrected before it runs, and a task past the cap is one
+// the user cannot fix without throwing the whole board away. The UI says how
+// many it is showing when the board is bigger than this.
+const maxEditableTasks = 60
+
 // BuildPlanApproveAsk builds a compact approval card from the board.
 func BuildPlanApproveAsk(query string, board *Board) PlanApproveAsk {
 	ask := PlanApproveAsk{
@@ -160,7 +194,7 @@ func BuildPlanApproveAsk(query string, board *Board) PlanApproveAsk {
 		}
 	}
 	for _, t := range board.Tasks {
-		if len(ask.TaskDetails) >= 20 {
+		if len(ask.TaskDetails) >= maxEditableTasks {
 			break
 		}
 		ask.TaskDetails = append(ask.TaskDetails, PlanApproveTask{
@@ -232,8 +266,12 @@ type PlanSquad struct {
 	Acceptance string   `json:"acceptance,omitempty"`
 	Worker     string   `json:"worker,omitempty"`
 	Reviewer   string   `json:"reviewer,omitempty"`
+	Tester     string   `json:"tester,omitempty"`
 	// Manager is the agent that triages this team's rejected work.
 	Manager string `json:"manager,omitempty"`
+	// Agents is the team's open roster; Skills what its task packs load.
+	Agents []string `json:"agents,omitempty"`
+	Skills []string `json:"skills,omitempty"`
 	// TaskCount is how much work this squad was given, so an idle team is
 	// visible on the card rather than only in the event log.
 	TaskCount int `json:"task_count"`

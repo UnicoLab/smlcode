@@ -377,23 +377,43 @@ func TestRoutingIsSafeWithoutAFactory(t *testing.T) {
 }
 
 // The manager's per-squad worker is consulted when the files say nothing.
-func TestSquadWorkerLookupFeedsRouting(t *testing.T) {
+// Every seat a team can staff has to reach routing. A seat the approval card
+// and the Teams page both offer, and routing ignores, is worse than one the UI
+// never showed: the user sets it, nothing changes, and nothing says why.
+func TestSquadSeatLookupsFeedRouting(t *testing.T) {
 	p := e2ePlan(t)
 	p.Squads[1].Worker = "react-worker"
+	p.Squads[1].Reviewer = "react-reviewer"
+	p.Squads[1].Tester = "react-tester"
 	o, _ := routingOrchestrator(t, p)
 
-	lookup := o.squadWorkerLookup()
-	if lookup == nil {
-		t.Fatal("a squad plan must expose its worker choices")
+	for seat, want := range map[string]string{
+		"worker": "react-worker", "reviewer": "react-reviewer", "tester": "react-tester",
+	} {
+		lookup := o.squadSeatLookup(seatReader(seat))
+		if lookup == nil {
+			t.Fatalf("a squad plan must expose its %s choices", seat)
+		}
+		if got := lookup("frontend"); got != want {
+			t.Errorf("%s lookup(frontend) = %q, want %q", seat, got, want)
+		}
+		if got := lookup("nope"); got != "" {
+			t.Errorf("%s: unknown squad = %q, want empty", seat, got)
+		}
 	}
-	if got := lookup("frontend"); got != "react-worker" {
-		t.Errorf("lookup(frontend) = %q", got)
-	}
-	if got := lookup("nope"); got != "" {
-		t.Errorf("unknown squad = %q, want empty", got)
-	}
-	if (&Orchestrator{}).squadWorkerLookup() != nil {
+	if (&Orchestrator{}).squadSeatLookup(seatReader("worker")) != nil {
 		t.Error("no plan, no lookup")
+	}
+}
+
+func seatReader(seat string) func(squads.Squad) string {
+	switch seat {
+	case "reviewer":
+		return func(s squads.Squad) string { return s.Reviewer }
+	case "tester":
+		return func(s squads.Squad) string { return s.Tester }
+	default:
+		return func(s squads.Squad) string { return s.Worker }
 	}
 }
 
@@ -1205,5 +1225,37 @@ func TestASeamTicketNeverScopesToTheOtherTeamsFiles(t *testing.T) {
 	// With nobody owing the seam, everything named is still useful context.
 	if got := o.seamFiles("web/src/App.tsx:12: boom", ""); len(got) != 1 {
 		t.Errorf("seamFiles(unowned) = %v, want the named path kept", got)
+	}
+}
+
+// A model cannot respect a boundary it was not shown.
+//
+// Measured against a live 30B: with no ownership in the split prompt it emitted
+// two tasks each naming BOTH halves' files. Every one straddled, so every one
+// stayed correctly unassigned — and the run finished having done no parallel
+// work at all, on a plan whose org chart and frozen contract were both right.
+// The failure is invisible in the output, which is exactly why it needs a test.
+func TestTheSplitterIsToldWhereTheTeamBoundariesAre(t *testing.T) {
+	o, _ := routingOrchestrator(t, e2ePlan(t))
+
+	got := o.splitGuidance()
+	for _, want := range []string{"backend", "frontend", "cmd/**", "web/**", "depends_on"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("split guidance is missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "span two teams") {
+		t.Errorf("the guidance must say WHY, not just list globs:\n%s", got)
+	}
+
+	// A single-stream run has no boundaries to describe, and a paragraph about
+	// teams that do not exist is noise in a small model's context.
+	single := &Orchestrator{}
+	if single.splitGuidance() != "" {
+		t.Error("no org chart, no guidance")
+	}
+	o.squadPlan = &squads.Plan{Squads: []squads.Squad{{ID: "solo", Owns: []string{"**"}}}}
+	if o.splitGuidance() != "" {
+		t.Error("one team is the single-stream pipeline wearing a hat — no boundary to state")
 	}
 }

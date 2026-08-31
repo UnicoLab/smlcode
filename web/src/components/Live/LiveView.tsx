@@ -25,12 +25,14 @@ import {
   previewComposition,
   getInterruptedRuns,
   resumeRun,
+  getSquads,
 } from '@/api/client';
 import type {
   AgentSpec,
   PipelineView,
   DynamicComposition,
   InterruptedRun,
+  SquadsView,
 } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
@@ -39,6 +41,7 @@ import LiveFeedback from './LiveFeedback';
 import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import SquadPanel from './SquadPanel';
+import NowBar from './NowBar';
 import RecoveryPanel from './RecoveryPanel';
 import ResultPanel from './ResultPanel';
 import { buildRecovery, recoveryTally } from './recovery';
@@ -121,6 +124,10 @@ export default function LiveView() {
           ? String(fixes.resolved)
           : undefined;
   const [railWidth, setRailWidth] = usePersistentState('live.rail.width', RAIL_DEFAULT_PX);
+  // The org chart, so the activity bar can say which TEAM the running task
+  // belongs to. Polled with the run rather than once: a run that assembles
+  // teams does so several phases in, long after this component mounted.
+  const [squads, setSquads] = useState<SquadsView | null>(null);
   // The rail is a column on a wide viewport and a full-height OVERLAY below it,
   // so its default cannot be the same on both: opening it by default on a phone
   // means the first thing a user sees is the task drawer covering the console
@@ -154,6 +161,31 @@ export default function LiveView() {
     window.addEventListener(FOCUS_PROMPT_EVENT, focus);
     return () => window.removeEventListener(FOCUS_PROMPT_EVENT, focus);
   }, []);
+
+  // The org chart, refreshed while a run is going and once when it stops.
+  //
+  // Polled slowly on purpose: it is written once, at charter, and everything
+  // downstream reads it unchanged. A fast poll would spend a request every
+  // second re-fetching a file that has not moved.
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      getSquads()
+        .then((v) => {
+          if (alive) setSquads(v);
+        })
+        .catch(() => {
+          /* no org chart is the normal state, not an error */
+        });
+    };
+    load();
+    if (!running) return () => { alive = false; };
+    const id = window.setInterval(load, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [running]);
 
   // Refresh the resumable-run list whenever a run finishes.
   useEffect(() => {
@@ -567,6 +599,11 @@ export default function LiveView() {
       {/* ── 4. Stream + rail ───────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {/* What is happening RIGHT NOW, pinned above the scroll. The log
+              answers "what happened" and scrolls it away; on a local 30B the
+              next line can be four minutes out, and a wall of finished lines
+              under a blinking cursor reads as a hang. */}
+          <NowBar events={events} running={running} squads={squads} />
           <div ref={logRef} className="min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4">
             {events.length === 0 ? (
               // Keyed on EVENTS alone, not on `result`. A finished run leaves a
@@ -577,7 +614,12 @@ export default function LiveView() {
               // The result itself is one tab away in the rail.
               <EmptyState hasPreviousRun={!!result?.result} />
             ) : (
-              <div className="mx-auto max-w-[110ch] space-y-3">
+              // 110ch is a reading measure, and it is right for prose. It is
+              // wrong for the tool output, diffs and JSON that make up most of
+              // this log — on a 27" screen it wrapped a 200-column stack trace
+              // inside a 900px ribbon with a third of the display blank. So the
+              // measure grows with the viewport instead of being one number.
+              <div className="mx-auto max-w-[110ch] space-y-3 2xl:max-w-[150ch]">
                 {/* Calibration runs before the first token of a run, so its
                     progress sits above the stream that replaces it. */}
                 <CalibrationBanner events={events} />

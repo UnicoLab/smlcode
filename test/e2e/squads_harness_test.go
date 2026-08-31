@@ -222,7 +222,30 @@ func squadAnswerFor(role, all string, hasTools, sawToolResult bool) (string, map
 	return "- A Go API and a React SPA.\n", nil
 }
 
+// The squad path has two entrances, and both have to work:
+//
+//	library   the saved team library preselects the teams from the query text
+//	          and the files on disk, with NO model call, and the manager is
+//	          asked only for the seam between them. This is the default, and
+//	          the one that matters most for a small model: the decision every
+//	          later phase is derived from stops depending on a 30B model
+//	          emitting valid JSON with non-overlapping globs.
+//	model     no library answer — the manager assembles the whole org chart,
+//	          which is what happens on a repository the library does not cover.
+//
+// Everything downstream of assembly is identical, so the assertions are shared
+// and only the expected team ids differ.
 func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
+	t.Run("library preselects the teams", func(t *testing.T) {
+		runSquadHarness(t, true, "backend-go", "frontend-react")
+	})
+	t.Run("manager assembles them when the library has no answer", func(t *testing.T) {
+		runSquadHarness(t, false, "backend", "frontend")
+	})
+}
+
+func runSquadHarness(t *testing.T, useLibrary bool, wantBackend, wantFrontend string) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -246,7 +269,8 @@ func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
 	cfg.APIKey = "test-key"
 	cfg.StructuredDecoding = "off"
 	cfg.DynamicPipeline = false
-	cfg.Squads = true // the path under test
+	cfg.Squads = true            // the path under test
+	cfg.TeamLibrary = useLibrary // which entrance to it
 	cfg.ClarifyMode = "off"
 	cfg.PlanApprove = "auto"
 	cfg.ContinueAsk = "off"
@@ -287,17 +311,19 @@ func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
 	}
 	t.Logf("model calls: %v", model.calls())
 
-	// 1. The manager ran and its plan was accepted.
+	// 1. The manager ran and a plan was accepted. It is called on BOTH paths —
+	// on the library path only for the contract, which is the part that is
+	// genuinely about this request rather than about the repository.
 	if model.calls()["manager"] == 0 {
-		t.Fatal("the manager specialist was never asked to assemble squads")
+		t.Fatal("the manager specialist was never asked for an org chart or a contract")
 	}
 	slmDir := filepath.Join(root, ".slmcode")
 	saved, ok, err := squads.Load(slmDir)
 	if err != nil || !ok {
 		t.Fatalf("the squad plan should be on disk: ok=%v err=%v", ok, err)
 	}
-	if got := saved.IDs(); len(got) != 2 || got[0] != "backend" || got[1] != "frontend" {
-		t.Fatalf("saved squads = %v", got)
+	if got := saved.IDs(); len(got) != 2 || got[0] != wantBackend || got[1] != wantFrontend {
+		t.Fatalf("saved squads = %v, want [%s %s]", got, wantBackend, wantFrontend)
 	}
 
 	// 2. The contract was frozen to disk BEFORE the workers ran.
@@ -305,7 +331,12 @@ func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CONTRACT.md must exist: %v", err)
 	}
-	for _, want := range []string{"FROZEN", "GET /api/todos", "Provided by: `backend`", "Consumed by: `frontend`"} {
+	// The model wrote `backend` / `frontend` in its contract while the library
+	// named the teams `backend-go` / `frontend-react`. Resolving that reference
+	// rather than dropping the clause is the difference between a frozen seam
+	// and none — see squads.Plan.ResolveRef.
+	for _, want := range []string{"FROZEN", "GET /api/todos",
+		"Provided by: `" + wantBackend + "`", "Consumed by: `" + wantFrontend + "`"} {
 		if !strings.Contains(string(contract), want) {
 			t.Errorf("CONTRACT.md is missing %q", want)
 		}
@@ -338,7 +369,7 @@ func TestSquadsEndToEndAgainstAFakeModel(t *testing.T) {
 			bySquad[task.Squad]++
 		}
 	}
-	if bySquad["backend"] == 0 || bySquad["frontend"] == 0 {
+	if bySquad[wantBackend] == 0 || bySquad[wantFrontend] == 0 {
 		t.Errorf("both squads should own work, got %v (tasks: %s)", bySquad, taskSummary(&res.Board))
 	}
 

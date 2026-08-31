@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { patchTask, deleteTask } from '@/api/client';
+import { teamColor } from './teamColor';
 import type { Task } from '@/types';
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
@@ -148,7 +149,7 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
       ref={setNodeRef}
       style={style}
       className={clsx(
-        'card group cursor-default select-none p-3 transition-shadow',
+        'card group relative cursor-default select-none overflow-hidden p-3 pl-3.5 transition-shadow',
         isDragOverlay && 'shadow-xl',
         task.status === 'failed' && 'ring-1 ring-red-300 dark:ring-red-800',
         task.status === 'done' && 'ring-1 ring-emerald-300 dark:ring-emerald-800',
@@ -163,6 +164,16 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
         }
       }}
     >
+      {/* The team's colour as a left edge. Reading which lane a card belongs to
+          has to work at a glance down a column of eight — a badge among six
+          other badges does not, and on a two-team board every column holds
+          both halves interleaved. */}
+      {task.squad && (
+        <span
+          aria-hidden="true"
+          className={clsx('absolute inset-y-0 left-0 w-1', teamColor(task.squad).accent)}
+        />
+      )}
       <div className="flex items-start gap-2">
         <button
           {...attributes}
@@ -195,6 +206,17 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {task.squad && (
+              <span
+                className={clsx(
+                  'rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold',
+                  teamColor(task.squad).badge,
+                )}
+                title={`Team ${task.squad} owns this task`}
+              >
+                {task.squad}
+              </span>
+            )}
             {task.role && (
               <span className="flex max-w-full items-center gap-1 rounded-md bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800/70" title={task.role}>
                 <User size={10} />

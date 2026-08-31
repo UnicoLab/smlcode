@@ -39,6 +39,9 @@ const KIND_BADGE: Record<string, string> = {
   pipeline: 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300',
   agent: 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300',
   quality: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
+  // Teal, to match the team badge on the board and the live rail — one team
+  // colour family everywhere, or the colour stops being information.
+  team: 'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300',
 };
 
 const KIND_TITLES: Record<string, string> = {
@@ -46,6 +49,7 @@ const KIND_TITLES: Record<string, string> = {
   pipeline: 'Pipeline',
   agent: 'Agent',
   quality: 'Quality',
+  team: 'Team',
 };
 
 const TABS = [
@@ -54,6 +58,7 @@ const TABS = [
   { id: 'pipeline', label: 'Pipelines' },
   { id: 'agent', label: 'Agents' },
   { id: 'quality', label: 'Quality' },
+  { id: 'team', label: 'Teams' },
 ];
 
 interface EditorState {
@@ -161,7 +166,7 @@ export default function BlockManager() {
   const blocks = getBlocksForTab();
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="mx-auto w-full max-w-[120rem] space-y-6 p-4 2xl:p-8">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Building Blocks</h1>
@@ -243,7 +248,7 @@ export default function BlockManager() {
       )}
 
       {!loading && blocks.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
           {blocks.map((block) => (
             <div
               key={`${block.kind}-${block.id}`}

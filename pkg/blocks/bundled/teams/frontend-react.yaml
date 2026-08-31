@@ -1,0 +1,34 @@
+api_version: blocks/v1
+kind: team
+id: frontend-react
+name: Frontend · React
+description: >-
+  The browser half: components, state and styling under web/, proven by its own
+  build rather than by whether the API happens to be up.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [frontend, react, ui, team]
+icon: "⚛️"
+shareable: true
+spec:
+  id: frontend-react
+  name: Frontend · React
+  charter: >-
+    Own the React client: components, state, styling and its build. Call the
+    API exactly as the frozen contract specifies — never guess a route or a
+    response shape, and never edit server files to make a call work.
+  owns:
+    - web/**
+    - frontend/**
+    - client/**
+  acceptance: npm --prefix web run build
+  worker: react-worker
+  reviewer: react-reviewer
+  tester: react-tester
+  skills: [react-components]
+  match:
+    keywords: [frontend, react, ui, spa, component, dashboard, page, tailwind, vite, browser]
+    files: [web/package.json, frontend/package.json, client/package.json]
+    extensions: [.tsx, .jsx]

@@ -155,6 +155,41 @@ func SanitizeTasksIn(tasks []Task, exploration, query, root string) []Task {
 // Only worker/deep roles merge. A tester or reviewer on the same file is a
 // different job on the same subject, and merging those would delete the
 // verification step.
+// MergeDuplicateTasks folds tasks that do the same job over the same files.
+//
+// Exported because the dedupe has to run AGAIN after file reconciliation.
+// Identity here is the FILE SET, and reconciliation rewrites file sets — it
+// prunes paths that do not resolve and adds ones discovery found — so two tasks
+// that were distinct when the sanitizer saw them can be identical by the time
+// they reach the board. Measured on a live 30B: two workers on
+// `web/src/App.tsx` and three testers over the same two files, all of which the
+// first pass had legitimately declined to merge.
+//
+// Idempotent: a second call over already-merged tasks returns them unchanged.
+func MergeDuplicateTasks(tasks []Task) []Task { return mergeSameFileWorkers(tasks) }
+
+// mergeFamily groups roles that do the SAME KIND of job, so two of them over
+// one file set can fold together. "" means never merge this role.
+//
+// Two families, and they must never mix: an implementer WRITES a file and a
+// tester PROVES it, they answer different contracts, and a survivor carrying
+// both would be handed a shape it cannot produce.
+//
+// Testers were excluded entirely until a live 30B emitted FOUR of them over the
+// same two files for one small change — four full model rounds for one answer,
+// on a budget that then ran out with seven of eight tasks never dispatched.
+// Verification is idempotent; running it three times buys nothing.
+func mergeFamily(role string) string {
+	switch {
+	case role == RoleWorker || role == "deep" || role == RoleCorrector:
+		return "implementer"
+	case IsTesterRole(role):
+		return "tester"
+	default:
+		return ""
+	}
+}
+
 func mergeSameFileWorkers(tasks []Task) []Task {
 	if len(tasks) < 2 {
 		return tasks
@@ -164,6 +199,9 @@ func mergeSameFileWorkers(tasks []Task) []Task {
 	// shape — five workers all rewriting src/App.tsx with different tails of
 	// components appended. The whole SET catches the same job written with its
 	// files in another order, where the primaries differ but the work does not.
+	// Keyed by ROLE FAMILY as well as by files. A worker and a tester on one
+	// file are two different jobs — one writes it, the other proves it — and
+	// folding them would hand the survivor a contract it cannot answer.
 	byPrimary := map[string]int{}
 	bySet := map[string]int{}
 	// absorbed task id → the id that absorbed it, for dependency rewriting.
@@ -171,11 +209,13 @@ func mergeSameFileWorkers(tasks []Task) []Task {
 	out := make([]Task, 0, len(tasks))
 	for _, t := range tasks {
 		t.Normalize()
-		if (t.Role != RoleWorker && t.Role != "deep") || len(t.Files) == 0 {
+		family := mergeFamily(t.Role)
+		if family == "" || len(t.Files) == 0 {
 			out = append(out, t)
 			continue
 		}
-		pk, sk := primaryFileKey(t.Files), fileSetKey(t.Files)
+		pk := family + "\x00" + primaryFileKey(t.Files)
+		sk := family + "\x00" + fileSetKey(t.Files)
 		idx, seen := bySet[sk]
 		if !seen {
 			idx, seen = byPrimary[pk]
@@ -192,6 +232,12 @@ func mergeSameFileWorkers(tasks []Task) []Task {
 			strings.TrimSpace(firstNonEmpty(t.Description, t.Title)))
 		into.Criteria = mergeCriteria([]Task{*into, t})
 		into.DependsOn = uniq(append(into.DependsOn, t.DependsOn...))
+		// The survivor inherits the absorbed task's files. Without this the
+		// merge NARROWS scope: folding a tester over
+		// [main.go, todo.go] into one over [main.go] silently stops verifying
+		// todo.go, and folding a worker the same way denies it write access to
+		// a file its own merged description now tells it to change.
+		into.Files = uniq(append(into.Files, t.Files...))
 		if strings.TrimSpace(into.Acceptance) == "" {
 			into.Acceptance = t.Acceptance
 		}

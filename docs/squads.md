@@ -1,4 +1,4 @@
-# 👥 Squads — parallel virtual dev teams
+# 👥 Teams — parallel virtual dev teams
 
 Build a Go backend and a React frontend **at the same time**, behind an
 interface frozen before either half starts.
@@ -8,13 +8,19 @@ slmcode run "build a todo app: Go API serving a React frontend"
 ```
 
 ```text
-charter  assembling parallel squads
-charter  2 squads · 2 interfaces · backend(cmd/**,internal/**) | frontend(web/**)
-charter  squad backend owns cmd/**, internal/**, go.mod
-charter  squad frontend owns web/**
-charter  squad assignment: backend=4 frontend=3 · 1 cross-squad
-execute  squads: backend 2/4 working · frontend 1/3 working
+charter  team library: 2 teams selected: backend-go, frontend-react
+charter  team backend-go — workspace has "go.mod"; workspace contains ".go" files
+charter  team frontend-react — query mentions "react"; workspace has "web/package.json"
+charter  freezing the interface contract
+charter  2 squads · 2 interfaces · backend-go(cmd/**,internal/**) | frontend-react(web/**)
+charter  squad assignment: backend-go=4 frontend-react=3 · 1 cross-squad
+execute  squads: backend-go 2/4 working · frontend-react 1/3 working
 ```
+
+Teams come from a **library you own** — create, edit and delete them on the
+Teams page, attach them to a pipeline, pin them for one run. Which of them a
+request involves is decided from the words in the query and the files on disk,
+with **no model call**; see [The team library](#the-team-library-).
 
 ---
 
@@ -54,16 +60,43 @@ explore ─▶ charter ─▶ plan ─▶ split ─▶ execute (both squads in p
              │                  │            │
              │                  │            └─ per-task squad brief + ownership deny list
              │                  └─ every task stamped with its owning squad
-             └─ manager assembles squads, freezes the contract, writes CONTRACT.md
+             └─ library preselects the teams, manager freezes the contract,
+                CONTRACT.md written
 ```
 
-### 1. The manager assembles the teams
+### 1. The teams are chosen 🎯
 
-The `manager` specialist reads the query and returns an org chart: squads, what
-each owns, the interfaces between them, and how the halves are joined.
+Two entrances, in this order:
 
-It returns **one** squad for a single-domain query, and the run proceeds as a
-normal single stream — squads are an accelerator, never a prerequisite.
+**The library, deterministically.** Every team in the library carries the
+evidence that says when it applies — query keywords, marker files, file
+extensions. Scoring that evidence answers "which teams does this request
+involve" with no model call at all:
+
+```text
+charter  team library: 2 teams selected: backend-go, frontend-react
+charter  team backend-go — query mentions "backend", "api"; workspace has "go.mod"
+```
+
+This is the part that mattered most to get off the model. The org chart is
+assembled *before* the split, and ownership, routing, per-team acceptance and
+the write deny list are all derived from it — so a 7–32B model that returns
+overlapping globs, an unregistered worker id, or JSON that will not parse does
+not produce a warning, it silently downgrades the whole run to a single stream.
+Reading `go.mod` off disk cannot fail that way.
+
+**The manager, when the library has nothing to say.** No library answer — a
+repository the library does not cover — and the `manager` specialist assembles
+the whole org chart itself, exactly as before.
+
+Either way, **fewer than two teams means one stream**. That is the correct
+answer for a single-domain query, which is most of them, and it is reported
+rather than silent:
+
+```text
+charter  team library: only backend-go matched — one team is the single-stream
+         pipeline wearing a hat, so it runs as one stream
+```
 
 ### 2. The contract is frozen to disk
 
@@ -84,7 +117,41 @@ FROZEN. Both squads build against this text.
 Two squads running concurrently cannot ask each other what the seam looks like,
 so the seam has to be a file they both read. It is also the cheapest place for a
 human to intervene: fixing one line here is worth more than reviewing either
-half afterwards.
+half afterwards — the plan-approval card and the Teams page both edit it.
+
+On the library path the manager is asked for **only** this. The teams, their
+globs and their acceptance commands are handed to it as fixed, so the answer it
+has to get right is a third of the size — and the two thirds it no longer owns
+are the two thirds that could corrupt a run.
+
+A reference that misses by a suffix is resolved rather than dropped. The teams
+are called `backend-go` and `frontend-react`; a small model handed those ids
+still writes `backend`. That clause would name a provider no team matches, fail
+validation, and cost the run its frozen seam — so an **unambiguous** reference
+resolves to the real team. Ambiguity is not guessed at: `backend` against a plan
+holding both `backend-go` and `backend-node` is a question only the author can
+answer.
+
+### 2b. The splitter is told where the boundaries are
+
+The org chart exists before the split, so the splitter is handed it:
+
+```text
+## Teams — every task's files must stay inside ONE team
+
+- `backend-go` owns cmd/**, internal/**, pkg/**, go.mod
+- `frontend-react` owns web/**, frontend/**, client/**
+
+A task whose `files` span two teams belongs to neither…
+```
+
+A model cannot respect a boundary it was not shown. Measured against a live 30B
+without this: it emitted two tasks, each naming `cmd/server/main.go` **and**
+`web/src/App.tsx`. Both correctly stayed unassigned — a seam task handed to one
+half is how a frontend task acquires permission to rewrite the API — and the run
+finished having done no parallel work at all, on a plan whose org chart and
+frozen contract were both right. The failure is invisible in the output, which
+is what makes four lines of prompt worth their tokens.
 
 ### 3. Tasks are routed to owners — and to specialists
 
@@ -293,6 +360,53 @@ hands the team back to the run's default manager.
 
 ---
 
+## Each half proves itself 🟢
+
+A squad's acceptance command is one of the three things a squad *is*: the
+command that proves this half works alone. It runs once every task in the lane
+is done, before the halves are joined:
+
+```text
+verify  team backend-go: proving its half alone — go build ./... && go test ./...
+verify  team backend-go is green: go build ./... && go test ./...
+verify  team frontend-react: acceptance could not run (npm is not installed here)
+        — its half is UNVERIFIED, not broken
+```
+
+Three rules, and the second is the one that keeps a local run from going red for
+nothing:
+
+| | |
+|---|---|
+| **Green means proved** | Not "every task reached done". A half can finish its tasks and not build, and the first thing to notice used to be integration — which then reported the *seam* as wrong when the real defect was one team's own code. |
+| **Absent tooling is UNVERIFIED, never red** | `npm run build` where `node_modules` was never installed exits non-zero and says nothing whatsoever about the code. Scoring it red sends a corrector to rewrite source that was never at fault, burns the retry budget, and shows a red team for something no model can fix. |
+| **A red half is that team's ticket** | Scoped to its own lane, because the wave's write deny list is derived from the task's squad — a ticket carrying another team's paths is one the tool layer refuses on exactly the files it was told to fix. Integration is skipped: joining a known-broken half proves nothing. |
+
+The result is on the board, per team: **proved green**, **half is red**, or
+**unverified** with the reason.
+
+---
+
+## Watching it happen 👀
+
+**The board** shows a strip above the columns: each team, its project manager,
+the command that proves its half, its progress, and any cross-team wait. A team
+blocked on another team's interface is a *contract dependency* and reads as one
+rather than as a red task. Clicking a team filters the board to its lane; the
+tasks on **no team** get their own lane, because the seam is a real thing to look
+at. Every card carries its team as a badge and a coloured left edge, and the
+colour comes from the team's id — so it is the same everywhere, and adding a
+team never recolours the others.
+
+**The live view** pins one line above the stream: the agent, its task, its team,
+the model, the run's token usage, and a clock that keeps ticking. On a local 30B
+the next log line can be four minutes out, and a wall of finished lines under a
+blinking cursor reads as a hang. Past two minutes on one step it says so in a
+colour, because a user who knows a call takes minutes is a user who waits
+instead of hitting stop.
+
+---
+
 ## When the halves do not fit 🔗
 
 Every squad green and the assembled application broken is the defect this whole
@@ -358,24 +472,199 @@ command, an interface with no spec, a plan with no integration command.
 
 ---
 
+## The team library 📚
+
+A team is not a per-run fact. *"The backend is Go, it lives under `cmd/` and
+`internal/`, `go-worker` writes it, `go test ./...` proves it"* is true of the
+repository, on every run, forever. Re-deriving it from a model each time pays a
+planning call to rediscover something you already know — and gets it subtly
+wrong a meaningful fraction of the time.
+
+So teams live in a library, as [building blocks](blocks.md) of kind `team`:
+
+```text
+pkg/blocks/bundled/teams/    shipped with SLMCode
+~/.slmcode/blocks/teams/     yours, every project
+.slmcode/blocks/teams/       this project — wins on an id clash
+```
+
+Six ship by default: `backend-go`, `backend-python`, `backend-node`,
+`frontend-react`, `docs` and `infra`. Editing a builtin writes a **project
+override** that shadows it; deleting the override reveals the builtin again.
+There is nothing to delete until you have edited one.
+
+### What a team carries
+
+```yaml
+# .slmcode/blocks/teams/payments.yaml
+api_version: blocks/v1
+kind: team
+id: payments
+name: Payments
+spec:
+  id: payments
+  charter: Own billing and invoices. Never edit another team's files.
+  owns: [billing/**, internal/money/**]     # no other team may claim these
+  acceptance: go test ./billing/...          # proves THIS half works alone
+  worker: go-worker                          # blank = the pipeline default
+  reviewer: go-reviewer
+  tester: go-tester
+  manager: backend-triage                    # who triages its rejected work
+  agents: [go-corrector, deep]               # the rest of the team — any number
+  skills: [go-table-tests, go-concurrency]   # pinned for every task it takes
+  match:                                     # when this team applies
+    keywords: [billing, invoice, payment, refund]
+    files: [billing/go.mod]
+    extensions: [.go]
+    priority: 0
+```
+
+Everything under `spec` is a field the harness actually reads. The two that
+carry the most weight are the two people get wrong:
+
+| | |
+|---|---|
+| **`owns`** | Teams may **never** share a path. Two agents writing one file in parallel loses one of the edits, silently. |
+| **`match`** | This is what preselects the team without a model. Leave it empty and the team becomes **manual-only**: still pickable by hand, never automatic. |
+
+### The team is however many people you put on it
+
+Four seats — worker, reviewer, tester, manager — is a shape the harness
+*dispatches*, not a shape a team has to *be*. `agents` is the rest of the team,
+in any number and in the order you write them, and it is load-bearing in three
+places:
+
+- the project manager triaging this team's rejected work sees **its own people
+  first** (that is the whole reason a per-team manager beats a run-wide one);
+- the approval card offers them first for this team's tasks;
+- an agent this harness cannot dispatch is **dropped with a reason** rather than
+  becoming a name on a team that never does any work.
+
+`skills` is open the same way: everything listed is pinned for every task the
+team takes, on top of whatever the query matches.
+
+Nothing here is filtered — the roster is an **ordering**, never a fence. The
+reason a task needs reassigning is often that its team lacks the skill the fix
+needs, and a picker that hid everybody else could only offer agents that have
+already failed.
+
+### How a team is scored
+
+| Evidence | Weight | Why |
+|---|---|---|
+| a marker **file** exists | 4 | `go.mod` is a fact about the repository |
+| a **keyword** appears in the query | 3 | matched on word boundaries — `api` must not fire on *rapids* |
+| an **extension** is present | 2 | one `.go` script is the weakest of the three |
+| its **territory already exists** | +1 each, capped at 3 | corroboration, not a reason — capped so breadth cannot win |
+
+`priority` breaks ties, and a **negative** priority opts a team out of automatic
+selection entirely while leaving it pinnable. That is why `docs` and `infra`
+ship at `-1`: nearly every request touches them in some sense, and a team that
+joins every run adds an acceptance command to every wave for nothing.
+
+Selection is capped at four teams, and **overlap is resolved here** rather than
+downstream. A library holding both `backend-go` and `backend-node` — as any real
+one will — would otherwise make every mixed repository fall back to a single
+stream. The weaker claim is dropped, and the page says which team took the
+contested path.
+
+### Managing them
+
+On the **Teams** page: create, edit, duplicate, delete, and *Try a request* —
+type a query and see which teams it would get **and why**, from the same code
+the run uses, before starting anything. Pick two or more and **Activate** to
+write the org chart the next run inherits.
+
+```bash
+slmcode blocks list                       # teams appear under TEAMS
+slmcode blocks show team backend-go
+slmcode blocks new team payments --file payments.yaml
+slmcode blocks delete team payments
+```
+
+### Pinning a team for one run
+
+An explicit choice is an instruction, not a hypothesis: a pinned team is used
+regardless of what the query says, and it wins the contested paths.
+
+```bash
+slmcode run "add invoice totals" --team payments --team frontend-react
+```
+
+Studio's run setup sends the same thing per run; it is restored when the run
+ends, so a one-off choice never quietly governs every later run.
+
+### Attaching teams to a pipeline
+
+A pipeline is a shape of work, and for most shapes the shape implies the org
+chart — a *fullstack* pipeline always has a backend half and a frontend half,
+whatever today's query says. Attaching them also reaches teams a query would
+never hint at:
+
+```yaml
+# .slmcode/pipeline.yaml
+teams: [backend-go, frontend-react, infra]
+```
+
+Ids the library no longer has are dropped with a warning rather than failing the
+pipeline: a shared preset outlives the library it was written against, and
+running with one fewer team is a better answer than refusing to start.
+
+---
+
+## Editing the plan before it runs ✏️
+
+The approval gate used to offer two answers: approve, or replan — and replan
+throws the whole board away to fix one wrong file path. So people approved plans
+they could see were slightly wrong and let the run find out.
+
+Editing is the third answer, and **everything the harness can apply is
+editable**, because a field that is visible and not editable is worse than one
+that is hidden:
+
+| | |
+|---|---|
+| **Tasks** | title, description, agent, team, files, acceptance, priority, and **waits for** — add a task, remove one, or make an existing task wait on a task you just added |
+| **Teams** | name, charter, owns, acceptance, worker, reviewer, project manager; **add** a team from the library or remove one outright |
+| **Contract** | rename a clause (keeping its spec), change its provider and consumers, edit the shape, add and remove clauses |
+
+Ordering is expressed as **dependencies**, not position. The board dispatches
+waves, so "do this later" only means "after these have finished" — a task with
+no dependency runs in the first wave wherever it sits in the list.
+
+Only the fields you actually changed are sent, so the harness can tell *"I did
+not touch this"* from *"set this to empty"*. Edits are applied by the harness,
+not by the model, so what you saw is what runs — and an edit that makes two
+teams share a path is refused **whole**, with the collision named, rather than
+half-applied.
+
+The same editor is on the Teams page, so the org chart and its contract can be
+corrected without waiting for a gate to open.
+
+---
+
 ## Configuration ⚙️
 
 ```yaml
 # .slmcode/config.yaml
-squads: true       # default
+squads: true          # default — assemble teams at all
+team_library: true    # default — preselect from the library before asking a model
+teams: []             # pinned team ids (per run; `--team` writes this)
 ```
 
 ```bash
-slmcode config set squads false   # always run a single stream
+slmcode config set squads false         # always run a single stream
+slmcode config set team_library false   # always let the manager assemble them
 ```
 
-On by default: it costs one extra planning call per run, which is cheap next to
-the sequential build it removes, and returns "one stream" for single-domain
-queries anyway.
+Both on by default. Assembly costs one extra planning call per run, which is
+cheap next to the sequential build it removes, and returns "one stream" for
+single-domain queries anyway.
 
-**Everything about it is non-fatal.** A manager that fails, times out, or returns
-a plan that does not validate leaves the run exactly as it was — one stream, one
-board. The only thing it will never do is activate a plan it could not validate.
+**Everything about it is non-fatal.** A library that covers nothing, a manager
+that fails or times out, or a plan that does not validate leaves the run exactly
+as it was — one stream, one board. The only thing it will never do is activate a
+plan it could not validate.
 
 ---
 
@@ -383,12 +672,14 @@ board. The only thing it will never do is activate a plan it could not validate.
 
 ```text
 .slmcode/
-├── CONTRACT.md    the frozen interface — what the agents read
-└── squads.json    the plan — what a resumed run reloads
+├── CONTRACT.md            the frozen interface — what the agents read
+├── squads.json            the org chart — what a resumed run reloads
+└── blocks/teams/*.yaml    the library — teams you authored or overrode
 ```
 
-Both are written atomically, together. A plan without its contract would mean
-agents building against text that describes a different plan.
+`CONTRACT.md` and `squads.json` are written atomically, together. A plan without
+its contract would mean agents building against text that describes a different
+plan. The library outlives both: it is what the *next* run starts from.
 
 ---
 

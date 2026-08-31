@@ -270,7 +270,7 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 			Command:  cmd,
 			Output:   output,
 			Files:    narrowFiles,
-			Squad:    correctionSquad(out, narrowFiles),
+			Squad:    correctionSquad(sq, out, narrowFiles),
 			Origin:   firstOf(targets.taskIDs),
 			Attempt:  countPriorCorrections(out),
 		}
@@ -296,7 +296,27 @@ func rewriteBoardFromTesterWith(board *plan.Board, query string, failures []stri
 
 // correctionSquad keeps a ticket with the team that owns the broken files, so
 // a backend regression does not land on the frontend's board.
-func correctionSquad(b plan.Board, files []string) string {
+//
+// OWNERSHIP decides, not a scan of which task happens to share a filename.
+// That scan returned the FIRST task with any file in common, so a ticket naming
+// `web/src/App.tsx` and `cmd/server/main.go` landed on whichever half appeared
+// earlier on the board — and then could not be worked at all: the wave's write
+// deny list is derived from the task's squad, so a `frontend` ticket is refused
+// at the tool layer the moment it touches `cmd/`. The ticket sits in
+// ready_to_dev forever, which looks like a stalled run rather than a
+// misrouted one. Measured against a live 30B, on exactly this shape.
+//
+// A ticket that straddles two teams therefore stays UNASSIGNED, which is the
+// same answer squads.Assign gives for a straddling task and for the same
+// reason: the seam belongs to both halves, and handing it to one is how a
+// frontend ticket acquires permission to rewrite the API.
+//
+// The board scan survives only as the fallback for a run with no org chart,
+// where there is no ownership to consult.
+func correctionSquad(sq *squads.Plan, b plan.Board, files []string) string {
+	if sq != nil {
+		return squads.LaneOf(sq, files)
+	}
 	for _, t := range b.Tasks {
 		if t.Squad == "" {
 			continue

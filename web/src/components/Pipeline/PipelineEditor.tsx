@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useContext } from 'react';
-import { getPipeline, updatePipeline, resetPipeline, getBlocks, applyPipelinePreset, getAgents, deleteBlock } from '@/api/client';
+import { getPipeline, updatePipeline, resetPipeline, getBlocks, applyPipelinePreset, getAgents, deleteBlock, getTeams } from '@/api/client';
 import { AppContext } from '@/App';
-import type { PipelineConfig, PipelineView, PhaseSpec, GroupMeta, Slot, ExecuteLoop, BlockCatalogEntry } from '@/types';
+import type { PipelineConfig, PipelineView, PhaseSpec, GroupMeta, Slot, ExecuteLoop, BlockCatalogEntry, TeamSpec } from '@/types';
 import BlockEditor from '@/components/Blocks/BlockEditor';
 import {
   RotateCcw,
@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   Info,
   Archive,
+  Users,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -87,6 +88,7 @@ export default function PipelineEditor() {
   const [applyingPreset, setApplyingPreset] = useState(false);
   const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [teamLibrary, setTeamLibrary] = useState<TeamSpec[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [newPhaseInputs, setNewPhaseInputs] = useState<Record<string, string>>({});
   const [phaseAddErrors, setPhaseAddErrors] = useState<Record<string, string>>({});
@@ -127,7 +129,19 @@ export default function PipelineEditor() {
     }
   }, []);
 
-  useEffect(() => { fetch(); fetchPresets(); fetchAgents(); }, [fetch, fetchPresets, fetchAgents]);
+  // The team library, so the pipeline can attach teams by picking rather than
+  // by typing an id that has to match exactly.
+  const fetchTeams = useCallback(async () => {
+    try {
+      const lib = await getTeams();
+      setTeamLibrary(lib.teams ?? []);
+    } catch {
+      // Best-effort: a pipeline without the library still edits, it just shows
+      // attached ids as plain text rather than named checkboxes.
+    }
+  }, []);
+
+  useEffect(() => { fetch(); fetchPresets(); fetchAgents(); fetchTeams(); }, [fetch, fetchPresets, fetchAgents, fetchTeams]);
 
   // Auto-dismiss success notices; errors stay until the next save.
   useEffect(() => {
@@ -262,7 +276,7 @@ export default function PipelineEditor() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <div className="mx-auto w-full max-w-[110rem] space-y-6 p-4 2xl:p-8">
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
@@ -454,6 +468,71 @@ export default function PipelineEditor() {
             <Info size={13} className="text-brand-500 shrink-0" />
             <span>default_role is used for worker tasks when a task has no explicit role.</span>
           </p>
+        </div>
+
+        {/* Teams attached to this pipeline.
+            A pipeline is a shape of work, and for most shapes the shape implies
+            the org chart: a "fullstack" pipeline always has a backend half and
+            a frontend half, whatever today's query happens to say. Attaching
+            them here also reaches teams a query would never hint at — infra,
+            docs — which preselection alone would never pick. */}
+        <div className="card p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <Users size={16} className="text-brand-500" />
+            Teams
+            {(config.teams ?? []).length > 0 && (
+              <span className="badge-brand text-[10px]">{(config.teams ?? []).length}</span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Teams used on every run of this pipeline, whatever the query says. Leave all unchecked
+            to let the request itself decide — the library preselects the teams a request involves
+            from its wording and the files in the workspace.
+          </p>
+          {teamLibrary.length === 0 ? (
+            <p className="text-xs text-gray-400">
+              No teams in the library yet — create one on the Teams page.
+            </p>
+          ) : (
+            <div className="grid gap-1.5 [grid-template-columns:repeat(auto-fill,minmax(15rem,1fr))]">
+              {teamLibrary.map((t) => {
+                const on = (config.teams ?? []).includes(t.id);
+                return (
+                  <label key={t.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() =>
+                        setCfg({
+                          ...config,
+                          teams: on
+                            ? (config.teams ?? []).filter((id) => id !== t.id)
+                            : [...(config.teams ?? []), t.id],
+                        })
+                      }
+                      className="accent-brand-500"
+                    />
+                    <span className="truncate">{t.name || t.id}</span>
+                    <code className="ml-auto shrink-0 font-mono text-[10px] text-gray-400">{t.id}</code>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          {(config.teams ?? []).filter((id) => !teamLibrary.some((t) => t.id === id)).length > 0 && (
+            <p className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+              <AlertCircle size={12} className="mt-0.5 shrink-0" />
+              <span>
+                This pipeline names{' '}
+                {config
+                  .teams!.filter((id) => !teamLibrary.some((t) => t.id === id))
+                  .map((id) => `"${id}"`)
+                  .join(', ')}
+                , which the library no longer has. Runs drop the id with a warning rather than
+                failing — a shared preset outlives the library it was written against.
+              </span>
+            </p>
+          )}
         </div>
 
         {/* Phase groups */}

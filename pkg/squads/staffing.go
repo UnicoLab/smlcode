@@ -24,7 +24,8 @@ type Staffing struct {
 	// default manager.
 	Manager string
 	// Members are the agent ids this squad is staffed with, most-specific
-	// first: its own worker, then its reviewer.
+	// first: its named seats (worker, reviewer, tester), then the rest of the
+	// roster its author put on it, in the order they wrote them.
 	Members []string
 }
 
@@ -43,7 +44,10 @@ func StaffingFor(p *Plan, squadID string) Staffing {
 			continue
 		}
 		out := Staffing{Squad: s.ID, Manager: strings.TrimSpace(s.Manager)}
-		for _, m := range []string{s.Worker, s.Reviewer} {
+		// Named seats first — they are the most specific statement about who
+		// does what — then the open roster, in the order its author wrote it.
+		roster := append([]string{s.Worker, s.Reviewer, s.Tester}, s.Agents...)
+		for _, m := range roster {
 			if m = strings.TrimSpace(m); m != "" && !containsFold(out.Members, m) {
 				out.Members = append(out.Members, m)
 			}

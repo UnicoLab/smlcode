@@ -13,7 +13,7 @@
 
 ## What are Building Blocks?
 
-Blocks are **versioned, marketplace-ready YAML packages** that define reusable configurations for the SLMCode pipeline. They come in four kinds:
+Blocks are **versioned, marketplace-ready YAML packages** that define reusable configurations for the SLMCode pipeline. They come in five kinds:
 
 | Kind | Schema | Purpose |
 |------|--------|---------|
@@ -21,6 +21,7 @@ Blocks are **versioned, marketplace-ready YAML packages** that define reusable c
 | `agent` | `AgentBlock` | Custom specialist definition or builtin override |
 | `quality` | `QualityBlock` | Format/lint/test/build commands per language |
 | `pack` | `PackBlock` | Composes pipeline + quality + agents + skills |
+| `team` | `TeamBlock` | A virtual dev team: what it owns, what proves it, who staffs it — see [Teams](squads.md#the-team-library) |
 
 ---
 
@@ -28,7 +29,7 @@ Blocks are **versioned, marketplace-ready YAML packages** that define reusable c
 
 Blocks are discovered in a priority chain. **First ID wins per kind:**
 
-1. **Project** — `.slmcode/blocks/{pipelines,agents,quality,packs}/*.yaml`
+1. **Project** — `.slmcode/blocks/{pipelines,agents,quality,packs,teams}/*.yaml`
 2. **User** — `~/.slmcode/blocks/…` or `$XDG_CONFIG_HOME/slmcode/blocks/…`
 3. **Extra** — `$SLMCODE_BLOCKS` env var, walk-up `blocks/` dirs
 4. **Builtin** — embedded in `pkg/blocks/bundled/` (compiled into binary)
@@ -43,7 +44,7 @@ Every block YAML file shares this header:
 
 ```yaml
 api_version: blocks/v1    # required — current schema version
-kind: pipeline            # pipeline | agent | quality | pack
+kind: pipeline            # pipeline | agent | quality | pack | team
 id: my-block              # lowercase kebab-case, 2-64 chars, [a-z][a-z0-9_-]+
 name: My Block            # human-readable display name
 description: A reusable block

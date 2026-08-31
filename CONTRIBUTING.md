@@ -322,6 +322,7 @@ normalize it in `Normalize()` → handle it in `ApplyPatch()` → document it in
 | `pkg/evolve` | fingerprints, repair rules, bandit, reflection, regressions |
 | `pkg/eval`, `pkg/eval/metrics` | eval harness, per-run metrics, `Compare`, replay |
 | `pkg/blocks`, `pkg/pipeline`, `pkg/stacks` | YAML building blocks, phase graph, presets, **language detection** (`DetectPack` / `DetectAll` — the only implementation) |
+| `pkg/teams`, `pkg/squads` | `teams` is the persistent library — a team template plus the evidence that selects it, scored with **no model call**; `squads` is one run's org chart, its ownership rules and its frozen contract |
 | `pkg/permissions`, `pkg/hitl`, `pkg/hooks` | write/shell policy, human gates, lifecycle hooks |
 | `pkg/server` | Studio HTTP/SSE API, security policy, review API |
 | `pkg/cli` | terminal rendering: diffs, gates, REPL input, colour, width, engine-advice translation |

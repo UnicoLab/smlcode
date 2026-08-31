@@ -404,6 +404,11 @@ func (r *Runner) applyWaveProtections(wave []plan.Task) func() {
 	// drawn from one task's prose from blocking another task's declared target,
 	// while ownership is the plan's explicit statement of who may write where —
 	// a sibling "colliding" with it is precisely the write to refuse.
+	// The stamp is re-derived from the files the tasks have RIGHT NOW, because
+	// the deny list below is derived from the stamp. A task whose files changed
+	// after it was stamped otherwise gets its own declared target denied — a
+	// task that cannot complete, for a reason nothing in the log explains.
+	r.repairWaveAssignments(wave)
 	if squadPats := r.squadProtections(wave); len(squadPats) > 0 {
 		seen := map[string]bool{}
 		for _, p := range pats {

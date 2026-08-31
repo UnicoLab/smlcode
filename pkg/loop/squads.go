@@ -5,6 +5,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/squads"
+	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
 // ── Squad wiring ─────────────────────────────────────────────────────────
@@ -49,6 +50,26 @@ func (r *Runner) squadProtections(wave []plan.Task) []string {
 		return nil
 	}
 	return squads.ForeignPatterns(r.Squads, wave)
+}
+
+// repairWaveAssignments re-derives each task's squad from its current files.
+//
+// Called immediately before the fence is computed, because that is the moment
+// the stamp becomes load-bearing: everything upstream treats it as a label, and
+// here it becomes a write permission.
+func (r *Runner) repairWaveAssignments(wave []plan.Task) {
+	if r == nil || r.Squads == nil {
+		return
+	}
+	for _, id := range squads.RepairAssignments(r.Squads, wave) {
+		r.fireEvent(LoopEvent{
+			Kind:   stream.KindCoord,
+			Level:  stream.LevelWarn,
+			TaskID: id,
+			Message: "re-assigned " + id + " — its files moved out of the team it was stamped with, " +
+				"which would have denied it write access to its own target",
+		})
+	}
 }
 
 // squadOf reports the squad a task belongs to, "" when unassigned.

@@ -80,7 +80,7 @@ export default function SettingsPanel() {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-4xl mx-auto p-6 space-y-8">
+      <div className="mx-auto w-full max-w-[80rem] space-y-8 p-4 2xl:p-8">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>

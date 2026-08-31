@@ -128,3 +128,69 @@ func TestPlaceholderIsSelfContainedAndThemeNeutral(t *testing.T) {
 		}
 	}
 }
+
+// A client-side ROUTE has no file behind it, and the file server 404s on one.
+// Every page except `/` therefore died on a browser refresh, on a bookmark, and
+// on a link shared with a colleague — `/board`, `/teams`, `/settings` all
+// answered the bare 404 page while in-app navigation to the identical URL
+// worked, which is as confusing as a bug gets.
+func TestClientRoutesServeTheShellSoARefreshWorks(t *testing.T) {
+	s := New(newHarness(t), studioUI())
+
+	for _, route := range []string{"/board", "/teams", "/settings", "/docs/PLAN.md", "/runs/abc/trace"} {
+		rec := httptest.NewRecorder()
+		// What a browser actually sends when the address bar is used. The
+		// header is the whole reason `/docs/PLAN.md` can be a route rather than
+		// a missing file, and asserting without it would test a rule no browser
+		// exercises.
+		req := newAPIRequest(http.MethodGet, route, nil)
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want the SPA shell — a refresh must not 404", route, rec.Code)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), "SPA") {
+			t.Errorf("GET %s served %q, not the shell", route, rec.Body.String())
+		}
+	}
+}
+
+// The check that keeps the fallback honest. Answering a request for a hashed
+// asset with HTML makes the browser report a syntax error in a script that was
+// never there — a failure whose message points nowhere near its cause.
+func TestAMissingAssetStill404sRatherThanServingTheShell(t *testing.T) {
+	s := New(newHarness(t), studioUI())
+
+	for _, missing := range []string{"/assets/index-deadbeef.js", "/nope.css", "/fonts/gone.woff2"} {
+		rec := httptest.NewRecorder()
+		// How a browser fetches a subresource: never `navigate`, and never
+		// asking for HTML.
+		req := newAPIRequest(http.MethodGet, missing, nil)
+		req.Header.Set("Sec-Fetch-Mode", "no-cors")
+		req.Header.Set("Accept", "*/*")
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404 — an asset that does not exist is not a route", missing, rec.Code)
+		}
+	}
+
+	// And a real asset is still served as itself.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "console.log") {
+		t.Fatalf("GET /app.js = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// The fallback must not become a hole in the API surface: an unknown /api path
+// is a client bug and has to say so, not return HTML a fetch() will choke on.
+func TestUnknownAPIPathsStill404(t *testing.T) {
+	s := New(newHarness(t), studioUI())
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, newAPIRequest(http.MethodGet, "/api/not-a-thing", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/not-a-thing = %d, want 404", rec.Code)
+	}
+}

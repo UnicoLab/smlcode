@@ -54,10 +54,17 @@ type Squad struct {
 	Owns []string `json:"owns"`
 	// Acceptance is the command that proves THIS squad's half works on its own.
 	Acceptance string `json:"acceptance,omitempty"`
-	// Worker / Reviewer name the agents staffing the squad. Empty means the
-	// pipeline's defaults.
+	// Worker / Reviewer / Tester name the agents staffing the squad. Empty
+	// means the pipeline's defaults.
+	//
+	// All three are consulted by task routing (plan.RoutePolicy), one rung
+	// BELOW the language of the task's own files: when a squad says `go-worker`
+	// and the task's files are all `.tsx`, the files are right and the squad
+	// label is stale. A field the UI offers and routing ignores is worse than
+	// one it does not offer, so all three reach the loop or none should exist.
 	Worker   string `json:"worker,omitempty"`
 	Reviewer string `json:"reviewer,omitempty"`
+	Tester   string `json:"tester,omitempty"`
 	// Manager is the agent that triages THIS squad's rejected work.
 	//
 	// A rejected delivery is a staffing decision — who takes it next, and what
@@ -70,6 +77,11 @@ type Squad struct {
 	// Empty means the run's default manager, which is still better than the
 	// deterministic ladder. See pkg/loop/handoff.go.
 	Manager string `json:"manager,omitempty"`
+	// Agents is the squad's ROSTER beyond the named seats — the people this
+	// team is made of, in whatever number its author chose. Its own members are
+	// listed FIRST when its manager triages a rejected delivery, which is the
+	// whole reason a per-team manager beats a run-wide one.
+	Agents []string `json:"agents,omitempty"`
 	// Skills are loaded into this squad's task packs.
 	Skills []string `json:"skills,omitempty"`
 }
@@ -138,6 +150,59 @@ func (p *Plan) Squad(id string) (Squad, bool) {
 		}
 	}
 	return Squad{}, false
+}
+
+// ResolveRef maps a loosely-written squad reference onto a real squad id.
+//
+// # WHY THIS EXISTS
+//
+// The plan's squad ids come from the team library — `backend-go`,
+// `frontend-react` — and the interface contract comes from a model that was
+// handed those ids and asked to reuse them. A 7–32B model reliably writes
+// `backend`. Both halves then build against a contract clause whose provider
+// matches no squad, Validate rejects it, and the run loses the frozen seam it
+// was supposed to be protected by — over a suffix.
+//
+// So a reference resolves when it is UNAMBIGUOUS: exact first, then a unique
+// prefix, then a unique substring either way round. Ambiguity is not resolved
+// by picking a favorite — `backend` against a plan holding both `backend-go`
+// and `backend-node` is a genuine question only the author can answer, and
+// guessing puts a clause on the wrong team.
+func (p *Plan) ResolveRef(ref string) (string, bool) {
+	ref = slug(ref)
+	if p == nil || ref == "" {
+		return "", false
+	}
+	for _, s := range p.Squads {
+		if s.ID == ref {
+			return s.ID, true
+		}
+	}
+	match := func(pick func(id string) bool) (string, bool) {
+		found := ""
+		for _, s := range p.Squads {
+			if !pick(s.ID) {
+				continue
+			}
+			if found != "" {
+				return "", false // ambiguous
+			}
+			found = s.ID
+		}
+		return found, found != ""
+	}
+	if id, ok := match(func(id string) bool { return strings.HasPrefix(id, ref+"-") }); ok {
+		return id, true
+	}
+	if id, ok := match(func(id string) bool { return strings.HasPrefix(ref, id+"-") }); ok {
+		return id, true
+	}
+	if id, ok := match(func(id string) bool {
+		return strings.Contains(id, ref) || strings.Contains(ref, id)
+	}); ok {
+		return id, true
+	}
+	return "", false
 }
 
 // IDs lists squad ids in plan order.
@@ -326,8 +391,10 @@ func (p *Plan) Normalize() {
 		s.Acceptance = strings.TrimSpace(s.Acceptance)
 		s.Worker = strings.TrimSpace(s.Worker)
 		s.Reviewer = strings.TrimSpace(s.Reviewer)
+		s.Tester = strings.TrimSpace(s.Tester)
 		s.Manager = strings.TrimSpace(s.Manager)
 		s.Owns = dedupePaths(s.Owns)
+		s.Agents = dedupeStrings(s.Agents)
 		s.Skills = dedupeStrings(s.Skills)
 		kept = append(kept, s)
 	}

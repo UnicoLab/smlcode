@@ -90,6 +90,78 @@ func AssignBoard(p *Plan, tasks []plan.Task) Report {
 	return rep
 }
 
+// RepairAssignments re-derives every task's squad from the files it CURRENTLY
+// has, and reports the ids it had to correct.
+//
+// # WHY THIS EXISTS
+//
+// AssignBoard stamps a squad once, at split. A task's files can change after
+// that — reconciliation prunes paths that do not resolve, a rewrite narrows a
+// reopened task, a worker declares what it actually touched — and the stamp
+// does not move with them.
+//
+// A stale stamp is worse than no stamp, because the WAVE'S DENY LIST is derived
+// from it: a task stamped `backend` whose only remaining file is
+// `web/package.json` has every frontend path denied at the tool layer, so its
+// single write is refused on its own declared target. The symptom is a task
+// that cannot be completed for a reason nothing in the log explains.
+//
+// Measured on a live 30B: a task stamped `backend-go` whose only file was
+// `web/package.json`, which the frontend owns.
+//
+// Re-deriving is safe because it is the same function that produced the stamp
+// in the first place — a task whose files still sit in one lane keeps its
+// stamp, one that now straddles or is unowned correctly loses it.
+func RepairAssignments(p *Plan, tasks []plan.Task) []string {
+	return repairAssignments(p, tasks, true)
+}
+
+// RetargetAssignments re-points a stamp that names the wrong team, and never
+// clears one.
+//
+// The difference from RepairAssignments is what it does with a task whose files
+// now STRADDLE two teams. At the wave fence that must clear the stamp: the
+// stamp is about to become a write permission, and a straddling task holding
+// one would be denied on half its own targets.
+//
+// Everywhere else it must not. A task's file list is transiently wide all over
+// the run — discovery adds a path, a worker reports what it touched, a reopen
+// widens to what a tester named — and clearing the stamp on each of those
+// throws away the routing the plan established, for a condition that resolves
+// itself by the time the task is dispatched. Measured: a backend task cleared
+// mid-run, which left its team with no work and its manager with nothing to
+// triage.
+func RetargetAssignments(p *Plan, tasks []plan.Task) []string {
+	return repairAssignments(p, tasks, false)
+}
+
+func repairAssignments(p *Plan, tasks []plan.Task, clearStraddling bool) []string {
+	if p == nil || len(p.Squads) == 0 {
+		return nil
+	}
+	var fixed []string
+	for i := range tasks {
+		// A task with no files declares no scope, so ownership cannot speak to
+		// it and its stamp is whatever the board or a human put there.
+		if len(tasks[i].Files) == 0 {
+			continue
+		}
+		want := ""
+		if a := p.Assign(tasks[i].Files); a.Squad != "" {
+			want = a.Squad
+		}
+		if tasks[i].Squad == want {
+			continue
+		}
+		if want == "" && !clearStraddling {
+			continue
+		}
+		tasks[i].Squad = want
+		fixed = append(fixed, tasks[i].ID)
+	}
+	return fixed
+}
+
 // ForeignPatterns returns the ownership globs of every squad EXCEPT the ones
 // represented in the given tasks.
 //
@@ -284,12 +356,23 @@ func withoutExisting(have, add []plan.Criterion) []plan.Criterion {
 //
 // Returns the problems found. An empty result means the edits were applied.
 func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
+	return ApplyPlanEdits(p, plan.PlanEdits{Squads: edits, RemoveSquads: removes})
+}
+
+// ApplyPlanEdits applies the org-chart AND contract halves of a human's edits.
+//
+// One function, one validation, one commit. Applying the two halves separately
+// would let a user remove a team and add the interface that replaces it and get
+// a rejection in between — the intermediate state is invalid, the final state is
+// fine, and only an atomic apply can tell the difference.
+func ApplyPlanEdits(p *Plan, edits plan.PlanEdits) Problems {
 	if p == nil {
 		return Problems{{Severity: SeverityError, Message: "no squad plan to edit"}}
 	}
-	if len(edits) == 0 && len(removes) == 0 {
+	if !edits.TouchesSquads() {
 		return nil
 	}
+	removes := edits.RemoveSquads
 
 	// Work on a copy so a rejected edit set leaves the live plan untouched.
 	next := p.clone()
@@ -328,7 +411,7 @@ func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
 	for i, s := range next.Squads {
 		index[s.ID] = i
 	}
-	for _, e := range edits {
+	for _, e := range edits.Squads {
 		id := slug(e.ID)
 		if id == "" {
 			continue
@@ -359,13 +442,26 @@ func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
 		if e.Reviewer != nil {
 			s.Reviewer = strings.TrimSpace(*e.Reviewer)
 		}
+		if e.Tester != nil {
+			s.Tester = strings.TrimSpace(*e.Tester)
+		}
 		if e.Manager != nil {
 			s.Manager = strings.TrimSpace(*e.Manager)
 		}
 		if e.OwnsSet {
 			s.Owns = e.Owns
 		}
+		if e.AgentsSet {
+			s.Agents = e.Agents
+		}
+		if e.SkillsSet {
+			s.Skills = e.Skills
+		}
 		next.Squads[i] = s
+	}
+
+	if probs := applyContractEdits(&next, edits); probs.Errors() {
+		return probs
 	}
 
 	next.Normalize()
@@ -383,6 +479,7 @@ func (p *Plan) clone() Plan {
 	out.Squads = make([]Squad, len(p.Squads))
 	for i, s := range p.Squads {
 		s.Owns = append([]string(nil), s.Owns...)
+		s.Agents = append([]string(nil), s.Agents...)
 		s.Skills = append([]string(nil), s.Skills...)
 		out.Squads[i] = s
 	}
@@ -393,4 +490,83 @@ func (p *Plan) clone() Plan {
 	}
 	out.Integration.Notes = append([]string(nil), p.Integration.Notes...)
 	return out
+}
+
+// applyContractEdits edits the frozen interface clauses in place.
+//
+// The contract is text two teams build against without being able to ask each
+// other anything, so an id here is a NAME — a route, an exported symbol — and
+// correcting a wrong one means renaming rather than deleting and re-adding.
+// Rename is a first-class field for exactly that: delete-then-add loses the
+// spec the user did not want to retype.
+func applyContractEdits(next *Plan, edits plan.PlanEdits) Problems {
+	if len(edits.Interfaces) == 0 && len(edits.RemoveInterfaces) == 0 {
+		return nil
+	}
+	gone := map[string]bool{}
+	for _, id := range edits.RemoveInterfaces {
+		gone[strings.TrimSpace(id)] = true
+	}
+	if len(gone) > 0 {
+		kept := make([]Interface, 0, len(next.Contract.Interfaces))
+		for _, in := range next.Contract.Interfaces {
+			if !gone[in.ID] {
+				kept = append(kept, in)
+			}
+		}
+		next.Contract.Interfaces = kept
+	}
+
+	index := map[string]int{}
+	for i, in := range next.Contract.Interfaces {
+		index[in.ID] = i
+	}
+	for _, e := range edits.Interfaces {
+		id := strings.TrimSpace(e.ID)
+		if id == "" {
+			continue
+		}
+		i, ok := index[id]
+		if !ok {
+			if !e.New {
+				return Problems{{Severity: SeverityError,
+					Message: fmt.Sprintf("no interface %q in this contract", e.ID)}}
+			}
+			next.Contract.Interfaces = append(next.Contract.Interfaces, Interface{ID: id})
+			i = len(next.Contract.Interfaces) - 1
+			index[id] = i
+		}
+		in := next.Contract.Interfaces[i]
+		if e.Rename != nil {
+			renamed := strings.TrimSpace(*e.Rename)
+			if renamed == "" {
+				return Problems{{Severity: SeverityError,
+					Message: fmt.Sprintf("interface %q: an empty name names nothing", e.ID)}}
+			}
+			if other, clash := index[renamed]; clash && other != i {
+				return Problems{{Severity: SeverityError,
+					Message: fmt.Sprintf("interface %q cannot be renamed to %q — that clause already exists", e.ID, renamed)}}
+			}
+			delete(index, in.ID)
+			in.ID = renamed
+			index[renamed] = i
+		}
+		if e.Provider != nil {
+			in.Provider = slug(*e.Provider)
+		}
+		if e.Spec != nil {
+			in.Spec = strings.TrimSpace(*e.Spec)
+		}
+		if e.ConsumersSet {
+			cons := make([]string, 0, len(e.Consumers))
+			for _, c := range e.Consumers {
+				if c = slug(c); c != "" {
+					cons = append(cons, c)
+				}
+			}
+			in.Consumers = cons
+		}
+		next.Contract.Interfaces[i] = in
+	}
+	return nil
 }

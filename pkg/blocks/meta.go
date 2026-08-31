@@ -22,6 +22,9 @@ const (
 	KindAgent    = "agent"
 	KindQuality  = "quality"
 	KindPack     = "pack"
+	// KindTeam is a reusable virtual development team — a squad template plus
+	// the evidence that says when it applies. See pkg/teams.
+	KindTeam = "team"
 
 	SourceBuiltin = "builtin"
 	SourceProject = "project"
@@ -108,7 +111,7 @@ func (m *Meta) Validate() error {
 		return fmt.Errorf("unsupported api_version %q (want %s)", m.APIVersion, APIVersion)
 	}
 	switch m.Kind {
-	case KindPipeline, KindAgent, KindQuality, KindPack:
+	case KindPipeline, KindAgent, KindQuality, KindPack, KindTeam:
 	default:
 		return fmt.Errorf("unknown kind %q", m.Kind)
 	}

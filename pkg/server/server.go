@@ -429,6 +429,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/composition", s.handleGetComposition)
 	s.mux.HandleFunc("GET /api/squads", s.handleGetSquads)
 	s.mux.HandleFunc("PATCH /api/squads", s.handlePatchSquads)
+	// The team LIBRARY, as opposed to /api/squads which reports on the teams of
+	// the current run. It exists whether or not anything is running.
+	s.mux.HandleFunc("GET /api/teams", s.handleListTeams)
+	s.mux.HandleFunc("POST /api/teams", s.handleCreateTeam)
+	s.mux.HandleFunc("POST /api/teams/preselect", s.handlePreselectTeams)
+	s.mux.HandleFunc("POST /api/teams/activate", s.handleActivateTeams)
+	s.mux.HandleFunc("GET /api/teams/{id}", s.handleGetTeam)
+	s.mux.HandleFunc("PUT /api/teams/{id}", s.handlePutTeam)
+	s.mux.HandleFunc("DELETE /api/teams/{id}", s.handleDeleteTeam)
 	s.mux.HandleFunc("POST /api/composition/preview", s.handlePreviewComposition)
 	s.mux.HandleFunc("PUT /api/pipeline", s.handlePutPipeline)
 	s.mux.HandleFunc("POST /api/pipeline/reset", s.handleResetPipeline)
@@ -833,6 +842,10 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		Mode       string   `json:"mode"`
 		Specialist string   `json:"specialist"`
 		Skills     []string `json:"skills"`
+		// Teams pins virtual teams for this run only. Restored when it ends —
+		// a run-scoped choice that leaked into the saved config would quietly
+		// govern every later run.
+		Teams []string `json:"teams"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Query) == "" {
 		http.Error(w, "query required", 400)
@@ -853,7 +866,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	// (see runOptions / "wiring required"), but until orchestrator.Run accepts
 	// them they are applied to the shared config under the write lock and
 	// restored the same way, so /api/config readers never observe a torn state.
-	opts := runOptions{Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills}
+	opts := runOptions{Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills, Teams: req.Teams}
 	query, saved := s.applyRunOptions(opts, req.Query)
 
 	// Ensure SSE stays wired for this run (config rebuilds call wireOrchestratorEvents too).
@@ -909,6 +922,9 @@ type runOptions struct {
 	Mode       string
 	Specialist string
 	Skills     []string
+	// Teams pins virtual teams for this run, bypassing preselection for them.
+	// An explicit choice is an instruction, not a hypothesis to be scored.
+	Teams []string
 }
 
 // savedRunOptions is the config state to restore once the run ends.
@@ -916,6 +932,7 @@ type savedRunOptions struct {
 	Mode       string
 	Specialist string
 	Skills     []string
+	Teams      []string
 	applied    bool
 }
 
@@ -929,6 +946,7 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 		}
 		saved.Mode, saved.Specialist = c.Mode, c.Specialist
 		saved.Skills = append([]string{}, c.PinnedSkills...)
+		saved.Teams = append([]string{}, c.Teams...)
 
 		if opts.Mode != "" {
 			c.Mode = opts.Mode
@@ -951,6 +969,9 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 			}
 			c.PinnedSkills = pins
 		}
+		if len(opts.Teams) > 0 {
+			c.Teams = append([]string{}, opts.Teams...)
+		}
 	})
 	return query, saved
 }
@@ -966,6 +987,7 @@ func (s *Server) restoreRunOptions(saved savedRunOptions) {
 		c.Mode = saved.Mode
 		c.Specialist = saved.Specialist
 		c.PinnedSkills = saved.Skills
+		c.Teams = saved.Teams
 	})
 }
 
@@ -2463,6 +2485,23 @@ func (s *Server) spaHandler(fileServer http.Handler) http.Handler {
 			return
 		}
 		path := r.URL.Path
+		// A client-side ROUTE has no file behind it, and the file server 404s
+		// on one. Every page except `/` therefore died on a browser refresh, a
+		// bookmark, or a link shared with a colleague — `/board`, `/teams`,
+		// `/settings` all returned the bare 404 page while in-app navigation to
+		// exactly the same URL worked, which is as confusing as a bug gets.
+		//
+		// So an unknown path that is a NAVIGATION is handed the shell and the
+		// router takes it from there. What must keep working is the opposite
+		// case: a MISSING ASSET has to 404, because answering a request for a
+		// hashed `.js` with HTML makes the browser report a syntax error in a
+		// script that was never there — a message pointing nowhere near its
+		// cause.
+		if path != "/" && !s.uiHasFile(path) && isNavigation(r) {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
+			path = "/"
+		}
 		isHTML := strings.HasSuffix(path, ".html") || path == "/"
 		// Prevent caching for HTML, allow caching for hashed assets
 		if isHTML {
@@ -2477,6 +2516,59 @@ func (s *Server) spaHandler(fileServer http.Handler) http.Handler {
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// isNavigation reports whether this request is a browser opening a PAGE, as
+// opposed to a page fetching a subresource.
+//
+// Three signals, strongest first:
+//
+//	Sec-Fetch-Mode  the browser saying so outright. Every engine sends it, and
+//	                this server already relies on Sec-Fetch-Site for its origin
+//	                policy, so it is not a new assumption.
+//	Accept          a navigation asks for text/html; a script or stylesheet
+//	                asks for its own type or */*.
+//	the path        the fallback for a client that sends neither — curl, a
+//	                probe, a link checker. A dot in the last segment means
+//	                "asset", which is right for `/assets/x.js` and wrong for
+//	                `/docs/PLAN.md`, so it is the LAST rule consulted rather
+//	                than the only one.
+func isNavigation(r *http.Request) bool {
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return strings.EqualFold(mode, "navigate")
+	}
+	if accept := r.Header.Get("Accept"); accept != "" {
+		return strings.Contains(accept, "text/html")
+	}
+	return !strings.Contains(lastSegment(r.URL.Path), ".")
+}
+
+// lastSegment is the final path element.
+func lastSegment(p string) string {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// uiHasFile reports whether the embedded SPA actually contains this path.
+//
+// The bare filesystem question the SPA fallback turns on: something that exists
+// is served, and only something that does not becomes a route.
+func (s *Server) uiHasFile(urlPath string) bool {
+	name := strings.TrimPrefix(strings.TrimSpace(urlPath), "/")
+	// `..` can never reach the embedded FS through fs.Open, which rejects a
+	// non-local name outright — but refusing it here keeps the answer to "does
+	// this exist" from depending on that.
+	if name == "" || !fs.ValidPath(name) {
+		return false
+	}
+	f, err := s.ui.Open(name)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 // maxWorkspaceFileBytes bounds a single file read so the browser is not handed

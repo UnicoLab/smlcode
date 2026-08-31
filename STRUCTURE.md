@@ -22,6 +22,8 @@ slmcode/
 │   ├── memory/ evolve/ eval/    four memory layers; repair rules + bandit; metrics
 │                                 (fed from the tool layer via workspace.ToolObserver)
 │   ├── blocks/ pipeline/ stacks/ YAML building blocks, phase graph, provider presets
+│   ├── teams/ squads/           the team library (deterministic preselection) and
+│                                 one run's org chart, ownership + frozen contract
 │   ├── permissions/ hitl/ hooks/ write & shell policy, human gates, lifecycle hooks
 │   ├── server/                  Studio HTTP/SSE API + security policy
 │   └── cli/                     terminal rendering: diffs, gates, REPL input, width

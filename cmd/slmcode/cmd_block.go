@@ -154,7 +154,7 @@ func blockList(cmd *cobra.Command, args []string) error {
 	cli.Header("Building Blocks")
 
 	groups := map[string][]blocks.CatalogEntry{}
-	kinds := []string{blocks.KindPack, blocks.KindPipeline, blocks.KindAgent, blocks.KindQuality}
+	kinds := []string{blocks.KindPack, blocks.KindPipeline, blocks.KindAgent, blocks.KindQuality, blocks.KindTeam}
 	for _, k := range kinds {
 		groups[k] = nil
 	}
@@ -191,7 +191,7 @@ func blockList(cmd *cobra.Command, args []string) error {
 	fmt.Println(cli.Dim("  New:     slmcode blocks new <kind> <id> --file <path.yaml>"))
 	fmt.Println(cli.Dim("  Edit:    slmcode blocks edit <kind> <id> --file <path.yaml>"))
 	fmt.Println(cli.Dim("  Delete:  slmcode blocks delete <kind> <id>"))
-	fmt.Println(cli.Dim("  Show:    slmcode blocks show <pipeline|agent|quality|pack> <id>"))
+	fmt.Println(cli.Dim("  Show:    slmcode blocks show <pipeline|agent|quality|pack|team> <id>"))
 	fmt.Println(cli.Dim("  Apply:   slmcode blocks apply <pack-id>"))
 	fmt.Println(cli.Dim("  Validate: slmcode blocks validate"))
 	return nil
@@ -210,6 +210,8 @@ func blockShow(kind, id string) error {
 		kind = blocks.KindQuality
 	case "pack", "packs":
 		kind = blocks.KindPack
+	case "team", "teams":
+		kind = blocks.KindTeam
 	}
 
 	root, err := projectRoot()
@@ -289,8 +291,31 @@ func blockShow(kind, id string) error {
 				fmt.Print(string(data))
 			}
 		}
+	case blocks.KindTeam:
+		b, ok := reg.GetTeam(id)
+		if !ok {
+			return fmt.Errorf("team %q not found", id)
+		}
+		printBlockMeta("team:"+b.ID, b.Meta, b.Path)
+		cli.KeyVal("owns", strings.Join(b.Spec.Owns, ", "))
+		cli.KeyVal("acceptance", b.Spec.Acceptance)
+		for label, id := range map[string]string{
+			"worker": b.Spec.Worker, "reviewer": b.Spec.Reviewer,
+			"tester": b.Spec.Tester, "manager": b.Spec.Manager,
+		} {
+			if id != "" {
+				cli.KeyVal(label, id)
+			}
+		}
+		if b.Path != "" {
+			data, err := os.ReadFile(b.Path)
+			if err == nil {
+				fmt.Println()
+				fmt.Print(string(data))
+			}
+		}
 	default:
-		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack, team)", kind)
 	}
 	return nil
 }
@@ -451,7 +476,7 @@ func blockValidate() error {
 func blockNew(kind, id, filePath, name string) error {
 	kind = blocks.NormalizeKind(kind)
 	if kind == "" {
-		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack, team)", kind)
 	}
 	id = strings.ToLower(strings.TrimSpace(id))
 	if filePath == "" && name == "" {
@@ -499,7 +524,7 @@ func blockNew(kind, id, filePath, name string) error {
 func blockEdit(kind, id, filePath string) error {
 	kind = blocks.NormalizeKind(kind)
 	if kind == "" {
-		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack, team)", kind)
 	}
 	id = strings.ToLower(strings.TrimSpace(id))
 	if filePath == "" {
@@ -549,7 +574,7 @@ func blockEdit(kind, id, filePath string) error {
 func blockDelete(kind, id string) error {
 	kind = blocks.NormalizeKind(kind)
 	if kind == "" {
-		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack)", kind)
+		return fmt.Errorf("unknown block kind %q (use: pipeline, agent, quality, pack, team)", kind)
 	}
 	id = strings.ToLower(strings.TrimSpace(id))
 

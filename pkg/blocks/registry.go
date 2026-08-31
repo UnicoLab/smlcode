@@ -9,7 +9,12 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
+	"github.com/UnicoLab/slmcode/pkg/teams"
 )
+
+// allKinds is every block kind the loader walks, in a fixed order so discovery
+// is byte-deterministic across runs.
+var allKinds = []string{KindPipeline, KindAgent, KindQuality, KindPack, KindTeam}
 
 // Registry is the in-memory catalog of discovered building blocks.
 type Registry struct {
@@ -17,6 +22,7 @@ type Registry struct {
 	Agents    map[string]*AgentBlock
 	Quality   map[string]*QualityBlock
 	Packs     map[string]*PackBlock
+	Teams     map[string]*TeamBlock
 }
 
 // NewRegistry constructs an empty catalog.
@@ -26,6 +32,7 @@ func NewRegistry() *Registry {
 		Agents:    map[string]*AgentBlock{},
 		Quality:   map[string]*QualityBlock{},
 		Packs:     map[string]*PackBlock{},
+		Teams:     map[string]*TeamBlock{},
 	}
 }
 
@@ -64,7 +71,7 @@ func (r *Registry) loadRoot(root Root) error {
 	if !st.IsDir() {
 		return nil
 	}
-	for _, kind := range []string{KindPipeline, KindAgent, KindQuality, KindPack} {
+	for _, kind := range allKinds {
 		dir := filepath.Join(root.Path, kindSubdir(kind))
 		files, err := listYAMLInDir(dir)
 		if err != nil {
@@ -106,7 +113,7 @@ func (r *Registry) loadRoot(root Root) error {
 }
 
 func (r *Registry) loadFS(fsys fs.FS, prefix, source string) error {
-	for _, kind := range []string{KindPipeline, KindAgent, KindQuality, KindPack} {
+	for _, kind := range allKinds {
 		sub := filepath.ToSlash(filepath.Join(prefix, kindSubdir(kind)))
 		files, err := listYAMLInFS(fsys, sub)
 		if err != nil {
@@ -167,6 +174,12 @@ func (r *Registry) ingest(path string, data []byte, source, expectKind string) e
 			return err
 		}
 		r.Packs[b.ID] = b
+	case KindTeam:
+		b, err := LoadTeamFile(path, data, source)
+		if err != nil {
+			return err
+		}
+		r.Teams[b.ID] = b
 	default:
 		return fmt.Errorf("%s: unknown kind %q", path, kind)
 	}
@@ -196,6 +209,9 @@ func (r *Registry) Catalog(kind string) []CatalogEntry {
 		add(b.Meta)
 	}
 	for _, b := range r.Packs {
+		add(b.Meta)
+	}
+	for _, b := range r.Teams {
 		add(b.Meta)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -232,6 +248,37 @@ func (r *Registry) GetQuality(id string) (*QualityBlock, bool) {
 	}
 	b, ok := r.Quality[strings.ToLower(strings.TrimSpace(id))]
 	return b, ok
+}
+
+// GetTeam returns a team block by id.
+func (r *Registry) GetTeam(id string) (*TeamBlock, bool) {
+	if r == nil {
+		return nil, false
+	}
+	b, ok := r.Teams[strings.ToLower(strings.TrimSpace(id))]
+	return b, ok
+}
+
+// TeamRoster is the discovered team library, in id order.
+//
+// This is the roster teams.Select scores. It is assembled from a map, so the
+// sort is not cosmetic: an unsorted roster makes preselection depend on map
+// iteration order, and two runs of one query would pick different teams
+// whenever two of them tie.
+func (r *Registry) TeamRoster() []teams.Team {
+	if r == nil {
+		return nil
+	}
+	out := make([]teams.Team, 0, len(r.Teams))
+	for _, b := range r.Teams {
+		t := b.Spec
+		t.Source = b.Source
+		t.Path = b.Path
+		t.Normalize()
+		out = append(out, t)
+	}
+	teams.Sort(out)
+	return out
 }
 
 // GetAgent returns an agent block by id.
@@ -273,6 +320,7 @@ type PublicView struct {
 	Pipelines      []map[string]any `json:"pipelines"`
 	Agents         []map[string]any `json:"agents"`
 	Quality        []map[string]any `json:"quality"`
+	Teams          []map[string]any `json:"teams"`
 	ActivePack     string           `json:"active_pack,omitempty"`
 	ActivePipeline string           `json:"active_pipeline,omitempty"`
 }
@@ -314,6 +362,16 @@ func (r *Registry) View(activePack, activePipeline string) PublicView {
 			"tags": a.Tags, "icon": a.Icon, "source": a.Source, "path": a.Path,
 			"builtin": a.Source == SourceBuiltin,
 			"spec":    a.Spec, "shareable": a.Shareable != nil && *a.Shareable,
+		})
+	}
+	for _, id := range sortedKeys(r.Teams) {
+		t := r.Teams[id]
+		v.Teams = append(v.Teams, map[string]any{
+			"id": t.ID, "name": t.Name, "description": t.Description,
+			"version": t.Version, "author": t.Author, "language": t.Language,
+			"tags": t.Tags, "icon": t.Icon, "source": t.Source, "path": t.Path,
+			"builtin": t.Source == SourceBuiltin,
+			"spec":    t.Spec, "shareable": t.Shareable != nil && *t.Shareable,
 		})
 	}
 	for _, id := range sortedKeys(r.Quality) {

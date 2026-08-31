@@ -472,3 +472,114 @@ func TestAnEditThatDoesNotMentionTheManagerKeepsIt(t *testing.T) {
 		t.Errorf("Manager = %q, want it untouched at %q", got, pm)
 	}
 }
+
+// A stale team stamp is worse than no stamp, because the wave's write deny list
+// is derived from it: a task stamped `backend` whose only remaining file is
+// `web/package.json` has every frontend path denied at the tool layer, so its
+// single write is refused on its own declared target — a task that cannot be
+// completed for a reason nothing in the log explains.
+//
+// Measured on a live 30B, on exactly that shape.
+func TestRepairAssignmentsFixesAStampItsFilesHaveMovedOutOf(t *testing.T) {
+	p := &Plan{Squads: []Squad{
+		{ID: "backend", Owns: []string{"cmd/**", "internal/**"}},
+		{ID: "frontend", Owns: []string{"web/**"}},
+	}}
+	tasks := []plan.Task{
+		// The bug: stamped backend, owns nothing there any more.
+		{ID: "T1", Squad: "backend", Files: []string{"web/package.json"}},
+		// Still correct — must not be touched.
+		{ID: "T2", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		// Straddles now: the stamp has to go, not move to one half.
+		{ID: "T3", Squad: "frontend", Files: []string{"web/App.tsx", "cmd/main.go"}},
+		// Nobody owns it: unassigned, which is what the board already says.
+		{ID: "T4", Squad: "backend", Files: []string{"Makefile"}},
+		// No files means no scope, so ownership cannot speak to it and whatever
+		// the board or a human put there stands.
+		{ID: "T5", Squad: "backend"},
+	}
+
+	fixed := RepairAssignments(p, tasks)
+
+	if got := tasks[0].Squad; got != "frontend" {
+		t.Errorf("T1 = %q, want frontend — its file moved lanes", got)
+	}
+	if got := tasks[1].Squad; got != "backend" {
+		t.Errorf("T2 = %q — a correct stamp must not be disturbed", got)
+	}
+	if got := tasks[2].Squad; got != "" {
+		t.Errorf("T3 = %q, want unassigned — it straddles, and one half must not own the seam", got)
+	}
+	if got := tasks[3].Squad; got != "" {
+		t.Errorf("T4 = %q, want unassigned — nobody owns Makefile", got)
+	}
+	if got := tasks[4].Squad; got != "backend" {
+		t.Errorf("T5 = %q — a task with no files declares no scope", got)
+	}
+
+	want := map[string]bool{"T1": true, "T3": true, "T4": true}
+	if len(fixed) != len(want) {
+		t.Fatalf("repaired %v, want exactly %v", fixed, want)
+	}
+	for _, id := range fixed {
+		if !want[id] {
+			t.Errorf("repaired %s, which was already correct", id)
+		}
+	}
+
+	// A run with no org chart has no ownership to repair against.
+	if RepairAssignments(nil, tasks) != nil {
+		t.Error("no plan, no repair")
+	}
+}
+
+// Retarget and Repair differ in exactly one case, and it matters.
+//
+// A task's file list is transiently wide all over a run — discovery adds a
+// path, a worker reports what it touched, a reopen widens to what a tester
+// named. Clearing the stamp on each of those throws away the routing the plan
+// established for a condition that resolves before dispatch. Measured: a
+// backend task cleared mid-run, which left its team with no work at all and its
+// project manager with nothing to triage.
+//
+// At the FENCE the same case must clear, because there the stamp is about to
+// become a write permission and a straddling task holding one would be denied
+// on half its own targets.
+func TestRetargetKeepsAStampAStraddleWouldClear(t *testing.T) {
+	p := &Plan{Squads: []Squad{
+		{ID: "backend", Owns: []string{"cmd/**"}},
+		{ID: "frontend", Owns: []string{"web/**"}},
+	}}
+	straddling := func() []plan.Task {
+		return []plan.Task{{ID: "T1", Squad: "backend", Files: []string{"cmd/main.go", "web/App.tsx"}}}
+	}
+
+	kept := straddling()
+	if fixed := RetargetAssignments(p, kept); len(fixed) != 0 {
+		t.Fatalf("retarget changed %v — a transient straddle must not lose its routing", fixed)
+	}
+	if kept[0].Squad != "backend" {
+		t.Fatalf("squad = %q, want the stamp kept", kept[0].Squad)
+	}
+
+	cleared := straddling()
+	if fixed := RepairAssignments(p, cleared); len(fixed) != 1 {
+		t.Fatalf("repair changed %v — at the fence a straddle must lose its permission", fixed)
+	}
+	if cleared[0].Squad != "" {
+		t.Fatalf("squad = %q, want cleared at the fence", cleared[0].Squad)
+	}
+
+	// Both agree on the case that is unambiguously wrong: a stamp naming a team
+	// that owns none of the task's files.
+	for name, fn := range map[string]func(*Plan, []plan.Task) []string{
+		"retarget": RetargetAssignments,
+		"repair":   RepairAssignments,
+	} {
+		wrong := []plan.Task{{ID: "T2", Squad: "backend", Files: []string{"web/package.json"}}}
+		if fixed := fn(p, wrong); len(fixed) != 1 || wrong[0].Squad != "frontend" {
+			t.Errorf("%s: squad = %q, fixed = %v — want it re-pointed to the real owner",
+				name, wrong[0].Squad, fixed)
+		}
+	}
+}

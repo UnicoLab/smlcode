@@ -1,5 +1,227 @@
 # Changelog
 
+## v0.23.0 — 2026-08-31
+
+Teams stop being something a model invents once per run and start being
+something you own — and the board, the live view and the gates all learned about
+them.
+
+### Breaking behaviour changes
+
+No flag, config key or API shape is removed. What changes is what a run DOES.
+
+- **Teams are preselected from a library instead of assembled by a model.**
+  `team_library` defaults to `true`, so a repository the shipped teams cover now
+  runs with `backend-go` / `frontend-react` rather than whatever the manager
+  specialist invented. The manager is still the fallback when the library has
+  nothing to say. Set `team_library: false` for the old behaviour.
+- **Team ids on the board have changed shape** as a consequence: a task's
+  `squad` is now a library id (`backend-go`), not a model-authored one
+  (`backend`). Anything grepping event lines or `board.json` for a squad name
+  should stop assuming it.
+- **A run executes more shell commands.** Each team's acceptance command now
+  runs, once, after its lane finishes. A command that cannot start is reported
+  UNVERIFIED and fails nothing; a command that runs and fails raises a ticket
+  in that team's lane and skips integration.
+- **The plan-approval card carries up to 60 structured tasks, was 20.** A larger
+  SSE payload and a longer card in the terminal.
+- **A correction ticket that straddles two teams now stays unassigned** instead
+  of landing on whichever half appeared first on the board. It is worked in the
+  normal unassigned lane rather than by one team.
+
+### Added — the team library
+
+v0.22.0 shipped squads: two teams, assembled by the `manager` specialist, alive
+for exactly one run. The Teams page reported on them, which meant it was empty
+whenever nothing was running — it was reporting on something with the lifetime
+of a single run.
+
+A team is not a per-run fact. *"The backend is Go, it lives under `cmd/` and
+`internal/`, `go-worker` writes it, `go test ./...` proves it"* is true of the
+repository, forever. So teams now live in a library you manage.
+
+- **A team is a block** (`kind: team`), with the same discovery every other
+  block has: builtin → user → project, project wins. Six ship by default —
+  `backend-go`, `backend-python`, `backend-node`, `frontend-react`, `docs`,
+  `infra`. Editing a builtin writes a project override; deleting the override
+  reveals the builtin again.
+- **Preselection needs no model call.** Which teams a request involves is scored
+  from the query's words, the marker files on disk and the extensions present.
+  This was the single most expensive gamble in a small-model run: the org chart
+  is assembled before the split and ownership, routing, per-team acceptance and
+  the write deny list are all derived from it, so a 30B that returned
+  overlapping globs or an unregistered worker id silently downgraded the whole
+  run to one stream. The manager is still the fallback when the library has
+  nothing to say, and is still asked for the CONTRACT either way — the one part
+  that is genuinely about this request.
+- **A contract reference that misses by a suffix now resolves.** The teams are
+  `backend-go` and `frontend-react`; a small model handed those ids still writes
+  `backend`. That clause used to name a provider no team matched and cost the
+  run its frozen seam. Ambiguity is still refused rather than guessed at.
+- **The Teams page is a library manager.** Create, edit, duplicate, delete and
+  pin teams; *Try a request* shows which teams a query would get **and why**,
+  from the same code the run uses; **Activate** writes the org chart and pins it
+  so the next run keeps it.
+- **Teams attach to a pipeline** (`teams: [...]` in `pipeline.yaml`) and to one
+  run (`slmcode run … --team backend-go`). An id the library no longer has is
+  dropped with a warning rather than failing the pipeline.
+- **A team is however many people you put on it.** Four seats is a shape the
+  harness dispatches, not a shape a team has to be: `agents` is an open roster
+  and `skills` an open pack list, both editable from the Teams page and from the
+  approval card, with pickers over what is actually installed. The roster is
+  what the team's project manager sees first when it decides who takes a
+  rejected delivery, and what the approval card offers first for that team's
+  tasks — an ordering, never a fence.
+- **The splitter is told where the team boundaries are.** The org chart exists
+  before the split and the splitter had never been shown it. Measured against a
+  live 30B: it emitted two tasks, each naming both halves' files, so every one
+  correctly stayed unassigned and the run did no parallel work at all — on a
+  plan whose org chart and frozen contract were both right. A model cannot
+  respect a boundary it was not shown, and the failure is invisible in the
+  output.
+- **A team's reviewer and tester now reach the loop.** Both were editable and
+  neither was consulted by task routing: the user set a seat, nothing changed,
+  and nothing said why. They sit one rung below the language of a task's own
+  files, the same place the team's worker already sat.
+- **New config:** `team_library` (default `true`) and `teams` (pinned ids).
+- **New endpoints:** `GET/POST /api/teams`, `GET/PUT/DELETE /api/teams/{id}`,
+  `POST /api/teams/preselect`, `POST /api/teams/activate`.
+
+### Added — the plan-approval card edits everything
+
+A field that is visible and not editable is worse than one that is hidden: it
+shows the user the mistake and gives them no way to fix it. The approval editor
+covered task title, agent, team and files; it now covers everything the harness
+can apply.
+
+- **Tasks** — description, acceptance and priority join the existing fields, and
+  **waits for** makes ordering expressible: the board dispatches waves, so "do
+  this later" only ever meant "after these have finished". A task you add can be
+  depended on by an existing one before the board has named it.
+- **Teams** — charter is editable, a team can be **added from the library**, and
+  a team can be removed outright. Both were previously one-way.
+- **The frozen contract** — rename a clause (keeping its spec), change its
+  provider and consumers, edit the shape, add and remove clauses. This is the
+  one artifact a two-team run cannot recover from getting wrong, and it was
+  read-only.
+- The card now carries up to 60 structured tasks instead of 20, and says how
+  many it is showing when the board is larger.
+- The same editor is on the Teams page, so the org chart and its contract can be
+  corrected without waiting for a gate to open.
+
+### Added — the board and the live view learned about teams
+
+- **The board shows the teams.** A strip above the columns names each team, its
+  **project manager**, the command that proves its half, its progress, and any
+  cross-team wait — a team blocked on another's interface is a contract
+  dependency, and it now reads as one instead of as a red task. Clicking a team
+  filters the board to its lane; tasks on no team get their own lane, because
+  the seam is a real thing to look at.
+- **Every task card carries its team**, as a badge and a coloured left edge. The
+  colour is derived from the team's id, so it is the same on the board, the card
+  and the live rail, and adding a team never recolours the others.
+- **The live view says what is happening RIGHT NOW.** One line above the stream:
+  the agent, its task, its team, the model, the run's token usage, and a clock
+  that keeps ticking. On a local 30B the next log line can be four minutes out,
+  and a wall of finished lines under a blinking cursor reads as a hang — this is
+  the difference between "thinking" and "stuck", and past two minutes it says so
+  in a colour rather than leaving the reader to do the arithmetic.
+
+### Added — each half is proved, not assumed
+
+- **A team's acceptance command now runs.** It was written into the contract,
+  shown on the approval card, editable on the Teams page — and never executed.
+  "Green" meant every task in the lane reached done, which is a statement about
+  the board rather than about the code. Each half is now proved before the
+  halves are joined, so a green team is a team whose own command passed.
+- **A missing toolchain leaves a half UNVERIFIED, never red.** `npm run build`
+  where `node_modules` was never installed exits non-zero and says nothing at
+  all about the code; scoring it red would send a corrector to rewrite source
+  that was never at fault and show a red team for something no model can fix.
+- A half that genuinely fails raises a ticket **in its own lane**, and
+  integration is skipped — joining a known-broken half proves nothing and
+  reports the seam as the fault.
+
+### Added — a local run stops wasting its budget on duplicate work
+
+Measured on a live 30B (`Qwen3-Coder-30B-A3B-Instruct-MLX-4bit`, oMLX, one
+laptop): for one small full-stack change the splitter produced eight tasks — two
+workers on the same `App.tsx`, and **four** tester tasks over the same two
+files. Each duplicate is a full worker → review → test round, they cannot even
+run in the same wave because their files collide, and the run spent its entire
+50-minute budget finishing **one** task of the eight and reporting failure.
+
+- **Duplicate testers now fold**, the way duplicate workers already did.
+  Verification is idempotent; running the same check three times costs three
+  model rounds for one answer. Merging is keyed by role FAMILY, so an
+  implementer and a tester over one file never fold into each other — they
+  answer different contracts.
+- **The dedupe runs again after file reconciliation.** Identity is the file set,
+  and reconciliation rewrites file sets — it prunes paths that do not resolve
+  and adds what discovery found. Two tasks the sanitizer legitimately declined
+  to merge were identical by the time they reached the board, and nothing looked
+  again.
+- **A merged task keeps the absorbed task's files.** The merge used to narrow
+  scope: folding a tester over two files into one over one file silently stopped
+  verifying the second, and folding a worker the same way denied it write access
+  to a file its own merged description told it to change.
+
+**On measured effect: run-to-run variance dominates.** Three runs of the same
+model against the same query produced 8 tasks / 1 done / failed in 42m, then 5
+tasks / 4 done / succeeded in 29m, then 8 tasks / 0 done / failed in 42m. The
+plan a small model writes differs every time, and how long the run takes is
+mostly a function of how much redundant work is in that plan. Do not read a
+speed-up into these changes — what they do is remove specific, reproducible ways
+the harness wasted the budget or corrupted the routing, each of which is pinned
+by a unit test. Reproduce with:
+
+```bash
+RUN_E2E=1 SLMCODE_MODEL=<your-model> go test ./test/e2e/ -run TestTeamsLive -timeout 60m -v
+```
+
+The suite records the harness event stream and dumps it when the run does not
+succeed, so a board that ends with work undone says *which round it stopped on*
+rather than leaving it to be guessed at — which is how the three defects above
+were found in the first place.
+
+### Fixed
+
+- **Every page except `/` 404'd on a browser refresh.** A client-side route has
+  no file behind it, so `/board`, `/teams` and `/settings` all answered the bare
+  404 page on a reload, a bookmark, or a link shared with a colleague — while
+  in-app navigation to the identical URL worked. A navigation now falls back to
+  the SPA shell; a missing *asset* still 404s, because answering a request for a
+  hashed `.js` with HTML makes the browser report a syntax error in a script
+  that was never there.
+- **Pages no longer strand themselves in the middle of a large screen.** Agents,
+  Pipeline, Skills, Blocks and Settings were capped at 896–1024px, so a 27"
+  display showed a narrow column with a third of the screen blank on each side
+  — while the content that wanted the room (a task list, an agent grid, a log of
+  tool output) was the content being squeezed. Widths are now chosen from what a
+  page holds: collections fill the viewport and turn extra width into more
+  columns, forms stay near a readable measure, and the live log's reading column
+  grows past `2xl`.
+- **A stale team stamp could deny a task write access to its own file.** A
+  task's files can change after it is stamped — reconciliation prunes a path, a
+  rewrite narrows a reopened task — and the wave's write deny list is derived
+  from the stamp. A task stamped `backend-go` whose only remaining file was
+  `web/package.json` had every frontend path denied at the tool layer, so its
+  single write was refused on its own declared target. The stamp is now
+  re-derived from the task's current files immediately before the fence is
+  computed. Found by the live 30B end-to-end run.
+- **A correction ticket on the seam no longer lands on one half and stalls.**
+  Tickets were routed by scanning the board for the first task sharing a
+  filename, so one naming `web/src/App.tsx` and `cmd/server/main.go` was stamped
+  with whichever half appeared first — and then could not be worked at all,
+  because the wave's write deny list is derived from the task's squad and
+  refused it at the tool layer the moment it touched the other team's files. The
+  ticket sat in `ready_to_dev` for the rest of the run, which reads as a stalled
+  harness rather than a misrouted ticket. Ownership decides now, and a straddling
+  ticket stays unassigned — the same answer a straddling task already got.
+  Found by the live 30B end-to-end run.
+
+---
+
 ## v0.22.0 — 2026-08-30
 
 Two virtual dev teams, per-task specialist routing, greenfield scaffolding that

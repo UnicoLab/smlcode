@@ -10,9 +10,10 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { getBoard, patchTask, addTask } from '@/api/client';
-import type { Board as BoardType, Task } from '@/types';
+import { getBoard, getSquads, patchTask, addTask } from '@/api/client';
+import type { Board as BoardType, SquadsView, Task } from '@/types';
 import TaskCard from './TaskCard';
+import TeamStrip, { UNASSIGNED_FILTER } from './TeamStrip';
 import clsx from 'clsx';
 import { Loader2, Plus, RefreshCw, X } from 'lucide-react';
 
@@ -57,6 +58,11 @@ export default function KanbanBoard() {
   const [draft, setDraft] = useState<NewTaskDraft>(EMPTY_DRAFT);
   const [savingAdd, setSavingAdd] = useState(false);
   const [addError, setAddError] = useState('');
+  // The org chart this board is executing against. Null on a single-stream run,
+  // which is most of them — the strip hides itself rather than showing an empty
+  // header nobody can act on.
+  const [squads, setSquads] = useState<SquadsView | null>(null);
+  const [teamFilter, setTeamFilter] = useState('');
   const addTitleRef = useRef<HTMLInputElement>(null);
 
   const sensors = useSensors(
@@ -82,18 +88,42 @@ export default function KanbanBoard() {
     }
   }, [showAdd]);
 
+  // The org chart moves far more slowly than the board — it is written once per
+  // run — so it rides the same poll rather than getting its own timer.
+  const fetchSquads = useCallback(async () => {
+    try {
+      setSquads(await getSquads());
+    } catch {
+      // No org chart is the normal state, not an error.
+      setSquads(null);
+    }
+  }, []);
+
   useEffect(() => {
     fetchBoard();
-    const interval = setInterval(fetchBoard, 3000);
+    void fetchSquads();
+    const interval = setInterval(() => {
+      fetchBoard();
+      void fetchSquads();
+    }, 3000);
     return () => clearInterval(interval);
-  }, [fetchBoard]);
+  }, [fetchBoard, fetchSquads]);
 
   const columns = useMemo(() => {
     const fromBoard = board?.columns?.length ? board.columns : [];
     return [...new Set([...COLUMN_ORDER, ...fromBoard])];
   }, [board?.columns]);
 
-  const byColumn = useMemo(() => groupTasks(board?.tasks || [], columns), [board?.tasks, columns]);
+  // Filtering happens BEFORE grouping, so a filtered column shows its own
+  // count rather than the whole board's — "the backend's four, and they are all
+  // blocked" is the sentence this page exists to make readable.
+  const visibleTasks = useMemo(() => {
+    const all = board?.tasks || [];
+    if (teamFilter === '') return all;
+    if (teamFilter === UNASSIGNED_FILTER) return all.filter((t) => !t.squad);
+    return all.filter((t) => t.squad === teamFilter);
+  }, [board?.tasks, teamFilter]);
+  const byColumn = useMemo(() => groupTasks(visibleTasks, columns), [visibleTasks, columns]);
   const totalTasks = board?.tasks?.length || 0;
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -200,12 +230,17 @@ export default function KanbanBoard() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-gray-50/70 p-4 dark:bg-gray-950">
+    <div className="flex h-full flex-col bg-gray-50/70 p-4 2xl:px-8 dark:bg-gray-950">
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-lg font-bold">Kanban Board</h1>
             <span className="badge-neutral text-[10px]">{totalTasks} task{totalTasks === 1 ? '' : 's'}</span>
+            {teamFilter !== '' && (
+              <span className="badge-brand text-[10px]">
+                {visibleTasks.length} in {teamFilter === UNASSIGNED_FILTER ? 'no team' : teamFilter}
+              </span>
+            )}
           </div>
           {board.plan?.summary && (
             <p className="mt-1 max-w-4xl text-sm text-gray-500 dark:text-gray-400">
@@ -344,6 +379,13 @@ export default function KanbanBoard() {
         </div>
       )}
 
+      <TeamStrip
+        view={squads}
+        tasks={board?.tasks || []}
+        filter={teamFilter}
+        onFilter={setTeamFilter}
+      />
+
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
@@ -357,7 +399,10 @@ export default function KanbanBoard() {
               <div
                 key={col}
                 className={clsx(
-                  'flex w-72 flex-shrink-0 flex-col rounded-xl border p-3',
+                  // A fixed 18rem column left a third of a 27" screen empty
+                  // while every card inside truncated. Grow into the space,
+                  // never below the width a card stays readable at.
+                  'flex min-w-[17rem] flex-1 flex-shrink-0 flex-col rounded-xl border p-3',
                   `kanban-col-${col}`,
                 )}
               >

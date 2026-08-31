@@ -1,0 +1,34 @@
+api_version: blocks/v1
+kind: team
+id: infra
+name: Infra · CI & Deploy
+description: >-
+  Build, packaging and CI — Dockerfiles, workflows, deploy manifests. A domain
+  whose failures are invisible to every other team's acceptance command.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [infra, devops, ci, team]
+icon: "🛠️"
+shareable: true
+spec:
+  id: infra
+  name: Infra · CI & Deploy
+  charter: >-
+    Own the build and deployment surface: Dockerfiles, CI workflows and deploy
+    manifests. Wire what the other teams built; never change their source to
+    make a pipeline pass.
+  owns:
+    - .github/**
+    - deploy/**
+    - infra/**
+    - Dockerfile
+    - docker-compose.yml
+  acceptance: ""
+  match:
+    keywords: [ci, deploy, docker, kubernetes, pipeline, workflow, release, infra, terraform]
+    files: [Dockerfile, docker-compose.yml, .github/workflows]
+    # Opt out of automatic selection: almost every request touches CI in some
+    # sense, and a team that joins every run is a team that adds an acceptance
+    # command to every wave for no reason. Pin it when the request IS the infra.
+    priority: -1

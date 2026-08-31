@@ -117,6 +117,8 @@ func kindSubdir(kind string) string {
 		return "quality"
 	case KindPack:
 		return "packs"
+	case KindTeam:
+		return "teams"
 	default:
 		return kind
 	}
@@ -254,6 +256,24 @@ func LoadPackFile(path string, data []byte, source string) (*PackBlock, error) {
 		b.ID = idFromFilename(path)
 	}
 	b.Kind = KindPack
+	b.Source = source
+	b.Path = path
+	if err := b.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &b, nil
+}
+
+// LoadTeamFile decodes one team block YAML.
+func LoadTeamFile(path string, data []byte, source string) (*TeamBlock, error) {
+	var b TeamBlock
+	if err := yaml.Unmarshal(data, &b); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if b.ID == "" {
+		b.ID = idFromFilename(path)
+	}
+	b.Kind = KindTeam
 	b.Source = source
 	b.Path = path
 	if err := b.Validate(); err != nil {

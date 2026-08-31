@@ -228,6 +228,10 @@ func TestARejectedDeliveryReachesTheProjectManager(t *testing.T) {
 	cfg.StructuredDecoding = "off"
 	cfg.DynamicPipeline = false
 	cfg.Squads = true
+	// The org chart under test is the one the MANAGER assembles — it is the
+	// plan's own `manager` field this exercises, and a library team would
+	// replace it before the model was ever asked for one.
+	cfg.TeamLibrary = false
 	cfg.ClarifyMode = "off"
 	cfg.PlanApprove = "auto"
 	cfg.ContinueAsk = "off"

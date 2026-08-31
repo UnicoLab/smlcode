@@ -6,6 +6,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/pipeline"
+	"github.com/UnicoLab/slmcode/pkg/teams"
 )
 
 // PipelineBlock is a named, versioned pipeline preset.
@@ -247,4 +248,52 @@ func (b *PackBlock) Validate() error {
 		return fmt.Errorf("pack %q: reference at least one pipeline, quality, or agent", b.ID)
 	}
 	return nil
+}
+
+// TeamBlock is a reusable virtual development team.
+//
+// Teams are blocks rather than a private store for the same reason packs are:
+// a team is exactly the kind of thing one person writes and another installs —
+// "our Go backend, its globs, its worker, its gate" is portable across every
+// repository with the same shape. Being a block gets discovery (builtin →
+// user → project, project wins), CRUD, provenance and shareability for free,
+// and puts the library on the same footing as the agents it staffs itself with.
+type TeamBlock struct {
+	Meta `yaml:",inline"`
+	Spec teams.Team `yaml:"spec" json:"spec"`
+}
+
+func (b *TeamBlock) Normalize() {
+	if b == nil {
+		return
+	}
+	b.Kind = KindTeam
+	b.Meta.Normalize()
+	// The block id is the identity. A spec that disagrees with it would be
+	// saved under one name and selected under another.
+	if strings.TrimSpace(b.Spec.ID) == "" {
+		b.Spec.ID = b.ID
+	}
+	if strings.TrimSpace(b.Spec.Name) == "" {
+		b.Spec.Name = b.Name
+	}
+	if strings.TrimSpace(b.Spec.Charter) == "" {
+		b.Spec.Charter = b.Description
+	}
+	b.Spec.Normalize()
+	if b.ID == "" {
+		b.ID = b.Spec.ID
+		b.Meta.Normalize()
+	}
+}
+
+func (b *TeamBlock) Validate() error {
+	if b == nil {
+		return fmt.Errorf("nil team block")
+	}
+	b.Normalize()
+	if err := b.Meta.Validate(); err != nil {
+		return err
+	}
+	return b.Spec.Validate()
 }

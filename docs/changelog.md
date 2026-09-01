@@ -1,10 +1,34 @@
 # Changelog
 
-## Unreleased
+## v0.24.0 — 2026-09-01
 
-Three defects found by running v0.23.0 against a local 30B, twice. All three
-share a shape: the run reported success, or reported red, and the number it
+Ten defects found by running v0.23.0 against a local 30B, thirteen times. Nearly
+all share a shape: the run reported success, or reported red, and the number it
 showed did not mean what it looked like.
+
+### Behaviour changes
+
+No flag, config key or API shape is removed. What changes is what a run REPORTS,
+and two of these move an exit code.
+
+- **A teams run whose halves are all green now reports
+  `success_with_failures` instead of `failure` when a task escalated.**
+  `Result.Success` drives the exit code, so a run that exited non-zero for this
+  can now exit zero. `FailedTasks` still carries the count, the outcome is never
+  plain `success`, and a warning names both the evidence and the seam it does
+  not cover. An UNVERIFIED half never counts, so a run with a half that was
+  never proved still fails flat.
+- **A team gate reports UNVERIFIED, not RED, when the project defines no such
+  check** — `npm error Missing script: "build"` no longer fails a team. A gate
+  that used to be red is now grey, and reds are no longer raised as tickets for
+  it.
+- **Task ids on the board can be derived.** A task spanning two teams is cut
+  into `T1-BACKEND-GO` / `T1-FRONTEND-REACT`, and tasks that depended on the
+  original are rewritten onto both pieces. Anything matching board task ids
+  against the planner's original numbering should stop assuming them.
+- **A team's acceptance command may be rewritten** to a script the project
+  actually defines (`build` → `compile`, `typecheck`, …). The substitution is
+  reported by name.
 
 ### Fixed
 

@@ -154,6 +154,37 @@ showed did not mean what it looked like.
   carries the process nonce, so a model writing "SMOKE PASSED" into its own
   output cannot mint the note.
 
+### Changed — what a teams run reports
+
+- **Both halves proving themselves is now a license to report
+  `success_with_failures` instead of flat failure.** Measured live: two
+  implementation tasks done, `team backend-go is green`, `team frontend-react is
+  green`, and the run reported **failure** because a seam *tester* escalated
+  after a local reviewer scored its prose 0. The software was built and each
+  half was proved by its own command; the user was told it failed.
+
+  The escalation refusal already had one exception — the objective gate measured
+  green — on the stated principle that when a planner's guess at a decomposition
+  and a measurement disagree, the measurement wins. Every team proving its own
+  half is a measurement of exactly that kind: an exit status on the real tree,
+  not a model's opinion of a write-up. It was simply being thrown away.
+
+  This is **not** a relaxation of the refusal:
+
+  - the escalated task stays escalated on the board, and `FailedTasks` keeps the
+    count;
+  - the outcome is never plain `success` — `success_with_failures` exists to be
+    told apart from a clean board, and the summary names the escalation;
+  - an **UNVERIFIED** gate is never counted. A command that could not run said
+    nothing about that half, and rounding it up here would undo that
+    distinction at the one place it decides the headline verdict;
+  - fewer than two proved halves proves nothing — one team doing all the work is
+    not a teams run.
+
+  A warning says so explicitly, naming the halves that were proved and the gap
+  that remains: those commands do not check the **seam**, which is the thing a
+  seam task existed to verify.
+
 ### Known limitation — the seam task
 
 The recurring failure across every run is a model-authored task whose job

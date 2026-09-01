@@ -501,6 +501,30 @@ nothing:
 The result is on the board, per team: **proved green**, **half is red**, or
 **unverified** with the reason.
 
+### Both halves green changes the run's verdict
+
+A task that escalates normally fails the whole run — the escalation is exactly
+the signal a human should look. There is one long-standing exception: the
+objective command measured green, on the principle that when a planner's guess
+at a decomposition and a measurement disagree, the measurement wins.
+
+Every team proving its own half is a measurement of that kind. So a run whose
+halves are all green reports `success_with_failures` rather than `failure`, and
+says why:
+
+```text
+verify  reporting success_with_failures over 1 task(s) needing human review:
+        every half proved itself (backend-go, frontend-react), which is a
+        measured exit status rather than a planner's guess — but the SEAM
+        between them is not what those commands check, so look at the
+        escalation before trusting the join
+```
+
+Nothing is swallowed. The task stays escalated, the count stays on the result,
+the outcome is never plain `success`, and an **unverified** half never counts —
+a command that could not run is not evidence, which is the whole reason
+UNVERIFIED is separate from RED.
+
 ---
 
 ## Watching it happen 👀

@@ -269,3 +269,64 @@ func (o *Orchestrator) settleSquadStamps(board *plan.Board) {
 			"so no single team owns that work and the board should not claim one does",
 		strings.Join(limitList(fixed, 5), ", ")), "")
 }
+
+// allHalvesProved reports whether EVERY team that had work proved its own half
+// by running its own acceptance command.
+//
+// This is measured evidence of the same kind the objective gate produces:
+// harness-run commands, on the tree that exists, judged by their exit status
+// rather than by a model's opinion of a write-up. It is what licenses a teams
+// run to report success over an escalated task — see the escalation logic in
+// completeRun, which already states the principle: when a planner's guess at a
+// decomposition and a measurement disagree, the measurement wins.
+//
+// Three things it deliberately refuses to count:
+//
+//   - an UNVERIFIED gate. A command that could not run said nothing about that
+//     half, and the whole point of separating UNVERIFIED from RED is that it is
+//     not evidence in either direction. Treating it as proof here would undo
+//     that distinction at the one place it decides the headline verdict.
+//   - fewer than two proved halves. "Both halves proved" needs both halves to
+//     exist and be proved; one team doing all the work is not a teams run.
+//   - a run with no team plan at all.
+//
+// It says nothing about the SEAM, which is why it never produces a bare
+// success: the caller keeps the escalation on the board, names it in the
+// summary, and reports success_with_failures.
+func (o *Orchestrator) allHalvesProved() bool {
+	if o == nil || o.squadPlan == nil || len(o.squadPlan.Squads) < 2 {
+		return false
+	}
+	gates := o.TeamGates()
+	if len(gates) < 2 {
+		return false
+	}
+	for _, g := range gates {
+		if !g.Ran || !g.OK {
+			return false
+		}
+	}
+	return true
+}
+
+// provedHalfNames lists the teams whose own acceptance command went green, for
+// the line that has to say WHY an escalation was walked past.
+func (o *Orchestrator) provedHalfNames() []string {
+	var out []string
+	for _, g := range o.TeamGates() {
+		if g.Ran && g.OK {
+			out = append(out, g.Team)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// boolToInt counts an escalation that carries no failure of its own, so the
+// warning above says "1 task" rather than "0 tasks".
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

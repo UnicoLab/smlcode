@@ -97,6 +97,12 @@ showed did not mean what it looked like.
   worse version. Only judged verdicts count — a reviewer that never replied
   scores 0 as an absence, and reading that as "much worse" would end a task on
   a transport error.
+- **A team is told that its acceptance command must be able to run.** The brief
+  said "your half is done when this passes: `npm --prefix web run build`", which
+  a small model reads as a description rather than an obligation — so the
+  scaffold got no build script and the half came back UNVERIFIED in every run,
+  for want of two lines only that team could add. It now says the command must
+  be runnable and that adding the missing script is part of the work.
 - **A team is proved by a check its project actually has.** The shipped
   `frontend-react` team declares `npm --prefix web run build`, which is right
   for Vite or CRA and wrong for whatever a 30B just scaffolded — so that half

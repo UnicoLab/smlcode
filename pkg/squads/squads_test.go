@@ -450,3 +450,42 @@ func TestSummarizeIsSafeOnAnEmptyPlan(t *testing.T) {
 		t.Errorf("Summarize() = %q", got)
 	}
 }
+
+// Saying only "done when this passes" is passive, and a small model reads it as
+// a description rather than an obligation. Measured live, repeatedly: the
+// frontend half was written, the gate ran `npm --prefix web run build`, the
+// scaffolded package.json defined no such script, and the half came back
+// UNVERIFIED in every run — never proved, so "both teams green" could never be
+// said. Only the worker can fix that, and only if it is told.
+func TestASquadIsToldItsAcceptanceMustBeAbleToRun(t *testing.T) {
+	p := &Plan{Squads: []Squad{
+		{ID: "frontend", Name: "Frontend", Owns: []string{"web/**"},
+			Acceptance: "npm --prefix web run build"},
+		{ID: "backend", Name: "Backend", Owns: []string{"cmd/**"}},
+	}}
+
+	brief := p.Brief("frontend")
+
+	if !strings.Contains(brief, "npm --prefix web run build") {
+		t.Fatalf("the brief does not name the command:\n%s", brief)
+	}
+	if !strings.Contains(brief, "must be able to RUN") {
+		t.Errorf("the brief states the command passively, so nobody makes it runnable:\n%s", brief)
+	}
+	if !strings.Contains(brief, "add it as part of this work") {
+		t.Errorf("the brief does not say who fixes a missing script:\n%s", brief)
+	}
+}
+
+// A squad with no acceptance command has nothing to make runnable, and telling
+// it to add a script it was never given would be an instruction to invent one.
+func TestNoAcceptanceMeansNoObligation(t *testing.T) {
+	p := &Plan{Squads: []Squad{
+		{ID: "frontend", Name: "Frontend", Owns: []string{"web/**"}},
+		{ID: "backend", Name: "Backend", Owns: []string{"cmd/**"}},
+	}}
+
+	if brief := p.Brief("frontend"); strings.Contains(brief, "must be able to RUN") {
+		t.Errorf("a squad with no acceptance was told to make one runnable:\n%s", brief)
+	}
+}

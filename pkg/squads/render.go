@@ -102,7 +102,18 @@ func (p *Plan) Brief(squadID string) string {
 			joinCode(dedupePaths(others)) + "\n")
 	}
 	if s.Acceptance != "" {
+		// Saying only "done when this passes" is passive, and a small model
+		// reads it as a description rather than an obligation. Measured live,
+		// repeatedly: the frontend half was written, the gate ran
+		// `npm --prefix web run build`, the scaffolded package.json defined no
+		// such script, and the half came back UNVERIFIED in every single run —
+		// never proved, so "both teams green" could never be said. Making the
+		// command RUNNABLE is part of the work, and the worker is the only one
+		// who can do it.
 		fmt.Fprintf(&b, "Your half is done when this passes: `%s`\n", s.Acceptance)
+		b.WriteString("That command must be able to RUN. If the project has no such " +
+			"script or target yet, add it as part of this work — a half nobody can " +
+			"build is a half nobody can prove.\n")
 	}
 
 	provides, consumes := p.interfacesFor(s.ID)

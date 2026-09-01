@@ -551,6 +551,19 @@ goes up rather than a second ticket appearing.
 
 ---
 
+### When the run ends, the stamps are settled
+
+A task's files can grow past its team's ownership mid-run — a worker reports
+what it actually touched, a reopen widens it to the paths a tester named. The
+stamp deliberately survives that: the condition usually resolves before the next
+dispatch, `RetargetAssignments` moves a stamp that moved wholly into another
+team, and the wave fence clears one that still straddles at the moment it
+becomes a write permission.
+
+When the run finishes, nothing more will be dispatched, so a stamp that still
+straddles is no longer transient — it is the board telling a reader that a team
+owns work it was fenced out of. Those are cleared, and the change is reported.
+
 ## Safety: disjoint ownership 🛡️
 
 **Two squads may never own the same path.** They write concurrently; an overlap

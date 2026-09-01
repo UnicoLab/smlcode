@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -238,4 +239,33 @@ func (o *Orchestrator) raiseTeamTicket(board *plan.Board, s squads.Squad, cmd, s
 	board.AddTask(nt)
 	o.persistBoard(board)
 	o.emit("verify", "raised a correction ticket for team "+s.ID, "")
+}
+
+// settleSquadStamps clears a stamp that still straddles when the run is over.
+//
+// The stamp is a write permission during the run, and on the finished board it
+// is also the answer to "which team did this?". A task whose files grew past
+// its team's ownership mid-run keeps its stamp on purpose: the condition
+// usually resolves before the next dispatch, and clearing at every save would
+// throw away routing the plan established — RetargetAssignments moves a stamp,
+// the wave fence clears it, and both are right where they are.
+//
+// Nothing is dispatched after this point, so a stamp that still straddles is
+// not transient any more. It is the board telling a reader that a team owns
+// work that team is fenced out of. Measured live: a task stamped
+// `frontend-react` finished holding `cmd/server/main.go`, which `backend-go`
+// owns — the wave had already refused it those files, and the board said
+// otherwise.
+func (o *Orchestrator) settleSquadStamps(board *plan.Board) {
+	if o == nil || o.squadPlan == nil || board == nil {
+		return
+	}
+	fixed := squads.RepairAssignments(o.squadPlan, board.Tasks)
+	if len(fixed) == 0 {
+		return
+	}
+	o.emitWarn("verify", fmt.Sprintf(
+		"cleared the team stamp on %s — their files ended up spanning two teams, "+
+			"so no single team owns that work and the board should not claim one does",
+		strings.Join(limitList(fixed, 5), ", ")), "")
 }

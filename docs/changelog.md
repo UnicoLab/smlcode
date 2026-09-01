@@ -97,6 +97,14 @@ showed did not mean what it looked like.
   worse version. Only judged verdicts count — a reviewer that never replied
   scores 0 as an absence, and reading that as "much worse" would end a task on
   a transport error.
+- **A team stamp that still straddles is cleared when the run ends.** A task
+  whose files grow past its team's ownership mid-run keeps its stamp on
+  purpose — the condition usually resolves before the next dispatch, and
+  clearing at every save would throw away routing the plan established. Once
+  nothing more will be dispatched that reasoning expires, and the stamp becomes
+  the finished board naming a team for work that team was fenced out of.
+  Measured live: a task stamped `frontend-react` ended holding
+  `cmd/server/main.go`, which the wave had already refused it.
 - **A team is told that its acceptance command must be able to run.** The brief
   said "your half is done when this passes: `npm --prefix web run build`", which
   a small model reads as a description rather than an obligation — so the

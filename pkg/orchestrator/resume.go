@@ -804,6 +804,10 @@ func runOutcome(success bool, failed int) string {
 }
 
 func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack string, board *plan.Board, testOut string, testerRejected, qaFailed bool, qaCmd string, start time.Time) (*Result, error) {
+	// Nothing more will be dispatched, so a stamp that still straddles is no
+	// longer transient — it is the finished board naming a team for work that
+	// team was fenced out of.
+	o.settleSquadStamps(board)
 	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseMemory)
 	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
 	var lessonsMD string

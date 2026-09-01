@@ -255,3 +255,53 @@ func TestNoGateWithoutTwoTeams(t *testing.T) {
 		t.Fatalf("ran %d commands on a single-stream run", calls)
 	}
 }
+
+// The invariant the live suite checks, and the one the board owes a reader: a
+// task stamped with a team is one that team owns every file of.
+//
+// Measured live: a task stamped `frontend-react` finished holding
+// `cmd/server/main.go`, which `backend-go` owns. The wave fence had already
+// refused it those files; the board went on saying otherwise.
+func TestAStampThatStillStraddlesIsClearedWhenTheRunEnds(t *testing.T) {
+	o, rec := gateOrchestrator(t, func(cmd string) quality.SmokeResult {
+		return quality.SmokeResult{Ran: true, OK: true, Command: cmd, Summary: "ok"}
+	})
+
+	board := &plan.Board{Tasks: []plan.Task{
+		// Started as frontend work, then grew a backend file mid-run.
+		{ID: "T1", Squad: "frontend", Files: []string{"web/src/App.tsx", "cmd/server/main.go"}},
+		// Honestly stamped: every file is its team's.
+		{ID: "T2", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+	}}
+
+	o.settleSquadStamps(board)
+
+	if board.Tasks[0].Squad != "" {
+		t.Errorf("T1 = %q — no single team owns work spanning both halves",
+			board.Tasks[0].Squad)
+	}
+	if board.Tasks[1].Squad != "backend" {
+		t.Errorf("T2 = %q — a correctly stamped task must keep its team",
+			board.Tasks[1].Squad)
+	}
+	// Silently rewriting the board would leave a reader wondering where the
+	// team went.
+	if !strings.Contains(rec.text(), "T1") {
+		t.Errorf("the change was not reported:\n%s", rec.text())
+	}
+}
+
+func TestSettlingStampsIsSafeWithoutSquads(t *testing.T) {
+	o, _ := gateOrchestrator(t, func(cmd string) quality.SmokeResult {
+		return quality.SmokeResult{Ran: true, OK: true}
+	})
+	o.squadPlan = nil
+	board := &plan.Board{Tasks: []plan.Task{{ID: "T1", Squad: "frontend"}}}
+
+	o.settleSquadStamps(board)
+	o.settleSquadStamps(nil)
+
+	if board.Tasks[0].Squad != "frontend" {
+		t.Errorf("a run without a squad plan lost a stamp: %q", board.Tasks[0].Squad)
+	}
+}

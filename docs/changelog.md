@@ -144,6 +144,16 @@ showed did not mean what it looked like.
   the fence or the scheduler put them there. The helper that formats it had
   been written and tested and never called.
 
+- **An escalated task says when the harness's own checks passed.** A person
+  reading `to_scope` sees "review rejected" and reasonably assumes the work is
+  broken; measured live it often is not. The verdict is unchanged — a tester is
+  never auto-approved on partial evidence, which is the one thing that would let
+  unverified work through — but "rejected" and "rejected while every check the
+  harness ran passed" call for completely different next moves, and the board
+  said only the first. Only harness-minted evidence counts: the smoke section
+  carries the process nonce, so a model writing "SMOKE PASSED" into its own
+  output cannot mint the note.
+
 ### Known limitation — the seam task
 
 The recurring failure across every run is a model-authored task whose job

@@ -2487,6 +2487,24 @@ func (r *Runner) escalateTask(current plan.Task, review plan.ReviewResult, attem
 			r.budget().max)
 		note = fmt.Sprintf("ESCALATED: %s. ", ErrTaskCallBudget)
 	}
+	// Say when the HARNESS's own checks disagreed with the reviewer.
+	//
+	// A person reading `to_scope` sees "review rejected" and reasonably assumes
+	// the work is broken. Measured live, repeatedly, it often is not: a tester
+	// asked to "verify Go build and tests pass" had its deterministic smoke
+	// PASS and its acceptance criteria come back 1 passed / 0 failed, and was
+	// still scored 0 by a local reviewer that wanted an execution trace in the
+	// prose. The same command went green in the team gate minutes later.
+	//
+	// The verdict is not changed — a tester is not auto-approved on partial
+	// evidence, which is the one thing that would let unverified work through.
+	// What changes is that the human is told the evidence exists, because
+	// "rejected" and "rejected while every check the harness ran passed" call
+	// for completely different next moves.
+	if ev := harnessEvidenceNote(current); ev != "" {
+		why += " — " + ev
+		note += ev + ". "
+	}
 	current.MoveTo(plan.ColToScope)
 	current.Error = why
 	current.Notes = strings.TrimSpace(current.Notes + "\n" + note +
@@ -3787,4 +3805,20 @@ func (r *Runner) reviewWave(ctx context.Context, board *plan.Board, tasks []plan
 func correctionRegressed(scores []int) bool {
 	n := len(scores)
 	return n >= 2 && scores[n-1] < scores[n-2]
+}
+
+// harnessEvidenceNote reports what the harness's OWN deterministic checks said
+// about a task, when they said something good, or "" when they did not run or
+// did not pass.
+//
+// Only harness-minted evidence counts: the smoke section carries this process's
+// nonce, so a model that writes "SMOKE PASSED" into its own output cannot
+// manufacture this note.
+func harnessEvidenceNote(t plan.Task) string {
+	if !quality.SmokePassedInOutput(t.Output) {
+		return ""
+	}
+	return "note: the harness's own deterministic smoke PASSED for this task, " +
+		"so the rejection is the reviewer's judgement of the write-up rather than " +
+		"a failing check"
 }

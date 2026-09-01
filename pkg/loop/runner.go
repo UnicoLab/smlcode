@@ -473,7 +473,9 @@ func (r *Runner) RunBoard(ctx context.Context, board *plan.Board) error {
 		// against one working tree, so two tasks on the same file are two
 		// workers overwriting each other. Whatever is skipped here keeps its
 		// place at the head of the next wave.
-		wave := r.admitDisjoint(ready, maxP)
+		// Least-tried first, so a retry cannot keep taking the slot from work
+		// that has never had a turn. Only reorders — see preferFreshWork.
+		wave := r.admitDisjoint(r.preferFreshWork(ready), maxP)
 		// Park anything that has spent its board-level attempt ceiling BEFORE
 		// spending another worker call on it.
 		if wave = r.admitWave(board, wave); len(wave) == 0 {

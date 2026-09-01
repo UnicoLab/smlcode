@@ -249,6 +249,61 @@ func (r *Runner) reclaimOrphaned(board *plan.Board) int {
 	return moved
 }
 
+// preferFreshWork orders ready tasks so the least-tried go first.
+//
+// # WHY THIS EXISTS
+//
+// Nothing stopped a task from taking a run to itself. Measured live: one seam
+// task took 17 of a run's 23 agent starts — corrector, reviewer, corrector,
+// reviewer, across three consecutive waves — while four tasks sitting in lanes
+// were attempted once or not at all. The run ended with 5 of 5 unexecuted and
+// nothing failed.
+//
+// It is not a bug in any one ceiling. Review retries, gate retries and the
+// corrective-wave continuation each grant attempts for their own good reason,
+// and they compose; no one of them can see that another task has had no turn.
+// The wave is filled in board order, so whichever task the board lists first
+// keeps winning the slot — and a retry usually collides on files with the work
+// it would otherwise share a wave with, which is exactly when it excludes it.
+//
+// A first attempt at untried work is worth more than a fourth at work that
+// keeps failing: it is more likely to succeed, it tells the run something new,
+// and it is what a person watching sees as progress. So the ready list is
+// ordered by attempts before the wave is filled.
+//
+// This only ever REORDERS. Nothing is dropped, so nothing can be starved by it:
+// a retried task runs as soon as no fresher task is available, and the attempt
+// ceiling still parks it if it never passes.
+func (r *Runner) preferFreshWork(ready []plan.Task) []plan.Task {
+	if r == nil || len(ready) < 2 {
+		return ready
+	}
+	attempts := make(map[string]int, len(ready))
+	spread := false
+	for _, t := range ready {
+		attempts[t.ID] = r.waveAttempts.get(t.ID)
+		if attempts[t.ID] != attempts[ready[0].ID] {
+			spread = true
+		}
+	}
+	// Everything equally tried is the normal case, and the board's own order
+	// carries meaning the attempt count does not.
+	if !spread {
+		return ready
+	}
+	out := make([]plan.Task, len(ready))
+	copy(out, ready)
+	sort.SliceStable(out, func(i, j int) bool {
+		return attempts[out[i].ID] < attempts[out[j].ID]
+	})
+	if out[0].ID != ready[0].ID {
+		r.logf("wave order: %s (%d attempt(s)) goes before %s (%d) — a first attempt at "+
+			"untried work beats another attempt at work that keeps failing",
+			out[0].ID, attempts[out[0].ID], ready[0].ID, attempts[ready[0].ID])
+	}
+	return out
+}
+
 func (r *Runner) admitWave(board *plan.Board, wave []plan.Task) []plan.Task {
 	out := make([]plan.Task, 0, len(wave))
 	for _, t := range wave {

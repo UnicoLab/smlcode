@@ -137,6 +137,20 @@ func (o *Orchestrator) runTeamAcceptance(ctx context.Context, board *plan.Board)
 			continue
 		}
 
+		// The team is not wrong about wanting its half to compile, only about
+		// what THIS project calls that. A shipped team declares
+		// `npm --prefix web run build`; a scaffold may name it `compile`, or
+		// have only `typecheck`. Resolving it is the difference between the
+		// half being proved and being permanently grey.
+		root := ""
+		if o.cfg != nil {
+			root = o.cfg.Root
+		}
+		if resolved, note := quality.ResolveScriptCommand(root, cmd); note != "" {
+			o.emit("verify", "team "+s.ID+": "+note, "")
+			cmd = resolved
+		}
+
 		o.emit("verify", "team "+s.ID+": proving its half alone — "+cmd, "")
 		res := o.runSmoke(ctx, cmd)
 		g := TeamGate{Team: s.ID, Command: cmd, Ran: res.Ran, OK: res.OK, Summary: res.Summary}

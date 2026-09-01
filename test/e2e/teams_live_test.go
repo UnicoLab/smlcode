@@ -331,7 +331,7 @@ func teamRelevant(e orchestrator.Event) bool {
 	for _, marker := range []string{
 		"squad assignment", "along the team boundary", "spans both squads",
 		"no squad owns", "no longer waits on", "contract attached", "frozen:",
-		"named no consumer",
+		"named no consumer", "proving the half with",
 		"teams live:", "no team owns this wave", "team ",
 	} {
 		if strings.Contains(msg, marker) {

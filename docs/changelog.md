@@ -20,8 +20,7 @@ showed did not mean what it looked like.
   a lane, where before every task straddled — though the two runs planned
   different work (7 tasks against 2), so read that as the mechanism working,
   not as a measured speed-up. The cut is refused where it would destroy
-  something: a tester on the seam, a task other tasks depend on, or a file
-  no team owns — and each refusal now says which, since a task sitting outside
+  something: a tester on the seam, or a file no team owns — and each refusal now says which, since a task sitting outside
   every lane looks identical whether the harness chose that or failed to notice.
   The cut is also written through to the live store, which it was not at first:
   every other routing decision mutates the task list in place and so reaches
@@ -80,6 +79,14 @@ showed did not mean what it looked like.
   is most runs. Now uses the suffix-aware `IsImplementerRole` / `IsTesterRole`,
   the predicates that exist for exactly this bug.
 
+- **A task everything waits on is cut too, and its dependents follow.** The
+  cut at first refused these, reasoning that rewriting a dependent onto "all of
+  the pieces" was a guess. It is not: the parent's work is exactly the union of
+  its pieces, so waiting for all of them is precisely as strong as waiting for
+  the parent and can never permit anything the original ordering forbade.
+  Refusing was the costly choice, and measured live it became the dominant
+  shape — the first task straddles, everything waits on it, so it runs alone
+  with no team while both lanes sit idle.
 - **A correction that made the work worse no longer gets another round.**
   Measured on a live 30B, one task's reviews ran 40, 40, 40, 40, 20, 40, 0
   across its attempts — never improving, and finally destroying what was there.

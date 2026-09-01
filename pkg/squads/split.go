@@ -53,35 +53,37 @@ import (
 //     both, and a split would be a no-op or a guess;
 //   - a NON-IMPLEMENTER task — a tester verifying that the halves meet is doing
 //     the one job that is genuinely about both, and cutting it in half produces
-//     two testers that each verify nothing;
-//   - a task other tasks DEPEND ON — the dependents named one id, and rewriting
-//     that into "all of the pieces" changes the shape of the wave graph on a
-//     guess about which piece they meant.
+//     two testers that each verify nothing.
+//
+// A task other tasks DEPEND ON is cut like any other, and every dependent is
+// rewritten onto ALL of its pieces. That is not a guess about which piece they
+// meant: the parent's work is exactly the union of its pieces, so waiting for
+// all of them is precisely as strong as waiting for the parent was, and can
+// never permit anything the original ordering forbade. Refusing here was
+// measured to be the costly choice — the shape it protected is a first task
+// that straddles and that everything else waits on, which then runs alone with
+// no team while both lanes sit idle.
 func SplitStraddlers(p *Plan, tasks []plan.Task) ([]plan.Task, string) {
 	if p == nil || len(p.Squads) < 2 || len(tasks) == 0 {
 		return tasks, ""
 	}
 
-	dependedOn := map[string]bool{}
-	for _, t := range tasks {
-		for _, d := range t.DependsOn {
-			dependedOn[strings.ToUpper(strings.TrimSpace(d))] = true
-		}
-	}
 	taken := map[string]bool{}
 	for _, t := range tasks {
 		taken[strings.ToUpper(strings.TrimSpace(t.ID))] = true
 	}
 
 	out := make([]plan.Task, 0, len(tasks))
+	replaced := map[string][]string{}
 	var cut []string
 	for _, t := range tasks {
-		byTeam, _, why := splitPlan(p, t, dependedOn)
+		byTeam, _, why := splitPlan(p, t)
 		if byTeam == nil || why != "" {
 			out = append(out, t)
 			continue
 		}
 		// Plan order, so the backend's piece is always the backend's piece.
+		var pieces []string
 		for _, s := range p.Squads {
 			files := byTeam[s.ID]
 			if len(files) == 0 {
@@ -103,13 +105,16 @@ func SplitStraddlers(p *Plan, tasks []plan.Task) ([]plan.Task, string) {
 					"and the frozen contract is what you build against.",
 					s.ID, strings.Join(files, ", "))
 			piece.Normalize()
+			pieces = append(pieces, piece.ID)
 			out = append(out, piece)
 		}
+		replaced[key(t.ID)] = pieces
 		cut = append(cut, t.ID)
 	}
 	if len(cut) == 0 {
 		return tasks, ""
 	}
+	rewriteDependents(out, replaced)
 	sort.Strings(cut)
 	return out, fmt.Sprintf("cut %s along the team boundary — a task spanning two teams "+
 		"belongs to neither, so it would have run alone outside both lanes",
@@ -124,7 +129,7 @@ func SplitStraddlers(p *Plan, tasks []plan.Task) ([]plan.Task, string) {
 // with an empty reason means cut it. straddles=true with a reason means leave it
 // whole, and the reason is what a reader is owed — a task sitting outside every
 // lane looks identical whether the harness chose that or failed to notice.
-func splitPlan(p *Plan, t plan.Task, dependedOn map[string]bool) (map[string][]string, bool, string) {
+func splitPlan(p *Plan, t plan.Task) (map[string][]string, bool, string) {
 	if len(t.Files) < 2 {
 		return nil, false, ""
 	}
@@ -153,10 +158,6 @@ func splitPlan(p *Plan, t plan.Task, dependedOn map[string]bool) (map[string][]s
 		return nil, true, "it is a " + roleLabel(t.Role) + " on the seam — verifying that " +
 			"the halves meet is the one job genuinely about both, and two half-testers " +
 			"each verify nothing"
-	case dependedOn[strings.ToUpper(strings.TrimSpace(t.ID))]:
-		return nil, true, "other tasks depend on it — they named one id, and rewriting that " +
-			"into all of the pieces would change the wave graph on a guess about which " +
-			"piece they meant"
 	}
 	return byTeam, true, ""
 }
@@ -180,18 +181,12 @@ func CutRefusal(p *Plan, tasks []plan.Task, id string) string {
 	if p == nil || len(p.Squads) < 2 {
 		return ""
 	}
-	want := strings.ToUpper(strings.TrimSpace(id))
-	dependedOn := map[string]bool{}
+	want := key(id)
 	for _, t := range tasks {
-		for _, d := range t.DependsOn {
-			dependedOn[strings.ToUpper(strings.TrimSpace(d))] = true
-		}
-	}
-	for _, t := range tasks {
-		if strings.ToUpper(strings.TrimSpace(t.ID)) != want {
+		if key(t.ID) != want {
 			continue
 		}
-		_, straddles, why := splitPlan(p, t, dependedOn)
+		_, straddles, why := splitPlan(p, t)
 		if !straddles {
 			return ""
 		}
@@ -216,4 +211,47 @@ func nextPieceID(parent, team string, taken map[string]bool) string {
 		}
 	}
 	return base
+}
+
+// rewriteDependents points every dependency at the pieces that replaced it.
+//
+// Waiting for ALL of a parent's pieces is exactly as strong as waiting for the
+// parent was — the parent's work is the union of its pieces — so this preserves
+// the ordering the planner wrote rather than reinterpreting it.
+func rewriteDependents(tasks []plan.Task, replaced map[string][]string) {
+	if len(replaced) == 0 {
+		return
+	}
+	for i := range tasks {
+		if len(tasks[i].DependsOn) == 0 {
+			continue
+		}
+		changed := false
+		out := make([]string, 0, len(tasks[i].DependsOn))
+		seen := map[string]bool{}
+		for _, d := range tasks[i].DependsOn {
+			pieces, split := replaced[key(d)]
+			if !split {
+				if !seen[key(d)] {
+					seen[key(d)] = true
+					out = append(out, d)
+				}
+				continue
+			}
+			changed = true
+			for _, piece := range pieces {
+				// A piece never waits on itself: a cut task whose sibling
+				// replaced a shared dependency would otherwise deadlock its own
+				// wave.
+				if piece == tasks[i].ID || seen[key(piece)] {
+					continue
+				}
+				seen[key(piece)] = true
+				out = append(out, piece)
+			}
+		}
+		if changed {
+			tasks[i].DependsOn = out
+		}
+	}
 }

@@ -234,14 +234,25 @@ builds against the frozen contract rather than against a half it cannot see. The
 pieces are named after their parent — `T1-BACKEND`, `T1-FRONTEND` — so a log
 showing only ids still traces back.
 
+A task **everything else waits on** is cut like any other, and each dependent is
+rewritten onto all of its pieces:
+
+```text
+T2 depends on T1  →  T2 depends on T1-BACKEND-GO, T1-FRONTEND-REACT
+```
+
+That is not a guess about which piece they meant. The parent's work is exactly
+the union of its pieces, so waiting for all of them is precisely as strong as
+waiting for the parent was, and can never permit anything the original ordering
+forbade. Refusing to cut here was measured to be the costly choice: a first task
+that straddles and that everything waits on then runs alone with no team, while
+both lanes sit idle.
+
 What a cut cannot recover is intent, so it is deliberately conservative. These
 stay **unassigned**, exactly as before:
 
 - **A tester on the seam.** Verifying that the halves *meet* is the one job
   genuinely about both; two half-testers each verify nothing.
-- **A task other tasks depend on.** The dependents named one id, and rewriting
-  that into "all of the pieces" changes the wave graph on a guess about which
-  piece they meant.
 - **Unowned files** — a hole in the squad plan, reported rather than guessed at.
   A file nobody owns cannot go to a piece, and dropping it would silently narrow
   the work, so the whole task is left alone.

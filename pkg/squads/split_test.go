@@ -86,12 +86,6 @@ func TestSplitStraddlersRefusesWhatItCannotCutSafely(t *testing.T) {
 		"a tester on the seam": {
 			{ID: "T1", Role: plan.RoleTester, Files: both},
 		},
-		// The dependents named one id. Rewriting that into "all the pieces"
-		// changes the wave graph on a guess about which piece they meant.
-		"a task others wait on": {
-			{ID: "T1", Role: plan.RoleWorker, Files: both},
-			{ID: "T2", Role: plan.RoleWorker, Files: []string{"web/x.tsx"}, DependsOn: []string{"T1"}},
-		},
 		// A file nobody owns cannot go to a piece, and dropping it would
 		// silently narrow the work.
 		"a file no team owns": {
@@ -188,13 +182,6 @@ func TestCutRefusalSaysWhyATaskWasLeftWhole(t *testing.T) {
 			[]plan.Task{{ID: "T1", Role: plan.RoleTester, Files: both}},
 			"halves meet",
 		},
-		"a task others wait on": {
-			[]plan.Task{
-				{ID: "T1", Role: plan.RoleWorker, Files: both},
-				{ID: "T2", Role: plan.RoleWorker, Files: []string{"web/x.tsx"}, DependsOn: []string{"T1"}},
-			},
-			"other tasks depend on it",
-		},
 		"a file no team owns": {
 			[]plan.Task{{ID: "T1", Role: plan.RoleWorker, Files: []string{"cmd/a.go", "web/b.tsx", "Makefile"}}},
 			"no team owns",
@@ -227,6 +214,76 @@ func TestCutRefusalIsSilentWhenThereIsNothingToExplain(t *testing.T) {
 	} {
 		if got := CutRefusal(p, c.tasks, c.id); got != "" {
 			t.Errorf("%s: explained %q when there was nothing to explain", name, got)
+		}
+	}
+}
+
+// A task everything waits on is cut like any other, and its dependents are
+// rewritten onto ALL of its pieces.
+//
+// Measured live, this was the costly refusal: the first task straddled, every
+// other task waited on it, so it ran alone with no team while both lanes sat
+// idle. Waiting for all the pieces is exactly as strong as waiting for the
+// parent, because the parent's work is the union of its pieces.
+func TestADependedOnTaskIsCutAndItsDependentsFollow(t *testing.T) {
+	p := twoTeamPlan()
+	tasks := []plan.Task{
+		{ID: "T1", Role: plan.RoleWorker, Files: []string{"cmd/server/main.go", "web/src/App.tsx"}},
+		{ID: "T2", Role: plan.RoleWorker, Files: []string{"web/x.tsx"}, DependsOn: []string{"T1"}},
+	}
+
+	out, note := SplitStraddlers(p, tasks)
+
+	if note == "" || len(out) != 3 {
+		t.Fatalf("got %d tasks (%q), want the two pieces plus T2", len(out), note)
+	}
+	var dependent plan.Task
+	pieces := map[string]bool{}
+	for _, task := range out {
+		if task.ID == "T2" {
+			dependent = task
+			continue
+		}
+		pieces[task.ID] = true
+	}
+	// No weaker than it was: T2 still starts only after every part of T1.
+	if len(dependent.DependsOn) != 2 {
+		t.Fatalf("T2 waits on %v, want both pieces", dependent.DependsOn)
+	}
+	for _, d := range dependent.DependsOn {
+		if !pieces[d] {
+			t.Errorf("T2 waits on %q, which is not one of the pieces", d)
+		}
+	}
+	if dependent.DependsOn[0] == dependent.DependsOn[1] {
+		t.Error("T2's dependencies collapsed to one piece")
+	}
+}
+
+// A piece must never wait on itself, or the cut deadlocks its own wave — and
+// every reference must still name a task that is on the board.
+func TestEveryDependencySurvivesTheCut(t *testing.T) {
+	p := twoTeamPlan()
+	tasks := []plan.Task{
+		{ID: "T1", Role: plan.RoleWorker, Files: []string{"cmd/a.go", "web/b.tsx"}},
+		{ID: "T2", Role: plan.RoleWorker, Files: []string{"cmd/c.go", "web/d.tsx"},
+			DependsOn: []string{"T1"}},
+	}
+
+	out, _ := SplitStraddlers(p, tasks)
+
+	ids := map[string]bool{}
+	for _, task := range out {
+		ids[task.ID] = true
+	}
+	for _, task := range out {
+		for _, d := range task.DependsOn {
+			if d == task.ID {
+				t.Fatalf("%s waits on itself", task.ID)
+			}
+			if !ids[d] {
+				t.Errorf("%s waits on %q, which is not on the board", task.ID, d)
+			}
 		}
 	}
 }

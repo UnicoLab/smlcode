@@ -144,6 +144,34 @@ showed did not mean what it looked like.
   the fence or the scheduler put them there. The helper that formats it had
   been written and tested and never called.
 
+### Known limitation — the seam task
+
+The recurring failure across every run is a model-authored task whose job
+duplicates a check the harness already performs. Traced live:
+
+```text
+@tester [T3]:      Verify Go build and tests pass
+                   T3 deterministic smoke PASSED: go vet ./cmd/server
+                   T3 acceptance criteria: 1 passed, 0 failed, 1 unverified
+@go-reviewer [T3]: review approved=false score=0
+@corrector [T3]:   I need to actually run the Go build and tests with ws_shell
+                   to produce a real execution trace
+verify             team backend-go is green: go build ./... && go test ./...
+```
+
+The smoke passed, a criterion passed, none failed — and the reviewer scored the
+task's prose 0, so it burned correction rounds and escalated, while the very
+command it was asked to verify went green in the team gate minutes later.
+
+The obvious fix is to let that deterministic evidence override the reviewer, and
+it is deliberately NOT taken: the review path excludes tester roles from
+auto-approval on purpose, because a tester's whole job is to verify and
+approving one on partial evidence approves unverified work. Overturning that
+safety property needs more than the dozen runs behind this entry. The tractable
+directions are upstream — not planning a task that re-runs a gate the harness
+owns, or giving the tester the harness's own evidence to cite rather than asking
+it to re-derive one by hand.
+
 ### Known limitation
 
 Plan size is the strongest predictor of a run finishing, and nothing yet acts

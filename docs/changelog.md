@@ -1,5 +1,116 @@
 # Changelog
 
+## Unreleased
+
+Three defects found by running v0.23.0 against a local 30B, twice. All three
+share a shape: the run reported success, or reported red, and the number it
+showed did not mean what it looked like.
+
+### Fixed
+
+- **A task spanning two teams is now cut along the boundary instead of running
+  outside both lanes.** Measured twice, on two different local models: *every*
+  task in the plan named a file from each half, so not one belonged to anybody
+  — `routing: 0 task(s) in a lane, 2 straddling`. The org chart was right, the
+  contract was frozen, both halves were edited, and the run reported success
+  while the teams did nothing: no parallel waves, no ownership fence, no
+  per-team acceptance. Such a task is now split into one task per team
+  (`T1-BACKEND`, `T1-FRONTEND`), each carrying only its own team's files and
+  told where its boundary is. The run after the change put 6 of its 7 tasks in
+  a lane, where before every task straddled — though the two runs planned
+  different work (7 tasks against 2), so read that as the mechanism working,
+  not as a measured speed-up. The cut is refused where it would destroy
+  something: a tester on the seam, a task other tasks depend on, or a file
+  no team owns — and each refusal now says which, since a task sitting outside
+  every lane looks identical whether the harness chose that or failed to notice.
+  The cut is also written through to the live store, which it was not at first:
+  every other routing decision mutates the task list in place and so reaches
+  the store through the shared backing array, while adding tasks replaces the
+  slice, and a new array is invisible to it. That failed in the most misleading
+  way available — the cut was reported, both teams were assigned, and then the
+  snapshot taken before execute restored the uncut task, so the wave that
+  actually ran held the original straddler with no team at all.
+  See [squads](squads.md#3c-tasks-on-the-seam-are-cut-along-it).
+- **A team no longer goes red because the project defines no such check.**
+  `npm --prefix web run build` against a package.json with no `build` script
+  exits non-zero, and the user was shown *"team frontend-react is RED — its own
+  half does not pass"* over code nothing had found fault with. npm launched
+  fine, so the existing absent-tooling rule correctly said no; the epistemics
+  are identical all the same. A check that never ran is UNVERIFIED, and the
+  board now says which of the two it was. Covers npm, pnpm, yarn, make, and
+  `go test` over a tree with nothing in it.
+- **The two halves stop waiting on each other once the seam is frozen.**
+  Letting them build at once is the whole point of freezing the interface
+  contract — the frontend needs the API's shape, not its code, and the shape is
+  what was frozen and attached to both sides as acceptance criteria. Planners
+  wrote the dependency anyway: measured live, `T2(frontend-react) after=T1`,
+  two tasks with disjoint files running in consecutive single-task waves. Every
+  mechanism was working and the teams still took twice the wall clock they
+  needed, on a model where wall clock is the budget that runs out. Such an edge
+  is now dropped, and each drop is reported by name. Only where the contract
+  actually replaced it — the awaited task's team PROVIDES an interface the
+  waiting task's team CONSUMES. A wait inside one team, a wait involving the
+  seam itself, a wait between two teams with no interface between them, and
+  every wait in a run with no frozen contract are all left alone.
+- **One task can no longer take a whole run to itself.** Measured live: a seam
+  task took 17 of a run's 23 agent starts — corrector, reviewer, corrector,
+  reviewer, across three consecutive waves — while four tasks sitting in lanes
+  were attempted once or not at all, and the run ended with everything
+  unexecuted and nothing failed. No single ceiling was wrong: review retries,
+  gate retries and the corrective-wave continuation each grant attempts for
+  their own good reason, and none can see that another task has had no turn.
+  The wave was filled in board order, and a retry usually collides on files
+  with the work it would otherwise share a wave with — which is exactly when it
+  excludes it. Ready tasks are now ordered least-tried-first, so a first
+  attempt at untried work goes before a fourth at work that keeps failing.
+  It only reorders: nothing is dropped, a retry runs as soon as no fresher task
+  is available, and the attempt ceiling still parks it.
+- **A contract clause that names no consumer gets one, when there is only one
+  it can be.** The shape a local 30B actually emits is a provider and an empty
+  consumer list, which half-freezes the seam: the spec is agreed and nothing
+  records who agreed to it. With exactly two teams that is arithmetic rather
+  than a guess — the only team that can consume what one provides is the other
+  — and left empty it costs the consumer its reason to stop waiting, so the fix
+  above never fired. At three teams the consumer is a real question and none is
+  invented. The inference is reported, never silent.
+- **Duplicate-task merging works again when a language pack is active.** The
+  merge grouped tasks by role family using the bare ids `worker` and `tester`,
+  so `go-worker` and `react-worker` matched neither and nothing was ever folded
+  — and per-task routing puts a language specialist on nearly every task, which
+  is most runs. Now uses the suffix-aware `IsImplementerRole` / `IsTesterRole`,
+  the predicates that exist for exactly this bug.
+
+### Added
+
+- **A run names each frozen contract clause** — `frozen: GET /todos — provided
+  by backend-go, consumed by frontend-react`. It used to report a count, which
+  makes a contract that froze the wrong seam, or the right seam between the
+  wrong two teams, indistinguishable from one that got it right.
+- **The live team suite prints the team decisions on every run, green ones
+  included** — who was cut, who was assigned, who stopped waiting, which teams
+  were live in each wave, how each half was judged. A dozen lines; the full
+  event stream stays failure-only. A run that succeeds while its teams do
+  nothing is the failure that suite exists to catch, and it is invisible in the
+  result: board, elapsed time and success flag all look the same either way.
+- **Every wave now says who is in it and which teams are live** —
+  `wave 3: T1(backend-go), T2(frontend-react) — teams live: backend-go,
+  frontend-react`. A run recorded that a wave happened and never what was in
+  it, which is the difference between diagnosing a throughput problem and
+  guessing at one: a run put two tasks in disjoint lanes into consecutive
+  single-task waves — the teams ran in series, the one thing the design exists
+  to avoid — and nothing in 2,700 lines of output said whether a dependency,
+  the fence or the scheduler put them there. The helper that formats it had
+  been written and tested and never called.
+
+### Known limitation
+
+A local 30B still runs out of runway before it runs out of plan on a bad draw,
+and run-to-run variance remains larger than any effect measured here — the same
+model on the same prompt produced 4 of 4 tasks done in 12m and 3 of 4 in 35m
+with the same code. Read the event lines, not the clock: the wave line naming
+both teams, and the drop line naming the interface, are what these changes can
+be held to.
+
 ## v0.23.0 — 2026-08-31
 
 Teams stop being something a model invents once per run and start being

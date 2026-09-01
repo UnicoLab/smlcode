@@ -195,19 +195,104 @@ its description said — and an integration failure much later with no owner.
 The task's own conditions keep their place at the head of the list, so a worker
 is never handed a criteria list that is all seam and no job.
 
-### 3c. Which tasks stay unassigned
+### 3c. Tasks on the seam are cut along it
 
-Two kinds of task stay **deliberately unassigned**:
+A task naming `cmd/server/main.go` **and** `web/src/App.tsx` belongs to neither
+team, and that is the right answer to the question ownership asks — handing the
+seam to "frontend" is exactly how a frontend task acquires permission to rewrite
+the API.
 
-- **Cross-squad tasks** (the seam itself) — handing `cmd/server/main.go` +
-  `web/vite.config.ts` to "frontend" is exactly how a frontend task acquires
-  permission to rewrite the API.
+It is the wrong answer to the question the *run* needs answered. Measured twice,
+against two different local models, every task in the plan straddled:
+
+```text
+task T1  squad=  files=[cmd/server/main.go web/src/App.tsx]
+task T2  squad=  files=[cmd/server/main.go web/src/App.tsx]
+routing: 0 task(s) in a lane, 2 straddling both halves
+```
+
+The org chart was right. The contract was frozen and correct. Both files were
+edited and the run reported **success**. And the teams did nothing at all: no
+parallel waves, no ownership fence, no per-team acceptance — because not one
+task belonged to anybody. Nothing in the output tells that apart from a run
+where the teams worked, which is what makes it worth code rather than a warning.
+Telling the splitter about the boundaries (§2b) helps and does not settle it: a
+model is free to ignore the instruction, and one of the two did, repeatedly.
+
+So the harness cuts the task itself, before assignment. Such a task **is** two
+tasks — one per team, each carrying only that team's files — and deriving them
+needs no model call, only the ownership map that already exists:
+
+```text
+charter  cut T1 along the team boundary — a task spanning two teams belongs to
+         neither, so it would have run alone outside both lanes
+routing: 6 task(s) in a lane, 1 straddling both halves
+```
+
+Each piece keeps the whole description and is told where its boundary is, so it
+builds against the frozen contract rather than against a half it cannot see. The
+pieces are named after their parent — `T1-BACKEND`, `T1-FRONTEND` — so a log
+showing only ids still traces back.
+
+What a cut cannot recover is intent, so it is deliberately conservative. These
+stay **unassigned**, exactly as before:
+
+- **A tester on the seam.** Verifying that the halves *meet* is the one job
+  genuinely about both; two half-testers each verify nothing.
+- **A task other tasks depend on.** The dependents named one id, and rewriting
+  that into "all of the pieces" changes the wave graph on a guess about which
+  piece they meant.
 - **Unowned files** — a hole in the squad plan, reported rather than guessed at.
+  A file nobody owns cannot go to a piece, and dropping it would silently narrow
+  the work, so the whole task is left alone.
+
+### 3d. The halves stop waiting on each other
+
+Letting both teams build **at once** is the point of freezing the seam. The
+frontend needs the API's *shape*, not its code, and the shape is what §2 froze
+and §3b attached to both sides as acceptance criteria.
+
+Planners write the dependency anyway:
+
+```text
+task T1  squad=backend-go     files=[cmd/server/main.go]
+task T2  squad=frontend-react files=[web/src/App.tsx]  after=T1
+
+wave 1: T1(backend-go) — teams live: backend-go
+wave 2: T2(frontend-react) — teams live: frontend-react
+```
+
+Two tasks, disjoint files, different teams, run one after the other. Every
+mechanism was working — the org chart, the fence, the frozen seam — and the
+teams still took twice the wall clock they needed, on a local model where wall
+clock is the budget that runs out. Nothing reported it either: a serialized run
+and a parallel one leave the same board behind.
+
+So an edge the contract has already answered is dropped, and each drop is named:
+
+```text
+charter  T2 no longer waits on T1 — frontend-react builds against
+         GET /api/todos, which backend-go froze, rather than against its code
+```
+
+A clause that names a provider and no consumer — the shape a local 30B usually
+emits — has the missing side filled in when there are exactly two teams, because
+then there is only one team it can be. That inference is reported, and it is
+refused at three teams, where the consumer is a real question.
+
+Only where the contract genuinely replaced it — the awaited task's team
+**provides** an interface that the waiting task's team **consumes**. Everything
+else is a real wait and stays: a dependency inside one team, a dependency
+involving the seam itself (integration does come after the halves), a dependency
+between two teams with no interface between them, and every dependency in a run
+with no frozen contract.
 
 ### 4. Both squads execute in parallel
 
-Their files are disjoint by construction, so the wave scheduler admits tasks
-from both teams into the same wave. Each worker gets:
+Their files are disjoint by construction and §3d has removed the waits the
+contract answers, so the wave scheduler admits tasks from both teams into the
+same wave — `wave 3: T1(backend-go), T2(frontend-react) — teams live:
+backend-go, frontend-react`. Each worker gets:
 
 - **its own brief** — its charter, its boundary, and the interfaces it owes or
   consumes. Never the whole contract: a worker handed both halves spends its
@@ -216,6 +301,24 @@ from both teams into the same wave. Each worker gets:
   list, so a write outside its lane is refused at the tool layer. A prompt
   saying "do not edit `web/`" is a suggestion a stuck model talks itself out
   of; a deny list is not.
+
+### 4b. A retry never takes the slot from untried work
+
+Ready tasks are ordered least-tried-first before the wave is filled. Measured
+live, one seam task took 17 of a run's 23 agent starts across three consecutive
+waves while four tasks in lanes were attempted once or not at all — no single
+ceiling was wrong, but review retries, gate retries and the corrective-wave
+continuation compose, and none of them can see that another task has had no
+turn. A retry usually collides on files with the work it would otherwise share a
+wave with, which is exactly when it excludes it.
+
+```text
+wave order: T4 (0 attempt(s)) goes before T3 (3) — a first attempt at untried
+            work beats another attempt at work that keeps failing
+```
+
+It only reorders. A retry runs as soon as no fresher task is available, and the
+attempt ceiling still parks a task that never passes.
 
 ### 5. The manager watches for cross-team stalls
 
@@ -369,8 +472,8 @@ is done, before the halves are joined:
 ```text
 verify  team backend-go: proving its half alone — go build ./... && go test ./...
 verify  team backend-go is green: go build ./... && go test ./...
-verify  team frontend-react: acceptance could not run (npm is not installed here)
-        — its half is UNVERIFIED, not broken
+verify  team frontend-react: acceptance could not run (this project defines no
+        such check: npm error Missing script: "build") — UNVERIFIED, not broken
 ```
 
 Three rules, and the second is the one that keeps a local run from going red for
@@ -379,7 +482,7 @@ nothing:
 | | |
 |---|---|
 | **Green means proved** | Not "every task reached done". A half can finish its tasks and not build, and the first thing to notice used to be integration — which then reported the *seam* as wrong when the real defect was one team's own code. |
-| **Absent tooling is UNVERIFIED, never red** | `npm run build` where `node_modules` was never installed exits non-zero and says nothing whatsoever about the code. Scoring it red sends a corrector to rewrite source that was never at fault, burns the retry budget, and shows a red team for something no model can fix. |
+| **A check that never ran is UNVERIFIED, never red** | Two ways that happens, both measured live. The tooling is absent — `npm run build` where `node_modules` was never installed. Or the project defines no such check — `npm error Missing script: "build"`, npm launching perfectly and finding nothing to do. Either way the command said nothing whatsoever about the code. Scoring it red sends a corrector to rewrite source that was never at fault, burns the retry budget, and shows a red team for something no model can fix. The board says which of the two it was. |
 | **A red half is that team's ticket** | Scoped to its own lane, because the wave's write deny list is derived from the task's squad — a ticket carrying another team's paths is one the tool layer refuses on exactly the files it was told to fix. Integration is skipped: joining a known-broken half proves nothing. |
 
 The result is on the board, per team: **proved green**, **half is red**, or

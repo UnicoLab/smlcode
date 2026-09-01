@@ -897,25 +897,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	// the expensive ones. Nothing is swallowed: FailedTasks keeps the count,
 	// Outcome below refuses to say plain "success", and the summary names it.
 	objectiveWon := o.finishedOnObjectiveGate()
-	// A teams run produces a SECOND measurement of the same kind, and it was
-	// being thrown away. When every team has proved its own half by running its
-	// own acceptance command, the halves are green by exit status — not by a
-	// model's opinion of a write-up — and the principle above applies
-	// unchanged: measurement beats a planner's guess at a decomposition.
-	//
-	// Measured live: two implementation tasks done, `team backend-go is green`,
-	// `team frontend-react is green`, and the run reported flat FAILURE because
-	// a seam TESTER escalated after a local reviewer scored its prose 0. The
-	// software was built and each half was proved; the user was told it failed.
-	//
-	// This is not a relaxation of the escalation refusal. The task stays
-	// escalated on the board, FailedTasks keeps the count, the summary names
-	// it, and the Outcome below refuses to say plain "success". An UNVERIFIED
-	// gate is never counted — a command that could not run is not evidence —
-	// so the run still fails flat when a half was never proved.
-	halvesProved := o.allHalvesProved()
-	provedByMeasurement := objectiveWon || halvesProved
-	escalatedBlocks := escalatedLeft && !provedByMeasurement
+	escalatedBlocks := escalatedLeft && !objectiveWon
 	// Never mark success when escalated/blocked tasks remain, even if a weak
 	// compileall QA gate was green (TestSLMs false-success regression).
 	success := !testerRejected && failed == 0 && board.AllDone() && !escalatedLeft
@@ -944,11 +926,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	// green beats a planner's guess, and the escalation is reported instead.
 	unexecuted := o.unexecutedTaskCount()
 	workLeft := board.AgentWorkRemaining() && unexecuted == 0
-	// Both halves green by their own commands is a strong gate in the sense
-	// this clause means: an exit status on the real tree, not a syntax-only
-	// rubber stamp.
-	softSuccess := !success && ((qaGreen && !weakQA) || halvesProved) &&
-		!testerRejected && !escalatedBlocks && !workLeft
+	softSuccess := !success && qaGreen && !weakQA && !testerRejected && !escalatedBlocks && !workLeft
 	if softSuccess {
 		success = true
 	}
@@ -990,20 +968,29 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	// never a BARE success. The escalation is exactly the signal that a human
 	// should look, so the verdict a caller branches on has to keep saying so
 	// even though Success is true.
-	if res.Success && provedByMeasurement && (failed > 0 || escalatedLeft) {
+	if res.Success && objectiveWon && (failed > 0 || escalatedLeft) {
 		res.Outcome = OutcomeSuccessWithFailures
 	}
-	// Walking past an escalation is a judgement the user must be able to see
-	// and disagree with, so it is said out loud with the evidence that licensed
-	// it and the gap that remains.
-	if res.Success && halvesProved && !objectiveWon && (failed > 0 || escalatedLeft) {
-		o.emitWarn("verify", fmt.Sprintf(
-			"reporting success_with_failures over %d task(s) needing human review: every half "+
-				"proved itself (%s), which is a measured exit status rather than a planner's "+
-				"guess — but the SEAM between them is not what those commands check, so look "+
-				"at the escalation before trusting the join",
-			failed+boolToInt(escalatedLeft && failed == 0),
-			strings.Join(o.provedHalfNames(), ", ")), "")
+	// A failing teams run says which halves were nonetheless PROVED.
+	//
+	// The verdict is not touched — the run failed, the exit code stands, and
+	// whatever refused it (a tester rejection, an escalation) refused it for a
+	// reason. What a person needs and did not get is the shape of the failure:
+	// "everything is broken" and "both halves compile and pass their own tests,
+	// and the thing that failed is the join between them" call for completely
+	// different next moves, and the summary said only the first.
+	//
+	// Measured live: `team backend-go is green`, `team frontend-react is
+	// green`, two implementation tasks done — reported as a flat failure with
+	// nothing to distinguish it from a run where nothing worked.
+	if !res.Success {
+		if proved := o.provedHalfNames(); len(proved) > 0 {
+			o.emitWarn("verify", fmt.Sprintf(
+				"the run failed, but %d half/halves proved themselves against their own "+
+					"acceptance command (%s) — those halves compile and pass what they "+
+					"declare, so start at what failed BETWEEN them rather than inside them",
+				len(proved), strings.Join(proved, ", ")), "")
+		}
 	}
 	if testerRejected || escalatedBlocks {
 		res.Success = false

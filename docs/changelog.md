@@ -8,16 +8,9 @@ showed did not mean what it looked like.
 
 ### Behaviour changes
 
-No flag, config key or API shape is removed. What changes is what a run REPORTS,
-and two of these move an exit code.
+No flag, config key or API shape is removed, and no exit code moves. What
+changes is what a run REPORTS.
 
-- **A teams run whose halves are all green now reports
-  `success_with_failures` instead of `failure` when a task escalated.**
-  `Result.Success` drives the exit code, so a run that exited non-zero for this
-  can now exit zero. `FailedTasks` still carries the count, the outcome is never
-  plain `success`, and a warning names both the evidence and the seam it does
-  not cover. An UNVERIFIED half never counts, so a run with a half that was
-  never proved still fails flat.
 - **A team gate reports UNVERIFIED, not RED, when the project defines no such
   check** — `npm error Missing script: "build"` no longer fails a team. A gate
   that used to be red is now grey, and reds are no longer raised as tickets for
@@ -180,34 +173,28 @@ and two of these move an exit code.
 
 ### Changed — what a teams run reports
 
-- **Both halves proving themselves is now a license to report
-  `success_with_failures` instead of flat failure.** Measured live: two
-  implementation tasks done, `team backend-go is green`, `team frontend-react is
-  green`, and the run reported **failure** because a seam *tester* escalated
-  after a local reviewer scored its prose 0. The software was built and each
-  half was proved by its own command; the user was told it failed.
+- **A failing teams run now says which halves nonetheless proved themselves.**
+  The verdict is untouched: the run failed, the exit code stands, and whatever
+  refused it did so for a reason. What a person needs and did not get is the
+  SHAPE of the failure — "everything is broken" and "both halves compile and
+  pass their own tests, and what failed is the join between them" call for
+  completely different next moves, and the summary said only the first.
+  Measured live: `team backend-go is green`, `team frontend-react is green`,
+  two implementation tasks done, reported as a flat failure indistinguishable
+  from a run where nothing worked at all.
 
-  The escalation refusal already had one exception — the objective gate measured
-  green — on the stated principle that when a planner's guess at a decomposition
-  and a measurement disagree, the measurement wins. Every team proving its own
-  half is a measurement of exactly that kind: an exit status on the real tree,
-  not a model's opinion of a write-up. It was simply being thrown away.
+  An UNVERIFIED half is never named as proved — a command that could not run
+  said nothing about that half, which is the whole reason UNVERIFIED is
+  separate from RED.
 
-  This is **not** a relaxation of the refusal:
-
-  - the escalated task stays escalated on the board, and `FailedTasks` keeps the
-    count;
-  - the outcome is never plain `success` — `success_with_failures` exists to be
-    told apart from a clean board, and the summary names the escalation;
-  - an **UNVERIFIED** gate is never counted. A command that could not run said
-    nothing about that half, and rounding it up here would undo that
-    distinction at the one place it decides the headline verdict;
-  - fewer than two proved halves proves nothing — one team doing all the work is
-    not a teams run.
-
-  A warning says so explicitly, naming the halves that were proved and the gap
-  that remains: those commands do not check the **seam**, which is the thing a
-  seam task existed to verify.
+  *A stronger version of this was written and withdrawn.* It let both-halves-
+  green license reporting `success_with_failures` instead of `failure` when a
+  task had escalated, by analogy with the objective gate's existing licence.
+  A wiring test showed it did not fix the case it was built for: that run was
+  refused by a **tester rejection**, which is a different and stronger refusal
+  — the tester found an unresolved defect — and one that should keep winning.
+  Changing the exit code on the strength of a scenario never actually observed
+  was not worth the risk, so only the reporting was kept.
 
 ### Known limitation — the seam task
 

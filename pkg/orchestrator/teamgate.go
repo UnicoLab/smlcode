@@ -321,12 +321,3 @@ func (o *Orchestrator) provedHalfNames() []string {
 	sort.Strings(out)
 	return out
 }
-
-// boolToInt counts an escalation that carries no failure of its own, so the
-// warning above says "1 task" rather than "0 tasks".
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}

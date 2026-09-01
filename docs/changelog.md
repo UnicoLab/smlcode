@@ -80,6 +80,27 @@ showed did not mean what it looked like.
   is most runs. Now uses the suffix-aware `IsImplementerRole` / `IsTesterRole`,
   the predicates that exist for exactly this bug.
 
+- **A correction that made the work worse no longer gets another round.**
+  Measured on a live 30B, one task's reviews ran 40, 40, 40, 40, 20, 40, 0
+  across its attempts — never improving, and finally destroying what was there.
+  Each round cost 300-560s of a 45-minute run while other tasks had not been
+  attempted once. A score that merely fails to improve may still be one round
+  from passing, so only an actual DROP stops the task: the corrector changed
+  the work, the reviewer liked it less, and the next round would start from the
+  worse version. Only judged verdicts count — a reviewer that never replied
+  scores 0 as an absence, and reading that as "much worse" would end a task on
+  a transport error.
+- **A team is proved by a check its project actually has.** The shipped
+  `frontend-react` team declares `npm --prefix web run build`, which is right
+  for Vite or CRA and wrong for whatever a 30B just scaffolded — so that half
+  reported UNVERIFIED in every run and "both teams green" could never be said.
+  The script is now resolved against the project's own package.json: a repo
+  whose build is called `compile`, or that has only `typecheck`, proves its
+  half instead of reporting nothing. Never substitutes into npm's default
+  failing `test` placeholder, which would turn an unproved half into a red one,
+  and leaves the command alone when nothing usable exists — an honest grey
+  beats proving something nobody asked for.
+
 ### Added
 
 - **A run names each frozen contract clause** — `frozen: GET /todos — provided
@@ -103,6 +124,15 @@ showed did not mean what it looked like.
   been written and tested and never called.
 
 ### Known limitation
+
+Plan size is the strongest predictor of a run finishing, and nothing yet acts
+on it. Across nine runs of the identical prompt against the same model and
+budget — a controlled comparison, since only the decomposition varied — every
+run of 1-2 tasks succeeded (3 of 3), 4 tasks succeeded twice in three, and
+every run of 5 or more failed (0 of 3). The cap is 8. The measured costs behind
+that: planning takes 74-95s, a first attempt 54-150s, and a correction round
+306-561s — so more tasks mean more review gates, more corrections, and rounds
+that are 4-6x the price of the work itself.
 
 A local 30B still runs out of runway before it runs out of plan on a bad draw,
 and run-to-run variance remains larger than any effect measured here — the same

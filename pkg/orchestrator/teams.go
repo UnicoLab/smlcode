@@ -234,34 +234,29 @@ func (o *Orchestrator) fillContract(ctx context.Context, p *squads.Plan, query s
 	// 7–32B model it will still write `backend` where the team is `backend-go`.
 	// Resolving the reference costs nothing; refusing it costs the frozen seam
 	// this whole feature exists to protect.
-	var kept []squads.Interface
-	var dropped []string
-	for _, in := range got.Contract.Interfaces {
-		provider, ok := p.ResolveRef(in.Provider)
-		if !ok {
-			// An interface whose provider is no team is owed by nobody. Kept,
-			// it fails Validate and costs the whole contract; dropped, it costs
-			// one clause and says so.
-			dropped = append(dropped, in.ID)
-			continue
-		}
-		in.Provider = provider
-		cons := make([]string, 0, len(in.Consumers))
-		for _, c := range in.Consumers {
-			if id, ok := p.ResolveRef(c); ok && id != provider {
-				cons = append(cons, id)
-			}
-		}
-		in.Consumers = cons
-		kept = append(kept, in)
+	kept, dropped, implied := resolveInterfaces(p, got.Contract.Interfaces)
+	for _, note := range implied {
+		o.emit("charter", "interface "+note+": named no consumer, and with two teams "+
+			"on this run there is only one it can be", "")
 	}
 	if len(dropped) > 0 {
-		sort.Strings(dropped)
 		o.emitWarn("charter", fmt.Sprintf(
 			"dropped %d contract clause(s) naming a team that is not on this run: %s",
 			len(dropped), strings.Join(limitList(dropped, 5), ", ")), "")
 	}
 	p.Contract.Interfaces = kept
+	// Name each frozen clause. Without this the run reports a COUNT, and a
+	// contract that froze the wrong seam, or froze it between the wrong two
+	// teams, is indistinguishable from one that got it right.
+	for _, in := range kept {
+		line := "frozen: " + in.ID + " — provided by " + in.Provider
+		if len(in.Consumers) > 0 {
+			line += ", consumed by " + strings.Join(in.Consumers, ", ")
+		} else {
+			line += ", consumed by nobody named"
+		}
+		o.emit("charter", line, "")
+	}
 	p.Contract.Summary = strings.TrimSpace(got.Contract.Summary)
 	p.Integration = got.Integration
 	if strings.TrimSpace(got.Summary) != "" {
@@ -353,4 +348,52 @@ func (o *Orchestrator) splitGuidance() string {
 		"Split it into one task per team, and use `depends_on` when the second genuinely " +
 		"needs the first.\n")
 	return b.String()
+}
+
+// resolveInterfaces maps each clause's team references onto real team ids,
+// drops the clauses that name nobody, and fills in the consumer a two-team run
+// leaves implicit.
+//
+// Returns the surviving clauses, the ids of those dropped, and one note per
+// implied consumer. Pure: every caller-visible decision is in the return value,
+// so the reporting lives with the orchestrator and the rule lives here.
+func resolveInterfaces(p *squads.Plan, in []squads.Interface) (kept []squads.Interface, dropped, implied []string) {
+	if p == nil {
+		return nil, nil, nil
+	}
+	for _, iface := range in {
+		provider, ok := p.ResolveRef(iface.Provider)
+		if !ok {
+			// An interface whose provider is no team is owed by nobody. Kept,
+			// it fails Validate and costs the whole contract; dropped, it costs
+			// one clause and says so.
+			dropped = append(dropped, iface.ID)
+			continue
+		}
+		iface.Provider = provider
+		cons := make([]string, 0, len(iface.Consumers))
+		for _, c := range iface.Consumers {
+			if id, ok := p.ResolveRef(c); ok && id != provider {
+				cons = append(cons, id)
+			}
+		}
+		// A clause naming a provider and NO consumer is the common shape from a
+		// small model, and it half-freezes the seam: the spec is agreed, and
+		// nothing records who agreed to it. With exactly two teams that is not
+		// a guess — the only team that can consume what one provides is the
+		// other one. Left empty it costs the consumer its reason to stop
+		// waiting on the provider, which is what freezing the seam buys.
+		if len(cons) == 0 && len(p.Squads) == 2 {
+			for _, s := range p.Squads {
+				if s.ID != provider {
+					cons = append(cons, s.ID)
+					implied = append(implied, iface.ID+" → "+s.ID)
+				}
+			}
+		}
+		iface.Consumers = cons
+		kept = append(kept, iface)
+	}
+	sort.Strings(dropped)
+	return kept, dropped, implied
 }

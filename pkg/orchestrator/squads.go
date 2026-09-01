@@ -140,13 +140,42 @@ func (o *Orchestrator) routeBoardToSquads(p *squads.Plan, board *plan.Board) {
 	if p == nil || board == nil {
 		return
 	}
+	// Cut the seam before assigning, not after.
+	//
+	// A task spanning two teams is assigned to neither — correctly, because
+	// handing the seam to one half is how a frontend task acquires permission
+	// to rewrite the API. But measured live, twice, against two different local
+	// models, EVERY task straddled: the org chart was right, the contract was
+	// frozen, both halves were edited, the run reported success, and not one
+	// task belonged to anybody. No parallel waves, no ownership fence, no
+	// per-team acceptance. Telling the splitter about the boundaries helps and
+	// does not settle it — a model is free to ignore the instruction, and one
+	// of the two did, repeatedly.
+	cut := false
+	if next, note := squads.SplitStraddlers(p, board.Tasks); note != "" {
+		board.Tasks = next
+		o.emit("charter", note, "")
+		cut = true
+	}
+
 	rep := squads.AssignBoard(p, board.Tasks)
 	o.emit("charter", "squad assignment: "+rep.Summary(), "")
 
-	if len(rep.Straddling) > 0 {
-		o.emitWarn("charter", fmt.Sprintf(
-			"%d task(s) span both squads and stay unassigned (%s) — they are the seam and belong to integration",
-			len(rep.Straddling), strings.Join(limitList(rep.Straddling, 6), ", ")), "")
+	// A task left outside every lane looks the same whether the harness chose
+	// that or failed to notice, so say which — and for the ones it chose, say
+	// why. The blanket "they belong to integration" was true of a seam tester
+	// and false of a task that merely had a dependent.
+	for _, id := range limitList(rep.Straddling, 6) {
+		msg := "task " + id + " spans both squads and stays unassigned"
+		if why := squads.CutRefusal(p, board.Tasks, id); why != "" {
+			msg += ": " + why
+		} else {
+			msg += " — it is the seam and belongs to integration"
+		}
+		o.emitWarn("charter", msg, "")
+	}
+	if n := len(rep.Straddling); n > 6 {
+		o.emitWarn("charter", fmt.Sprintf("%d more task(s) span both squads", n-6), "")
 	}
 	if len(rep.Unowned) > 0 {
 		o.emitWarn("charter", fmt.Sprintf(
@@ -164,6 +193,32 @@ func (o *Orchestrator) routeBoardToSquads(p *squads.Plan, board *plan.Board) {
 	// obvious owner.
 	if n := squads.AttachContract(p, board.Tasks); n > 0 {
 		o.emit("charter", fmt.Sprintf("contract attached as acceptance criteria on %d task(s)", n), "")
+	}
+
+	// Only now, with the seam frozen AND checked on both sides, is it safe to
+	// let the halves stop waiting on each other. Measured live: two tasks in
+	// disjoint lanes ran in consecutive single-task waves because the planner
+	// wrote frontend-after-backend — every mechanism working, and the teams
+	// still taking twice the wall clock they needed on a model where wall clock
+	// is the budget that runs out.
+	for _, note := range squads.UnblockAcrossTeams(p, board.Tasks) {
+		o.emit("charter", note, "")
+	}
+
+	// A cut ADDS tasks, and that is the one change here the live store cannot
+	// see for itself.
+	//
+	// Everything else this function does — the squad stamps, the contract
+	// criteria, the dropped dependencies — writes through `board.Tasks` in
+	// place, so it reaches the store through the shared backing array. A cut
+	// replaces the slice, and a new array is invisible to the store. Measured
+	// live, and it looked like the split silently failing: the cut was
+	// reported, both teams were assigned, `squad assignment: backend-go=1
+	// frontend-react=1` — and then the snapshot taken before execute restored
+	// the uncut task, so the wave that actually ran held the original
+	// straddler with no team at all.
+	if cut {
+		o.persistBoard(board)
 	}
 }
 

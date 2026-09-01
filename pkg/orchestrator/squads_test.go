@@ -163,7 +163,11 @@ func TestIntegrationIsInertOnASingleStreamRun(t *testing.T) {
 	}
 }
 
-func TestRouteBoardToSquadsStampsAndReports(t *testing.T) {
+// An implementer task on the seam is CUT along the boundary, so both teams end
+// up with work. Measured live, twice, against two different models: every task
+// straddled, so not one belonged to anybody — the org chart was right, the
+// contract was frozen, and the teams did nothing.
+func TestRouteBoardToSquadsCutsTheSeamAndStampsTheRest(t *testing.T) {
 	p := e2ePlan(t)
 	o, rec, _ := integrationOrchestrator(t, p, true)
 
@@ -175,18 +179,88 @@ func TestRouteBoardToSquadsStampsAndReports(t *testing.T) {
 	}}
 	o.routeBoardToSquads(p, board)
 
-	want := map[string]string{"T1": "backend", "T2": "frontend", "T3": "", "T4": ""}
+	want := map[string]string{
+		"T1": "backend", "T2": "frontend",
+		"T3-BACKEND": "backend", "T3-FRONTEND": "frontend",
+		"T4": "",
+	}
+	if len(board.Tasks) != len(want) {
+		t.Fatalf("board has %d tasks, want %d: %+v", len(board.Tasks), len(want), board.Tasks)
+	}
 	for _, task := range board.Tasks {
-		if task.Squad != want[task.ID] {
-			t.Errorf("%s = %q, want %q", task.ID, task.Squad, want[task.ID])
+		expected, known := want[task.ID]
+		if !known {
+			t.Errorf("unexpected task %s on the board", task.ID)
+			continue
+		}
+		if task.Squad != expected {
+			t.Errorf("%s = %q, want %q", task.ID, task.Squad, expected)
 		}
 	}
 	out := rec.text()
-	for _, want := range []string{"squad assignment", "backend=1", "frontend=1",
-		"span both squads", "no squad owns"} {
+	for _, want := range []string{"squad assignment", "backend=2", "frontend=2",
+		"along the team boundary", "no squad owns"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("routing report is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A cut adds tasks, and that is the one change routing makes that the live
+// store cannot see for itself: every other write here mutates board.Tasks in
+// place and reaches the store through the shared backing array, while a cut
+// replaces the slice. Measured live, and it looked exactly like the split
+// failing — the cut was reported, both teams were assigned, and then the
+// snapshot taken before execute restored the uncut task, so the wave that ran
+// held the original straddler with no team at all.
+func TestACutReachesTheLiveStore(t *testing.T) {
+	p := e2ePlan(t)
+	o, _, _ := integrationOrchestrator(t, p, true)
+	o.boardStore = plan.NewLiveStore(t.TempDir())
+
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Files: []string{"cmd/server/main.go", "web/src/api.ts"}},
+	}}
+	o.routeBoardToSquads(p, board)
+
+	// What execute actually runs is the store's snapshot, not this board.
+	snap := o.boardStore.Snapshot()
+	if len(snap.Tasks) != 2 {
+		t.Fatalf("the store holds %d task(s), want the two pieces: %+v", len(snap.Tasks), snap.Tasks)
+	}
+	for _, task := range snap.Tasks {
+		if task.Squad == "" {
+			t.Errorf("%s reached the store with no team — it would run outside both lanes", task.ID)
+		}
+	}
+}
+
+// A tester on the seam is NOT cut — verifying that the halves meet is the one
+// job that is genuinely about both, and two half-testers verify nothing. It
+// stays unassigned, which is what a seam task has always done.
+func TestASeamTesterStaysUnassigned(t *testing.T) {
+	p := e2ePlan(t)
+	o, rec, _ := integrationOrchestrator(t, p, true)
+
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: plan.RoleTester, Files: []string{"cmd/server/main.go", "web/src/api.ts"}},
+	}}
+	o.routeBoardToSquads(p, board)
+
+	if len(board.Tasks) != 1 || board.Tasks[0].ID != "T1" {
+		t.Fatalf("the tester was cut: %+v", board.Tasks)
+	}
+	if board.Tasks[0].Squad != "" {
+		t.Fatalf("squad = %q — a seam task belongs to both halves, so to neither", board.Tasks[0].Squad)
+	}
+	out := rec.text()
+	if !strings.Contains(out, "spans both squads") {
+		t.Errorf("a task left on the seam must still be reported:\n%s", out)
+	}
+	// And the REASON, because a task outside every lane looks identical whether
+	// the harness chose that or failed to notice.
+	if !strings.Contains(out, "halves meet") {
+		t.Errorf("the refusal was reported without saying why:\n%s", out)
 	}
 }
 

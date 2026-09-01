@@ -223,3 +223,32 @@ func TestMergeUnionsTheImplementerScope(t *testing.T) {
 		t.Fatalf("files = %v — the survivor must keep the absorbed task's scope", out[0].Files)
 	}
 }
+
+// Per-task routing puts `go-worker` / `react-worker` / `python-tester` on almost
+// every task, so a family check that matched only the bare ids stopped folding
+// ANYTHING the moment a language pack was active — which is most runs. This is
+// the same suffix bug the repository has hit in every private copy of a role
+// predicate; the shared IsImplementerRole / IsTesterRole exist for it.
+//
+// Measured on a live model: two byte-identical `go-worker` tasks over the same
+// two files, both surviving.
+func TestMergeFoldsLanguageSpecialistsNotJustBareRoles(t *testing.T) {
+	for _, role := range []string{"go-worker", "react-worker", "python-corrector", "ts-tester", ""} {
+		tasks := []Task{
+			{ID: "T1", Role: role, Files: []string{"cmd/server/main.go"}, Title: "a"},
+			{ID: "T2", Role: role, Files: []string{"cmd/server/main.go"}, Title: "b"},
+		}
+		if out := MergeDuplicateTasks(tasks); len(out) != 1 {
+			t.Errorf("role %q: %d tasks survived, want 1 (family=%q)", role, len(out), mergeFamily(role))
+		}
+	}
+
+	// And the families still never mix, whatever the prefix.
+	mixed := []Task{
+		{ID: "T1", Role: "go-worker", Files: []string{"cmd/main.go"}},
+		{ID: "T2", Role: "go-tester", Files: []string{"cmd/main.go"}},
+	}
+	if out := MergeDuplicateTasks(mixed); len(out) != 2 {
+		t.Fatalf("a specialist worker folded into a specialist tester: %+v", out)
+	}
+}

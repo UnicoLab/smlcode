@@ -181,7 +181,14 @@ func MergeDuplicateTasks(tasks []Task) []Task { return mergeSameFileWorkers(task
 // Verification is idempotent; running it three times buys nothing.
 func mergeFamily(role string) string {
 	switch {
-	case role == RoleWorker || role == "deep" || role == RoleCorrector:
+	// SUFFIX-AWARE, via the shared predicate. Matching the bare ids is the bug
+	// this repository has hit in every private copy of a role check: per-task
+	// routing puts `go-worker` / `react-worker` on almost every task, and a
+	// check for `worker` alone then says none of them is an implementer — so
+	// the dedupe quietly stopped folding anything the moment a language pack
+	// was active, which is most runs. Measured on a live model: two byte-
+	// identical `go-worker` tasks over the same two files, both surviving.
+	case IsImplementerRole(role) || role == "deep":
 		return "implementer"
 	case IsTesterRole(role):
 		return "tester"

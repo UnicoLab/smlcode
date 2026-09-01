@@ -119,6 +119,7 @@ func TestTeamsLiveAgainstASmallModel(t *testing.T) {
 	// most of its board untouched is the case worth reading, and it does not
 	// necessarily break an invariant.
 	harnessFailed := false
+	var teamLog []string
 	orch.OnEvent(func(e orchestrator.Event) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -129,14 +130,27 @@ func TestTeamsLiveAgainstASmallModel(t *testing.T) {
 		if e.TaskID != "" {
 			line += " [" + e.TaskID + "]"
 		}
-		log = append(log, line+": "+firstLineOf(e.Message))
+		full := line + ": " + firstLineOf(e.Message)
+		log = append(log, full)
+		if teamRelevant(e) {
+			teamLog = append(teamLog, full)
+		}
 	})
 	defer func() {
 		mu.Lock()
 		defer mu.Unlock()
-		// Only on failure: a green run's stream is a thousand lines nobody
-		// reads, and burying the one that matters is how a log stops being read
-		// at all.
+		// The team lines print ALWAYS, including on a green run. A run that
+		// succeeds while its teams do nothing is the failure this suite exists
+		// to catch, and it is invisible in the result: the board, the elapsed
+		// time and the success flag all look the same. There are a handful of
+		// these lines.
+		t.Logf("── team decisions (%d) ──", len(teamLog))
+		for _, line := range teamLog {
+			t.Log("  " + line)
+		}
+		// The full stream stays failure-only: a green run's is a thousand lines
+		// nobody reads, and burying the one that matters is how a log stops
+		// being read at all.
 		if !t.Failed() && !harnessFailed {
 			return
 		}
@@ -204,8 +218,16 @@ func TestTeamsLiveAgainstASmallModel(t *testing.T) {
 	straddling := 0
 	for _, task := range res.Board.Tasks {
 		bySquad[task.Squad]++
-		t.Logf("task %s role=%-14s squad=%-16s col=%-11s files=%v",
-			task.ID, task.Role, task.Squad, task.Column, task.Files)
+		// DependsOn is dumped because it is the thing most likely to have
+		// serialized two teams that were meant to run at once: the frozen
+		// contract exists so the halves need not wait on each other, and a
+		// planner is free to write the dependency anyway.
+		deps := ""
+		if len(task.DependsOn) > 0 {
+			deps = " after=" + strings.Join(task.DependsOn, ",")
+		}
+		t.Logf("task %s role=%-14s squad=%-16s col=%-11s files=%v%s",
+			task.ID, task.Role, task.Squad, task.Column, task.Files, deps)
 		if task.Squad == "" {
 			if len(task.Files) > 1 && squads.LaneOf(&p, task.Files) == "" {
 				straddling++
@@ -299,4 +321,22 @@ func liveBudget() time.Duration {
 		}
 	}
 	return 60 * time.Minute
+}
+
+// teamRelevant picks the lines that say what the TEAMS did — who was cut, who
+// was assigned, who waited, which teams were live in a wave, and how each half
+// was judged. Everything here is emitted once or twice per run.
+func teamRelevant(e orchestrator.Event) bool {
+	msg := strings.ToLower(e.Message)
+	for _, marker := range []string{
+		"squad assignment", "along the team boundary", "spans both squads",
+		"no squad owns", "no longer waits on", "contract attached", "frozen:",
+		"named no consumer",
+		"teams live:", "no team owns this wave", "team ",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

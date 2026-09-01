@@ -2298,6 +2298,9 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 	// overwrite below — and survives the process.
 	lin := r.newLineage(current)
 	defer lin.flush()
+	// Judged review scores, in order, so a correction that made the work WORSE
+	// can be spotted before another round is spent on it. See correctionRegressed.
+	var scores []int
 	for attempt := 0; attempt <= r.MaxRetries; attempt++ {
 		startedAt := time.Now()
 		// Pick up human edits from the live store.
@@ -2377,7 +2380,25 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			Language: detectSignalLanguage(r.Root),
 		}, "")
 
+		// Only a JUDGED verdict carries a meaningful number: a reviewer that
+		// never replied scores 0 as an ABSENCE, and reading that as "much
+		// worse" would end a task on a transport error.
+		if !review.NoVerdict {
+			scores = append(scores, review.Score)
+		}
 		if attempt == r.MaxRetries || outOfBudget {
+			return r.escalateTask(current, review, attempt, outOfBudget)
+		}
+		// A correction that lowered the score did not fail to help — it hurt,
+		// and the next round starts from the worse version. Measured on a live
+		// 30B, one task's reviews ran 40, 40, 40, 40, 20, 40, 0 across its
+		// attempts: never improving, and finally destroying what was there.
+		// Each of those rounds cost 300-560s of a 45-minute run while other
+		// tasks had not been attempted once.
+		if correctionRegressed(scores) {
+			r.logf("%s stopping after attempt %d — the last correction scored %d against %d "+
+				"before it, so it made the work worse; another round starts from the worse version",
+				current.ID, attempt, scores[len(scores)-1], scores[len(scores)-2])
 			return r.escalateTask(current, review, attempt, outOfBudget)
 		}
 
@@ -3753,4 +3774,17 @@ func (r *Runner) reviewWave(ctx context.Context, board *plan.Board, tasks []plan
 		}
 	}
 	r.persist(board)
+}
+
+// correctionRegressed reports whether the last judged review scored WORSE than
+// the one before it.
+//
+// The narrow case on purpose. A score that fails to improve may still be a
+// round away from passing, and ending there would throw away tasks that were
+// about to land. A score that DROPPED is different in kind: the corrector
+// changed the work and the reviewer liked it less, so the next round would
+// start from the worse version. Continuing is not merely unproductive.
+func correctionRegressed(scores []int) bool {
+	n := len(scores)
+	return n >= 2 && scores[n-1] < scores[n-2]
 }

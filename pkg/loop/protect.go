@@ -422,6 +422,9 @@ func (r *Runner) applyWaveProtections(wave []plan.Task) func() {
 		}
 		sort.Strings(pats)
 	}
+	// After repairWaveAssignments, so the teams named are the ones the fence
+	// was actually built from rather than a stale stamp.
+	r.announceWave(wave)
 	r.Focus.Protect(pats...)
 	if len(pats) > 0 {
 		r.logf("wave %d protected paths (from task text): %s", r.waveN, strings.Join(pats, ", "))

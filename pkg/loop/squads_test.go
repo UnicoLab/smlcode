@@ -243,3 +243,57 @@ func TestBothSquadsAreAdmittedToOneWave(t *testing.T) {
 		t.Fatalf("both squads must be live in the same wave, got %v", live)
 	}
 }
+
+// A run used to record that a wave HAPPENED and never what was in it. That is
+// the difference between diagnosing a throughput problem and guessing at one:
+// measured, two tasks in disjoint lanes went into consecutive single-task waves
+// — the teams ran in series, the one thing the design exists to avoid — and
+// nothing in 2,700 lines of output said whether a dependency, the fence or the
+// scheduler put them there.
+func TestAWaveSaysWhoIsInItAndWhichTeamsAreLive(t *testing.T) {
+	r := NewRunner(nil, nil)
+	r.Squads = twoSquadPlan()
+	r.Focus = workspace.NewFocusGuard()
+	var seen []string
+	r.OnEvent = func(kind, agent, taskID, message, scope, output string) {
+		seen = append(seen, message)
+	}
+
+	undo := r.applyWaveProtections([]plan.Task{
+		{ID: "T1", Squad: "backend", Files: []string{"cmd/server/main.go"}},
+		{ID: "T2", Squad: "frontend", Files: []string{"web/src/App.tsx"}},
+	})
+	defer undo()
+
+	joined := strings.Join(seen, "\n")
+	for _, want := range []string{"T1(backend)", "T2(frontend)", "teams live: backend, frontend"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the wave line is missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// The shape worth noticing at a glance is one team across consecutive waves, so
+// a wave nobody owns has to say that rather than say nothing.
+func TestAWaveNoTeamOwnsSaysSo(t *testing.T) {
+	r := NewRunner(nil, nil)
+	r.Squads = twoSquadPlan()
+	r.Focus = workspace.NewFocusGuard()
+	var seen []string
+	r.OnEvent = func(kind, agent, taskID, message, scope, output string) {
+		seen = append(seen, message)
+	}
+
+	undo := r.applyWaveProtections([]plan.Task{
+		{ID: "T3", Files: []string{"README.md"}},
+	})
+	defer undo()
+
+	joined := strings.Join(seen, "\n")
+	if !strings.Contains(joined, "no team owns this wave") {
+		t.Errorf("an unowned wave must say so:\n%s", joined)
+	}
+	if strings.Contains(joined, "teams live") {
+		t.Errorf("a team was claimed live with nothing of its own in the wave:\n%s", joined)
+	}
+}

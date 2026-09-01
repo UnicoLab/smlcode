@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -74,6 +75,41 @@ func (r *Runner) repairWaveAssignments(wave []plan.Task) {
 
 // squadOf reports the squad a task belongs to, "" when unassigned.
 func squadOf(t plan.Task) string { return strings.TrimSpace(t.Squad) }
+
+// announceWave says which tasks are in this wave and which teams they belong to.
+//
+// Without it a run's log records that a wave HAPPENED and never what was in it,
+// which is the difference between diagnosing a throughput problem and guessing
+// at one. Measured: a run put two tasks in disjoint lanes into consecutive
+// single-task waves — the teams ran in series, which is the one thing the whole
+// design exists to avoid — and nothing in 2,700 lines of output said whether a
+// dependency, the fence, or the scheduler put them there.
+//
+// It also answers the question a person actually watching asks, which is not
+// "is something happening" but "who is working right now".
+func (r *Runner) announceWave(wave []plan.Task) {
+	if r == nil || len(wave) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(wave))
+	for _, t := range wave {
+		id := strings.TrimSpace(t.ID)
+		if team := squadOf(t); team != "" {
+			id += "(" + team + ")"
+		}
+		ids = append(ids, id)
+	}
+	msg := fmt.Sprintf("wave %d: %s", r.waveN, strings.Join(ids, ", "))
+	// Naming the teams separately is what makes serialization visible at a
+	// glance: one team across consecutive waves is the shape to notice.
+	if teams := waveSquads(wave); len(teams) > 0 {
+		msg += " — teams live: " + strings.Join(teams, ", ")
+	} else if r.Squads != nil {
+		msg += " — no team owns this wave"
+	}
+	r.logf("%s", msg)
+	r.fire(stream.KindCoord, "loop", "", msg, "", "")
+}
 
 // waveSquads lists the distinct squads represented in a wave, in first-seen
 // order, for the event line that tells a watching human which teams are live.

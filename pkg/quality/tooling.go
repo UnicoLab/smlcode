@@ -178,3 +178,88 @@ func isLauncher(prog string) bool {
 	}
 	return false
 }
+
+// ── The check the project never defined ──────────────────────────────────
+//
+// A second way for a verification command to produce no evidence, and the one
+// that turns a working run red in practice: the runner starts perfectly and
+// reports that there is no such script to run.
+//
+//	npm error Missing script: "build"
+//
+// Measured live, on the `frontend-react` team whose acceptance is
+// `npm --prefix web run build`: the model scaffolded components and a
+// package.json without a build script, npm launched fine, exited 1, and the
+// team went RED — "team frontend-react is RED, its own half does not pass" —
+// over code nobody had shown to be wrong. ToolingMissing correctly says no
+// here, because npm is installed; the epistemics are nevertheless identical to
+// absent tooling. The check did not run, so it reported nothing.
+//
+// Same narrowness as above, enforced the same way: the runner must name the
+// very script the command asked for. `Missing script: "build"` acquits
+// `npm run build` and nothing else — an ordinary test failure that happens to
+// print those words about some other name stays red.
+
+// checkUndefinedRes match a runner announcing it has no such script or target,
+// capturing the NAME it was asked for so it can be checked against the command.
+var checkUndefinedRes = []*regexp.Regexp{
+	// npm and pnpm: `npm error Missing script: "build"`, `Missing script: build`
+	regexp.MustCompile(`(?i)missing script:\s*["']?([A-Za-z0-9_:.\-]+)`),
+	// yarn v1: `error Command "build" not found.`
+	regexp.MustCompile(`(?i)command\s+["']([A-Za-z0-9_:.\-]+)["']\s+not found`),
+	// make: `make: *** No rule to make target 'test'.  Stop.`
+	regexp.MustCompile(`(?i)no rule to make target\s+["']?([A-Za-z0-9_:.\-/]+)`),
+}
+
+// CheckUndefined reports whether output shows the runner launched and found no
+// such check to run, as opposed to running one and finding a fault.
+//
+// False is the safe answer here too: excusing a real failure would hide broken
+// code. The captured script name must appear as a token in the command, which
+// is what keeps the rule honest — the runner has to be complaining about the
+// exact thing it was told to run.
+func CheckUndefined(command, output string) bool {
+	if strings.TrimSpace(command) == "" || strings.TrimSpace(output) == "" {
+		return false
+	}
+	asked := map[string]bool{}
+	for _, f := range strings.Fields(strings.ToLower(command)) {
+		asked[strings.Trim(f, `"'`)] = true
+	}
+	for _, re := range checkUndefinedRes {
+		for _, m := range re.FindAllStringSubmatch(output, -1) {
+			if len(m) > 1 && asked[strings.ToLower(m[1])] {
+				return true
+			}
+		}
+	}
+	// `go test ./...` in a tree with no Go files: the toolchain is present, the
+	// command is valid, and nothing at all was compiled or run. Handled apart
+	// because there is no script name to match — but the phrase is emitted by
+	// the go tool alone, and only when it tested nothing.
+	if strings.Contains(strings.ToLower(output), "matched no packages") {
+		for _, tool := range commandTools(command) {
+			if tool == "go" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CheckDidNotRun returns why a verification command produced no evidence about
+// the code, or "" when it genuinely ran and reached a verdict.
+//
+// This is the question every caller actually has. A command that never ran must
+// not be scored as a failure: it sends a corrector to rewrite source that was
+// never at fault, spends the retry budget on it, and shows the user red for
+// something no model can fix.
+func CheckDidNotRun(command, output string) string {
+	switch {
+	case ToolingMissing(command, output):
+		return "tooling is not installed here"
+	case CheckUndefined(command, output):
+		return "this project defines no such check"
+	}
+	return ""
+}

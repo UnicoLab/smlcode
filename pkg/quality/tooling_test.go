@@ -99,3 +99,66 @@ func TestScriptNamesAreNotTreatedAsPrograms(t *testing.T) {
 		t.Error("npx vitest regressed")
 	}
 }
+
+// The measured case, and the shapes the other runners use to say the same
+// thing. Each is the runner reporting it has no such script — not a verdict.
+func TestCheckUndefinedSpotsAScriptTheProjectNeverDefined(t *testing.T) {
+	for name, c := range map[string]struct{ command, output string }{
+		// Live, on the frontend-react team: the model wrote components and a
+		// package.json with no build script, and the team went RED for it.
+		"npm, the one that was measured": {
+			"npm --prefix web run build", `npm error Missing script: "build"`},
+		"npm 8": {"npm run build", `npm ERR! Missing script: "build"`},
+		"pnpm":  {"pnpm run lint", "ERR_PNPM_NO_SCRIPT  Missing script: lint"},
+		"yarn":  {"yarn build", `error Command "build" not found.`},
+		"make":  {"make test", "make: *** No rule to make target 'test'.  Stop."},
+		// A valid command over a tree with nothing in it to compile or run.
+		"go over an empty tree": {"go test ./...", `go: warning: "./..." matched no packages`},
+	} {
+		if !CheckUndefined(c.command, c.output) {
+			t.Errorf("%s: %q + %q read as a real failure", name, c.command, c.output)
+		}
+		if got := CheckDidNotRun(c.command, c.output); got != "this project defines no such check" {
+			t.Errorf("%s: reason = %q", name, got)
+		}
+	}
+}
+
+// The direction that matters. Excusing a real failure hides broken code, so
+// every one of these must stay RED.
+func TestCheckUndefinedDoesNotExcuseARealFailure(t *testing.T) {
+	for name, c := range map[string]struct{ command, output string }{
+		"a build that ran and found a type error": {
+			"npm run build", "error TS2345: Argument of type 'string' is not assignable"},
+		// The runner names a script we did not ask for, so it is not answering
+		// for this command.
+		"a different script is missing": {
+			"npm run build", `npm error Missing script: "test"`},
+		"a different make target": {
+			"make test", "make: *** No rule to make target 'clean'.  Stop."},
+		"a compile error": {"go build ./...", "./main.go:9:2: undefined: handler"},
+		// `go test ./...` that really did test something and failed.
+		"a failing go test": {"go test ./...", "--- FAIL: TestThing (0.00s)\nFAIL"},
+		"a failing assertion that mentions the script name": {
+			"npm run build", `AssertionError: expected "build" to equal "release"`},
+		"nothing at all": {"npm run build", ""},
+	} {
+		if CheckUndefined(c.command, c.output) {
+			t.Errorf("%s: %q + %q was excused — a real failure must stay red", name, c.command, c.output)
+		}
+		if got := CheckDidNotRun(c.command, c.output); got != "" {
+			t.Errorf("%s: reason = %q, want none", name, got)
+		}
+	}
+}
+
+// The two axes stay distinct: absent tooling is a fact about the machine, an
+// undefined script a fact about the project, and the user is told which.
+func TestCheckDidNotRunNamesWhichKindOfNothingHappened(t *testing.T) {
+	if got := CheckDidNotRun("npm run build", "npm: command not found"); got != "tooling is not installed here" {
+		t.Errorf("absent tooling reported as %q", got)
+	}
+	if got := CheckDidNotRun("npm run build", `npm error Missing script: "build"`); got != "this project defines no such check" {
+		t.Errorf("undefined script reported as %q", got)
+	}
+}

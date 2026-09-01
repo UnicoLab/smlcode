@@ -142,15 +142,17 @@ func (o *Orchestrator) runTeamAcceptance(ctx context.Context, board *plan.Board)
 		g := TeamGate{Team: s.ID, Command: cmd, Ran: res.Ran, OK: res.OK, Summary: res.Summary}
 		o.teamGates.set(g)
 
-		// Absent tooling is a fact about the MACHINE. `npm run build` where
-		// node_modules was never installed exits non-zero and says nothing
-		// whatsoever about the code — scoring that red sends a corrector to
-		// rewrite source that was never at fault, burns the retry budget, and
-		// shows the user a red team for something no model can fix. Same
-		// distinction the acceptance-criteria gate already draws.
-		if res.Ran && !res.OK && quality.ToolingMissing(cmd, res.Output) {
+		// A check that never ran is a fact about the MACHINE or the project,
+		// not about the code. `npm run build` with node_modules never
+		// installed, or with no build script in package.json, exits non-zero
+		// and says nothing whatsoever about what the team wrote — scoring that
+		// red sends a corrector to rewrite source that was never at fault,
+		// burns the retry budget, and shows the user a red team for something
+		// no model can fix. Both were measured live; the second is why this
+		// asks CheckDidNotRun rather than ToolingMissing alone.
+		if why := quality.CheckDidNotRun(cmd, res.Output); res.Ran && !res.OK && why != "" {
 			g.Ran = false
-			g.Summary = "tooling is not installed here: " + res.Summary
+			g.Summary = why + ": " + res.Summary
 			o.teamGates.set(g)
 		}
 

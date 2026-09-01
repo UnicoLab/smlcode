@@ -101,11 +101,11 @@ func (r *Runner) runGates(ctx context.Context, t *plan.Task, role string, snapsh
 		// `python -m pytest -q` on a host with no pytest rejected a correct
 		// task, the corrector rewrote correct code, and the task escalated for
 		// human review with the dependency still missing.
-		if ar.Ran && quality.ToolingMissing(ar.Command, ar.Output) {
+		if why := quality.CheckDidNotRun(ar.Command, ar.Output); ar.Ran && why != "" {
 			if opt.verbose {
-				r.logf("%s acceptance smoke UNVERIFIED — tooling missing: %s", t.ID, ar.Command)
+				r.logf("%s acceptance smoke UNVERIFIED — %s: %s", t.ID, why, ar.Command)
 				r.fireLevel(stream.KindAgentEnd, "qa", t.ID,
-					"acceptance smoke could not run — tooling is not installed here",
+					"acceptance smoke could not run — "+why,
 					scope, truncate(ar.Output, 800), stream.LevelWarn)
 			}
 		} else if ar.Ran {

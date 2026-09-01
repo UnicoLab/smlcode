@@ -112,6 +112,49 @@ func TestAbsentToolingLeavesAHalfUnverifiedRatherThanRed(t *testing.T) {
 	}
 }
 
+// The same verdict when the runner works and the project simply has no such
+// script. Live, on Qwen3-Coder-Next: the model scaffolded a React half without
+// a build script, `npm --prefix web run build` exited 1, and the user was shown
+// "team frontend-react is RED — its own half does not pass" over code nothing
+// had found fault with.
+func TestAScriptTheProjectNeverDefinedLeavesAHalfUnverified(t *testing.T) {
+	o, rec := gateOrchestrator(t, func(cmd string) quality.SmokeResult {
+		if strings.HasPrefix(cmd, "npm") {
+			return quality.SmokeResult{
+				Ran: true, OK: false, Command: cmd,
+				Summary: "FAILED: exit status 1",
+				Output:  "npm error Missing script: \"build\"\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run",
+			}
+		}
+		return quality.SmokeResult{Ran: true, OK: true, Command: cmd, Summary: "ok"}
+	})
+
+	board := boardWithBothHalves()
+	failed := o.runTeamAcceptance(context.Background(), board)
+
+	if len(failed) != 0 {
+		t.Fatalf("an undefined script must not fail a team, got %v", failed)
+	}
+	var frontend TeamGate
+	for _, g := range o.TeamGates() {
+		if g.Team == "frontend" {
+			frontend = g
+		}
+	}
+	if frontend.Ran {
+		t.Fatalf("frontend = %+v, want UNVERIFIED", frontend)
+	}
+	if !strings.Contains(frontend.Summary, "defines no such check") {
+		t.Errorf("summary blames the machine for a project gap: %q", frontend.Summary)
+	}
+	if !strings.Contains(rec.text(), "UNVERIFIED") {
+		t.Errorf("the reason must be stated, not implied: %s", rec.text())
+	}
+	if len(board.Tasks) != 2 {
+		t.Errorf("a ticket was raised for a script nobody wrote: %d tasks", len(board.Tasks))
+	}
+}
+
 // A half that genuinely does not build is red, owned by the team that owns the
 // files, and integration is not attempted — joining a known-broken half proves
 // nothing and reports the seam as the fault.

@@ -1218,6 +1218,10 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// BEFORE plan/split so the splitter's tasks can be routed to an owner, and
 	// returns nil — meaning "one stream" — for every single-domain query and
 	// every failure mode.
+	// Cleared first: the handle outlives a run in a long-lived Studio process,
+	// and a run started after teams were switched off must not inherit the
+	// previous run's org chart.
+	o.squadPlan = nil
 	if o.cfg.Squads {
 		o.squadPlan = o.assembleSquads(ctx, query, inventory, exploreOut, archOut)
 	}

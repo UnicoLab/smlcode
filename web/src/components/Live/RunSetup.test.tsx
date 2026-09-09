@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import RunSetup from './RunSetup';
 import type { AgentSpec, DynamicComposition } from '@/types';
@@ -166,5 +166,52 @@ describe('RunSetup', () => {
     // The loop section still renders with its defaults rather than vanishing:
     // "which worker is implementing this" is never a question with no answer.
     expect(screen.getByText('worker: worker')).toBeInTheDocument();
+  });
+});
+
+describe('RunSetup teams', () => {
+  beforeEach(() => localStorage.clear());
+
+  // The team decision rides on the composition now, so the panel says which
+  // teams are on the run and who manages each — resolved, with the run
+  // default marked — instead of leaving that to a log line at charter.
+  it('shows the teams on the run with their managers', () => {
+    setup({
+      composition: {
+        ...COMPOSITION,
+        team_mode: 'parallel',
+        team_note: '2 teams build in parallel behind a frozen contract: backend-go, frontend-react',
+        teams: [
+          { id: 'backend-go', worker: 'go-worker', tester: 'go-tester', manager: 'triage', manager_default: true, reason: 'workspace has "go.mod"' },
+          { id: 'frontend-react', worker: 'react-worker', manager: 'fe-triage', pinned: true, reason: 'pinned by hand' },
+        ],
+      },
+    });
+    expect(screen.getByText('Teams — in parallel')).toBeInTheDocument();
+    expect(screen.getByText(/2 teams build in parallel/)).toBeInTheDocument();
+    const backend = screen.getByTestId('run-team-backend-go');
+    expect(within(backend).getByText('triage')).toBeInTheDocument();
+    expect(within(backend).getByText('(default)')).toBeInTheDocument();
+    const frontend = screen.getByTestId('run-team-frontend-react');
+    expect(within(frontend).getByText('fe-triage')).toBeInTheDocument();
+    expect(within(frontend).getByText('pinned')).toBeInTheDocument();
+    expect(within(frontend).queryByText('(default)')).not.toBeInTheDocument();
+  });
+
+  it('says when one team staffs the whole run', () => {
+    setup({
+      composition: {
+        ...COMPOSITION,
+        team_mode: 'single',
+        team_note: 'team backend-go staffs this run as one stream',
+        teams: [{ id: 'backend-go', worker: 'go-worker', manager: 'triage', manager_default: true }],
+      },
+    });
+    expect(screen.getByText('Team — staffs this run')).toBeInTheDocument();
+  });
+
+  it('explains a run with no team rather than hiding the section', () => {
+    setup({ composition: { ...COMPOSITION, team_note: 'no team matched this request — it runs as one stream' } });
+    expect(screen.getByText(/no team matched this request/)).toBeInTheDocument();
   });
 });

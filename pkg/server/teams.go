@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -44,24 +45,45 @@ type teamPayload struct {
 	Language    string   `json:"language,omitempty"`
 }
 
+// runDefaultManager is the agent that triages a team's rejected work when the
+// team names nobody, or names someone who cannot answer the triage contract.
+const runDefaultManager = agents.RoleTriage
+
+// effectiveManager resolves the manager a team will actually get.
+//
+// The same rule the run applies (orchestrator.effectiveManager): a manager has
+// to answer the triage contract, not merely exist, and the run default always
+// can. Reported alongside the team so the page never shows a manager the run
+// would then silently replace.
+func effectiveManager(named string, managers map[string]bool) (string, bool) {
+	named = strings.ToLower(strings.TrimSpace(named))
+	if named == "" || !managers[named] {
+		return runDefaultManager, true
+	}
+	return named, false
+}
+
 // teamView renders one library team for Studio.
-func teamView(b *blocks.TeamBlock) map[string]interface{} {
+func teamView(b *blocks.TeamBlock, managers map[string]bool) map[string]interface{} {
 	if b == nil {
 		return nil
 	}
 	t := b.Spec
+	manager, isDefault := effectiveManager(t.Manager, managers)
 	return map[string]interface{}{
-		"id":         t.ID,
-		"name":       t.Name,
-		"charter":    t.Charter,
-		"owns":       t.Owns,
-		"acceptance": t.Acceptance,
-		"worker":     t.Worker,
-		"reviewer":   t.Reviewer,
-		"tester":     t.Tester,
-		"manager":    t.Manager,
-		"agents":     t.Agents,
-		"skills":     t.Skills,
+		"effective_manager": manager,
+		"manager_default":   isDefault,
+		"id":                t.ID,
+		"name":              t.Name,
+		"charter":           t.Charter,
+		"owns":              t.Owns,
+		"acceptance":        t.Acceptance,
+		"worker":            t.Worker,
+		"reviewer":          t.Reviewer,
+		"tester":            t.Tester,
+		"manager":           t.Manager,
+		"agents":            t.Agents,
+		"skills":            t.Skills,
 		"match": map[string]interface{}{
 			"keywords":   t.Match.Keywords,
 			"files":      t.Match.Files,
@@ -90,9 +112,10 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	managers := s.managerSet()
 	list := make([]map[string]interface{}, 0, len(reg.Teams))
 	for _, id := range sortedTeamIDs(reg) {
-		list = append(list, teamView(reg.Teams[id]))
+		list = append(list, teamView(reg.Teams[id], managers))
 	}
 
 	// An optional query previews what WOULD be selected, so the page can show
@@ -110,10 +133,28 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 		"managers":        s.triageCapableAgents(),
 		"library_enabled": cfg.TeamLibrary,
 		"squads_enabled":  cfg.Squads,
+		"dynamic_enabled": cfg.DynamicPipeline,
+		"default_manager": runDefaultManager,
 		"pinned":          cfg.Teams,
 		"pipeline_teams":  s.pipelineTeams(),
 		"preselect":       preselect,
+		"running":         s.isRunning(),
 	})
+}
+
+func (s *Server) isRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
+
+// managerSet is the triage-capable roster as a lookup.
+func (s *Server) managerSet() map[string]bool {
+	out := map[string]bool{}
+	for _, id := range s.triageCapableAgents() {
+		out[strings.ToLower(id)] = true
+	}
+	return out
 }
 
 func sortedTeamIDs(reg *blocks.Registry) []string {
@@ -136,7 +177,7 @@ func (s *Server) handleGetTeam(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, teamView(b))
+	writeJSON(w, teamView(b, s.managerSet()))
 }
 
 func (s *Server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +243,7 @@ func (s *Server) writeTeam(w http.ResponseWriter, r *http.Request, pathID string
 		http.Error(w, "saved but not discoverable — check .slmcode/blocks/teams/", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, teamView(saved))
+	writeJSON(w, teamView(saved, s.managerSet()))
 }
 
 // handleDeleteTeam removes a project-level team.
@@ -270,16 +311,51 @@ func (s *Server) preselectView(reg *blocks.Registry, query string, pinned []stri
 			"selected": ev.Selected, "conflict": ev.Conflict, "pinned": ev.Pinned,
 		})
 	}
+
+	// Who will actually work, per selected team, after the staff check — the
+	// same answer the composition carries (composer.TeamChoice), so the page
+	// and the run setup panel never disagree about a team's manager.
+	managers := s.managerSet()
+	staffed := make([]map[string]interface{}, 0, len(p.Squads))
+	for _, sq := range p.Squads {
+		manager, isDefault := effectiveManager(sq.Manager, managers)
+		staffed = append(staffed, map[string]interface{}{
+			"id": sq.ID, "name": sq.Name, "worker": sq.Worker, "reviewer": sq.Reviewer,
+			"tester": sq.Tester, "manager": manager, "manager_default": isDefault,
+			"agents": sq.Agents, "skills": sq.Skills, "owns": sq.Owns, "acceptance": sq.Acceptance,
+		})
+	}
+	mode, note := teamModeNote(sel, cfg.Squads)
 	return map[string]interface{}{
 		"query":    query,
 		"selected": sel.IDs(),
 		"evidence": evidence,
 		// enabled is the fact that matters: fewer than two teams means this
 		// request runs as one stream no matter how well any single team scored.
-		"enabled":  sel.Enabled(),
+		"enabled":  sel.Enabled() && cfg.Squads,
+		"mode":     mode,
+		"note":     note,
+		"teams":    staffed,
 		"problems": problems,
 		"staffing": notes,
 		"pinned":   pinned,
+	}
+}
+
+// teamModeNote says what a selection does to a run, in the composition's
+// vocabulary (composer.TeamMode*): parallel teams, one team staffing the run,
+// or none.
+func teamModeNote(sel teams.Selection, squadsOn bool) (string, string) {
+	ids := sel.IDs()
+	switch {
+	case len(ids) == 0:
+		return "", "no team matched — the request runs as one stream"
+	case len(ids) == 1:
+		return "single", "team " + ids[0] + " staffs the run as one stream: its worker, reviewer, tester and skills take the pipeline"
+	case !squadsOn:
+		return "", strings.Join(ids, ", ") + " matched, but teams are turned off for this project (squads: false) — the request runs as one stream"
+	default:
+		return "parallel", strings.Join(ids, " + ") + " build in parallel behind a frozen contract"
 	}
 }
 
@@ -485,4 +561,183 @@ func (s *Server) pipelineTeams() []string {
 		return nil
 	}
 	return o.Pipeline().Teams
+}
+
+// ── A dedicated project manager for one team ─────────────────────────────
+
+// handleCreateTeamManager gives a team its own project manager.
+//
+// A manager is an ordinary custom agent whose id ends in "-triage" — that
+// suffix is what maps it to the triage contract (agents.NormalizeDecoding), so
+// the loop can read its verdicts. Writing one by hand means knowing that rule,
+// the prompt the builtin manager runs with, and that a manager must have no
+// tools; this endpoint does all three, seeds the prompt with the team's charter
+// and roster so the manager knows whose work it answers for, and points the
+// team at it in one step. Idempotent: an existing agent of that id is kept and
+// only the team's manager seat is written.
+func (s *Server) handleCreateTeamManager(w http.ResponseWriter, r *http.Request) {
+	if s.rejectMutationWhileRunning(w) {
+		return
+	}
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	var body struct {
+		Title        string `json:"title"`
+		SystemPrompt string `json:"system_prompt"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+	}
+	reg, err := blocks.Load(s.cfg().Root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	b, ok := reg.GetTeam(id)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	team := b.Spec
+
+	managerID := team.ID + "-triage"
+	created := false
+	if !s.agentRegistered()(managerID) {
+		title := strings.TrimSpace(body.Title)
+		if title == "" {
+			title = team.Name + " project manager"
+		}
+		prompt := strings.TrimSpace(body.SystemPrompt)
+		if prompt == "" {
+			prompt = managerPrompt(team)
+		}
+		spec := agents.CustomSpec{
+			ID:           managerID,
+			Title:        title,
+			Description:  "Decides who on the " + team.Name + " team takes a rejected delivery next, and what they need to know.",
+			SystemPrompt: prompt,
+			Tools:        agents.BoolPtr(false),
+			MaxIter:      2,
+			Temperature:  0.15,
+			MaxTokens:    640,
+		}
+		if _, err := agents.WriteCustom(s.cfg().AgentsDir(), spec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.rebuildOrchestrator(); err != nil {
+			http.Error(w, "manager saved but rebuild failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		created = true
+	}
+
+	// The team now names its manager. Written as a project override, which is
+	// what editing any team does — a builtin is shadowed, not mutated.
+	block := &blocks.TeamBlock{Meta: b.Meta, Spec: team}
+	block.Spec.Manager = managerID
+	block.Spec.Source, block.Spec.Path = "", ""
+	if err := block.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, err := blocks.Save(s.cfg().Root, block); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	reg, err = blocks.Load(s.cfg().Root)
+	if err != nil {
+		http.Error(w, "saved but reload failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	saved, ok := reg.GetTeam(team.ID)
+	if !ok {
+		http.Error(w, "saved but not discoverable", http.StatusInternalServerError)
+		return
+	}
+	s.emit(orchestrator.Event{
+		Phase: "charter", Kind: "output",
+		Message: "team " + team.ID + " now has its own project manager: " + managerID, Time: time.Now(),
+	})
+	writeJSON(w, map[string]interface{}{
+		"ok":       true,
+		"manager":  managerID,
+		"created":  created,
+		"team":     teamView(saved, s.managerSet()),
+		"managers": s.triageCapableAgents(),
+	})
+}
+
+// managerPrompt is the builtin triage prompt with the team written in: whose
+// work this manager answers for, who is on the team, and where its territory
+// ends. The rules and the output shape are the builtin's verbatim, because the
+// decoding grammar is derived from them.
+func managerPrompt(t teams.Team) string {
+	var b strings.Builder
+	b.WriteString("You are the project manager of the " + t.Name + " team (" + t.ID + ").\n")
+	if t.Charter != "" {
+		b.WriteString("Team charter: " + t.Charter + "\n")
+	}
+	var people []string
+	for _, id := range append([]string{t.Worker, t.Reviewer, t.Tester}, t.Agents...) {
+		if id = strings.TrimSpace(id); id != "" {
+			people = append(people, id)
+		}
+	}
+	if len(people) > 0 {
+		b.WriteString("Your people: " + strings.Join(people, ", ") + ". Prefer them; reach outside the team only when the fix needs a skill they lack.\n")
+	}
+	if len(t.Owns) > 0 {
+		b.WriteString("Team territory: " + strings.Join(t.Owns, ", ") + ". A fix that needs files outside it belongs to another team or to integration — say so in guidance.\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(agents.PromptTriage)
+	return b.String()
+}
+
+// ── Assigning a task to a team by hand ───────────────────────────────────
+
+// teamAssignmentProblem refuses a team that is not on the org chart.
+func teamAssignmentProblem(p *squads.Plan, team string) string {
+	team = strings.ToLower(strings.TrimSpace(team))
+	if team == "" {
+		return ""
+	}
+	if p == nil {
+		return "no org chart — activate teams on the Teams page before assigning tasks to one"
+	}
+	if _, ok := p.Squad(team); !ok {
+		return "no team " + team + " on the org chart (" + strings.Join(p.IDs(), ", ") + ")"
+	}
+	return ""
+}
+
+// ownershipRefusal is why a hand assignment would not stick.
+//
+// A stamp is a write permission at the wave fence, and the fence is derived
+// from the task's FILES: a task whose files all sit in the backend's territory
+// is re-stamped backend on the next save whatever the board says
+// (squads.RetargetAssignments). Refusing here, with the reason, beats
+// accepting an assignment the next wave silently undoes. A task with no files,
+// or files no single team owns, keeps whatever a human puts there.
+func ownershipRefusal(p *squads.Plan, t plan.Task, team string) string {
+	team = strings.ToLower(strings.TrimSpace(team))
+	if p == nil || team == "" || len(t.Files) == 0 {
+		return ""
+	}
+	a := p.Assign(t.Files)
+	if a.Squad == "" || a.Squad == team {
+		return ""
+	}
+	return fmt.Sprintf("%s cannot move to %s: its files (%s) are owned by %s, and ownership decides the stamp — "+
+		"change the task's files or the team's paths first", t.ID, team, strings.Join(limitPaths(t.Files, 3), ", "), a.Squad)
+}
+
+func limitPaths(in []string, n int) []string {
+	if len(in) <= n {
+		return in
+	}
+	return append(append([]string{}, in[:n]...), fmt.Sprintf("+%d more", len(in)-n))
 }

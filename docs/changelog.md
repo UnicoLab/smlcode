@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+Teams are a thing you build and send work to, not a panel that fills in when a
+run happens to assemble some.
+
+### Added
+
+- **Send a request to teams.** The Teams page has a *Send a request* section:
+  type a request and see the teams it selects and why, who staffs and manages
+  each, what the selection does to the run, and the pipeline the composer would
+  assemble — then **Run** it with exactly those teams pinned, or **Activate**
+  them as the org chart. The Live view's command bar has the same **Teams**
+  control; both send `teams` on `POST /api/runs`, run-scoped as documented.
+- **Every team has a manager, and can have its own.** Cards and the editor show
+  the manager the run will actually use — the team's own when it answers the
+  triage contract, else the run default, marked as such. *Give it a manager*
+  (`POST /api/teams/{id}/manager`) creates `<team>-triage`, seeded with the
+  team's charter, people and territory, and points the team at it.
+- **How the teams worked** (`GET /api/teams/activity`): the run's team-relevant
+  events, classified — manager decisions, reassignments, cross-team waits,
+  contract clauses, gates, integration — filterable by team, with one row per
+  manager. Live during a run and kept afterwards; `?query=<id>` reads a past run.
+- **Teams on the composition.** `composer.Composition` carries `teams`,
+  `team_mode` and `team_note`: the library teams the run will use, each with its
+  resolved manager and the evidence that chose it. Shown by the run setup panel,
+  `slmcode compose --explain` and the composition preview, which now honours
+  per-run pins (`teams` on `POST /api/composition/preview`).
+- **Assign a task to a team** on the board (`squad` on `PATCH /api/tasks/{id}`),
+  under the rule the wave fence applies: files owned by one team keep the task
+  there, and the refusal names the owner.
+
+### Changed
+
+- **One pinned team staffs the run.** A single selected team no longer runs "as
+  one stream wearing a hat" with its staffing ignored: its worker, reviewer and
+  tester take the execute loop, its skills are pinned, and its charter and
+  territory ride in the handoff.
+- **The composer model is told the teams** on the run, so the roles it picks
+  agree with the charter phase. It cannot add or remove a team.
+- `GET /api/teams` reports `default_manager`, `dynamic_enabled` and `running`;
+  each team carries `effective_manager` and `manager_default`;
+  `POST /api/teams/preselect` reports `mode`, `note` and per-team staffing.
+
+### Fixed
+
+- **A resumed run kept no org chart.** The squad plan lived on disk and the
+  orchestrator's handle died with the process, so a resumed run executed with
+  no squad brief, no ownership fence, no per-team gates and no integration.
+  Resume now restores the plan when the board's tasks are stamped with its teams.
+- A run started after `squads` was switched off in a long-lived Studio
+  process could inherit the previous run's org chart.
+
 ## v0.24.0 — 2026-09-01
 
 Ten defects found by running v0.23.0 against a local 30B, thirteen times. Nearly

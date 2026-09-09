@@ -18,6 +18,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
 
@@ -61,6 +62,7 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	o.decisions = nil
 	o.gates = nil
 	o.mu.Unlock()
+	o.restoreSquadPlan(&board)
 	defer func() {
 		o.mu.Lock()
 		o.currentTurn = nil
@@ -1407,4 +1409,46 @@ func (o *Orchestrator) qaFailureLines(max int) []string {
 		return []string{"qa_gate red"}
 	}
 	return out
+}
+
+// restoreSquadPlan gives a resumed run back the org chart its board was built
+// under.
+//
+// The plan is written to disk at charter and the orchestrator's own handle
+// dies with the process, so a resumed run used to execute with squadPlan nil:
+// no squad brief in the packs, no ownership fence on the waves, no per-team
+// acceptance and no integration step — the team structure the user watched
+// being assembled silently gone, on the one path where the work was already
+// half done under it.
+//
+// The saved file is a PROJECT fact and the resumed turn may not be the run
+// that wrote it, so the board is the arbiter: the plan is restored only when
+// a task on it is stamped with one of the plan's teams. A board no team ever
+// touched gets no plan, which is what it ran with.
+func (o *Orchestrator) restoreSquadPlan(board *plan.Board) {
+	if o == nil || o.cfg == nil || board == nil || !o.cfg.Squads {
+		return
+	}
+	p, ok, err := squads.Load(o.cfg.SlmDir())
+	if err != nil {
+		o.emitWarn("init", "could not read the saved team plan ("+err.Error()+") — resuming as a single stream", "")
+		return
+	}
+	if !ok || !p.Enabled() {
+		return
+	}
+	stamped := false
+	for _, t := range board.Tasks {
+		if _, on := p.Squad(t.Squad); t.Squad != "" && on {
+			stamped = true
+			break
+		}
+	}
+	if !stamped {
+		return
+	}
+	o.mu.Lock()
+	o.squadPlan = &p
+	o.mu.Unlock()
+	o.emit("init", "restored the team plan for this run: "+p.Summarize(), "")
 }

@@ -88,6 +88,50 @@ type TeamMember struct {
 	Skills []string `json:"skills,omitempty"`
 }
 
+// TeamChoice is one library team the composition puts on the run, with the
+// staffing the run will actually dispatch.
+//
+// This is NOT the composer model's to invent. Which teams a request involves is
+// answered deterministically from the library (pkg/teams) and stamped onto the
+// composition by the harness, so the composer prompt, the run setup panel and
+// the org chart the run builds all describe the same teams — a composition that
+// said "go-worker" while the charter phase then staffed the backend with
+// someone else was the two halves of one decision disagreeing.
+type TeamChoice struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name,omitempty"`
+	Charter    string   `json:"charter,omitempty"`
+	Owns       []string `json:"owns,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
+	Worker     string   `json:"worker,omitempty"`
+	Reviewer   string   `json:"reviewer,omitempty"`
+	Tester     string   `json:"tester,omitempty"`
+	// Manager is the agent that triages this team's rejected work: the team's
+	// own when it names one the harness can dispatch, else the run default.
+	Manager string `json:"manager,omitempty"`
+	// ManagerDefault is true when Manager is the run's default rather than a
+	// manager the team chose for itself.
+	ManagerDefault bool     `json:"manager_default,omitempty"`
+	Agents         []string `json:"agents,omitempty"`
+	Skills         []string `json:"skills,omitempty"`
+	// Reason says why this team is on the run — the evidence that scored it, or
+	// "pinned" for a team the user chose by hand.
+	Reason string `json:"reason,omitempty"`
+	Pinned bool   `json:"pinned,omitempty"`
+	Score  int    `json:"score,omitempty"`
+}
+
+// Team modes — how the chosen teams shape the run.
+const (
+	// TeamModeParallel is two or more teams building at once behind a frozen
+	// contract (pkg/squads).
+	TeamModeParallel = "parallel"
+	// TeamModeSingle is one team staffing the whole single-stream run: its
+	// worker, reviewer and tester take the execute loop, its skills are pinned
+	// and its charter rides in the handoff.
+	TeamModeSingle = "single"
+)
+
 // Composition is the composer's structured output: a full dynamic pipeline plan.
 type Composition struct {
 	// Summary is a one-line description of the assembled plan.
@@ -110,6 +154,15 @@ type Composition struct {
 	Team []TeamMember `json:"team,omitempty"`
 	// Slots are extra insertable specialists around phase anchors.
 	Slots []pipeline.Slot `json:"slots,omitempty"`
+	// Teams are the library teams on this run and how they are staffed. Filled
+	// by the harness, never by the composer model — see TeamChoice.
+	Teams []TeamChoice `json:"teams,omitempty"`
+	// TeamMode says what the teams do to the run: TeamModeParallel,
+	// TeamModeSingle, or empty when no team is on it.
+	TeamMode string `json:"team_mode,omitempty"`
+	// TeamNote is the one-line human explanation of the team decision — why
+	// these teams, or why none — in the words the run setup panel shows.
+	TeamNote string `json:"team_note,omitempty"`
 }
 
 // Normalize lowercases and trims identifiers, drops empty entries, and applies
@@ -165,6 +218,54 @@ func (c *Composition) Normalize() {
 		c.Slots[i].ID = strings.ToLower(strings.TrimSpace(c.Slots[i].ID))
 		c.Slots[i].Agent = strings.ToLower(strings.TrimSpace(c.Slots[i].Agent))
 	}
+
+	var teams []TeamChoice
+	seenTeam := map[string]bool{}
+	for _, t := range c.Teams {
+		t.ID = strings.ToLower(strings.TrimSpace(t.ID))
+		if t.ID == "" || seenTeam[t.ID] {
+			continue
+		}
+		seenTeam[t.ID] = true
+		t.Name = strings.TrimSpace(t.Name)
+		t.Charter = strings.TrimSpace(t.Charter)
+		t.Acceptance = strings.TrimSpace(t.Acceptance)
+		t.Worker = strings.ToLower(strings.TrimSpace(t.Worker))
+		t.Reviewer = strings.ToLower(strings.TrimSpace(t.Reviewer))
+		t.Tester = strings.ToLower(strings.TrimSpace(t.Tester))
+		t.Manager = strings.ToLower(strings.TrimSpace(t.Manager))
+		t.Owns = cleanListPreserveCase(t.Owns)
+		t.Agents = cleanList(t.Agents)
+		t.Skills = cleanList(t.Skills)
+		t.Reason = strings.TrimSpace(t.Reason)
+		teams = append(teams, t)
+	}
+	c.Teams = teams
+	c.TeamMode = strings.ToLower(strings.TrimSpace(c.TeamMode))
+	if c.TeamMode != TeamModeParallel && c.TeamMode != TeamModeSingle {
+		c.TeamMode = ""
+	}
+	c.TeamNote = strings.TrimSpace(c.TeamNote)
+}
+
+// TeamIDs lists the teams on the run, in rank order.
+func (c Composition) TeamIDs() []string {
+	out := make([]string, 0, len(c.Teams))
+	for _, t := range c.Teams {
+		out = append(out, t.ID)
+	}
+	return out
+}
+
+// TeamChoiceFor returns the choice for one team id.
+func (c Composition) TeamChoiceFor(id string) (TeamChoice, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, t := range c.Teams {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return TeamChoice{}, false
 }
 
 func cleanList(in []string) []string {
@@ -384,6 +485,15 @@ func (c Composition) AgentSet() map[string]bool {
 	}
 	for _, s := range c.Slots {
 		add(s.Agent)
+	}
+	for _, t := range c.Teams {
+		add(t.Worker)
+		add(t.Reviewer)
+		add(t.Tester)
+		add(t.Manager)
+		for _, a := range t.Agents {
+			add(a)
+		}
 	}
 	return out
 }

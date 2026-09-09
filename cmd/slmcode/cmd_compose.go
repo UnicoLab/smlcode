@@ -191,6 +191,37 @@ func formatCompositionCLI(resp compositionCLIResponse) string {
 	writeCLIKeyVal(&b, "corrector", c.Execute.Corrector)
 	writeCLIKeyVal(&b, "max_waves", fmt.Sprintf("%d", c.Execute.MaxWaves))
 
+	// The library teams on the run and who manages each — the decision the
+	// charter phase will act on, shown before it happens.
+	if len(c.Teams) > 0 || c.TeamNote != "" {
+		b.WriteString("\n")
+		switch c.TeamMode {
+		case "parallel":
+			b.WriteString(cli.Bold("Teams (in parallel)"))
+		case "single":
+			b.WriteString(cli.Bold("Team (staffs this run)"))
+		default:
+			b.WriteString(cli.Bold("Teams"))
+		}
+		b.WriteString("\n")
+		if c.TeamNote != "" {
+			b.WriteString("  " + cli.Dim(c.TeamNote) + "\n")
+		}
+		for _, t := range c.Teams {
+			manager := t.Manager
+			if manager == "" {
+				manager = "-"
+			} else if t.ManagerDefault {
+				manager += " (run default)"
+			}
+			fmt.Fprintf(&b, "  %-16s worker=%s reviewer=%s tester=%s manager=%s\n", t.ID,
+				valueOrDash(t.Worker), valueOrDash(t.Reviewer), valueOrDash(t.Tester), manager)
+			if t.Reason != "" {
+				b.WriteString("  " + strings.Repeat(" ", 16) + " " + cli.Dim(t.Reason) + "\n")
+			}
+		}
+	}
+
 	if len(c.Team) > 0 {
 		b.WriteString("\n")
 		b.WriteString(cli.Bold("Team"))
@@ -241,4 +272,11 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func valueOrDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
 }

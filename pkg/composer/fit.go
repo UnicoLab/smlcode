@@ -50,6 +50,16 @@ func FitHints(c Composition, dynamicEnabled bool, contextLimit int) []string {
 	if len(c.Team) == 0 {
 		hints = append(hints, "team is empty; runtime will fall back to default agents")
 	}
+	switch c.TeamMode {
+	case TeamModeParallel:
+		hints = append(hints, fmt.Sprintf("%d teams build in parallel behind a frozen contract: %s",
+			len(c.Teams), strings.Join(c.TeamIDs(), ", ")))
+	case TeamModeSingle:
+		if len(c.Teams) > 0 {
+			hints = append(hints, fmt.Sprintf("team %s staffs this run (manager: %s)",
+				c.Teams[0].ID, valueOr(c.Teams[0].Manager, "run default")))
+		}
+	}
 	if genericRole(c.Execute.DefaultRole) {
 		hints = append(hints, "worker role is generic; apply a language pack or mention the stack/language for stronger specialists")
 	}
@@ -71,4 +81,11 @@ func FitHints(c Composition, dynamicEnabled bool, contextLimit int) []string {
 func genericRole(role string) bool {
 	role = strings.ToLower(strings.TrimSpace(role))
 	return role == "" || role == "worker" || role == "tester" || role == "deep"
+}
+
+func valueOr(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }

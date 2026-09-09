@@ -253,6 +253,11 @@ func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, que
 	if o != nil && o.factory != nil {
 		unknown = o.sanitizeComposition(comp)
 	}
+	// The team decision, made once from the library and stamped onto the
+	// composition. BEFORE the language hint: a team's own worker is the user's
+	// configuration and the hint is a guess from file extensions, so the team
+	// takes a generic seat first and the hint fills whatever is still generic.
+	o.composeTeams(comp, query, inventory)
 	workerHint, testerHint := queryLanguageSpecialists(query)
 	if workerHint == "" && o.cfg != nil {
 		workerHint, testerHint = projectLanguageSpecialists(detectProjectLang(o.cfg.Root))
@@ -283,8 +288,11 @@ func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, que
 		lang = detectProjectLang(o.cfg.Root)
 	}
 	ensureCompositionHandoff(comp, query, inventory, lang, workerHint, testerHint)
+	teamHandoff(comp)
 	if o != nil {
-		ensureCompositionTeam(comp, o.availableSkillNames())
+		skills := o.availableSkillNames()
+		ensureCompositionTeam(comp, skills)
+		teamSeats(comp, skills)
 	}
 	return unknown
 }
@@ -1331,6 +1339,10 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 		b.WriteString("\n\n")
 	}
 
+	if choices, mode, note := o.teamChoices(query, inventory); len(choices) > 0 || note != "" {
+		b.WriteString(teamsPromptSection(choices, mode, note))
+	}
+
 	b.WriteString("## Canonical phases (copy ids exactly)\n")
 	def := pipeline.Default()
 	for _, id := range def.Order {
@@ -1409,6 +1421,20 @@ func compositionBrief(c composer.Composition) string {
 			}
 		}
 	}
+	if len(c.Teams) > 0 {
+		b.WriteString("\nTeams on this run")
+		if c.TeamMode == composer.TeamModeParallel {
+			b.WriteString(" (in parallel, behind the frozen contract)")
+		}
+		b.WriteString(":\n")
+		for _, t := range c.Teams {
+			b.WriteString("- " + t.ID + " manager=" + valueOr(t.Manager, "default"))
+			if len(t.Owns) > 0 {
+				b.WriteString(" owns=" + strings.Join(t.Owns, ", "))
+			}
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -1435,6 +1461,7 @@ func compositionMarkdown(c composer.Composition) string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString(teamsMarkdown(c))
 	b.WriteString("## Phases\n\n")
 	for _, p := range c.Phases {
 		state := "disabled"

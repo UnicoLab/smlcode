@@ -428,6 +428,35 @@ export interface DynamicTeamMember {
   skills?: string[];
 }
 
+/**
+ * One library team on the run, with the staffing the run will dispatch.
+ * Mirrors pkg/composer.TeamChoice. Filled by the harness from the library,
+ * never by the composer model.
+ */
+export interface TeamChoice {
+  id: string;
+  name?: string;
+  charter?: string;
+  owns?: string[];
+  acceptance?: string;
+  worker?: string;
+  reviewer?: string;
+  tester?: string;
+  /** The agent that triages this team's rejected work. */
+  manager?: string;
+  /** True when `manager` is the run default rather than the team's own. */
+  manager_default?: boolean;
+  agents?: string[];
+  skills?: string[];
+  /** Why this team is on the run: the evidence, or "pinned by hand". */
+  reason?: string;
+  pinned?: boolean;
+  score?: number;
+}
+
+/** What the chosen teams do to the run — see pkg/composer TeamMode*. */
+export type TeamMode = 'parallel' | 'single' | '';
+
 export interface DynamicComposition {
   summary: string;
   strategy?: string;
@@ -442,6 +471,11 @@ export interface DynamicComposition {
   execute?: DynamicExecuteChoice | null;
   team?: DynamicTeamMember[];
   slots?: Slot[];
+  /** The library teams on this run, with their managers. */
+  teams?: TeamChoice[];
+  team_mode?: TeamMode;
+  /** The one-line explanation of the team decision. */
+  team_note?: string;
 }
 
 export interface CompositionPreviewResponse {
@@ -500,6 +534,11 @@ export interface RunRequest {
   mode?: string;
   specialist?: string;
   skills?: string[];
+  /**
+   * Teams pinned for this run only. An explicit choice is an instruction, not
+   * a hypothesis to be scored; restored when the run ends.
+   */
+  teams?: string[];
 }
 
 // ── Pipeline ──
@@ -1397,6 +1436,28 @@ export interface TeamSpec {
    * override; there is no file to delete until it has been edited.
    */
   builtin?: boolean;
+  /**
+   * The manager the run will actually use: `manager` when it names an agent
+   * that answers the triage contract, else the run default.
+   */
+  effective_manager?: string;
+  /** True when effective_manager is the run default. */
+  manager_default?: boolean;
+}
+
+/** One selected team's staffing, as the preselect preview reports it. */
+export interface TeamStaffing {
+  id: string;
+  name?: string;
+  worker?: string;
+  reviewer?: string;
+  tester?: string;
+  manager?: string;
+  manager_default?: boolean;
+  agents?: string[];
+  skills?: string[];
+  owns?: string[];
+  acceptance?: string;
 }
 
 /** Why one team scored what it scored — see teams.Evidence in Go. */
@@ -1421,6 +1482,12 @@ export interface TeamPreselect {
   /** Staffing the harness cannot dispatch, cleared with a reason. */
   staffing?: string[];
   pinned?: string[];
+  /** What the selection does to the run — parallel teams, one team, none. */
+  mode?: TeamMode;
+  /** The one-line explanation the page leads with. */
+  note?: string;
+  /** Who staffs each selected team, managers resolved. */
+  teams?: TeamStaffing[];
 }
 
 export interface TeamsLibrary {
@@ -1432,7 +1499,79 @@ export interface TeamsLibrary {
   managers?: string[];
   library_enabled?: boolean;
   squads_enabled?: boolean;
+  dynamic_enabled?: boolean;
+  /** The agent that manages a team naming no manager of its own. */
+  default_manager?: string;
   pinned?: string[];
   pipeline_teams?: string[];
   preselect?: TeamPreselect | null;
+  /** True while a run is in flight — edits are refused until it ends. */
+  running?: boolean;
+}
+
+// ── Team activity (GET /api/teams/activity) ──────────────────────────────
+//
+// The team-relevant slice of a run's event stream, classified: what the
+// managers decided, who moved, which team waited on which, which halves were
+// proved. Derived on the server from the events and the org chart.
+
+export type TeamActivityKind =
+  | 'selection'
+  | 'contract'
+  | 'routing'
+  | 'triage'
+  | 'reassign'
+  | 'stall'
+  | 'wave'
+  | 'gate'
+  | 'integration'
+  | 'progress'
+  | 'edit';
+
+export interface TeamActivityEntry {
+  time: string;
+  kind: TeamActivityKind;
+  phase?: string;
+  level?: string;
+  team?: string;
+  agent?: string;
+  task_id?: string;
+  message: string;
+}
+
+export interface TeamManagerSummary {
+  team: string;
+  manager: string;
+  default?: boolean;
+  decisions: number;
+  moved: number;
+  stalls: number;
+  gate?: 'green' | 'red' | 'unverified' | '';
+}
+
+export interface TeamTaskRow {
+  id: string;
+  title: string;
+  team?: string;
+  role?: string;
+  column?: string;
+  status?: string;
+}
+
+export interface TeamActivity {
+  ok: boolean;
+  query?: string;
+  teams?: string[];
+  entries?: TeamActivityEntry[];
+  counts?: Partial<Record<TeamActivityKind, number>>;
+  managers?: TeamManagerSummary[];
+  tasks?: TeamTaskRow[];
+}
+
+export interface TeamManagerResponse {
+  ok: boolean;
+  manager: string;
+  created: boolean;
+  team: TeamSpec;
+  managers?: string[];
 }

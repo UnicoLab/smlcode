@@ -56,11 +56,7 @@ const runDefaultManager = agents.RoleTriage
 // can. Reported alongside the team so the page never shows a manager the run
 // would then silently replace.
 func effectiveManager(named string, managers map[string]bool) (string, bool) {
-	named = strings.ToLower(strings.TrimSpace(named))
-	if named == "" || !managers[named] {
-		return runDefaultManager, true
-	}
-	return named, false
+	return agents.ResolveManager(named, func(id string) bool { return managers[id] })
 }
 
 // teamView renders one library team for Studio.
@@ -720,19 +716,25 @@ func teamAssignmentProblem(p *squads.Plan, team string) string {
 // from the task's FILES: a task whose files all sit in the backend's territory
 // is re-stamped backend on the next save whatever the board says
 // (squads.RetargetAssignments). Refusing here, with the reason, beats
-// accepting an assignment the next wave silently undoes. A task with no files,
-// or files no single team owns, keeps whatever a human puts there.
+// accepting an assignment the next wave silently undoes — and that covers
+// un-assigning too: "no team" for a task the backend's territory owns is
+// undone just as silently. A task with no files, or files no single team
+// owns, keeps whatever a human puts there.
 func ownershipRefusal(p *squads.Plan, t plan.Task, team string) string {
 	team = strings.ToLower(strings.TrimSpace(team))
-	if p == nil || team == "" || len(t.Files) == 0 {
+	if p == nil || len(t.Files) == 0 {
 		return ""
 	}
 	a := p.Assign(t.Files)
 	if a.Squad == "" || a.Squad == team {
 		return ""
 	}
-	return fmt.Sprintf("%s cannot move to %s: its files (%s) are owned by %s, and ownership decides the stamp — "+
-		"change the task's files or the team's paths first", t.ID, team, strings.Join(limitPaths(t.Files, 3), ", "), a.Squad)
+	verb := "move to " + team
+	if team == "" {
+		verb = "be un-assigned"
+	}
+	return fmt.Sprintf("%s cannot %s: its files (%s) are owned by %s, and ownership decides the stamp — "+
+		"change the task's files or the team's paths first", t.ID, verb, strings.Join(limitPaths(t.Files, 3), ", "), a.Squad)
 }
 
 func limitPaths(in []string, n int) []string {

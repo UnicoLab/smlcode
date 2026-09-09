@@ -440,7 +440,7 @@ func TestActivateDynamicCompositionEmitsAnnotatedTelemetryWithoutPersistingHints
 		Execute: composer.ExecuteChoice{DefaultRole: "worker", Reviewer: "reviewer", Corrector: "corrector", MaxWaves: 1},
 		Team:    []composer.TeamMember{{Role: "worker"}},
 	}
-	if err := o.activateDynamicComposition(comp, "fix package", []string{"pkg/a.go"}, true); err != nil {
+	if err := o.activateDynamicComposition(comp, "fix package", []string{"pkg/a.go"}, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	annotated, ok := data.(composer.AnnotatedComposition)

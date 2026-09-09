@@ -773,9 +773,13 @@ so a one-off choice never quietly governs every later run.
 
 **One pinned team is a request to that team.** Two teams run in parallel; one
 team cannot, but it still *staffs* the run: its worker, reviewer and tester take
-the execute loop, its skills are pinned into every task pack, and its charter
-and territory ride in the handoff. "Send this to the backend team" means the
-backend's people, even when the request has no second half.
+the execute loop, its skills are pinned into every task pack, its charter and
+territory ride in the handoff, and **its manager** is the one asked when a
+delivery is rejected. "Send this to the backend team" means the backend's
+people, even when the request has no second half — and the charter phase keeps
+that decision: it does not ask the manager agent to invent a second team. Only
+a library with nothing to say (no team matched, nothing pinned) hands the
+question to the model.
 
 ### The composer knows the teams
 

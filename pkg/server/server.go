@@ -727,6 +727,11 @@ func (s *Server) handlePatchTask(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return fmt.Errorf("not found")
 		}
+		// Files first: a patch that moves a task AND changes its files is
+		// judged on the files it will have, not the ones it had.
+		if patch.Files != nil {
+			t.Files = patch.Files
+		}
 		if squadSet {
 			if why := ownershipRefusal(teamPlan, t, patch.Squad); why != "" {
 				problems = append(problems, why)
@@ -2010,15 +2015,17 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 	}
 	var comp composer.Composition
 	switch {
+	case s.h != nil && s.orch() != nil:
+		// Through the orchestrator whenever there is one, pins or not: it has
+		// the agent factory, so a seat the run would clear or a manager it
+		// would replace is previewed as the run will have it.
+		comp = s.orch().PreviewCompositionWithTeams(req.Query, req.Teams)
 	case len(req.Teams) > 0:
-		// A copy of the config with the run's pins in place: the preview must
-		// not touch the shared config, and the orchestrator's own preview
-		// reads the shared one.
+		// No orchestrator: a copy of the config with the run's pins in place,
+		// never the shared config itself.
 		c := *s.cfg()
 		c.Teams = append([]string{}, req.Teams...)
 		comp = orchestrator.PreviewCompositionForConfig(&c, req.Query)
-	case s.h != nil && s.orch() != nil:
-		comp = s.orch().PreviewComposition(req.Query)
 	default:
 		comp = orchestrator.PreviewCompositionForConfig(s.cfg(), req.Query)
 	}

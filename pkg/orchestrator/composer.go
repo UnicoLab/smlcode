@@ -54,18 +54,22 @@ func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string,
 	// specialists and skills is worth its tokens. Skipping the composer
 	// because the classifier was SURE the work was dangerous would be the
 	// precise inversion of the point.
+	// The team decision, made ONCE for the run: the composer prompt, the
+	// composition and the charter phase all read this same answer.
+	td := o.decideTeams(query, inventory, nil)
+
 	if cls := composer.Classify(query); cls.Confident &&
 		(cls.Complexity == composer.ComplexityTrivial || cls.Kind == composer.KindInquiry) {
 		o.emitAgent("compose", composer.RoleID, "",
 			fmt.Sprintf("budget class %s:%s — composing deterministically (%s)",
 				cls.Complexity, cls.Kind, cls.Why), "", "")
-		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
+		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut, &td)
 		return
 	}
 
 	o.emitAgent("compose", composer.RoleID, "", "assembling task-specific pipeline", "", "")
 
-	input := o.buildComposerPrompt(query, inventory, exploreOut, archOut)
+	input := o.buildComposerPrompt(query, inventory, exploreOut, archOut, td)
 	pack := o.skillPackFor(composer.RoleID, query)
 	if strings.TrimSpace(pack) != "" {
 		input = pack + "\n\n" + input
@@ -78,13 +82,13 @@ func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string,
 			return
 		}
 		o.emitWarn("compose", "composer failed ("+err.Error()+") — using deterministic composition", "")
-		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
+		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut, &td)
 		return
 	}
 	comp, err := composer.Parse(out)
 	if err != nil {
 		o.emitWarn("compose", "unparsable composition ("+err.Error()+") — using deterministic composition", "")
-		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
+		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut, &td)
 		return
 	}
 	// No "omitted enabled" repair here any more: composer.PhaseChoice grew an
@@ -93,18 +97,18 @@ func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string,
 	// the raw text was a no-op on this path; ensureCriticalComposition (inside
 	// activateDynamicComposition) still protects plan/split/execute/test from
 	// an EXPLICIT false.
-	if err := o.activateDynamicComposition(&comp, query, inventory, false); err != nil {
+	if err := o.activateDynamicComposition(&comp, query, inventory, false, &td); err != nil {
 		o.emitWarn("compose", "invalid composition ("+err.Error()+") — using deterministic composition", "")
-		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut)
+		o.composeHeuristicDynamicPipeline(query, inventory, exploreOut, archOut, &td)
 	}
 }
 
-func (o *Orchestrator) composeHeuristicDynamicPipeline(query string, inventory []string, exploreOut, archOut string) {
+func (o *Orchestrator) composeHeuristicDynamicPipeline(query string, inventory []string, exploreOut, archOut string, td *teamDecision) {
 	if o == nil || o.cfg == nil {
 		return
 	}
 	comp := heuristicComposition(query, inventory, detectProjectLang(o.cfg.Root), exploreOut, archOut)
-	if err := o.activateDynamicComposition(&comp, query, inventory, true); err != nil {
+	if err := o.activateDynamicComposition(&comp, query, inventory, true, td); err != nil {
 		o.emitWarn("compose", "deterministic composition failed ("+err.Error()+") — keeping static pipeline", "")
 	}
 }
@@ -113,6 +117,15 @@ func (o *Orchestrator) composeHeuristicDynamicPipeline(query string, inventory [
 // be used as the local-model fallback for this query. It does not call an LLM,
 // mutate pipeline state, write files, or emit events.
 func (o *Orchestrator) PreviewComposition(query string) composer.Composition {
+	return o.PreviewCompositionWithTeams(query, nil)
+}
+
+// PreviewCompositionWithTeams is PreviewComposition for a run that would pin
+// these teams (nil → the configured pins). Same factory checks as the run, so
+// a seat the run would clear or a manager it would replace is shown as the run
+// will have it — a preview computed without the factory would show staffing
+// the run then quietly changes.
+func (o *Orchestrator) PreviewCompositionWithTeams(query string, pins []string) composer.Composition {
 	if o == nil {
 		return PreviewCompositionForConfig(nil, query)
 	}
@@ -123,7 +136,8 @@ func (o *Orchestrator) PreviewComposition(query string) composer.Composition {
 		lang = detectProjectLang(o.cfg.Root)
 	}
 	comp := heuristicComposition(query, inventory, lang, "", "")
-	_ = o.prepareDynamicComposition(&comp, query, inventory)
+	td := o.decideTeams(query, inventory, pins)
+	_ = o.prepareDynamicComposition(&comp, query, inventory, &td)
 	return comp
 }
 
@@ -139,15 +153,15 @@ func PreviewCompositionForConfig(cfg *config.Config, query string) composer.Comp
 	}
 	comp := heuristicComposition(query, inventory, lang, "", "")
 	o := &Orchestrator{cfg: cfg}
-	_ = o.prepareDynamicComposition(&comp, query, inventory)
+	_ = o.prepareDynamicComposition(&comp, query, inventory, nil)
 	return comp
 }
 
-func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, query string, inventory []string, heuristic bool) error {
+func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, query string, inventory []string, heuristic bool, td *teamDecision) error {
 	if o == nil || o.cfg == nil || o.factory == nil || comp == nil {
 		return fmt.Errorf("missing dynamic composition dependencies")
 	}
-	unknown := o.prepareDynamicComposition(comp, query, inventory)
+	unknown := o.prepareDynamicComposition(comp, query, inventory, td)
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
 		o.emitWarn("compose", "unknown agents dropped — "+strings.Join(unknown, ", "), "")
@@ -170,6 +184,13 @@ func (o *Orchestrator) activateDynamicComposition(comp *composer.Composition, qu
 	o.dynamicBrief = compositionBrief(*comp)
 	cp := *comp
 	o.dynamicComposition = &cp
+	// The single team stays on the run so its manager is the one asked when
+	// a delivery is rejected — see singleTeamPlan.
+	o.singleTeam = nil
+	if comp.TeamMode == composer.TeamModeSingle && len(comp.Teams) == 1 {
+		st := comp.Teams[0]
+		o.singleTeam = &st
+	}
 	o.mu.Unlock()
 
 	// Persist for inspection; pipeline.yaml is intentionally left untouched.
@@ -245,7 +266,10 @@ func applyBudgetProfile(runner *loop.Runner, cfg *config.Config, prof composer.P
 	}
 }
 
-func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, query string, inventory []string) []string {
+// prepareDynamicComposition repairs and completes a composition before it is
+// activated or previewed. td is the run's team decision; nil computes one from
+// the configured pins (the config-only preview path).
+func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, query string, inventory []string, td *teamDecision) []string {
 	if comp == nil {
 		return nil
 	}
@@ -253,11 +277,15 @@ func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, que
 	if o != nil && o.factory != nil {
 		unknown = o.sanitizeComposition(comp)
 	}
-	// The team decision, made once from the library and stamped onto the
-	// composition. BEFORE the language hint: a team's own worker is the user's
-	// configuration and the hint is a guess from file extensions, so the team
-	// takes a generic seat first and the hint fills whatever is still generic.
-	o.composeTeams(comp, query, inventory)
+	// The team decision, stamped onto the composition. BEFORE the language
+	// hint: a team's own worker is the user's configuration and the hint is a
+	// guess from file extensions, so the team takes a generic seat first and
+	// the hint fills whatever is still generic.
+	if td == nil {
+		d := o.decideTeams(query, inventory, nil)
+		td = &d
+	}
+	composeTeams(comp, *td)
 	workerHint, testerHint := queryLanguageSpecialists(query)
 	if workerHint == "" && o.cfg != nil {
 		workerHint, testerHint = projectLanguageSpecialists(detectProjectLang(o.cfg.Root))
@@ -1295,7 +1323,7 @@ func (o *Orchestrator) availableSkillNames() map[string]bool {
 
 // buildComposerPrompt renders the full composer context (query + inventory +
 // exploration + phases + roster + skills) with the STRICT JSON schema contract.
-func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exploreOut, archOut string) string {
+func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exploreOut, archOut string, td teamDecision) string {
 	var b strings.Builder
 	b.WriteString("## Query\n")
 	b.WriteString(truncate(query, 2000))
@@ -1339,9 +1367,7 @@ func (o *Orchestrator) buildComposerPrompt(query string, inventory []string, exp
 		b.WriteString("\n\n")
 	}
 
-	if choices, mode, note := o.teamChoices(query, inventory); len(choices) > 0 || note != "" {
-		b.WriteString(teamsPromptSection(choices, mode, note))
-	}
+	b.WriteString(teamsPromptSection(td))
 
 	b.WriteString("## Canonical phases (copy ids exactly)\n")
 	def := pipeline.Default()

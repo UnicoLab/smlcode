@@ -273,6 +273,19 @@ func TestPatchTaskAssignsATeamUnlessOwnershipDisagrees(t *testing.T) {
 	if rec.Code != http.StatusOK || decode(t, rec)["squad"] != nil {
 		t.Fatalf("un-assign: status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	// Un-assigning a task the backend's territory owns would be undone on
+	// the next save, so it is refused the same way.
+	rec = do(t, s, http.MethodPatch, "/api/tasks/T2", map[string]interface{}{"squad": ""})
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "cannot be un-assigned") {
+		t.Fatalf("un-assign owned task: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// A move that also changes the files is judged on the new files.
+	rec = do(t, s, http.MethodPatch, "/api/tasks/T2", map[string]interface{}{
+		"squad": "frontend-react", "files": []string{"web/src/App.tsx"},
+	})
+	if rec.Code != http.StatusOK || decode(t, rec)["squad"] != "frontend-react" {
+		t.Fatalf("files+squad: status=%d body=%s", rec.Code, rec.Body.String())
+	}
 	// A team that is not on the chart is a 400, not a silent stamp.
 	rec = do(t, s, http.MethodPatch, "/api/tasks/T1", map[string]interface{}{"squad": "platform"})
 	if rec.Code != http.StatusBadRequest {
@@ -280,7 +293,7 @@ func TestPatchTaskAssignsATeamUnlessOwnershipDisagrees(t *testing.T) {
 	}
 	// Any other patch leaves the stamp alone.
 	rec = do(t, s, http.MethodPatch, "/api/tasks/T2", map[string]interface{}{"title": "renamed"})
-	if rec.Code != http.StatusOK || decode(t, rec)["squad"] != "backend-go" {
+	if rec.Code != http.StatusOK || decode(t, rec)["squad"] != "frontend-react" {
 		t.Fatalf("title patch moved the stamp: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -346,4 +359,30 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// The plan on disk is a project fact; the timeline only attributes it to a
+// run whose board was built under it.
+func TestActivityIgnoresAPlanTheRunDidNotUse(t *testing.T) {
+	s, root := teamServer(t)
+	if err := squads.Save(filepath.Join(root, ".slmcode"), twoTeamPlan()); err != nil {
+		t.Fatal(err)
+	}
+	// An empty board is the post-Activate, pre-run state: the chart shows.
+	body := decode(t, do(t, s, http.MethodGet, "/api/teams/activity", nil))
+	if managers, _ := body["managers"].([]interface{}); len(managers) != 2 {
+		t.Fatalf("empty board should show the activated chart: %v", body["managers"])
+	}
+	// A board with tasks and no team stamps ran as one stream: no managers.
+	rec := do(t, s, http.MethodPost, "/api/tasks", map[string]interface{}{"id": "T1", "title": "solo", "role": "worker"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
+	}
+	body = decode(t, do(t, s, http.MethodGet, "/api/teams/activity", nil))
+	if managers, _ := body["managers"].([]interface{}); len(managers) != 0 {
+		t.Fatalf("single-stream run must not report the saved chart's managers: %v", body["managers"])
+	}
+	if teams, _ := body["teams"].([]interface{}); len(teams) != 0 {
+		t.Fatalf("teams=%v", body["teams"])
+	}
 }

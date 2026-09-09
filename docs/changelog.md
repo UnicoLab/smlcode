@@ -25,7 +25,7 @@ run happens to assemble some.
 - **Teams on the composition.** `composer.Composition` carries `teams`,
   `team_mode` and `team_note`: the library teams the run will use, each with its
   resolved manager and the evidence that chose it. Shown by the run setup panel,
-  `slmcode compose --explain` and the composition preview, which now honours
+  `slmcode compose --explain` and the composition preview, which now honors
   per-run pins (`teams` on `POST /api/composition/preview`).
 - **Assign a task to a team** on the board (`squad` on `PATCH /api/tasks/{id}`),
   under the rule the wave fence applies: files owned by one team keep the task
@@ -39,6 +39,17 @@ run happens to assemble some.
   territory ride in the handoff.
 - **The composer model is told the teams** on the run, so the roles it picks
   agree with the charter phase. It cannot add or remove a team.
+- **The charter phase keeps the library's answer.** One matched team used to
+  send the charter to the manager model, which could invent two squads behind
+  a composition that had just said "one stream"; the model is now asked only
+  when the library has nothing to say. On a single-team run the team's own
+  manager (not the run default) triages its rejected work, with its people
+  first in the roster.
+- The "manager must answer the triage contract, else the run default" rule
+  lives once, in `agents.ResolveManager`, and is what the Teams page, the
+  composition and the loop all apply.
+- Un-assigning a task whose files one team owns is refused like a wrong
+  assignment would be: ownership would re-stamp it on the next save.
 - `GET /api/teams` reports `default_manager`, `dynamic_enabled` and `running`;
   each team carries `effective_manager` and `manager_default`;
   `POST /api/teams/preselect` reports `mode`, `note` and per-team staffing.

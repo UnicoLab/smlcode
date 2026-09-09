@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,8 +212,9 @@ func TestComposerPromptNamesTheTeams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := o.buildComposerPrompt("add a Go API endpoint and the React page that calls it",
-		[]string{"go.mod", "web/package.json"}, "", "")
+	query := "add a Go API endpoint and the React page that calls it"
+	inventory := []string{"go.mod", "web/package.json"}
+	prompt := o.buildComposerPrompt(query, inventory, "", "", o.decideTeams(query, inventory, nil))
 	if !strings.Contains(prompt, "## Teams on this run") {
 		t.Fatalf("prompt lacks the teams section:\n%s", prompt)
 	}
@@ -281,5 +283,119 @@ func TestResumeRestoresTheSquadPlanTheBoardWasBuiltUnder(t *testing.T) {
 	o.restoreSquadPlan(stamped)
 	if o.squadPlan != nil {
 		t.Fatalf("squads: false must not restore a plan")
+	}
+}
+
+// The library's "one team" is a decision the charter phase keeps: it does not
+// ask the model to invent a second team behind the composition's back.
+func TestOneLibraryTeamIsDecidedNotHandedToTheModel(t *testing.T) {
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"web/package.json": `{"name":"web"}`,
+		"web/src/App.tsx":  "export default function App() { return null }\n",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Default(root)
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, decided := o.teamsFromLibrary(context.Background(), "add a dark mode toggle to the dashboard", nil, "", "")
+	if p != nil || !decided {
+		t.Fatalf("one matched team: plan=%v decided=%v — the library decided, the model must not be asked", p, decided)
+	}
+
+	// Nothing matched and nothing pinned: the question stays open.
+	empty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(empty, "notes.txt"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o2, err := New(config.Default(empty))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, decided := o2.teamsFromLibrary(context.Background(), "rewrite the poem", nil, "", ""); p != nil || decided {
+		t.Fatalf("no match: plan=%v decided=%v — the model may still be asked", p, decided)
+	}
+}
+
+// On a single-team run the team's own manager is the one asked about a
+// rejected delivery, with the team's people first in the roster — not the run
+// default, which is what a run with no squad plan used to fall back to.
+func TestSingleTeamManagerStaffsTriage(t *testing.T) {
+	cfg := config.Default(fullstackRoot(t))
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.singleTeam = &composer.TeamChoice{
+		ID: "frontend-react", Worker: "react-worker", Reviewer: "react-reviewer", Tester: "react-tester",
+		Manager: "triage", Agents: []string{"worker"},
+	}
+	st := o.singleTeamStaffing()
+	if st.Squad != "frontend-react" || st.Manager != "triage" {
+		t.Fatalf("staffing=%+v", st)
+	}
+	if got := strings.Join(st.Members, ","); !strings.HasPrefix(got, "react-worker,react-reviewer,react-tester,worker") {
+		t.Fatalf("members=%v", st.Members)
+	}
+	// The staffing plan the loop's helpers read is the single team's when
+	// there is no squad plan, and the squad plan when there is one.
+	if p := o.staffingPlan(); p == nil || len(p.Squads) != 1 || p.Squads[0].ID != "frontend-react" {
+		t.Fatalf("staffingPlan=%+v", p)
+	}
+	o.squadPlan = &squads.Plan{Squads: []squads.Squad{{ID: "a"}, {ID: "b"}}}
+	if p := o.staffingPlan(); p == nil || len(p.Squads) != 2 {
+		t.Fatalf("staffingPlan with a squad plan=%+v", p)
+	}
+	o.singleTeam = nil
+	o.squadPlan = nil
+	if o.staffingPlan() != nil || o.singleTeamStaffing().Squad != "" {
+		t.Fatalf("no team: staffing should be empty")
+	}
+}
+
+// A preview with pins goes through the factory like the run does: a seat the
+// run would clear is shown cleared, and a manager it would replace is shown
+// replaced.
+func TestPreviewWithPinsAppliesTheFactoryChecks(t *testing.T) {
+	root := fullstackRoot(t)
+	teamsDir := filepath.Join(root, ".slmcode", "blocks", "teams")
+	if err := os.MkdirAll(teamsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	team := "api_version: blocks/v1\nkind: team\nid: ghost\nname: Ghost\nspec:\n  id: ghost\n" +
+		"  owns: [ghost/**]\n  worker: no-such-worker\n  manager: go-worker\n"
+	if err := os.WriteFile(filepath.Join(teamsDir, "ghost.yaml"), []byte(team), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, err := New(config.Default(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp := o.PreviewCompositionWithTeams("tidy the module manifest", []string{"ghost"})
+	tc, ok := comp.TeamChoiceFor("ghost")
+	if !ok {
+		t.Fatalf("pinned team not on the composition: %+v", comp.Teams)
+	}
+	if !tc.Pinned {
+		t.Fatalf("pin not marked: %+v", tc)
+	}
+	if tc.Worker != "" {
+		t.Fatalf("an unregistered worker must be cleared, got %q", tc.Worker)
+	}
+	if tc.Manager != "triage" || !tc.ManagerDefault {
+		t.Fatalf("a worker cannot manage; want the run default, got %+v", tc)
+	}
+	// The configured pins are untouched by a preview with an override.
+	if len(o.cfg.Teams) != 0 {
+		t.Fatalf("preview leaked pins into the config: %v", o.cfg.Teams)
 	}
 }

@@ -44,8 +44,17 @@ func (o *Orchestrator) assembleSquads(ctx context.Context, query string, invento
 	// here — overlapping globs, unregistered worker ids, unparsable JSON —
 	// from a decision that everything downstream is derived from.
 	if o.cfg.TeamLibrary {
-		if p := o.teamsFromLibrary(ctx, query, inventory, exploreOut, archOut); p != nil {
+		p, decided := o.teamsFromLibrary(ctx, query, inventory, exploreOut, archOut)
+		if p != nil {
 			return p
+		}
+		// The library's "one team" is an answer, not a gap: the composition
+		// already told the user that team staffs a single stream, and asking
+		// the model to invent a second team here would run the two halves of
+		// one decision against each other. Only a library with NOTHING to
+		// say — no roster, no match — hands the question to the model.
+		if decided {
+			return nil
 		}
 	}
 
@@ -577,6 +586,15 @@ func (o *Orchestrator) applyPlanEdits(board *plan.Board, edits *plan.PlanEdits) 
 // validates the answer before applying it, so a bad verdict costs one call, not
 // a stalled task.
 func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.TriageRequest) (plan.TriageDecision, bool) {
+	// On a single-team run there is no squad plan for the loop to read the
+	// staffing from, so the request arrives with none: the run's one team is
+	// the staffing, its people first in the roster.
+	if strings.TrimSpace(req.Staffing.Squad) == "" {
+		if st := o.singleTeamStaffing(); st.Squad != "" {
+			req.Staffing = st
+			req.Roster = squads.Colleagues(o.singleTeamPlan(), st.Squad, req.Roster)
+		}
+	}
 	// No executor means nothing can be dispatched at all. Triage is an
 	// accelerator over the deterministic ladder, never a prerequisite, so a
 	// half-built orchestrator declines the question instead of crashing on it.
@@ -641,11 +659,9 @@ func (o *Orchestrator) triageRejectedDelivery(ctx context.Context, req loop.Tria
 
 	// A team may name its own manager; the run's `triage` agent answers for
 	// the teams that did not. The nominee has to actually answer the triage
-	// contract — see Factory.EmitsSchema for why existing is not enough.
-	manager := agents.RoleTriage
-	if m := strings.TrimSpace(req.Staffing.Manager); m != "" && o.factory.EmitsSchema(m, schema.RoleTriage) {
-		manager = m
-	}
+	// contract — see Factory.EmitsSchema for why existing is not enough — and
+	// the rule is the one the Teams page and the composition apply.
+	manager, _ := agents.ResolveManager(req.Staffing.Manager, o.canTriage)
 
 	out, err := o.runRoleTracked(ctx, manager, "", b.String())
 	if err != nil {
@@ -717,14 +733,14 @@ func (o *Orchestrator) triageRepeatTickets(ctx context.Context, board *plan.Boar
 		if strings.Contains(t.Notes, reassignedMarker) {
 			continue
 		}
-		staff := squads.StaffingFor(o.squadPlan, t.Squad)
+		staff := squads.StaffingFor(o.staffingPlan(), t.Squad)
 		d, ok := o.triageRejectedDelivery(ctx, loop.TriageRequest{
 			Task: t,
 			// The ticket body IS the review here: the tester's findings were
 			// written into it when it was raised, and re-deriving a summary
 			// from the board would only lose detail.
 			Review:   plan.ReviewResult{Summary: ticketHeadline(t), Issues: ticketFindings(t)},
-			Roster:   squads.Colleagues(o.squadPlan, t.Squad, roster),
+			Roster:   squads.Colleagues(o.staffingPlan(), t.Squad, roster),
 			Language: plan.LanguageOf(t.Files),
 			Staffing: staff,
 		})

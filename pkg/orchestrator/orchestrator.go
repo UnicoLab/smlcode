@@ -120,6 +120,11 @@ type Orchestrator struct {
 	// single-stream run. Set by the manager phase before plan/split; read by
 	// the board router, the execute loop and the between-wave report.
 	squadPlan *squads.Plan
+	// singleTeam is the one library team staffing a single-stream run, when
+	// the composition chose one (composer.TeamModeSingle). It is what makes
+	// that team's manager the one asked about its rejected work; a squad plan
+	// exists only for two or more teams. Nil on every other run.
+	singleTeam *composer.TeamChoice
 	// teamGates holds each team's acceptance result for THIS run. Run state,
 	// never written into squads.json — that file is the org chart the next run
 	// inherits, not a record of what this one proved.
@@ -1207,6 +1212,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		return nil, r.err
 	}
 
+	// Team state is per run, and the orchestrator outlives a run in a
+	// long-lived Studio process: cleared before anything below can set it.
+	o.mu.Lock()
+	o.squadPlan, o.singleTeam = nil, nil
+	o.mu.Unlock()
+
 	// 2a Dynamic pipeline composition (optional): the composer specialist assembles
 	// a task-specific pipeline (phases, team, tools, skills) before design/plan.
 	if o.cfg.DynamicPipeline {
@@ -1218,10 +1229,6 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// BEFORE plan/split so the splitter's tasks can be routed to an owner, and
 	// returns nil — meaning "one stream" — for every single-domain query and
 	// every failure mode.
-	// Cleared first: the handle outlives a run in a long-lived Studio process,
-	// and a run started after teams were switched off must not inherit the
-	// previous run's org chart.
-	o.squadPlan = nil
 	if o.cfg.Squads {
 		o.squadPlan = o.assembleSquads(ctx, query, inventory, exploreOut, archOut)
 	}

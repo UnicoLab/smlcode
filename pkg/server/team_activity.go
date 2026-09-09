@@ -369,7 +369,10 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 	var sources []activitySource
 	queryID := strings.TrimSpace(r.URL.Query().Get("query"))
 	if queryID != "" {
-		recs, err := session.ReadEvents(s.slmDir(), queryID, 5000)
+		// ReadEvents keeps the FIRST n records; a run that streamed tokens
+		// has tens of thousands, and the gates and late triage that matter
+		// most sit at the end. Read the whole log.
+		recs, err := session.ReadEvents(s.slmDir(), queryID, pastRunEventCap)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -391,15 +394,15 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 
-	var planPtr *squads.Plan
-	if p, ok, err := squads.Load(s.slmDir()); err == nil && ok && len(p.Squads) > 0 {
-		planPtr = &p
-	}
 	tasks := s.boardTasks()
 	if queryID != "" {
 		if turn, err := session.LoadTurn(s.slmDir(), queryID); err == nil && turn != nil {
 			tasks = turn.Board.Tasks
 		}
+	}
+	var planPtr *squads.Plan
+	if p, ok, err := squads.Load(s.slmDir()); err == nil && ok && len(p.Squads) > 0 && planBelongsToBoard(&p, tasks) {
+		planPtr = &p
 	}
 	taskTeams := map[string]string{}
 	for _, t := range tasks {
@@ -434,6 +437,34 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 		"managers": summarizeManagers(planPtr, entries, gates, runDefaultManager),
 		"tasks":    teamTaskRows(tasks),
 	})
+}
+
+// pastRunEventCap bounds a past run's event log read for the timeline.
+const pastRunEventCap = 250000
+
+// planBelongsToBoard says whether the saved org chart is the one this board
+// was built under.
+//
+// The plan on disk is a PROJECT fact — written by the last run that had
+// teams, or by Activate on the Teams page — and the run whose events are
+// being read may have had none. The board is the arbiter, the same way
+// Resume decides (orchestrator.restoreSquadPlan): a board with tasks and no
+// team stamp from this plan ran without it, and showing its managers would
+// report two managers for a run that had none. An EMPTY board is the
+// pre-run state after Activate, where the chart is exactly what to show.
+func planBelongsToBoard(p *squads.Plan, tasks []plan.Task) bool {
+	if p == nil {
+		return false
+	}
+	if len(tasks) == 0 {
+		return true
+	}
+	for _, t := range tasks {
+		if _, on := p.Squad(t.Squad); t.Squad != "" && on {
+			return true
+		}
+	}
+	return false
 }
 
 // teamTaskRows is the board seen by team: which tasks each team holds, who is

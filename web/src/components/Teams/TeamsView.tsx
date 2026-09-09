@@ -158,9 +158,11 @@ export default function TeamsView() {
     try {
       // The composition preview is best-effort and rides alongside: the team
       // answer is the one that must not fail.
+      // Both against the SAME pins, or the two panels describe two different
+      // runs: the page's pins are local until Activate saves them.
       const [sel, comp] = await Promise.all([
         preselectTeams(q, pinned),
-        previewComposition(q).then((r) => r.composition).catch(() => null),
+        previewComposition(q, pinned).then((r) => r.composition).catch(() => null),
       ]);
       setPreselect(sel);
       setComposition(comp);

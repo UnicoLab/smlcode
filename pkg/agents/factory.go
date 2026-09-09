@@ -625,6 +625,23 @@ func AgentsEmitting(schemaRole string, custom []CustomSpec) []string {
 	return ids
 }
 
+// ResolveManager decides which agent actually triages a team's rejected work.
+//
+// The rule lives here, once, because it is applied in three places that must
+// agree — the Teams page, the composition, and the loop's triage call: a team
+// may name any agent, but only one that answers the triage contract can be its
+// manager (its decoding grammar comes from its own prompt, so anything else
+// replies in a shape the reassignment step cannot read). Empty, or a nominee
+// that cannot triage, falls back to the run default, which always can. The
+// second result is true when the default stood in.
+func ResolveManager(named string, canTriage func(id string) bool) (string, bool) {
+	named = strings.ToLower(strings.TrimSpace(named))
+	if named == "" || canTriage == nil || !canTriage(named) {
+		return RoleTriage, true
+	}
+	return named, false
+}
+
 // EmitsSchema reports whether id is an agent that answers with the given
 // pkg/schema contract.
 //

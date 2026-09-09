@@ -35,6 +35,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/rewind"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stacks"
 	"github.com/UnicoLab/slmcode/pkg/updatecheck"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
@@ -435,6 +436,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/teams", s.handleCreateTeam)
 	s.mux.HandleFunc("POST /api/teams/preselect", s.handlePreselectTeams)
 	s.mux.HandleFunc("POST /api/teams/activate", s.handleActivateTeams)
+	s.mux.HandleFunc("GET /api/teams/activity", s.handleTeamActivity)
+	s.mux.HandleFunc("POST /api/teams/{id}/manager", s.handleCreateTeamManager)
 	s.mux.HandleFunc("GET /api/teams/{id}", s.handleGetTeam)
 	s.mux.HandleFunc("PUT /api/teams/{id}", s.handlePutTeam)
 	s.mux.HandleFunc("DELETE /api/teams/{id}", s.handleDeleteTeam)
@@ -691,16 +694,50 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePatchTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var patch plan.Task
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	var patch plan.Task
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	// "squad" is the one field where an empty value is an instruction
+	// (un-assign) rather than an omission, so presence is read off the raw
+	// body instead of the zero value.
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &keys)
+	_, squadSet := keys["squad"]
+	var teamPlan *squads.Plan
+	if squadSet {
+		if p, ok, err := squads.Load(s.slmDir()); err == nil && ok && len(p.Squads) > 0 {
+			teamPlan = &p
+		}
+		if refused := teamAssignmentProblem(teamPlan, patch.Squad); refused != "" {
+			http.Error(w, refused, http.StatusBadRequest)
+			return
+		}
+	}
 	var out plan.Task
-	err := s.orch().Board().Update(func(b *plan.Board) error {
+	var problems []string
+	err = s.orch().Board().Update(func(b *plan.Board) error {
 		t, ok := b.Get(id)
 		if !ok {
 			return fmt.Errorf("not found")
+		}
+		// Files first: a patch that moves a task AND changes its files is
+		// judged on the files it will have, not the ones it had.
+		if patch.Files != nil {
+			t.Files = patch.Files
+		}
+		if squadSet {
+			if why := ownershipRefusal(teamPlan, t, patch.Squad); why != "" {
+				problems = append(problems, why)
+				return nil
+			}
+			t.Squad = strings.ToLower(strings.TrimSpace(patch.Squad))
 		}
 		if patch.Title != "" {
 			t.Title = patch.Title
@@ -734,6 +771,20 @@ func (s *Server) handlePatchTask(w http.ResponseWriter, r *http.Request) {
 		out = t
 		return nil
 	})
+	if len(problems) > 0 {
+		writeProblems(w, problems)
+		return
+	}
+	if err == nil && squadSet {
+		team := out.Squad
+		if team == "" {
+			team = "nobody"
+		}
+		s.emit(orchestrator.Event{
+			Phase: "charter", Kind: "output", TaskID: out.ID,
+			Message: out.ID + " assigned to team " + team + " by hand", Time: time.Now(),
+		})
+	}
 	if err != nil {
 		http.Error(w, err.Error(), 404)
 		return
@@ -1949,6 +2000,10 @@ func (s *Server) handleGetComposition(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query string `json:"query"`
+		// Teams pinned for the run being set up. The preview has to see the
+		// same pins the run will, or the panel shows one staffing and the run
+		// uses another.
+		Teams []string `json:"teams"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -1959,9 +2014,19 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var comp composer.Composition
-	if s.h != nil && s.orch() != nil {
-		comp = s.orch().PreviewComposition(req.Query)
-	} else {
+	switch {
+	case s.h != nil && s.orch() != nil:
+		// Through the orchestrator whenever there is one, pins or not: it has
+		// the agent factory, so a seat the run would clear or a manager it
+		// would replace is previewed as the run will have it.
+		comp = s.orch().PreviewCompositionWithTeams(req.Query, req.Teams)
+	case len(req.Teams) > 0:
+		// No orchestrator: a copy of the config with the run's pins in place,
+		// never the shared config itself.
+		c := *s.cfg()
+		c.Teams = append([]string{}, req.Teams...)
+		comp = orchestrator.PreviewCompositionForConfig(&c, req.Query)
+	default:
 		comp = orchestrator.PreviewCompositionForConfig(s.cfg(), req.Query)
 	}
 	prof := config.ResolveModelProfile(s.cfg().ModelProfiles, s.cfg().Model)

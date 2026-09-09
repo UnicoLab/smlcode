@@ -23,6 +23,7 @@ import {
   getPipeline,
   getComposition,
   previewComposition,
+  getTeams,
   getInterruptedRuns,
   resumeRun,
   getSquads,
@@ -33,6 +34,7 @@ import type {
   DynamicComposition,
   InterruptedRun,
   SquadsView,
+  TeamSpec,
 } from '@/types';
 import EventLog from './EventLog';
 import LiveTaskPanel from './LiveTaskPanel';
@@ -41,6 +43,7 @@ import LiveFeedback from './LiveFeedback';
 import CalibrationBanner from './CalibrationBanner';
 import TokenStream from './TokenStream';
 import SquadPanel from './SquadPanel';
+import TeamPicker from './TeamPicker';
 import NowBar from './NowBar';
 import RecoveryPanel from './RecoveryPanel';
 import ResultPanel from './ResultPanel';
@@ -142,6 +145,13 @@ export default function LiveView() {
   }, [isWide]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
+  // Teams for THIS run. Empty means the library decides from the request and
+  // the workspace; a pick pins them for the run only (the server restores the
+  // saved pins when it ends). The library itself is fetched once per visit
+  // and again when a run stops, since a run can create a manager or a team.
+  const [teamLibrary, setTeamLibrary] = useState<TeamSpec[]>([]);
+  const [configPinnedTeams, setConfigPinnedTeams] = useState<string[]>([]);
+  const [runTeams, setRunTeams] = useState<string[]>([]);
   const [pipelineView, setPipelineView] = useState<PipelineView | null>(null);
   const [persistedComposition, setPersistedComposition] = useState<DynamicComposition | null>(null);
   const [persistedCompositionError, setPersistedCompositionError] = useState('');
@@ -212,6 +222,18 @@ export default function LiveView() {
   }, []);
 
   useEffect(() => {
+    if (running) return;
+    getTeams()
+      .then((lib) => {
+        setTeamLibrary(lib.teams ?? []);
+        setConfigPinnedTeams(lib.pinned ?? []);
+      })
+      .catch(() => {
+        /* no library is fine — the picker simply does not render */
+      });
+  }, [running]);
+
+  useEffect(() => {
     getPipeline().then(setPipelineView).catch(() => {});
     getComposition()
       .then((r) => {
@@ -237,7 +259,7 @@ export default function LiveView() {
     let cancelled = false;
     setPreviewLoading(true);
     const timer = window.setTimeout(() => {
-      previewComposition(q)
+      previewComposition(q, runTeams)
         .then((r) => {
           if (!cancelled) {
             setCompositionPreview(r.composition || null);
@@ -258,7 +280,7 @@ export default function LiveView() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query, running, specialist, ctx?.config?.dynamic_pipeline]);
+  }, [query, running, specialist, runTeams, ctx?.config?.dynamic_pipeline]);
 
   const clearRunPanels = () => {
     setResult(null);
@@ -280,6 +302,7 @@ export default function LiveView() {
         mode: specialist ? 'specialist' : undefined,
         specialist: specialist || undefined,
         skills: ctx?.config?.pinned_skills,
+        teams: runTeams.length > 0 ? runTeams : undefined,
       });
     } catch (e) {
       toast.reportError(e, 'Could not start the run');
@@ -453,6 +476,13 @@ export default function LiveView() {
           />
 
           <div className="flex shrink-0 items-center gap-2">
+            <TeamPicker
+              teams={teamLibrary}
+              configPinned={configPinnedTeams}
+              value={runTeams}
+              disabled={running || !!specialist}
+              onChange={setRunTeams}
+            />
             {agents.length > 0 && (
               <select
                 value={specialist}

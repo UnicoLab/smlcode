@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { UserCog } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { slugify } from './teamId';
 import MultiPicker from './MultiPicker';
@@ -31,9 +32,16 @@ export interface TeamEditorProps {
   skills?: Skill[];
   /** Ids already taken, so a create cannot silently overwrite a team. */
   takenIds: string[];
+  /** The agent that manages a team naming no manager of its own. */
+  defaultManager?: string;
   saving?: boolean;
   onCancel: () => void;
   onSave: (team: TeamSpec) => void;
+  /**
+   * Create a dedicated project manager for a SAVED team and return its id, or
+   * null when it could not be created. The editor adopts it into the draft.
+   */
+  onCreateManager?: (teamID: string) => Promise<string | null>;
 }
 
 const BLANK: TeamSpec = {
@@ -58,11 +66,14 @@ export default function TeamEditor({
   managers,
   skills = [],
   takenIds,
+  defaultManager = 'triage',
   saving,
   onCancel,
   onSave,
+  onCreateManager,
 }: TeamEditorProps) {
   const [draft, setDraft] = useState<TeamSpec>(BLANK);
+  const [creatingManager, setCreatingManager] = useState(false);
 
   // Reset on every open. A draft left over from the last team is how someone
   // saves the frontend's globs onto the backend team.
@@ -231,8 +242,47 @@ export default function TeamEditor({
               label="Project manager"
               value={draft.manager ?? ''}
               agents={managers}
+              emptyLabel={`run default (${defaultManager})`}
               onChange={(v) => patch({ manager: v })}
             />
+          </div>
+          {/* Every team has a manager — the run default when it names none.
+              A DEDICATED one knows the team's charter and people, and is what
+              makes "the backend's manager decides" mean something. It exists
+              only for a saved team, because the agent is named after the id. */}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+            <UserCog size={12} className="shrink-0" aria-hidden="true" />
+            {draft.manager ? (
+              <span>
+                <span className="font-mono">{draft.manager}</span> decides who takes this team&rsquo;s rejected work.
+              </span>
+            ) : (
+              <span>
+                No manager of its own — the run default (<span className="font-mono">{defaultManager}</span>) triages its
+                rejected work.
+              </span>
+            )}
+            {onCreateManager && !creating && !draft.manager && (
+              <button
+                type="button"
+                disabled={creatingManager || saving}
+                onClick={async () => {
+                  setCreatingManager(true);
+                  try {
+                    const id = await onCreateManager(draft.id);
+                    if (id) patch({ manager: id });
+                  } finally {
+                    setCreatingManager(false);
+                  }
+                }}
+                className="btn-secondary focus-ring h-7 gap-1 px-2 text-[11px]"
+              >
+                {creatingManager ? 'Creating…' : `Create ${draft.id}-triage`}
+              </button>
+            )}
+            {creating && !draft.manager && (
+              <span className="text-gray-400">Save the team first to create a manager named after it.</span>
+            )}
           </div>
           {/* The roster, in whatever number the team needs. Four seats is a
               shape the harness dispatches, not a shape a team has to be — and a
@@ -363,12 +413,14 @@ function AgentPicker({
   label,
   value,
   agents,
+  emptyLabel = 'pipeline default',
   onChange,
 }: {
   id: string;
   label: string;
   value: string;
   agents: string[];
+  emptyLabel?: string;
   onChange: (v: string) => void;
 }) {
   const missing = value !== '' && !agents.includes(value);
@@ -383,7 +435,7 @@ function AgentPicker({
         onChange={(e) => onChange(e.target.value)}
         className="input h-8 w-full text-[11px]"
       >
-        <option value="">pipeline default</option>
+        <option value="">{emptyLabel}</option>
         {missing && <option value={value}>{value} (not registered)</option>}
         {agents.map((a) => (
           <option key={a} value={a}>

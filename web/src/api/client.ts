@@ -53,6 +53,8 @@ import type {
   TeamsLibrary,
   TeamSpec,
   TeamPreselect,
+  TeamActivity,
+  TeamManagerResponse,
   ConfigureResult,
 } from '@/types';
 
@@ -446,10 +448,15 @@ export async function getComposition(): Promise<CompositionGetResponse> {
   return request<CompositionGetResponse>('/composition');
 }
 
-export async function previewComposition(query: string): Promise<CompositionPreviewResponse> {
+/**
+ * POST /api/composition/preview → the deterministic composition for a query,
+ * with `teams` pinned when the run being set up pins them, so the preview shows
+ * the staffing the run will actually use.
+ */
+export async function previewComposition(query: string, teams?: string[]): Promise<CompositionPreviewResponse> {
   return request<CompositionPreviewResponse>('/composition/preview', {
     method: 'POST',
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(teams && teams.length > 0 ? { query, teams } : { query }),
   });
 }
 
@@ -828,5 +835,32 @@ export async function activateTeams(
   return request('/teams/activate', {
     method: 'POST',
     body: JSON.stringify({ teams, summary }),
+  });
+}
+
+/**
+ * GET /api/teams/activity → what the managers decided and how the teams
+ * collaborated on the current run, or on a past one when `query` names it.
+ */
+export async function getTeamActivity(query?: string, limit?: number): Promise<TeamActivity> {
+  const params = new URLSearchParams();
+  if (query) params.set('query', query);
+  if (limit) params.set('limit', String(limit));
+  const qs = params.toString();
+  return request<TeamActivity>(`/teams/activity${qs ? `?${qs}` : ''}`);
+}
+
+/**
+ * POST /api/teams/{id}/manager → give a team its own project manager: a
+ * triage-capable agent seeded with the team's charter and roster, and the team
+ * pointed at it. Idempotent.
+ */
+export async function createTeamManager(
+  id: string,
+  opts?: { title?: string; system_prompt?: string },
+): Promise<TeamManagerResponse> {
+  return request<TeamManagerResponse>(`/teams/${encodeURIComponent(id)}/manager`, {
+    method: 'POST',
+    body: JSON.stringify(opts ?? {}),
   });
 }

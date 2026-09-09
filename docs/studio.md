@@ -71,7 +71,7 @@ the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 | `/runs` | **Runs** | Run history, and a per-run **trace** with per-phase wall time and token/cost attribution |
 | `/pipeline` | **Pipeline** | Edit the phase graph, bind agents to phases, insert slots, configure the execute loop |
 | `/agents` | **Agents** | Create/edit/delete custom specialists with a full prompt editor |
-| `/teams` | **Teams** | The [team library](squads.md#the-team-library) — author teams from existing agents, try a request against them, and edit the org chart and its frozen contract |
+| `/teams` | **Teams** | The [team library](squads.md#the-team-library) — build teams from existing agents and give each a project manager, send a request to teams and see who would work on it and how, edit the org chart and its frozen contract, and read how the managers and teams collaborated on a run |
 | `/blocks` | **Blocks** | Browse and apply pipeline / agent / quality / pack / team blocks |
 | `/files` | **Files** | Workspace tree browser, read-only, with diff against the last checkpoint |
 | `/skills` | **Skills** | Manage `SKILL.md` packs |
@@ -306,8 +306,8 @@ Roughly 60 endpoints under `/api/`, grouped: `health` · `readiness` · `config`
 interrupted) · `clarify` · `plan` · `continue` · `escalate` · `shell` (the five HITL gates, each
 `GET …/pending` + `POST …/answer|approve`) · `rewind` · `compact` · `events` · `status` · `models`
 · `auth` · `mcp` · `stacks` · `agents` · `pipeline` · `composition` · `blocks` · `packs` ·
-`squads` (the current run's org chart) · `teams` (the library — CRUD, plus `teams/preselect` and
-`teams/activate`) · `archives` · `queries` (+ `/events`, `/trace`) · `review` ·
+`squads` (the current run's org chart) · `teams` (the library — CRUD, plus `teams/preselect`,
+`teams/activate`, `teams/activity` and `teams/{id}/manager`) · `archives` · `queries` (+ `/events`, `/trace`) · `review` ·
 `workspace/file` · `workspace/tree`.
 
 `slmcode config schema` and `GET /api/config/schema` both emit the machine-readable config schema

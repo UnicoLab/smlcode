@@ -29,6 +29,8 @@ interface TaskCardProps {
   task: Task;
   columns: string[];
   columnLabels: Record<string, string>;
+  /** Teams on the org chart, so a task can be assigned to one. Empty hides the field. */
+  teams?: string[];
   onUpdate: () => void;
   isDragOverlay?: boolean;
 }
@@ -37,6 +39,7 @@ interface TaskDraft {
   title: string;
   description: string;
   role: string;
+  squad: string;
   column: string;
   status: string;
   priority: string;
@@ -53,7 +56,7 @@ const STATUS_ICON: Record<string, ReactNode> = {
 
 const STATUS_OPTIONS = ['todo', 'scoped', 'ready', 'running', 'review', 'correcting', 'blocked', 'failed', 'done'];
 
-export default function TaskCard({ task, columns, columnLabels, onUpdate, isDragOverlay }: TaskCardProps) {
+export default function TaskCard({ task, columns, columnLabels, teams = [], onUpdate, isDragOverlay }: TaskCardProps) {
   const confirm = useConfirm();
   const toast = useToast();
   const [expanded, setExpanded] = useState(false);
@@ -97,6 +100,9 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
       if (title !== task.title) patch.title = title;
       if (draft.description !== (task.description || '')) patch.description = draft.description;
       if (draft.role.trim() !== (task.role || '')) patch.role = draft.role.trim();
+      // Sent only when changed: the server treats a present `squad` as an
+      // instruction, and un-assigning is a real one.
+      if (draft.squad !== (task.squad || '')) patch.squad = draft.squad;
       if (draft.column !== (task.column || 'to_scope')) patch.column = draft.column;
       if (draft.status !== (task.status || '')) patch.status = draft.status;
 
@@ -118,6 +124,10 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
       }
       setEditing(false);
       setExpanded(true);
+    } catch (err) {
+      // An assignment ownership refuses comes back as a 422 with the reason
+      // — the one save error a user can act on, so it is shown, not swallowed.
+      toast.reportError(err, 'Could not save the task');
     } finally {
       setSaving(false);
     }
@@ -340,6 +350,24 @@ export default function TaskCard({ task, columns, columnLabels, onUpdate, isDrag
                     placeholder="worker"
                   />
                 </label>
+                {(teams.length > 0 || task.squad) && (
+                  <label>
+                    <span className="label">Team</span>
+                    <select
+                      value={draft.squad}
+                      onChange={(e) => setDraft((d) => ({ ...d, squad: e.target.value }))}
+                      className="input text-xs"
+                      aria-label={`Team of ${task.id}`}
+                      title="Ownership decides: a task whose files all sit in one team's territory stays with that team"
+                    >
+                      <option value="">no team</option>
+                      {task.squad && !teams.includes(task.squad) && <option value={task.squad}>{task.squad}</option>}
+                      {teams.map((id) => (
+                        <option key={id} value={id}>{id}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label>
                   <span className="label">Priority</span>
                   <input
@@ -474,6 +502,7 @@ function taskToDraft(task: Task): TaskDraft {
     title: task.title || '',
     description: task.description || '',
     role: task.role || '',
+    squad: task.squad || '',
     column: task.column || 'to_scope',
     status: task.status || '',
     priority: String(task.priority || 0),

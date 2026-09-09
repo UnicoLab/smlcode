@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { ChevronRight, Bot, Layers, AlertTriangle, Cpu } from 'lucide-react';
+import { ChevronRight, Bot, Layers, AlertTriangle, Cpu, Users, UserCog } from 'lucide-react';
+import { teamColor } from '@/components/Board/teamColor';
 import type { AgentSpec, DynamicComposition } from '@/types';
 import { usePersistentState } from '@/hooks/useUiState';
 import clsx from 'clsx';
@@ -126,6 +127,15 @@ export default function RunSetup({
         <span className="hidden min-w-0 flex-1 truncate text-[11px] text-gray-500 dark:text-gray-400 sm:block">
           {composition?.summary}
         </span>
+        {(composition?.teams?.length ?? 0) > 0 && (
+          <span
+            className="hidden shrink-0 items-center gap-1 font-mono text-[10px] text-gray-500 dark:text-gray-400 md:inline-flex"
+            title={composition?.team_note}
+          >
+            <Users size={11} className="text-brand-500" aria-hidden="true" />
+            {composition!.teams!.map((t) => t.id).join(' + ')}
+          </span>
+        )}
         <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-400 sm:ml-0">
           {phases.length} phases
         </span>
@@ -152,6 +162,42 @@ export default function RunSetup({
               change.
             </p>
           )}
+
+          {composition && (composition.teams?.length || composition.team_note) ? (
+            <Section title={composition.team_mode === 'parallel' ? 'Teams — in parallel' : composition.team_mode === 'single' ? 'Team — staffs this run' : 'Teams'}>
+              {composition.team_note && (
+                <p className="mb-1.5 text-[11px] text-gray-600 dark:text-gray-300">{composition.team_note}</p>
+              )}
+              {(composition.teams ?? []).length > 0 && (
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                  {composition.teams!.map((t) => (
+                    <div
+                      key={t.id}
+                      className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] dark:border-gray-700 dark:bg-gray-900"
+                      data-testid={`run-team-${t.id}`}
+                    >
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={clsx('rounded px-1 font-mono text-[10px] font-semibold', teamColor(t.id).badge)}>{t.id}</span>
+                        {t.pinned && <span className="badge-brand text-[10px]">pinned</span>}
+                        {t.name && t.name !== t.id && <span className="truncate text-gray-500">{t.name}</span>}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+                        {t.worker && <span>worker <span className="font-mono">{t.worker}</span></span>}
+                        {t.reviewer && <span>reviewer <span className="font-mono">{t.reviewer}</span></span>}
+                        {t.tester && <span>tester <span className="font-mono">{t.tester}</span></span>}
+                        <span className="inline-flex items-center gap-0.5">
+                          <UserCog size={10} aria-hidden="true" /> manager{' '}
+                          <span className="font-mono">{t.manager || 'triage'}</span>
+                          {t.manager_default && <span className="text-gray-400">(default)</span>}
+                        </span>
+                      </div>
+                      {t.reason && <p className="mt-0.5 text-[10px] text-gray-400">{t.reason}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Section>
+          ) : null}
 
           {composition && (
             <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">

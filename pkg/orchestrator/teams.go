@@ -87,35 +87,28 @@ const teamInventoryLimit = 2000
 
 // preselectTeams picks the teams for this request without a model call.
 func (o *Orchestrator) preselectTeams(query string, inventory []string) (teams.Selection, []teams.Team) {
-	roster := o.teamRoster()
-	if len(roster) == 0 {
-		return teams.Selection{}, nil
-	}
-	files := plan.ListWorkspaceFiles(o.cfg.Root, teamInventoryLimit)
-	if len(files) == 0 {
-		files = inventory
-	}
-	sel := teams.Select(roster, teams.Signals{Query: query, Files: files}, teams.Options{
-		Pinned: o.pinnedTeams(),
-	})
-	return sel, roster
+	return o.preselectTeamsWith(query, inventory, nil)
 }
 
 // teamsFromLibrary builds and activates a squad plan from the library.
 //
-// Returns nil when the library cannot answer — no teams, or fewer than two
-// selected — which is the signal for assembleSquads to fall back to the model.
-func (o *Orchestrator) teamsFromLibrary(ctx context.Context, query string, inventory []string, exploreOut, archOut string) *squads.Plan {
+// The plan is nil when the library did not produce two runnable teams. The
+// second result says whether the library DECIDED anyway: one team selected is
+// a decision — that team staffs a single stream, as the composition already
+// announced — and assembleSquads must not then ask the model to invent a
+// second one. Only a library with nothing to say (no roster, no match) leaves
+// the question open.
+func (o *Orchestrator) teamsFromLibrary(ctx context.Context, query string, inventory []string, exploreOut, archOut string) (*squads.Plan, bool) {
 	sel, roster := o.preselectTeams(query, inventory)
 	if len(roster) == 0 {
-		return nil
+		return nil, false
 	}
 	if !sel.Enabled() {
 		// Reported, not warned: one team (or none) is the correct answer for a
 		// single-domain request, which is most of them. Saying WHY is what
 		// stops "why did my teams not run" from being unanswerable.
 		o.emit("charter", "team library: "+selectionLine(sel), "")
-		return nil
+		return nil, len(sel.Teams) > 0
 	}
 
 	p := teams.Compose(sel, "teams preselected from the library: "+strings.Join(sel.IDs(), " + "))
@@ -156,18 +149,18 @@ func (o *Orchestrator) teamsFromLibrary(ctx context.Context, query string, inven
 				o.emitWarn("charter", "team plan rejected: "+pr.Message, "")
 			}
 		}
-		return nil
+		return nil, true
 	}
 	if err := squads.Save(o.cfg.SlmDir(), p); err != nil {
 		o.emitWarn("charter", "could not save the team plan ("+err.Error()+") — running as a single stream", "")
-		return nil
+		return nil, true
 	}
 	o.emit("charter", p.Summarize(), "")
 	for _, s := range p.Squads {
 		o.emitAgent("charter", "manager", "", fmt.Sprintf("team %s owns %s",
 			s.ID, strings.Join(s.Owns, ", ")), "", "")
 	}
-	return &p
+	return &p, true
 }
 
 // fillContract asks the manager for the seam between teams that already exist.
@@ -274,8 +267,8 @@ func selectionLine(sel teams.Selection) string {
 		return "no team matched this request (" + evidenceLine(sel) + ") — running as a single stream"
 	}
 	if len(sel.Teams) == 1 {
-		return "only " + sel.Teams[0].ID + " matched — one team is the single-stream pipeline wearing a hat, " +
-			"so it runs as one stream"
+		return "only " + sel.Teams[0].ID + " matched — it staffs this run as one stream (its worker, reviewer, " +
+			"tester, skills and manager), and no second team is invented"
 	}
 	return fmt.Sprintf("%d teams selected: %s", len(sel.Teams), strings.Join(sel.IDs(), ", "))
 }

@@ -533,6 +533,12 @@ at. Every card carries its team as a badge and a coloured left edge, and the
 colour comes from the team's id — so it is the same everywhere, and adding a
 team never recolours the others.
 
+**The Teams page** keeps the record: *How the teams worked* lists every manager
+decision, reassignment, cross-team wait, gate and integration result of the
+run, live and after it, filterable by team. The **board** lets you move a task to
+a team by hand — within the same rule the wave fence applies: a task whose files
+all sit in one team's territory stays with that team, and the refusal says so.
+
 **The live view** pins one line above the stream: the agent, its task, its team,
 the model, the run's token usage, and a clock that keeps ticking. On a local 30B
 the next log line can be four minutes out, and a wall of finished lines under a
@@ -718,10 +724,32 @@ contested path.
 
 ### Managing them
 
-On the **Teams** page: create, edit, duplicate, delete, and *Try a request* —
-type a query and see which teams it would get **and why**, from the same code
-the run uses, before starting anything. Pick two or more and **Activate** to
-write the org chart the next run inherits.
+On the **Teams** page: create, edit, duplicate and delete teams, and give each
+its **project manager**. Every team has one whether you named it or not — a team
+that names nobody answers to the run's default manager (`triage`), and the card
+says so rather than showing an empty seat. *Give it a manager* creates a
+dedicated one in one click: a triage-capable agent named `<team>-triage`, seeded
+with the team's charter, people and territory, and the team pointed at it. A
+manager you name that cannot answer the triage contract (a worker, say) is
+reported as such and the run default stands in.
+
+**Send a request** is the part that makes teams do work. Type a request and see,
+before anything starts and from the same code the run uses:
+
+- which teams it selects and **why** — the evidence per team;
+- **who staffs each**: worker, reviewer, tester, and the manager, resolved;
+- what the selection **does to the run** — two or more teams build in parallel
+  behind a frozen contract, one team staffs the whole run, none is the plain
+  single stream;
+- the **pipeline the composer would assemble** for it, phases and loop.
+
+Then **Run** sends the request with exactly those teams pinned for that run, or
+**Activate** writes them as the org chart every later run inherits.
+
+**How the teams worked** is the record of a run, live while it goes: the
+managers' decisions on rejected deliveries, tasks moved between agents, a team
+waiting on another's interface, each half's gate, and integration — filterable
+by team and by kind, with one row per manager summing up what they did.
 
 ```bash
 slmcode blocks list                       # teams appear under TEAMS
@@ -739,8 +767,39 @@ regardless of what the query says, and it wins the contested paths.
 slmcode run "add invoice totals" --team payments --team frontend-react
 ```
 
-Studio's run setup sends the same thing per run; it is restored when the run
-ends, so a one-off choice never quietly governs every later run.
+Studio sends the same thing per run — the **Teams** control on the Live view's
+command bar, or *Run* on the Teams page — and it is restored when the run ends,
+so a one-off choice never quietly governs every later run.
+
+**One pinned team is a request to that team.** Two teams run in parallel; one
+team cannot, but it still *staffs* the run: its worker, reviewer and tester take
+the execute loop, its skills are pinned into every task pack, its charter and
+territory ride in the handoff, and **its manager** is the one asked when a
+delivery is rejected. "Send this to the backend team" means the backend's
+people, even when the request has no second half — and the charter phase keeps
+that decision: it does not ask the manager agent to invent a second team. Only
+a library with nothing to say (no team matched, nothing pinned) hands the
+question to the model.
+
+### The composer knows the teams
+
+The dynamic pipeline composer used to decide phases and loop roles with no idea
+which teams the charter phase would then assemble — the run setup panel showed
+one staffing and the org chart used another. The team decision is now made once,
+from the library, and stamped onto the composition:
+
+```text
+Teams (in parallel)
+  2 teams build in parallel behind a frozen contract: backend-go, frontend-react
+  backend-go       worker=go-worker reviewer=go-reviewer tester=go-tester manager=triage (run default)
+                   workspace has "go.mod"; workspace contains ".go" files
+  frontend-react   worker=react-worker reviewer=react-reviewer tester=react-tester manager=triage (run default)
+                   query mentions "react"
+```
+
+The composer *model* is told which teams are on the run so the roles it picks
+agree with them; it cannot add or remove one. `slmcode compose --explain`, the
+Live view's run setup panel and the Teams page all show the same answer.
 
 ### Attaching teams to a pipeline
 

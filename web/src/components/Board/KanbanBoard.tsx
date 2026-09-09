@@ -62,6 +62,8 @@ export default function KanbanBoard() {
   // which is most of them — the strip hides itself rather than showing an empty
   // header nobody can act on.
   const [squads, setSquads] = useState<SquadsView | null>(null);
+  // The org chart's team ids, so a card can be assigned to one.
+  const teamIDs = useMemo(() => (squads?.ok ? (squads.squads ?? []).map((s) => s.id) : []), [squads]);
   const [teamFilter, setTeamFilter] = useState('');
   const addTitleRef = useRef<HTMLInputElement>(null);
 
@@ -428,7 +430,7 @@ export default function KanbanBoard() {
                 >
                   <div className="flex-1 space-y-2 overflow-y-auto min-h-[60px]">
                     {tasks.map((task) => (
-                      <TaskCard key={task.id} task={task} columns={columns} columnLabels={COLUMN_LABELS} onUpdate={fetchBoard} />
+                      <TaskCard key={task.id} task={task} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={fetchBoard} />
                     ))}
                     {tasks.length === 0 && (
                       <div className="flex items-center justify-center h-16 text-[10px] text-gray-400 italic border border-dashed rounded-lg border-gray-300 dark:border-gray-700">
@@ -445,7 +447,7 @@ export default function KanbanBoard() {
         <DragOverlay>
           {activeTask && (
             <div className="opacity-90 rotate-2">
-              <TaskCard task={activeTask} columns={columns} columnLabels={COLUMN_LABELS} onUpdate={fetchBoard} isDragOverlay />
+              <TaskCard task={activeTask} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={fetchBoard} isDragOverlay />
             </div>
           )}
         </DragOverlay>

@@ -141,6 +141,46 @@ jobs:
           version="$(./scripts/next-version.sh --bump "$BUMP" --explain)"
           echo "selected ${version} for release"
           ./scripts/prepare-release.sh "$version" --no-gate
+
+          # Push the bump NOW, seconds after checkout, rather than at the end.
+          #
+          # It used to go out after the builds, so that a failed release left the
+          # branch untouched. That made every release lose a race it could not
+          # win: the job takes ~40 minutes, and any push in that window — a
+          # dependabot merge, an unrelated fix — made the bump un-fast-forwardable
+          # and threw the whole build away. It happened on the first real run.
+          #
+          # Rebasing at the END instead would be worse than losing the race: the
+          # binaries are built from this tree, and a rebased tag would name a
+          # commit whose tree is not the one that was built. Here, before
+          # anything is built, a rebase is free and honest — the gate and the
+          # builds then run on exactly what was pushed.
+          #
+          # What this trades: a release that fails later leaves the bump on the
+          # branch with no tag and no release. That state is self-healing, not
+          # wreckage — the next run computes the same version, finds the files
+          # already at it, and prepare-release.sh takes its tag-only path.
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              pushed=1
+              break
+            fi
+            echo "push rejected — ${GITHUB_REF_NAME} moved (attempt ${attempt}/3); rebasing the bump onto it"
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}"
+          done
+          if [[ "$pushed" != 1 ]]; then
+            echo "::error::could not land the version bump on ${GITHUB_REF_NAME} after 3 attempts — it is being pushed to faster than this job can rebase. Nothing has been published and no tag exists; try again when it is quieter."
+            exit 1
+          fi
+
+          # A rebase moves the commit, and prepare-release.sh's tag still points
+          # at where it used to be. Re-point it at what was actually pushed, so
+          # the tag published later names the tree that gets built below.
+          git tag -f "v${version}" HEAD
+          echo "bump landed on ${GITHUB_REF_NAME} as $(git rev-parse --short HEAD)"
+
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
 
@@ -345,32 +385,33 @@ jobs:
           print("binary reports version=%s commit=%s built=%s" % (info["version"], info["commit"], info["built"]))
           PY
 
-      # The point of no return for an automatic release, and deliberately the
-      # last thing before publishing: the gate has passed, the Studio UI is
-      # verified embedded, all six binaries are built and the linux/amd64 one
-      # has been run and asked what version it thinks it is. Only now do the
-      # bump and its tag leave this runner.
+      # The point of no return, and deliberately the last thing before
+      # publishing: the gate has passed, the Studio UI is verified embedded, all
+      # six binaries are built and the linux/amd64 one has been run and asked
+      # what version it thinks it is. Only now does the tag exist.
       #
-      # A rejected push means the branch moved during the ~40 minutes this took.
-      # That is NOT something to force past: the binaries above were built from
-      # THIS tree, and forcing would publish them under a branch that no longer
-      # contains the commit they came from. Fail and let a person look.
+      # The bump commit itself went out at the start (see "Choose the version and
+      # bump it"), because holding it until here meant losing a 40-minute race
+      # with every other push to the branch. The tag is what actually publishes —
+      # it is what the GitHub Release is cut from and what users download — so it
+      # is the thing worth withholding until everything has proven itself. A bump
+      # without a tag is a no-op that the next run absorbs.
       #
-      # Pushing the tag here does not start a second Release run: events raised
-      # by GITHUB_TOKEN do not trigger workflows. That restriction is usually a
+      # Unlike the branch, a tag cannot be rejected for moving: nothing else
+      # creates it. The only way this fails is if the tag already exists, which
+      # prepare-release.sh refuses up front.
+      #
+      # Pushing it here does not start a second Release run: events raised by
+      # GITHUB_TOKEN do not trigger workflows. That restriction is usually a
       # nuisance; here it is what keeps one button from producing two releases.
-      - name: Publish the version bump (automatic releases)
+      - name: Publish the release tag (automatic releases)
         if: steps.auto.outputs.tag != ''
         env:
           TAG: ${{ steps.auto.outputs.tag }}
         run: |
           set -euo pipefail
-          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
-            echo "::error::${GITHUB_REF_NAME} moved while this release was building, so the bump could not be fast-forwarded. Nothing has been published and no tag exists. Re-run the release — the new run reads the newer commits and picks its version again."
-            exit 1
-          fi
           git push origin "refs/tags/${TAG}"
-          echo "pushed the bump and ${TAG} to ${GITHUB_REF_NAME}"
+          echo "published ${TAG} at $(git rev-parse --short HEAD)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

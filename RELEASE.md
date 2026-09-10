@@ -124,11 +124,24 @@ reversible with `git tag -d` and `git reset`.
 beforehand: no local checkout, no bump, no tag. The job reads the version off the
 conventional commits since the last tag (`scripts/next-version.sh`), runs
 `prepare-release.sh` to bump `version.go`, the Makefile, the Formula, `docs/install.md`
-and the changelog, and commits it — **in the runner's tree only**. The bump and its tag are
-pushed at the very end, after the gate has passed, the Studio UI is verified embedded, all
-six binaries are built and the linux/amd64 one has been asked what version it reports. A
-release that fails before then leaves `main` untouched: no bump, no tag, nothing to roll
-back.
+and the changelog, and commits it.
+
+Two things leave the runner, at two different moments:
+
+- **The bump commit goes out immediately**, seconds after checkout. If `main` moved in
+  between, the job rebases onto it and retries (three times) — so the gate and the six
+  builds run on exactly the tree that will be tagged. Holding the bump until the end
+  instead meant losing a 40-minute race with every other push to `main`, and one lost
+  race threw away the whole build.
+- **The tag goes out at the very end**, after the gate has passed, the Studio UI is
+  verified embedded, all six binaries are built and the linux/amd64 one has been asked
+  what version it reports. The tag is what publishes — the GitHub Release is cut from it —
+  so it is the thing worth withholding.
+
+A release that fails partway therefore leaves a `chore: release vX.Y.Z` commit on `main`
+with no tag and no release. That is a no-op, not wreckage, and it heals itself: the next
+run picks the same version, finds the files already at it, and `prepare-release.sh` takes
+its tag-only path. Nothing to revert.
 
 The `bump` dropdown forces the level when you disagree with the commits:
 

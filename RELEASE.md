@@ -147,9 +147,9 @@ The `bump` dropdown forces the level when you disagree with the commits:
 
 | Commits since the last tag | Version chosen |
 |---|---|
-| any `feat!:` / `BREAKING CHANGE:` | major — but **held inside 0.x** (0.24.0 → 0.25.0) |
-| any `feat:` | minor (0.24.0 → 0.25.0) |
-| only `fix:` / `perf:` | patch (0.24.0 → 0.24.1) |
+| any `feat!:` / `BREAKING CHANGE:` | major — but **held inside 0.x** (0.25.0 → 0.25.0) |
+| any `feat:` | minor (0.25.0 → 0.25.0) |
+| only `fix:` / `perf:` | patch (0.25.0 → 0.24.1) |
 | only `chore:`, `docs:`, `ci:` … | patch |
 | subjects that are not conventional at all | counted, but they drive nothing |
 
@@ -205,10 +205,10 @@ served "Studio not built" to every user without failing.
 Published artifacts:
 
 ```
-slmcode_0.24.0_darwin_arm64      slmcode_0.24.0_windows_amd64.exe
-slmcode_0.24.0_darwin_amd64      slmcode_0.24.0_windows_arm64.exe
-slmcode_0.24.0_linux_arm64       install.sh  install.ps1  install.cmd
-slmcode_0.24.0_linux_amd64       SHA256SUMS
+slmcode_0.25.0_darwin_arm64      slmcode_0.25.0_windows_amd64.exe
+slmcode_0.25.0_darwin_amd64      slmcode_0.25.0_windows_arm64.exe
+slmcode_0.25.0_linux_arm64       install.sh  install.ps1  install.cmd
+slmcode_0.25.0_linux_amd64       SHA256SUMS
 ```
 
 ---
@@ -221,11 +221,11 @@ CI verifies the bytes. These are the things only a human on a real machine can c
 
 ```bash
 cd "$(mktemp -d)"
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.24.0/SHA256SUMS
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.24.0/slmcode_0.24.0_darwin_arm64
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.25.0/SHA256SUMS
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.25.0/slmcode_0.25.0_darwin_arm64
 shasum -a 256 -c SHA256SUMS --ignore-missing        # must say OK
-chmod +x slmcode_0.24.0_darwin_arm64
-./slmcode_0.24.0_darwin_arm64 version --json        # version 0.20.0, real commit, real built
+chmod +x slmcode_0.25.0_darwin_arm64
+./slmcode_0.25.0_darwin_arm64 version --json        # version 0.20.0, real commit, real built
 ```
 
 **The install one-liner, on a machine that has never had slmcode:**

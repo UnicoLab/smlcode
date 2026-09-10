@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.25.0 — 2026-09-10
+
+- Land the version bump before the build, not after it
+- Keep automatic releases on the default branch
+- Choose the version from the commits, and release in one click
+- Start a release by hand, not only by pushing a tag
+- Pin the floor test's clock so its elapsed assertion stops expiring
+- Efficiency, robustness and Studio: fewer model calls, retries instead of dead ends, a live and linked Studio (#38)
+- The Live view is a 3D team floor, and the pipeline fills the seats a team lacks (#37)
+- Teams you send work to, with managers, on the composition (#36)
+- Sync Homebrew formula + prebuilt binaries for v0.24.0 [skip ci]
+
 ## Unreleased
 
 Teams are a thing you build and send work to, not a panel that fills in when a

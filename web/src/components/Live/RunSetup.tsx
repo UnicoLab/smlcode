@@ -182,15 +182,33 @@ export default function RunSetup({
                         {t.name && t.name !== t.id && <span className="truncate text-gray-500">{t.name}</span>}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-gray-600 dark:text-gray-300">
-                        {t.worker && <span>worker <span className="font-mono">{t.worker}</span></span>}
-                        {t.reviewer && <span>reviewer <span className="font-mono">{t.reviewer}</span></span>}
-                        {t.tester && <span>tester <span className="font-mono">{t.tester}</span></span>}
-                        <span className="inline-flex items-center gap-0.5">
-                          <UserCog size={10} aria-hidden="true" /> manager{' '}
-                          <span className="font-mono">{t.manager || 'triage'}</span>
-                          {t.manager_default && <span className="text-gray-400">(default)</span>}
-                        </span>
+                        {(t.seats && t.seats.length > 0
+                          ? t.seats
+                          : [
+                              { role: 'worker', agent: t.worker ?? '', source: 'team' },
+                              { role: 'reviewer', agent: t.reviewer ?? '', source: 'team' },
+                              { role: 'tester', agent: t.tester ?? '', source: 'team' },
+                              { role: 'manager', agent: t.manager || 'triage', source: t.manager_default ? 'default' : 'team' },
+                            ]
+                        )
+                          .filter((s) => s.agent)
+                          .map((s) => (
+                            <span key={s.role} className="inline-flex items-center gap-0.5" title={s.source === 'team' ? `${s.role}: the team's own` : `${s.role}: ${s.agent} takes the seat — the team names none (${s.source})`}>
+                              {s.role === 'manager' && <UserCog size={10} aria-hidden="true" />}
+                              {s.role} <span className="font-mono">{s.agent}</span>
+                              {s.source !== 'team' && (
+                                <span className={clsx('rounded px-1 text-[9px]', s.source === 'pipeline' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200' : 'bg-gray-100 text-gray-500 dark:bg-gray-800')}>
+                                  {s.role === 'manager' ? 'default' : `from ${s.source}`}
+                                </span>
+                              )}
+                            </span>
+                          ))}
                       </div>
+                      {(t.gaps ?? []).length > 0 && (
+                        <p className="mt-0.5 text-[10px] text-amber-700 dark:text-amber-300" title={t.gaps!.join('\n')}>
+                          {t.gaps!.length} seat{t.gaps!.length === 1 ? '' : 's'} filled from the pipeline
+                        </p>
+                      )}
                       {t.reason && <p className="mt-0.5 text-[10px] text-gray-400">{t.reason}</p>}
                     </div>
                   ))}

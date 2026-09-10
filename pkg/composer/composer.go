@@ -119,6 +119,11 @@ type TeamChoice struct {
 	Reason string `json:"reason,omitempty"`
 	Pinned bool   `json:"pinned,omitempty"`
 	Score  int    `json:"score,omitempty"`
+	// Seats is how the four seats are actually staffed on this run once the
+	// pipeline fills what the team left empty — see FillSeats. Gaps are the
+	// borrowed working seats, in words.
+	Seats []SeatFill `json:"seats,omitempty"`
+	Gaps  []string   `json:"gaps,omitempty"`
 }
 
 // Team modes — how the chosen teams shape the run.
@@ -238,6 +243,12 @@ func (c *Composition) Normalize() {
 		t.Agents = cleanList(t.Agents)
 		t.Skills = cleanList(t.Skills)
 		t.Reason = strings.TrimSpace(t.Reason)
+		for i := range t.Seats {
+			t.Seats[i].Role = strings.ToLower(strings.TrimSpace(t.Seats[i].Role))
+			t.Seats[i].Agent = strings.ToLower(strings.TrimSpace(t.Seats[i].Agent))
+			t.Seats[i].Source = strings.ToLower(strings.TrimSpace(t.Seats[i].Source))
+		}
+		t.Gaps = cleanListPreserveCase(t.Gaps)
 		teams = append(teams, t)
 	}
 	c.Teams = teams

@@ -191,11 +191,11 @@ describe('RunSetup teams', () => {
     expect(screen.getByText(/2 teams build in parallel/)).toBeInTheDocument();
     const backend = screen.getByTestId('run-team-backend-go');
     expect(within(backend).getByText('triage')).toBeInTheDocument();
-    expect(within(backend).getByText('(default)')).toBeInTheDocument();
+    expect(within(backend).getByText('default')).toBeInTheDocument();
     const frontend = screen.getByTestId('run-team-frontend-react');
     expect(within(frontend).getByText('fe-triage')).toBeInTheDocument();
     expect(within(frontend).getByText('pinned')).toBeInTheDocument();
-    expect(within(frontend).queryByText('(default)')).not.toBeInTheDocument();
+    expect(within(frontend).queryByText('default')).not.toBeInTheDocument();
   });
 
   it('says when one team staffs the whole run', () => {
@@ -213,5 +213,39 @@ describe('RunSetup teams', () => {
   it('explains a run with no team rather than hiding the section', () => {
     setup({ composition: { ...COMPOSITION, team_note: 'no team matched this request — it runs as one stream' } });
     expect(screen.getByText(/no team matched this request/)).toBeInTheDocument();
+  });
+});
+
+describe('RunSetup seats', () => {
+  beforeEach(() => localStorage.clear());
+
+  // A team without a tester on a pipeline with a test phase: the panel names
+  // who tests its work and where they came from, not "pipeline default".
+  it('shows a seat the pipeline fills for a team that left it empty', () => {
+    setup({
+      composition: {
+        ...COMPOSITION,
+        team_mode: 'parallel',
+        teams: [
+          {
+            id: 'backend-go',
+            worker: 'go-worker',
+            manager: 'triage',
+            manager_default: true,
+            seats: [
+              { role: 'worker', agent: 'go-worker', source: 'team' },
+              { role: 'reviewer', agent: 'reviewer', source: 'pipeline' },
+              { role: 'tester', agent: 'go-tester', source: 'pipeline' },
+              { role: 'manager', agent: 'triage', source: 'default' },
+            ],
+            gaps: ['team backend-go names no reviewer — the pipeline\'s reviewer takes its reviewer seat', 'team backend-go names no tester — the pipeline\'s go-tester takes its tester seat'],
+          },
+        ],
+      },
+    });
+    const card = screen.getByTestId('run-team-backend-go');
+    expect(within(card).getByText('go-tester')).toBeInTheDocument();
+    expect(within(card).getAllByText('from pipeline')).toHaveLength(2);
+    expect(within(card).getByText('2 seats filled from the pipeline')).toBeInTheDocument();
   });
 });

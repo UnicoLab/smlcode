@@ -432,7 +432,16 @@ describe('TeamsView send a request', () => {
         { team_id: 'frontend-react', score: 6, selected: true, pinned: true, reasons: ['selected by hand'] },
       ],
       teams: [
-        { id: 'backend-go', worker: 'go-worker', manager: 'triage', manager_default: true },
+        {
+          id: 'backend-go', worker: 'go-worker', manager: 'triage', manager_default: true,
+          seats: [
+            { role: 'worker', agent: 'go-worker', source: 'team' },
+            { role: 'reviewer', agent: 'reviewer', source: 'pipeline' },
+            { role: 'tester', agent: 'go-tester', source: 'pipeline' },
+            { role: 'manager', agent: 'triage', source: 'default' },
+          ],
+          gaps: ['team backend-go names no tester — the pipeline\'s go-tester takes its tester seat'],
+        },
         { id: 'frontend-react', worker: 'react-worker', manager: 'fe-triage', manager_default: false, skills: ['react-components'] },
       ],
     });
@@ -458,6 +467,9 @@ describe('TeamsView send a request', () => {
     const backend = await screen.findByTestId('staffing-backend-go');
     expect(within(backend).getByText('triage')).toBeInTheDocument();
     expect(within(backend).getByText('(run default)')).toBeInTheDocument();
+    // The seat the team left empty is named as the pipeline will fill it.
+    expect(within(backend).getAllByText(/go-tester/).length).toBeGreaterThan(0);
+    expect(within(backend).getByText(/names no tester/)).toBeInTheDocument();
     const frontend = screen.getByTestId('staffing-frontend-react');
     expect(within(frontend).getByText('fe-triage')).toBeInTheDocument();
     expect(within(frontend).queryByText('(run default)')).not.toBeInTheDocument();

@@ -3,9 +3,31 @@
 ## Unreleased
 
 Teams are a thing you build and send work to, not a panel that fills in when a
-run happens to assemble some.
+run happens to assemble some — and the Live view shows them working.
 
 ### Added
+
+- **The Live view is a floor, not a log.** Its centre is a 3D scene (three.js,
+  loaded only where WebGL exists; a flat map otherwise or on request): each team
+  at a table on its rug, the manager at the head with the team's board on the
+  wall behind them, members with monitors that light up when they work, tickets
+  on the table threaded to whoever holds them; contract conduits with packets
+  flowing between tables, amber when a consumer waits; green or red rims for
+  gates; several people work at once, each unmistakably (lit monitor, rising
+  code, a pool of light, the pop-out saying what they just said); the
+  pipeline's own phase agents stand on a stage under a screen naming the
+  current phase. The floor moves with the run — a dispatch arc when a manager sends
+  someone onto a ticket, a spark when a ticket changes hands, a drop when one
+  appears, a burst when one finishes or fails, idle people glancing at whoever
+  is working — and every change slides into a **feed** at the edge. Click a
+  person or a ticket for its **dossier** (status, manager or reports, tickets,
+  recent lines; every name a link), and the camera glides to it. Orbit, zoom,
+  follow the worker, spin. The phase track is a journey the run walks, and the
+  five side tabs are one activity column with the log by default.
+- **Seats the pipeline fills.** When a pipeline needs a seat a team did not name
+  (a test phase, no tester), the composition, the preselect preview, the run
+  setup panel, the charter log and the floor all say who takes it and where
+  they came from (`seats` with `source`, `gaps` in words).
 
 - **Send a request to teams.** The Teams page has a *Send a request* section:
   type a request and see the teams it selects and why, who staffs and manages

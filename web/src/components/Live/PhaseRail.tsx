@@ -1,23 +1,18 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { Check } from 'lucide-react';
 import clsx from 'clsx';
 
 /**
- * The pipeline as ONE horizontal track.
+ * The pipeline as ONE journey.
  *
- * It replaces a stack of four separate header panels — a metrics grid, a
- * percentage bar, a wrapped grid of phase chips, and a "current stage" card —
- * that between them consumed roughly a third of the viewport to answer a single
- * question: where in the run are we? On a laptop that pushed the live event log,
- * which is the entire point of this page, below the fold.
+ * A single track from the first phase to the last, drawn as a path the run
+ * walks: phases are stops, the five groups are the colored stretches between
+ * them, the stretch already walked is lit and the stop the run is at pulses.
+ * Position along the track IS the progress, so the two can never disagree.
  *
- * One track answers it in ~44px, and answers it better: position along the rail
- * IS the progress bar, so the two can never disagree.
- *
- * Colour carries meaning and nothing else. Phases used to be tinted by a
- * fifteen-entry per-phase palette, which reads as decoration because it is —
- * nobody can hold fifteen hues to fifteen phase names. Here the tint is the
- * phase's GROUP (five of them, and groups are a real concept in pipeline.yaml),
- * and STATE is carried by fill and weight rather than by hue.
+ * Color carries the GROUP (five of them, and groups are a real concept in
+ * pipeline.yaml) and state is carried by fill, weight and motion — nobody can
+ * hold fifteen hues to fifteen phase names.
  */
 
 export type PhaseState = 'pending' | 'active' | 'completed';
@@ -29,12 +24,12 @@ export interface RailGroup {
 }
 
 /** Group accents. Five, matching the pipeline's own grouping. */
-const GROUP_TONE: Record<string, { dot: string; text: string }> = {
-  prepare: { dot: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400' },
-  design: { dot: 'bg-violet-500', text: 'text-violet-600 dark:text-violet-400' },
-  build: { dot: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400' },
-  verify: { dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' },
-  finish: { dot: 'bg-slate-400', text: 'text-slate-500 dark:text-slate-400' },
+const GROUP_TONE: Record<string, { hex: string; text: string; soft: string }> = {
+  prepare: { hex: '#0ea5e9', text: 'text-sky-600 dark:text-sky-400', soft: 'bg-sky-500/10' },
+  design: { hex: '#8b5cf6', text: 'text-violet-600 dark:text-violet-400', soft: 'bg-violet-500/10' },
+  build: { hex: '#f59e0b', text: 'text-amber-600 dark:text-amber-400', soft: 'bg-amber-500/10' },
+  verify: { hex: '#10b981', text: 'text-emerald-600 dark:text-emerald-400', soft: 'bg-emerald-500/10' },
+  finish: { hex: '#64748b', text: 'text-slate-500 dark:text-slate-400', soft: 'bg-slate-500/10' },
 };
 
 function toneFor(groupID: string) {
@@ -54,88 +49,98 @@ export default function PhaseRail({
 }) {
   const activeRef = useRef<HTMLDivElement>(null);
 
-  // Keep the active phase in view as the run walks the rail. Without this the
-  // rail is only useful until the run scrolls past the fold of its own track.
+  // Keep the active phase in view as the run walks the track.
   useEffect(() => {
     activeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
   }, [activePhase]);
 
-  const total = groups.reduce((n, g) => n + g.phases.length, 0);
+  const shown = useMemo(() => groups.filter((g) => g.phases.length > 0), [groups]);
+  const all = useMemo(() => shown.flatMap((g) => g.phases), [shown]);
+  const total = all.length;
   const done = Object.values(phaseState).filter((s) => s === 'completed').length;
+  // How far along the track the run is: the active stop, else the last
+  // completed one, else the start.
+  const activeIndex = activePhase ? all.indexOf(activePhase) : -1;
+  const reached = activeIndex >= 0 ? activeIndex : Math.max(-1, done - 1);
+  const progress = total <= 1 ? (reached >= 0 ? 100 : 0) : Math.max(0, Math.min(100, (reached / (total - 1)) * 100));
 
   if (total === 0) return null;
 
   return (
-    <div className="shrink-0 border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+    <div className="shrink-0 border-b border-gray-200 bg-white/90 dark:border-gray-800 dark:bg-gray-950/90">
       <div className="flex items-center gap-3 px-3 py-2 sm:px-4">
-        {/* The fade is the only affordance that this track scrolls: a clipped
-            chip at the right edge otherwise reads as a rendering bug rather
-            than as "there is more pipeline over here". */}
-        <div
-          className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-0.5 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]"
-          role="list"
-          aria-label="Pipeline phases"
-        >
-          {groups.map((group) => {
-            // A group whose phases were all filtered out by a budget class is
-            // not a group. Callers filter too, but a lone dangling group label
-            // is a confusing enough artifact to guard against here as well.
-            if (group.phases.length === 0) return null;
-            const tone = toneFor(group.id);
-            return (
-              <div key={group.id} className="flex shrink-0 items-stretch gap-1">
-                <span
-                  className={clsx(
-                    'hidden select-none self-center pl-1 pr-0.5 text-[9px] font-bold uppercase tracking-[0.14em] md:inline',
-                    tone.text,
-                  )}
-                >
-                  {group.label}
-                </span>
-                {group.phases.map((phase) => {
-                  const state = phaseState[phase] ?? 'pending';
-                  const isActive = state === 'active';
-                  return (
-                    <div
-                      key={phase}
-                      ref={isActive ? activeRef : undefined}
-                      role="listitem"
-                      title={`${group.label} · ${phase} · ${state}`}
-                      className={clsx(
-                        'flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors',
-                        isActive &&
-                          'border-brand-400 bg-brand-50 font-bold text-brand-700 shadow-sm dark:border-brand-500 dark:bg-brand-950/50 dark:text-brand-200',
-                        state === 'completed' &&
-                          'border-transparent bg-gray-100 font-medium text-gray-600 dark:bg-gray-800/70 dark:text-gray-300',
-                        state === 'pending' &&
-                          'border-dashed border-gray-200 bg-transparent font-medium text-gray-400 dark:border-gray-800 dark:text-gray-600',
-                      )}
-                    >
-                      <span
-                        className={clsx(
-                          'h-1.5 w-1.5 shrink-0 rounded-full',
-                          isActive && running && 'animate-pulse',
-                          state === 'pending' ? 'bg-gray-300 dark:bg-gray-700' : tone.dot,
-                        )}
-                      />
-                      {phase}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
+        <div className="relative min-w-0 flex-1 overflow-x-auto pb-1 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]">
+          <div className="relative flex min-w-max items-stretch" role="list" aria-label="Pipeline phases">
+            {/* The track: a base line and the lit portion the run has walked. */}
+            <div className="pointer-events-none absolute left-4 right-4 top-[15px] h-1 rounded-full bg-gray-200 dark:bg-gray-800" aria-hidden="true" />
+            <div
+              className="journey-fill pointer-events-none absolute left-4 top-[15px] h-1 rounded-full bg-gradient-to-r from-sky-500 via-violet-500 to-emerald-500"
+              style={{ width: `calc((100% - 2rem) * ${progress / 100})` }}
+              aria-hidden="true"
+            />
+            {shown.map((group) => {
+              const tone = toneFor(group.id);
+              return (
+                <div key={group.id} className="relative flex shrink-0 flex-col">
+                  <div className="flex items-start">
+                    {group.phases.map((phase) => {
+                      const state = phaseState[phase] ?? 'pending';
+                      const isActive = state === 'active';
+                      return (
+                        <div
+                          key={phase}
+                          ref={isActive ? activeRef : undefined}
+                          role="listitem"
+                          title={`${group.label} · ${phase} · ${state}`}
+                          className="relative flex w-[4.6rem] shrink-0 flex-col items-center px-1"
+                        >
+                          <span className="relative flex h-8 w-8 items-center justify-center">
+                            {isActive && running && (
+                              <span className="journey-active-ring absolute inset-0 rounded-full" style={{ background: tone.hex, opacity: 0.35 }} aria-hidden="true" />
+                            )}
+                            <span
+                              className={clsx(
+                                'relative flex items-center justify-center rounded-full border-2 transition-all',
+                                isActive ? 'h-7 w-7 shadow-md' : 'h-5 w-5',
+                                state === 'pending' && 'border-dashed border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-950',
+                              )}
+                              style={
+                                state === 'pending'
+                                  ? undefined
+                                  : { borderColor: tone.hex, background: state === 'completed' ? tone.hex : '#fff' }
+                              }
+                            >
+                              {state === 'completed' && <Check size={11} className="text-white" aria-hidden="true" strokeWidth={3} />}
+                              {isActive && <span className={clsx('h-2.5 w-2.5 rounded-full', running && 'animate-pulse')} style={{ background: tone.hex }} aria-hidden="true" />}
+                            </span>
+                          </span>
+                          <span
+                            className={clsx(
+                              'mt-1 max-w-full truncate text-[10.5px] leading-tight',
+                              isActive ? 'font-bold text-gray-900 dark:text-gray-50' : state === 'completed' ? 'font-medium text-gray-600 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600',
+                            )}
+                          >
+                            {phase}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <span className={clsx('mt-0.5 self-center rounded px-1.5 text-[9px] font-bold uppercase tracking-[0.14em]', tone.text, tone.soft)}>
+                    {group.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 border-l border-gray-200 pl-3 dark:border-gray-800">
-          <div className="hidden h-1.5 w-20 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800 lg:block">
-            <div
-              className="h-full rounded-full bg-brand-500 transition-[width] duration-700"
-              style={{ width: `${total > 0 ? Math.round((done / total) * 100) : 0}%` }}
-            />
-          </div>
-          <span className="font-mono text-[11px] font-semibold tabular-nums text-gray-500 dark:text-gray-400">
+        <div className="flex shrink-0 flex-col items-end gap-0.5 border-l border-gray-200 pl-3 dark:border-gray-800">
+          <span className="font-mono text-[11px] font-semibold tabular-nums text-gray-600 dark:text-gray-300">
             {done}/{total}
+          </span>
+          <span className="text-[9px] uppercase tracking-wider text-gray-400">
+            {activePhase && running ? `now: ${activePhase}` : done === total && total > 0 ? 'complete' : 'phases'}
           </span>
         </div>
       </div>

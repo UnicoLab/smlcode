@@ -2,18 +2,12 @@ import { useState, useEffect, useRef, useContext, useMemo } from 'react';
 import {
   AlertTriangle,
   Bot,
-  CheckCircle2,
   Circle,
-  FolderTree,
-  ListTodo,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
   Play,
   Square,
-  Users,
-  Wrench,
-  XCircle,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import {
@@ -27,6 +21,7 @@ import {
   getInterruptedRuns,
   resumeRun,
   getSquads,
+  getTasks,
 } from '@/api/client';
 import type {
   AgentSpec,
@@ -34,49 +29,44 @@ import type {
   DynamicComposition,
   InterruptedRun,
   SquadsView,
+  Task,
   TeamSpec,
 } from '@/types';
-import EventLog from './EventLog';
-import LiveTaskPanel from './LiveTaskPanel';
-import LiveFileInspector from './LiveFileInspector';
-import LiveFeedback from './LiveFeedback';
-import CalibrationBanner from './CalibrationBanner';
-import TokenStream from './TokenStream';
-import SquadPanel from './SquadPanel';
 import TeamPicker from './TeamPicker';
 import NowBar from './NowBar';
-import RecoveryPanel from './RecoveryPanel';
-import ResultPanel from './ResultPanel';
-import { buildRecovery, recoveryTally } from './recovery';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
 import RunSetup from './RunSetup';
+import ActivityRail from './ActivityRail';
+import type { RailView } from './ActivityRail';
+import TeamFloor from './floor/TeamFloor';
+import { buildFloor } from './floor/floorModel';
 import ResizeHandle from '@/components/ui/ResizeHandle';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
-import { usePersistentState, useMediaQuery, useStickToBottom } from '@/hooks/useUiState';
+import { usePersistentState, useMediaQuery } from '@/hooks/useUiState';
 import clsx from 'clsx';
 
 /**
  * The live run console.
  *
- * The layout is four fixed zones, in priority order, and the ordering is the
- * whole design:
+ * Four fixed zones, in priority order:
  *
- *   1. Command bar   — what you type and the button you press. Always one row
- *                      on desktop; wraps on narrow screens. Never scrolls away.
- *   2. Phase rail    — where the run is, in ~44px. See PhaseRail.
+ *   1. Command bar   — what you type and the button you press. Never scrolls.
+ *   2. Phase journey — where the run is, as one track it walks. See PhaseRail.
  *   3. Run setup     — how the run is configured, behind a disclosure that is
  *                      open while idle and closed while running. See RunSetup.
- *   4. Stream + rail — everything left over, which is most of the screen.
+ *   4. Floor + rail  — the rest of the screen. The FLOOR is the teams at their
+ *                      tables: who is on which team, who manages them, which
+ *                      ticket each holds, who is working right now, what flows
+ *                      between teams and where one waits on another (see
+ *                      floor/). The RAIL is one column for everything the floor
+ *                      does not draw — the log by default, with tasks, fixes,
+ *                      files and the result as filters on it (see ActivityRail).
  *
- * What changed and why: the previous version stacked six always-expanded
- * panels above the log — a metrics grid, a progress card, a stage card, an
- * agent-activity card, a composition panel and an active-agent panel. Each was
- * individually reasonable and together they pushed the event stream, the one
- * thing a page called "Live" exists to show, off a 900px viewport entirely.
- * Every one of them survives here; they just had to stop competing with the
- * stream for the same pixels at the same moment.
+ * The log used to be the centre of this page and five tabs sat beside it. A
+ * run is people doing things, and a person watching one for eleven minutes
+ * wants to SEE that; the lines are still there, one column to the right.
  */
 
 const PIPELINE_GROUPS: RailGroup[] = [
@@ -86,8 +76,6 @@ const PIPELINE_GROUPS: RailGroup[] = [
   { id: 'verify', label: 'Verify', phases: ['polish', 'test'] },
   { id: 'finish', label: 'Finish', phases: ['memory', 'done'] },
 ];
-
-type RailTab = 'tasks' | 'teams' | 'fixes' | 'files' | 'result';
 
 /** Where the side rail becomes a column instead of an overlay. */
 const WIDE_VIEWPORT = '(min-width: 1024px)';
@@ -113,24 +101,20 @@ export default function LiveView() {
   const setResult = ctx?.setLiveResult || (() => {});
 
   const [query, setQuery] = useState('');
-  // Persisted: a layout the user arranged has to survive a reload.
-  const [railTab, setRailTab] = usePersistentState<RailTab>('live.rail.tab', 'tasks');
-  // The self-healing tally rides on the tab, so a user who never opens it still
-  // sees that something was found and something was done about it.
-  const fixes = useMemo(() => recoveryTally(buildRecovery(events)), [events]);
-  const fixesBadge =
-    fixes.needsYou > 0
-      ? String(fixes.needsYou)
-      : fixes.healing > 0
-        ? String(fixes.healing)
-        : fixes.resolved > 0
-          ? String(fixes.resolved)
-          : undefined;
+  // Persisted: a layout the user arranged has to survive a reload. The old
+  // 'live.rail.tab' key held tab names this column no longer has.
+  const [railView, setRailView] = usePersistentState<RailView>('live.rail.view', 'log');
   const [railWidth, setRailWidth] = usePersistentState('live.rail.width', RAIL_DEFAULT_PX);
-  // The org chart, so the activity bar can say which TEAM the running task
-  // belongs to. Polled with the run rather than once: a run that assembles
-  // teams does so several phases in, long after this component mounted.
+  // The org chart and the board, so the floor can draw the teams, their
+  // tickets and which team the running task belongs to. Polled with the run
+  // rather than once: a run that assembles teams does so several phases in,
+  // long after this component mounted, and the board grows with every wave.
   const [squads, setSquads] = useState<SquadsView | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  // True once the org chart and the board have been asked for at least once:
+  // the floor stays empty until then, so the first thing drawn is the real
+  // floor and not a crew table that the teams then replace.
+  const [boardReady, setBoardReady] = useState(false);
   // The rail is a column on a wide viewport and a full-height OVERLAY below it,
   // so its default cannot be the same on both: opening it by default on a phone
   // means the first thing a user sees is the task drawer covering the console
@@ -160,10 +144,6 @@ export default function LiveView() {
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const promptRef = useRef<HTMLInputElement>(null);
-  // Follows the stream only while the user is already AT the bottom. An
-  // unconditional scroll yanked the log back down every flush, which made
-  // reading anything mid-run impossible.
-  const logRef = useStickToBottom<HTMLDivElement>(events, true);
 
   // `/` focuses the prompt from anywhere in the app.
   useEffect(() => {
@@ -179,14 +159,18 @@ export default function LiveView() {
   // second re-fetching a file that has not moved.
   useEffect(() => {
     let alive = true;
+    // Both halves land together: the floor decides between "teams" and
+    // "one crew" from the org chart, so tickets arriving a beat before the
+    // chart would draw every ticket on one crew table for a frame and then
+    // redraw it as teams. One settled pair, one paint.
     const load = () => {
-      getSquads()
-        .then((v) => {
-          if (alive) setSquads(v);
-        })
-        .catch(() => {
-          /* no org chart is the normal state, not an error */
-        });
+      Promise.allSettled([getSquads(), getTasks()]).then(([chart, board]) => {
+        if (!alive) return;
+        // No org chart is the normal state, not an error; an empty board is a fact.
+        if (chart.status === 'fulfilled') setSquads(chart.value);
+        if (board.status === 'fulfilled') setTasks(board.value?.tasks ?? []);
+        setBoardReady(true);
+      });
     };
     load();
     if (!running) return () => { alive = false; };
@@ -446,6 +430,21 @@ export default function LiveView() {
     return ids.size;
   }, [events]);
 
+  // The floor: everything the stage draws, derived once per change.
+  const floor = useMemo(
+    () =>
+      boardReady
+        ? buildFloor({ squads, tasks, events, composition: shownComposition, running })
+        : buildFloor({ squads: null, tasks: [], events: [], composition: null, running: false }),
+    [boardReady, squads, tasks, events, shownComposition, running],
+  );
+
+  // Picking a ticket on the floor opens it in the rail's task list.
+  const focusTicket = () => {
+    setRailView('tasks');
+    setRailOpen(true);
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
       {/* ── 1. Command bar ─────────────────────────────────────────── */}
@@ -626,49 +625,22 @@ export default function LiveView() {
         compositionError={running ? '' : persistedCompositionError}
       />
 
-      {/* ── 4. Stream + rail ───────────────────────────────────────── */}
+      {/* ── 4. Floor + rail ────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {/* What is happening RIGHT NOW, pinned above the scroll. The log
-              answers "what happened" and scrolls it away; on a local 30B the
-              next line can be four minutes out, and a wall of finished lines
-              under a blinking cursor reads as a hang. */}
+          <div className="relative min-h-0 flex-1">
+            <TeamFloor floor={floor} running={running} events={events} onTicket={focusTicket} />
+          </div>
+          {/* What is happening RIGHT NOW, pinned under the floor as a ticker.
+              On a local 30B the next log line can be four minutes out, and a
+              clock that keeps moving is the difference between "thinking" and
+              "hung". */}
           <NowBar events={events} running={running} squads={squads} />
-          <div ref={logRef} className="min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-4">
-            {events.length === 0 ? (
-              // Keyed on EVENTS alone, not on `result`. A finished run leaves a
-              // result behind, so the old `!result` clause meant that reopening
-              // Studio after any previous run showed a bare "waiting for
-              // events" line instead of the empty state — on exactly the visit
-              // where a first-time reader most needs to be told what to do.
-              // The result itself is one tab away in the rail.
-              <EmptyState hasPreviousRun={!!result?.result} />
-            ) : (
-              // 110ch is a reading measure, and it is right for prose. It is
-              // wrong for the tool output, diffs and JSON that make up most of
-              // this log — on a 27" screen it wrapped a 200-column stack trace
-              // inside a 900px ribbon with a third of the display blank. So the
-              // measure grows with the viewport instead of being one number.
-              <div className="mx-auto max-w-[110ch] space-y-3 2xl:max-w-[150ch]">
-                {/* Calibration runs before the first token of a run, so its
-                    progress sits above the stream that replaces it. */}
-                <CalibrationBanner events={events} />
-                <TokenStream text={ctx?.tokenStream ?? ''} running={running} />
-                <EventLog events={events} />
-              </div>
-            )}
-          </div>
-
-          {/* Feedback docks to the bottom of the stream, where a reply belongs —
-              next to what you are replying to, not in a header card above it. */}
-          <div className="shrink-0 border-t border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950 sm:px-4">
-            <LiveFeedback compact />
-          </div>
         </main>
 
-        {/* The rail is a column at ≥1024px and a full-height overlay below it.
-            An overlay rather than a stacked block: on a phone the stream and the
-            task list both want the whole screen, and splitting it gives neither
+        {/* The rail is a column at ≥1024px and a full-height OVERLAY below it.
+            An overlay rather than a stacked block: on a phone the floor and the
+            log both want the whole screen, and splitting it gives neither
             enough to be readable. */}
         {railOpen && (
           <>
@@ -678,9 +650,6 @@ export default function LiveView() {
               onClick={() => setRailOpen(false)}
               className="fixed inset-0 z-30 bg-black/30 lg:hidden"
             />
-            {/* The divider exists only on a wide viewport: as an overlay the
-                rail has no neighbour to steal width from, so a horizontal drag
-                would mean nothing. */}
             {isWide && (
               <ResizeHandle
                 size={railWidth}
@@ -692,153 +661,25 @@ export default function LiveView() {
               />
             )}
             <aside
-              // maxWidth is a second clamp, in CSS rather than in the handle: a
-              // window narrowed AFTER the width was stored must never leave the
-              // stream with no room, even when the stored value is wider than
-              // the window itself.
               style={isWide ? { width: railWidth, maxWidth: '60%', minWidth: RAIL_MIN_PX } : undefined}
               className={clsx(
                 'z-40 flex min-h-0 flex-col border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950',
-                'fixed inset-y-0 right-0 w-[min(26rem,90vw)] border-l shadow-2xl',
+                'fixed inset-y-0 right-0 w-[min(28rem,92vw)] border-l shadow-2xl',
                 'lg:static lg:shadow-none',
               )}
             >
-              <div className="flex shrink-0 border-b border-gray-200 dark:border-gray-800">
-                <RailTabButton
-                  active={railTab === 'tasks'}
-                  onClick={() => setRailTab('tasks')}
-                  icon={<ListTodo size={14} />}
-                  label="Tasks"
-                />
-                {/* Teams sits next to Tasks because with two squads running,
-                    "which half is behind" is the question the task list cannot
-                    answer — the aggregate count hides one squad finishing while
-                    the other sits blocked. The tab renders nothing on a
-                    single-stream run, which is most of them. */}
-                <RailTabButton
-                  active={railTab === 'teams'}
-                  onClick={() => setRailTab('teams')}
-                  icon={<Users size={14} />}
-                  label="Teams"
-                />
-                {/* What the harness fixed by itself. The failures are red and
-                    loud and the recovery is a handful of plain lines in a log
-                    of fifty, so a user watching sees a run going wrong with no
-                    evidence anything is handling it — the worst possible
-                    reading of a system that is fixing itself. */}
-                <RailTabButton
-                  active={railTab === 'fixes'}
-                  onClick={() => setRailTab('fixes')}
-                  icon={<Wrench size={14} className={fixes.needsYou > 0 ? 'text-amber-500' : undefined} />}
-                  label="Fixes"
-                  badge={fixesBadge}
-                />
-                <RailTabButton
-                  active={railTab === 'files'}
-                  onClick={() => setRailTab('files')}
-                  icon={<FolderTree size={14} />}
-                  label="Files"
-                />
-                <RailTabButton
-                  active={railTab === 'result'}
-                  onClick={() => setRailTab('result')}
-                  icon={
-                    result?.result ? (
-                      result.result.success ? (
-                        <CheckCircle2 size={14} className="text-emerald-500" />
-                      ) : (
-                        <XCircle size={14} className="text-rose-500" />
-                      )
-                    ) : (
-                      <CheckCircle2 size={14} />
-                    )
-                  }
-                  label="Result"
-                />
-                <button
-                  onClick={() => setRailOpen(false)}
-                  className="focus-ring shrink-0 px-3 text-gray-400 hover:text-gray-600 lg:hidden"
-                  aria-label="Close side panel"
-                >
-                  <PanelRightClose size={16} />
-                </button>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {railTab === 'tasks' && <LiveTaskPanel />}
-                {railTab === 'teams' && (
-                  <div className="h-full overflow-auto p-3">
-                    <SquadPanel refreshKey={events.length} />
-                  </div>
-                )}
-                {railTab === 'fixes' && (
-                  <div className="h-full overflow-auto">
-                    <RecoveryPanel events={events} />
-                  </div>
-                )}
-                {railTab === 'files' && <LiveFileInspector events={events} running={running} />}
-                {railTab === 'result' && <ResultPanel result={result} />}
-              </div>
+              <ActivityRail
+                events={events}
+                running={running}
+                result={result}
+                tokenStream={ctx?.tokenStream ?? ''}
+                view={railView}
+                onView={setRailView}
+                overlay={!isWide}
+                onClose={() => setRailOpen(false)}
+              />
             </aside>
           </>
-        )}
-
-      </div>
-    </div>
-  );
-}
-
-function RailTabButton({
-  active,
-  onClick,
-  icon,
-  label,
-  badge,
-}: {
-  active: boolean;
-  onClick: () => void;
-  badge?: string;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-current={active ? 'page' : undefined}
-      className={clsx(
-        'focus-ring flex flex-1 items-center justify-center gap-1.5 border-b-2 py-2.5 text-xs font-semibold transition-colors',
-        active
-          ? 'border-brand-500 text-brand-600 dark:text-brand-400'
-          : 'border-transparent text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
-      )}
-    >
-      {icon}
-      {label}
-      {badge && (
-        <span className="badge-neutral shrink-0 text-[10px] leading-none">{badge}</span>
-      )}
-    </button>
-  );
-}
-
-function EmptyState({ hasPreviousRun }: { hasPreviousRun: boolean }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 dark:bg-brand-950/40">
-        <Play size={24} className="text-brand-500" />
-      </div>
-      <div className="max-w-sm">
-        <h2 className="text-base font-semibold text-gray-700 dark:text-gray-200">
-          Nothing running yet
-        </h2>
-        <p className="mt-1 text-sm text-gray-400">
-          Describe a change above and press Run. Phases, agent activity and file
-          writes stream here as they happen.
-        </p>
-        {hasPreviousRun && (
-          <p className="mt-2 text-xs text-gray-400">
-            The previous run&rsquo;s summary is under <span className="font-semibold">Result</span>.
-          </p>
         )}
       </div>
     </div>

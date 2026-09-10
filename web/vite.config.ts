@@ -25,7 +25,10 @@ export default defineConfig({
     // 'hidden' still generates maps for local debugging but emits no
     // sourceMappingURL comment, so browsers never request them.
     sourcemap: 'hidden',
-    chunkSizeWarningLimit: 900,
+    // three + fiber + drei is one ~950 kB chunk (250 kB gzipped), loaded lazily
+    // by the Live view's floor only where WebGL exists. It is the one chunk
+    // allowed past the old limit, and nothing else should approach it.
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         // Split the vendor bundle so a Studio code change does not invalidate
@@ -41,6 +44,12 @@ export default defineConfig({
             return 'react';
           }
           if (id.includes('node_modules/@dnd-kit/')) return 'dnd';
+          // The 3D team floor. One chunk, loaded lazily by the Live view only
+          // when WebGL is available — three alone is larger than the rest of
+          // Studio, and a page that never shows the floor must not pay for it.
+          if (/[\\/]node_modules[\\/](three|@react-three|three-stdlib|troika-three-text|troika-three-utils|troika-worker-utils|maath|zustand|suspend-react|its-fine|react-reconciler|@monogrid|camera-controls|stats-gl|stats\.js|detect-gpu|hls\.js|meshline|three-mesh-bvh|webgl-sdf-generator|bidi-js|utility-types|glsl-noise|tunnel-rat|@use-gesture)[\\/]/.test(id)) {
+            return 'three';
+          }
           if (id.includes('node_modules/lucide-react/')) return 'icons';
           return undefined;
         },

@@ -65,7 +65,7 @@ the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 
 | Route | Page | What it does |
 |---|---|---|
-| `/` | **Live** | SSE-streamed run: phases, `@agent` activity, token stream, event log, HITL modal |
+| `/` | **Live** | The run as a place: the **team floor** (each team at its table with its manager, members, monitors and tickets; contract conduits between tables; a spark when a manager moves a ticket), the **phase journey** above it, a ticker of what is happening right now, and one **activity** column beside it — the log by default, with tasks, fixes, files and the result as filters |
 | `/board` | **Board** | Kanban — add, edit, delete, move, delegate, drag mid-run |
 | `/review` | **Review** | Pending changes from `permission: review`, as diffs, with per-file apply/reject |
 | `/runs` | **Runs** | Run history, and a per-run **trace** with per-phase wall time and token/cost attribution |
@@ -83,6 +83,59 @@ any page — you no longer have to be on the Live view to answer one. A **connec
 stream health, and an error boundary keeps one broken panel from blanking the app.
 
 ---
+
+## The Live floor
+
+The centre of the Live view is a 3D floor, drawn with three.js: one round table
+per team on its own rug, the manager at the head with the team's board on the
+wall behind them (a column per state, a tile per ticket, the counts above), the
+members around the table, each with a monitor that lights up when the log says
+that agent is working and a pop-out over their head naming the ticket. Tickets
+lie on the table, colored by state, and a thread runs from each one to the
+monitor of whoever holds it, with beads travelling along it while they type.
+The frozen contract runs between tables as conduits with packets flowing from
+the provider to the consumer; a consumer waiting on a clause it has not been
+given turns its conduit amber. A gate paints the table's rim green or red.
+
+Whoever is working is unmistakable: their monitor lights up, lines of code
+rise off the screen, a pool of light and a breathing ring mark the seat, and
+the pop-out over their head says which ticket and what they just said. Several
+people can be at it at once — one per ticket in flight — and idle people glance
+at whoever is. The pipeline's own people — the planner, splitter, architect,
+explorer and the rest, who sit at no table — stand on a **stage** at the left
+under a screen naming the phase the run is in and what is being said; the one
+speaking is lit, the rest wait in the wings until their phase.
+
+The floor moves when the run does. A manager sending someone onto a ticket is
+an arc from the head seat with the ticket's name; a ticket moving from one
+person to another is a spark across the table with the reason; a ticket that
+appears drops onto the table, one that finishes or fails bursts; idle people
+glance at whoever is working. Every change also slides in as a card in the
+**feed** at the right edge — *T4 appeared on Backend*, *go-worker started on
+T2*, *T2 done ✓*, *Backend: gate green* — for twenty seconds, and each card is a
+link.
+
+Everything is clickable. A person opens their **dossier**: seat and team, who
+manages them (or, for a manager, who they manage and what they do), whether they
+are working right now and on what, the last thing they said, the tickets they
+hold and have touched, and their recent lines from the log. A ticket opens its
+own: state, holder, everyone who has touched it, any handoff, and *open in
+Tasks*. Every name in a dossier is a link to the next one, so the floor can be
+explored by clicking around; the camera glides to whatever is selected. Drag to
+orbit, wheel to zoom, right-drag to pan, click a table to frame it, **follow**
+to keep whoever is working in the middle, **spin** for a slow tour, Esc or a
+click on empty floor to clear.
+
+A run with no org chart shows the **pipeline crew** — the planner, splitter,
+worker, reviewer and tester the composition chose — at one table, and a single
+library team staffing a run shows as that team, with its manager, board and
+gate. A seat the team left empty and the pipeline fills (a tester on a team that
+names none) sits at the table too, drawn as borrowed and labelled *from the
+pipeline*.
+
+Where WebGL is unavailable, or on request (the **3D / map** toggle), the same
+floor is drawn as a flat map with the same dossier and feed. Both honor
+`prefers-reduced-motion`.
 
 ## The review workflow
 

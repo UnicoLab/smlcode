@@ -316,6 +316,10 @@ func (o *Orchestrator) prepareDynamicComposition(comp *composer.Composition, que
 		lang = detectProjectLang(o.cfg.Root)
 	}
 	ensureCompositionHandoff(comp, query, inventory, lang, workerHint, testerHint)
+	// The seats are settled only now: the language hint and the critical-phase
+	// repair above may have bound execute/test, and a team's empty tester seat
+	// is filled by whatever the test phase ended up with.
+	fillTeamSeats(comp)
 	teamHandoff(comp)
 	if o != nil {
 		skills := o.availableSkillNames()

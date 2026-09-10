@@ -209,3 +209,286 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* ── The team floor (Live view) ─────────────────────────────────────────
+   A tilted, softly lit stage. All motion is CSS so the global
+   prefers-reduced-motion rule above freezes it to a still picture. */
+.floor-stage {
+  color: #1f2937;
+}
+.dark .floor-stage {
+  color: #e5e7eb;
+}
+.floor-ground {
+  background:
+    radial-gradient(ellipse at 50% 120%, rgba(139, 92, 246, 0.18), transparent 60%),
+    radial-gradient(ellipse at 20% -20%, rgba(14, 165, 233, 0.10), transparent 50%),
+    linear-gradient(180deg, transparent, rgba(139, 92, 246, 0.04));
+}
+.dark .floor-ground {
+  background:
+    radial-gradient(ellipse at 50% 120%, rgba(139, 92, 246, 0.28), transparent 60%),
+    radial-gradient(ellipse at 20% -20%, rgba(14, 165, 233, 0.14), transparent 50%),
+    linear-gradient(180deg, rgba(15, 17, 23, 0), rgba(15, 17, 23, 0.6));
+}
+.floor-ground::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(139, 92, 246, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139, 92, 246, 0.07) 1px, transparent 1px);
+  background-size: 48px 48px;
+  transform: perspective(900px) rotateX(58deg) translateY(30%) scale(2.2);
+  transform-origin: 50% 100%;
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent 80%);
+}
+.floor-tilt {
+  perspective: 1400px;
+}
+.floor-tilt > svg {
+  transform: rotateX(10deg);
+  transform-origin: 50% 60%;
+  overflow: visible;
+}
+.floor-title { font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
+.floor-sub { font-size: 10.5px; font-weight: 600; opacity: 0.75; }
+.floor-note { font-size: 9.5px; font-weight: 600; }
+.floor-pct { font-size: 8.5px; font-weight: 700; }
+.floor-name { font-size: 10px; font-weight: 600; }
+.floor-name-manager { font-weight: 700; }
+.floor-glyph { font-size: 15px; }
+.floor-ticket-id { font-size: 9px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.floor-bubble-text { font-size: 9.5px; font-weight: 700; }
+
+.floor-island { animation: floorBob 6s ease-in-out infinite; }
+.floor-island:nth-of-type(2n) { animation-delay: -2s; }
+.floor-island:nth-of-type(3n) { animation-delay: -4s; }
+.floor-island-active .floor-face { filter: url(#floor-glow); }
+@keyframes floorBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.floor-halo { animation: floorHalo 2.2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes floorHalo {
+  0% { transform: scale(0.7); opacity: 0.45; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.floor-halo-ring { animation: floorRing 2.2s ease-in-out infinite; }
+@keyframes floorRing {
+  0%, 100% { stroke-opacity: 0.9; }
+  50% { stroke-opacity: 0.3; }
+}
+.floor-avatar-active .floor-avatar-body { animation: floorBreath 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes floorBreath {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+.floor-bubble { animation: floorBubble 0.4s ease-out; }
+@keyframes floorBubble {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.floor-ticket-live rect { animation: floorTicket 1.4s ease-in-out infinite; }
+@keyframes floorTicket {
+  0%, 100% { opacity: 0.92; }
+  50% { opacity: 0.6; }
+}
+.floor-flow-on { animation: floorFlow 1.2s linear infinite; }
+.floor-flow-stalled { animation: floorStall 1s ease-in-out infinite; }
+@keyframes floorFlow {
+  to { stroke-dashoffset: -36; }
+}
+@keyframes floorStall {
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.25; }
+}
+.floor-waiting { animation: floorFlow 2.4s linear infinite; }
+.floor-arc { transition: stroke-dasharray 0.7s ease; }
+.floor-ghost { animation: floorBob 5s ease-in-out infinite; }
+
+/* ── The phase journey ─────────────────────────────────────────────────── */
+.journey-active-ring { animation: journeyRing 1.8s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes journeyRing {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.journey-fill { transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* ── The 3D floor's DOM labels (drei <Html>) ───────────────────────────── */
+.floor3d-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1.5px solid;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 18px rgba(17, 24, 39, 0.12);
+  color: #111827;
+  white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
+}
+.dark .floor3d-label { background: rgba(17, 24, 39, 0.86); color: #f3f4f6; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45); }
+.floor3d-dot { position: absolute; left: 6px; top: 8px; width: 6px; height: 6px; border-radius: 9999px; }
+.floor3d-label { position: relative; padding-left: 16px; }
+.floor3d-label-name { font-size: 13px; font-weight: 800; letter-spacing: -0.01em; }
+.floor3d-label-sub { font-size: 9.5px; font-weight: 600; opacity: 0.7; }
+.floor3d-label-wait { font-size: 9.5px; font-weight: 700; color: #d97706; }
+.floor3d-more { font-size: 10px; font-weight: 700; color: #6b7280; }
+.floor3d-ticket {
+  position: relative;
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
+  transition: transform 0.15s ease;
+}
+.floor3d-ticket-hover { transform: scale(1.15); z-index: 5; }
+.floor3d-ticket-tip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  min-width: 140px;
+  max-width: 240px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.floor3d-person { display: flex; flex-direction: column; align-items: center; gap: 4px; white-space: nowrap; transform: translate(-50%, -100%); }
+.floor3d-name {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #1f2937;
+  font-size: 10.5px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(17, 24, 39, 0.12);
+  backdrop-filter: blur(4px);
+}
+.dark .floor3d-name { background: rgba(17, 24, 39, 0.85); color: #e5e7eb; }
+.floor3d-name-manager { font-weight: 800; }
+.floor3d-name em { font-style: normal; font-weight: 500; opacity: 0.65; }
+.floor3d-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 150px;
+  padding: 3px 9px;
+  border-radius: 12px 12px 12px 3px;
+  border: 1.5px solid;
+  background: #ffffff;
+  color: #111827;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 8px 22px rgba(17, 24, 39, 0.18);
+  animation: floorBubble 0.3s ease-out;
+}
+.dark .floor3d-bubble { background: #0f1117; color: #f3f4f6; }
+.floor3d-bubble-dots { display: inline-flex; gap: 3px; }
+.floor3d-bubble-dots i { width: 4px; height: 4px; border-radius: 9999px; background: currentColor; opacity: 0.35; animation: floorDots 1.2s ease-in-out infinite; }
+.floor3d-bubble-dots i:nth-child(2) { animation-delay: 0.2s; }
+.floor3d-bubble-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes floorDots { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+.floor3d-conduit, .floor3d-spark, .floor3d-integration {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+.floor3d-spark { background: #7c3aed; animation: floorBubble 0.3s ease-out; }
+.floor3d-spark i { font-style: normal; font-weight: 500; opacity: 0.85; }
+.floor3d-integration {
+  border-radius: 10px;
+  border: 1.5px solid;
+  background: rgba(255, 255, 255, 0.88);
+  color: #111827;
+  text-align: center;
+  white-space: nowrap;
+}
+.dark .floor3d-integration { background: rgba(17, 24, 39, 0.88); color: #f3f4f6; }
+
+/* ── The floor's interactive layer: dossier, feed, selection, flashes ── */
+.floor-dossier { animation: floorBubble 0.22s ease-out; }
+.floor-dot-live { animation: floorDots 1.2s ease-in-out infinite; }
+.floor-selected { animation: floorSelected 1.6s ease-in-out infinite; }
+.floor-selected-ring { animation: floorSpin 6s linear infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes floorSelected { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes floorSpin { to { transform: rotate(360deg); } }
+.floor-flash-ring { animation: floorFlashRing 0.9s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+@keyframes floorFlashRing { 0% { opacity: 1; transform: scale(0.8); } 100% { opacity: 0; transform: scale(1.8); } }
+.floor-ticket-flash rect:last-of-type { animation: floorTicketFlash 0.9s ease-out; }
+@keyframes floorTicketFlash { 0% { filter: brightness(2.2); } 100% { filter: brightness(1); } }
+.floor-feed-card { animation: floorFeedIn 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2); transition: opacity 0.6s ease; }
+.floor-feed-card-fading { opacity: 0.45; }
+@keyframes floorFeedIn { 0% { opacity: 0; transform: translateX(24px) scale(0.96); } 100% { opacity: 1; transform: none; } }
+.floor3d-person-selected .floor3d-name { outline: 2px solid #7c3aed; outline-offset: 1px; }
+.floor3d-name { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.floor3d-person-hover .floor3d-name { transform: scale(1.1); box-shadow: 0 6px 18px rgba(124, 58, 237, 0.35); }
+.floor3d-dispatch {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  background: #0284c7;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+  animation: floorBubble 0.3s ease-out;
+}
+.floor3d-board-head {
+  display: inline-flex;
+  gap: 8px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #6b7280;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+}
+.dark .floor3d-board-head { background: rgba(17, 24, 39, 0.85); color: #9ca3af; }
+.floor3d-board-cell { display: inline-flex; align-items: center; gap: 3px; }
+.floor3d-board-cell i { display: inline-block; width: 6px; height: 6px; border-radius: 2px; }
+.floor3d-board-cell b { color: #111827; }
+.dark .floor3d-board-cell b { color: #f9fafb; }
+/* SVG people and tickets are buttons: a keyboard ring, never a mouse one. */
+.floor-avatar:focus, .floor-ticket:focus { outline: none; }
+.floor-avatar:focus-visible, .floor-ticket:focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .floor-dossier, .floor-dot-live, .floor-selected, .floor-selected-ring, .floor-flash-ring, .floor-ticket-flash rect, .floor-feed-card, .floor3d-dispatch { animation: none !important; }
+}
+
+/* ── The pipeline's stage and the stronger "working" cues ── */
+.floor3d-bubble-say { max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9.5px; font-weight: 500; opacity: 0.8; }
+.floor3d-name-waiting { opacity: 0.6; }
+.floor3d-screen { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 230px; color: #ede9fe; text-align: center; white-space: normal; }
+.floor3d-screen-kicker { font-size: 8.5px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.6; }
+.floor3d-screen-phase { font-size: 22px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1; text-shadow: 0 0 14px rgba(167, 139, 250, 0.7); }
+.floor3d-screen-who { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 700; color: #c4b5fd; }
+.floor3d-screen-say { font-size: 9.5px; line-height: 1.3; opacity: 0.8; max-height: 3.9em; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .floor3d-screen-phase { text-shadow: none; } }
+.floor-stage-live { animation: floorSelected 1.4s ease-in-out infinite; }

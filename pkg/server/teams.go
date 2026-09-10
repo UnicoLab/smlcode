@@ -10,6 +10,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/blocks"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/plan"
@@ -312,13 +313,19 @@ func (s *Server) preselectView(reg *blocks.Registry, query string, pinned []stri
 	// same answer the composition carries (composer.TeamChoice), so the page
 	// and the run setup panel never disagree about a team's manager.
 	managers := s.managerSet()
+	defaults := s.pipelineSeatDefaults()
 	staffed := make([]map[string]interface{}, 0, len(p.Squads))
 	for _, sq := range p.Squads {
 		manager, isDefault := effectiveManager(sq.Manager, managers)
+		seats := composer.FillSeats(sq.Worker, sq.Reviewer, sq.Tester, manager, isDefault, defaults)
 		staffed = append(staffed, map[string]interface{}{
 			"id": sq.ID, "name": sq.Name, "worker": sq.Worker, "reviewer": sq.Reviewer,
 			"tester": sq.Tester, "manager": manager, "manager_default": isDefault,
 			"agents": sq.Agents, "skills": sq.Skills, "owns": sq.Owns, "acceptance": sq.Acceptance,
+			// Who actually sits where once the pipeline fills the empty seats,
+			// and the gaps in words — the answer the composition gives too.
+			"seats": seats,
+			"gaps":  composer.Gaps(sq.ID, seats),
 		})
 	}
 	mode, note := teamModeNote(sel, cfg.Squads)
@@ -742,4 +749,18 @@ func limitPaths(in []string, n int) []string {
 		return in
 	}
 	return append(append([]string{}, in[:n]...), fmt.Sprintf("+%d more", len(in)-n))
+}
+
+// pipelineSeatDefaults reads the seats the active pipeline lends a team.
+func (s *Server) pipelineSeatDefaults() composer.SeatDefaults {
+	o := s.orch()
+	if o == nil {
+		return composer.SeatDefaults{Worker: plan.RoleWorker, Reviewer: plan.RoleReviewer, Tester: plan.RoleTester}
+	}
+	pipe := o.Pipeline()
+	return composer.SeatDefaults{
+		Worker:   pipe.Execute.DefaultRole,
+		Reviewer: pipe.Execute.Reviewer,
+		Tester:   pipe.PhaseAgent("test", plan.RoleTester),
+	}
 }

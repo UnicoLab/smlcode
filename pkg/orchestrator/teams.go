@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/blocks"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/teams"
@@ -116,6 +117,12 @@ func (o *Orchestrator) teamsFromLibrary(ctx context.Context, query string, inven
 		for _, note := range teams.StaffCheck(&p, o.factory.HasRole) {
 			o.emitWarn("charter", note, "")
 		}
+	}
+	// A seat the team left empty is filled from the pipeline the run is on —
+	// said here, once per gap, so "who tested the backend's work" has an
+	// answer in the log and on the floor rather than only in the routing code.
+	for _, gap := range o.seatGaps(&p) {
+		o.emit("charter", gap, "")
 	}
 
 	// Report the evidence before the contract call, so a preselection the user
@@ -389,4 +396,25 @@ func resolveInterfaces(p *squads.Plan, in []squads.Interface) (kept []squads.Int
 	}
 	sort.Strings(dropped)
 	return kept, dropped, implied
+}
+
+// seatGaps lists, for every squad, the working seats it did not fill and who
+// the pipeline lends for them — the same rule the composition applies
+// (composer.FillSeats), read from the pipeline this run is bound to.
+func (o *Orchestrator) seatGaps(p *squads.Plan) []string {
+	if o == nil || p == nil {
+		return nil
+	}
+	pipe := o.Pipeline()
+	d := composer.SeatDefaults{
+		Worker:   pipe.Execute.DefaultRole,
+		Reviewer: pipe.Execute.Reviewer,
+		Tester:   pipe.PhaseAgent("test", plan.RoleTester),
+	}
+	var out []string
+	for _, s := range p.Squads {
+		manager, isDefault := o.effectiveManager(s.Manager)
+		out = append(out, composer.Gaps(s.ID, composer.FillSeats(s.Worker, s.Reviewer, s.Tester, manager, isDefault, d))...)
+	}
+	return out
 }

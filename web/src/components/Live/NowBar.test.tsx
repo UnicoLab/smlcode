@@ -94,6 +94,47 @@ describe('NowBar', () => {
     expect(screen.getByTitle(/4,600 tokens this run/)).toBeInTheDocument();
   });
 
+  // The clock keys on the floor's working set. A worker whose agent_end has
+  // arrived is finished, whatever the newest line names; the bar says nobody
+  // is working and stops counting, instead of timing a step that is over.
+  it('stops the clock once the working agent has ended', () => {
+    render(
+      <NowBar
+        events={[
+          at(40, { agent: 'go-worker', task_id: 'T1', message: 'writing the handler' }),
+          at(10, { agent: 'go-worker', task_id: 'T1', kind: 'agent_end', message: 'worker finished' }),
+        ]}
+        running
+        squads={null}
+      />,
+    );
+    const bar = screen.getByTestId('now-bar');
+    expect(bar).toHaveAttribute('data-working', 'false');
+    expect(bar).toHaveTextContent(/nobody is working/);
+    expect(screen.queryByTitle(/A local 30B routinely takes minutes/)).not.toBeInTheDocument();
+    expect(screen.queryByText('@go-worker')).not.toBeInTheDocument();
+  });
+
+  // The floor's own reading wins when the page passes it: one read of the log
+  // per flush, and the ticker and the floor never disagree about who is on.
+  it('uses the floor model’s now when given one, and links it', () => {
+    render(
+      <NowBar
+        events={[at(5, { agent: 'planner' })]}
+        running
+        squads={squads}
+        now={{ agent: 'go-worker', task: 'T1', team: 'backend-go', message: 'from the floor', model: 'm', since: Date.now() - 12_000 }}
+        totals={{ tokens: 2500, cost: 0 }}
+      />,
+    );
+    expect(screen.getByText('@go-worker').closest('a')).toHaveAttribute('href', '/?agent=go-worker&team=backend-go');
+    expect(screen.getByText('T1').closest('a')).toHaveAttribute('href', '/?task=T1&team=backend-go');
+    expect(screen.getByText('backend-go').closest('a')).toHaveAttribute('href', '/teams?team=backend-go');
+    expect(screen.getByText('from the floor')).toBeInTheDocument();
+    expect(screen.getByText('12s')).toBeInTheDocument();
+    expect(screen.getByTitle(/2,500 tokens this run/)).toBeInTheDocument();
+  });
+
   // It is an activity indicator, not a summary. A finished run has a result
   // panel; a spinner over it would say the run is still going.
   it('shows nothing when no run is going', () => {

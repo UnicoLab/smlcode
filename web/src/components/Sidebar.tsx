@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -21,8 +21,6 @@ import {
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import { useMediaQuery } from '@/hooks/useUiState';
-import { getHealth } from '@/api/client';
-import type { Health } from '@/types';
 import clsx from 'clsx';
 
 interface NavItem {
@@ -55,7 +53,6 @@ const docItems: NavItem[] = [
 
 export default function Sidebar() {
   const ctx = useContext(AppContext);
-  const [liveHealth, setLiveHealth] = useState<Health | null>(null);
 
   const isDesktop = useMediaQuery('(min-width: 1024px)');
 
@@ -86,33 +83,13 @@ export default function Sidebar() {
     });
   };
 
-  // The connection truth lives in App (EventSource state + a 10s health poll);
-  // this only needs the run flag and the pending-review count, and only while
-  // the API is actually reachable.
-  useEffect(() => {
-    if (ctx?.connection === 'down') {
-      setLiveHealth(null);
-      return undefined;
-    }
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const h = await getHealth();
-        if (!cancelled) setLiveHealth(h);
-      } catch {
-        if (!cancelled) setLiveHealth(null);
-      }
-    };
-    tick();
-    const interval = setInterval(tick, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [ctx?.connection]);
-
-  const pendingCount = liveHealth?.pending ?? 0;
-  const online = ctx ? ctx.connection === 'live' : Boolean(liveHealth?.ok);
+  // The connection truth, the run flag and the review count all live in the
+  // stream App owns: its health poll and the server's `review_pending` event.
+  // This used to run a second health poll of its own every 15 s for the same
+  // two numbers.
+  const online = ctx?.connection === 'live';
+  const pendingCount = online ? (ctx?.pendingReview ?? ctx?.health?.pending ?? 0) : 0;
+  const agentRunning = Boolean(ctx?.liveRunning) && online;
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     clsx(
@@ -246,7 +223,7 @@ export default function Sidebar() {
           )}
 
           {/* Running indicator */}
-          {liveHealth?.running && (
+          {agentRunning && (
             <div className="flex items-center gap-2 text-xs">
               <Activity size={12} className="text-brand-500 animate-pulse" />
               <span className="text-brand-600 dark:text-brand-400 animate-pulse">
@@ -268,7 +245,7 @@ export default function Sidebar() {
             </span>
           )}
           {/* Running indicator icon only */}
-          {liveHealth?.running && (
+          {agentRunning && (
             <span title="Agent running">
               <Activity size={14} className="text-brand-500 animate-pulse" />
             </span>

@@ -111,8 +111,19 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
+// ── Props ──
+export interface LiveTaskPanelProps {
+  /**
+   * A task the Live floor asked to be shown: the rail should scroll to its
+   * card and flash it. Set by LiveView when a ticket is picked on the floor or
+   * when the page opens with ?task=ID. Accepted and not yet acted on.
+   */
+  focusTaskId?: string;
+}
+
 // ── Component ──
-export default function LiveTaskPanel() {
+export default function LiveTaskPanel({ focusTaskId }: LiveTaskPanelProps = {}) {
+  void focusTaskId;
   // ── App context ──
   const ctx = useContext(AppContext);
   const config = ctx?.config;

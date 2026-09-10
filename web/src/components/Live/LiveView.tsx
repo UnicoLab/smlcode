@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useContext, useMemo } from 'react';
+import { useState, useEffect, useRef, useContext, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   Bot,
@@ -20,16 +21,12 @@ import {
   getTeams,
   getInterruptedRuns,
   resumeRun,
-  getSquads,
-  getTasks,
 } from '@/api/client';
 import type {
   AgentSpec,
   PipelineView,
   DynamicComposition,
   InterruptedRun,
-  SquadsView,
-  Task,
   TeamSpec,
 } from '@/types';
 import TeamPicker from './TeamPicker';
@@ -41,10 +38,13 @@ import ActivityRail from './ActivityRail';
 import type { RailView } from './ActivityRail';
 import TeamFloor from './floor/TeamFloor';
 import { buildFloor } from './floor/floorModel';
+import type { FloorSelection } from './floor/floorShared';
 import ResizeHandle from '@/components/ui/ResizeHandle';
 import { useToast } from '@/components/ui/Toast';
 import { FOCUS_PROMPT_EVENT } from '@/hooks/useKeyboard';
 import { usePersistentState, useMediaQuery } from '@/hooks/useUiState';
+import { useBoardStore } from '@/hooks/useBoardStore';
+import { EMPTY_DERIVED } from '@/hooks/runDerived';
 import clsx from 'clsx';
 
 /**
@@ -94,6 +94,10 @@ export default function LiveView() {
   // is a pure consumer — it holds no EventSource and no event state of its own,
   // which is what made the log collapse to a single entry before.
   const events = useMemo(() => ctx?.liveEvents ?? [], [ctx?.liveEvents]);
+  // What the log adds up to, folded once per event by the stream hook. This
+  // view used to recompute all of it — phases seen, the active agent, the task
+  // count, the newest composition — with seven scans of the log per flush.
+  const derived = ctx?.liveDerived ?? EMPTY_DERIVED;
   const running = ctx?.liveRunning ?? false;
   const setRunning = ctx?.setLiveRunning ?? (() => {});
   const resetEvents = ctx?.resetLiveEvents ?? (() => {});
@@ -106,15 +110,14 @@ export default function LiveView() {
   const [railView, setRailView] = usePersistentState<RailView>('live.rail.view', 'log');
   const [railWidth, setRailWidth] = usePersistentState('live.rail.width', RAIL_DEFAULT_PX);
   // The org chart and the board, so the floor can draw the teams, their
-  // tickets and which team the running task belongs to. Polled with the run
-  // rather than once: a run that assembles teams does so several phases in,
-  // long after this component mounted, and the board grows with every wave.
-  const [squads, setSquads] = useState<SquadsView | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  // True once the org chart and the board have been asked for at least once:
-  // the floor stays empty until then, so the first thing drawn is the real
-  // floor and not a crew table that the teams then replace.
-  const [boardReady, setBoardReady] = useState(false);
+  // tickets and which team the running task belongs to. From the shared board
+  // store: seeded once, kept current by the stream's task_update events, and
+  // refreshed on both edges of a run — this view used to poll both every 5 s.
+  // `ready` is true once both have been asked for at least once: the floor
+  // stays empty until then, so the first thing drawn is the real floor and
+  // not a crew table that the teams then replace.
+  const board = useBoardStore();
+  const { squads, tasks, ready: boardReady } = board;
   // The rail is a column on a wide viewport and a full-height OVERLAY below it,
   // so its default cannot be the same on both: opening it by default on a phone
   // means the first thing a user sees is the task drawer covering the console
@@ -127,6 +130,60 @@ export default function LiveView() {
   useEffect(() => {
     setRailOpen(isWide);
   }, [isWide]);
+
+  // ── What is selected on the floor lives in the URL ──
+  //
+  // ?task=ID opens a ticket's dossier, ?agent=ID a person's, either with an
+  // optional &team=ID. The URL rather than component state so a dossier
+  // survives navigating away and back, survives a reload, and can be linked
+  // to: every task chip in the log, the ticker and the board points here.
+  // Written with `replace`, so clicking around the floor does not fill the
+  // history with one entry per dossier.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selection = useMemo<FloorSelection>(() => {
+    const task = searchParams.get('task');
+    const agent = searchParams.get('agent');
+    const team = searchParams.get('team') ?? '';
+    if (task) return { kind: 'ticket', id: task, team };
+    if (agent) return { kind: 'agent', id: agent, team };
+    return null;
+  }, [searchParams]);
+  const setSelection = useCallback(
+    (sel: FloorSelection) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('task');
+          next.delete('agent');
+          next.delete('team');
+          if (sel) {
+            next.set(sel.kind === 'ticket' ? 'task' : 'agent', sel.id);
+            if (sel.team) next.set('team', sel.team);
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  // The task the Tasks rail should scroll to and flash: the selected ticket,
+  // or whatever "open in Tasks" was last pressed for.
+  const [focusTaskId, setFocusTaskId] = useState<string | undefined>(() => searchParams.get('task') ?? undefined);
+  useEffect(() => {
+    if (selection?.kind === 'ticket') setFocusTaskId(selection.id);
+  }, [selection]);
+  // Arriving with ?task=ID in the URL (a link from the board or the log) means
+  // "show me this task": the rail opens on Tasks where there is room for it.
+  const arrivedWithTask = useRef(Boolean(searchParams.get('task')));
+  useEffect(() => {
+    if (!arrivedWithTask.current) return;
+    arrivedWithTask.current = false;
+    if (isWide) {
+      setRailView('tasks');
+      setRailOpen(true);
+    }
+  }, [isWide, setRailView]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
   // Teams for THIS run. Empty means the library decides from the request and
@@ -152,35 +209,6 @@ export default function LiveView() {
     return () => window.removeEventListener(FOCUS_PROMPT_EVENT, focus);
   }, []);
 
-  // The org chart, refreshed while a run is going and once when it stops.
-  //
-  // Polled slowly on purpose: it is written once, at charter, and everything
-  // downstream reads it unchanged. A fast poll would spend a request every
-  // second re-fetching a file that has not moved.
-  useEffect(() => {
-    let alive = true;
-    // Both halves land together: the floor decides between "teams" and
-    // "one crew" from the org chart, so tickets arriving a beat before the
-    // chart would draw every ticket on one crew table for a frame and then
-    // redraw it as teams. One settled pair, one paint.
-    const load = () => {
-      Promise.allSettled([getSquads(), getTasks()]).then(([chart, board]) => {
-        if (!alive) return;
-        // No org chart is the normal state, not an error; an empty board is a fact.
-        if (chart.status === 'fulfilled') setSquads(chart.value);
-        if (board.status === 'fulfilled') setTasks(board.value?.tasks ?? []);
-        setBoardReady(true);
-      });
-    };
-    load();
-    if (!running) return () => { alive = false; };
-    const id = window.setInterval(load, 5000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [running]);
-
   // Refresh the resumable-run list whenever a run finishes.
   useEffect(() => {
     if (running) return;
@@ -193,13 +221,13 @@ export default function LiveView() {
 
   // A fresh run clears the composition panels; the log itself is reset by the
   // stream hook when the server emits `run_start`.
-  const lastRunStart = events.length > 0 ? events[events.length - 1] : null;
+  const lastEvent = derived.last;
   useEffect(() => {
-    if (lastRunStart?.kind === 'run_start') {
+    if (lastEvent?.kind === 'run_start') {
       setPersistedComposition(null);
       setPersistedCompositionError('');
     }
-  }, [lastRunStart]);
+  }, [lastEvent]);
 
   useEffect(() => {
     getAgents().then(setAgents).catch(() => {});
@@ -320,13 +348,10 @@ export default function LiveView() {
 
   // ── Derived run state ──
 
-  const dynamicComposition = useMemo<DynamicComposition | null>(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
-      if (ev.kind === 'composition' && ev.data) return ev.data;
-    }
-    return running ? null : persistedComposition;
-  }, [events, persistedComposition, running]);
+  const dynamicComposition = useMemo<DynamicComposition | null>(
+    () => derived.composition ?? (running ? null : persistedComposition),
+    [derived.composition, persistedComposition, running],
+  );
 
   const shownComposition = dynamicComposition || (!running ? compositionPreview : null);
   const shownCompositionMode: '' | 'runtime' | 'preview' = dynamicComposition
@@ -371,20 +396,8 @@ export default function LiveView() {
     [groups, dynamicPhaseOrder],
   );
 
-  const seenPhases = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of events) {
-      if (e.phase) set.add(e.phase);
-    }
-    return set;
-  }, [events]);
-
-  const activePhase = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].phase) return events[i].phase;
-    }
-    return null;
-  }, [events]);
+  const seenPhases = derived.phaseSet;
+  const activePhase = derived.activePhase;
 
   const phaseStateMap = useMemo<Record<string, PhaseState>>(() => {
     const map: Record<string, PhaseState> = {};
@@ -405,12 +418,7 @@ export default function LiveView() {
     return map;
   }, [allPhases, activePhase, seenPhases]);
 
-  const activeAgentId = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].agent) return events[i].agent;
-    }
-    return null;
-  }, [events]);
+  const activeAgentId = derived.activeAgent;
 
   const activeAgentSpec = useMemo(
     () => (activeAgentId ? agents.find((a) => a.id === activeAgentId) || null : null),
@@ -422,13 +430,8 @@ export default function LiveView() {
     [agents, specialist],
   );
 
-  const taskCount = useMemo(() => {
-    const ids = new Set<string>();
-    for (const e of events) {
-      if (e.task_id) ids.add(e.task_id);
-    }
-    return ids.size;
-  }, [events]);
+  const taskCount = derived.taskIds.size;
+  const totals = useMemo(() => ({ tokens: derived.tokens, cost: derived.cost }), [derived.tokens, derived.cost]);
 
   // The floor: everything the stage draws, derived once per change.
   const floor = useMemo(
@@ -439,11 +442,17 @@ export default function LiveView() {
     [boardReady, squads, tasks, events, shownComposition, running],
   );
 
-  // Picking a ticket on the floor opens it in the rail's task list.
-  const focusTicket = () => {
-    setRailView('tasks');
-    setRailOpen(true);
-  };
+  // "Open in Tasks" from a dossier: the rail opens on Tasks, scrolled to the
+  // ticket. The id used to be dropped on the way, so the rail opened on the
+  // top of the list whatever was clicked.
+  const focusTicket = useCallback(
+    (id: string) => {
+      setFocusTaskId(id);
+      setRailView('tasks');
+      setRailOpen(true);
+    },
+    [setRailView],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
@@ -629,13 +638,21 @@ export default function LiveView() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="relative min-h-0 flex-1">
-            <TeamFloor floor={floor} running={running} events={events} onTicket={focusTicket} />
+            <TeamFloor
+              floor={floor}
+              running={running}
+              events={events}
+              onTicket={focusTicket}
+              selection={selection}
+              onSelect={setSelection}
+            />
           </div>
           {/* What is happening RIGHT NOW, pinned under the floor as a ticker.
               On a local 30B the next log line can be four minutes out, and a
               clock that keeps moving is the difference between "thinking" and
-              "hung". */}
-          <NowBar events={events} running={running} squads={squads} />
+              "hung". Who is working comes from the floor's own reading of the
+              log, so the clock stops when the floor says nobody is. */}
+          <NowBar events={events} running={running} squads={squads} now={floor.now} totals={totals} />
         </main>
 
         {/* The rail is a column at ≥1024px and a full-height OVERLAY below it.
@@ -677,6 +694,8 @@ export default function LiveView() {
                 onView={setRailView}
                 overlay={!isWide}
                 onClose={() => setRailOpen(false)}
+                derived={derived}
+                focusTaskId={focusTaskId}
               />
             </aside>
           </>

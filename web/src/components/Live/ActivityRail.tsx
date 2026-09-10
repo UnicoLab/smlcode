@@ -12,6 +12,7 @@ import ResultPanel from './ResultPanel';
 import LiveFeedback from './LiveFeedback';
 import { buildRecovery, recoveryTally } from './recovery';
 import { useStickToBottom } from '@/hooks/useUiState';
+import type { RunDerived } from '@/hooks/runDerived';
 import type { LatestRunResponse, RunEvent } from '@/types';
 
 // ── One column for everything the stage does not draw ────────────────────
@@ -35,25 +36,35 @@ export interface ActivityRailProps {
   onClose?: () => void;
   /** True when the rail is an overlay (narrow viewport), so it shows a close button. */
   overlay?: boolean;
+  /**
+   * The stream's running totals — task and file counts for the chips — so
+   * the rail does not re-scan the log on every flush.
+   */
+  derived?: RunDerived;
+  /** A task the floor asked the Tasks view to scroll to and flash. */
+  focusTaskId?: string;
 }
 
-export default function ActivityRail({ events, running, result, tokenStream, view, onView, onClose, overlay }: ActivityRailProps) {
+export default function ActivityRail({ events, running, result, tokenStream, view, onView, onClose, overlay, derived, focusTaskId }: ActivityRailProps) {
   const logRef = useStickToBottom<HTMLDivElement>(events, view === 'log');
   const fixes = useMemo(() => recoveryTally(buildRecovery(events)), [events]);
   const fixesBadge =
     fixes.needsYou > 0 ? String(fixes.needsYou) : fixes.healing > 0 ? String(fixes.healing) : fixes.resolved > 0 ? String(fixes.resolved) : undefined;
+  // From the accumulator when the page has one; a bare rail (tests) counts.
   const fileCount = useMemo(() => {
+    if (derived) return derived.files.size;
     const set = new Set<string>();
     for (const e of events) {
       if (e.kind === 'file_change' && e.scope) set.add(e.scope);
     }
     return set.size;
-  }, [events]);
+  }, [derived, events]);
   const taskCount = useMemo(() => {
+    if (derived) return derived.taskIds.size;
     const ids = new Set<string>();
     for (const e of events) if (e.task_id) ids.add(e.task_id);
     return ids.size;
-  }, [events]);
+  }, [derived, events]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -99,12 +110,12 @@ export default function ActivityRail({ events, running, result, tokenStream, vie
               <div className="space-y-3">
                 <CalibrationBanner events={events} />
                 <TokenStream text={tokenStream} running={running} />
-                <EventLog events={events} />
+                <EventLog events={events} scrollRef={logRef} />
               </div>
             )}
           </div>
         )}
-        {view === 'tasks' && <LiveTaskPanel />}
+        {view === 'tasks' && <LiveTaskPanel focusTaskId={focusTaskId} />}
         {view === 'fixes' && (
           <div className="h-full overflow-auto">
             <RecoveryPanel events={events} />

@@ -3,7 +3,6 @@ import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Info } from 'lucide-react';
 import {
-  getSquads,
   getTeams,
   createTeam,
   updateTeam,
@@ -18,6 +17,7 @@ import {
   ApiError,
 } from '@/api/client';
 import { AppContext } from '@/App';
+import { useBoardStore } from '@/hooks/useBoardStore';
 import { useToast } from '@/components/ui/Toast';
 import { useConfirm } from '@/components/ui/Modal';
 import TeamLibrary from './TeamLibrary';
@@ -29,7 +29,6 @@ import ActiveTeams from './ActiveTeams';
 import type {
   DynamicComposition,
   Skill,
-  SquadsView,
   TeamActivity as TeamActivityData,
   TeamPreselect,
   TeamSpec,
@@ -60,7 +59,11 @@ export default function TeamsView() {
   const ctx = useContext(AppContext);
 
   const [library, setLibrary] = useState<TeamsLibrary | null>(null);
-  const [squads, setSquads] = useState<SquadsView | null>(null);
+  // The org chart comes from the shared board store: one copy for the whole
+  // app, refreshed by the stream, rather than this page's own 5 s poll.
+  const board = useBoardStore();
+  const squads = board.squads;
+  const refreshChart = board.refresh;
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -87,17 +90,16 @@ export default function TeamsView() {
   const load = useCallback(async () => {
     try {
       // Both, together: the page is only coherent when the library and the
-      // chart it feeds are from the same moment. Squads is allowed to fail —
-      // "no org chart yet" is the normal state, not an error.
+      // chart it feeds are from the same moment, so the store is asked to
+      // re-read the chart alongside the library.
       // Skills are best-effort: the editor still composes a team without the
       // picker, it just cannot offer what is installed.
-      const [lib, sq, sk] = await Promise.all([
+      const [lib, sk] = await Promise.all([
         getTeams(),
-        getSquads().catch(() => null),
         getSkills().catch(() => [] as Skill[]),
+        refreshChart(),
       ]);
       setLibrary(lib);
-      setSquads(sq);
       setSkills(sk);
       // The saved pin is the starting point, not an override: a user
       // mid-selection must not have their unsaved choices replaced by a reload.
@@ -106,7 +108,7 @@ export default function TeamsView() {
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.displayMessage : 'Could not load the teams.');
     }
-  }, []);
+  }, [refreshChart]);
 
   const loadActivity = useCallback(async () => {
     setActivityLoading(true);
@@ -125,9 +127,9 @@ export default function TeamsView() {
     void loadActivity();
   }, [load, loadActivity]);
 
-  // While a run goes, the org chart and the activity move: poll them slowly.
-  // The chart is written once at charter; the activity grows with every
-  // manager decision. Once the run stops, one last fetch catches the tail.
+  // While a run goes, the activity grows with every manager decision: poll it
+  // slowly. The org chart rides the board store, which the stream keeps
+  // current. Once the run stops, one last fetch catches the tail.
   const wasRunning = useRef(running);
   useEffect(() => {
     if (!running) {
@@ -141,7 +143,6 @@ export default function TeamsView() {
     wasRunning.current = true;
     const id = window.setInterval(() => {
       void loadActivity();
-      getSquads().then(setSquads).catch(() => {});
     }, ACTIVITY_POLL_MS);
     return () => window.clearInterval(id);
   }, [running, load, loadActivity]);

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Cpu, ListTodo, Users, Clock, Coins } from 'lucide-react';
+import { Loader2, Cpu, Users, Clock, Coins, Hourglass } from 'lucide-react';
 import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
+import EntityLink from '@/components/shared/EntityLink';
 import type { RunEvent, SquadsView } from '@/types';
+import { nowFor, readActivity, type FloorNow } from './floor/floorModel';
 
 // ── What is happening RIGHT NOW ──────────────────────────────────────────
 //
@@ -21,147 +23,135 @@ import type { RunEvent, SquadsView } from '@/types';
 // model, and a clock that is still moving. The clock is the point — a number
 // that ticks is the difference between "thinking" and "hung", and no amount of
 // log output provides it.
+//
+// Who is "in flight" is the floor's reading of the log (floorModel's working
+// set): an agent between its agent_start and agent_end, or the newest voice.
+// It used to be "the last line that named an agent", which kept the clock
+// counting on a worker whose agent_end had already arrived — a finished step
+// timed as if it were still going. When nobody is working, the bar says so and
+// the clock stops.
 
 export interface NowBarProps {
   events: RunEvent[];
   running: boolean;
   /** The org chart, so the active task's team can be named and coloured. */
   squads?: SquadsView | null;
+  /**
+   * Who is working, from the floor model. LiveView passes the floor's own so
+   * the log is read once; left undefined, the bar reads the log itself.
+   */
+  now?: FloorNow | null;
+  /** Cumulative tokens and cost for the run, from the stream's accumulator. */
+  totals?: { tokens: number; cost: number };
 }
 
-/** What the stream says is in flight, derived from the tail of the log. */
-interface Now {
-  phase: string;
-  agent: string;
-  taskID: string;
-  message: string;
-  model: string;
-  /** When this activity started, for the elapsed clock. */
-  since: number;
-  /** Cumulative tokens and cost for the run so far. */
-  tokens: number;
-  cost: number;
-}
+export default function NowBar({ events, running, squads, now: nowProp, totals }: NowBarProps) {
+  // The fallback path (no floor to borrow from) reads the log the way the
+  // floor does, so both agree on who is working.
+  const ownNow = useMemo<FloorNow | null>(() => {
+    if (nowProp !== undefined) return null;
+    if (events.length === 0) return null;
+    const activity = readActivity(events);
+    return nowFor(activity, squads?.ok ? (squads.task_teams ?? {}) : {}, Date.now());
+  }, [events, nowProp, squads]);
+  const now = nowProp !== undefined ? nowProp : ownNow;
 
-/**
- * readNow walks the log backwards for the most recent thing that STARTED.
- *
- * Backwards, and stopping at the first agent line, because the log's own order
- * is the only ordering there is — a wave runs several agents and the last one
- * announced is the one the user is waiting on. Totals are summed forward, since
- * every event may carry usage.
- */
-function readNow(events: RunEvent[]): Now | null {
-  if (events.length === 0) return null;
+  const ownTotals = useMemo(() => {
+    if (totals) return null;
+    let tokens = 0;
+    let cost = 0;
+    for (const e of events) {
+      tokens += e.tokens ?? 0;
+      cost += e.cost_usd ?? 0;
+    }
+    return { tokens, cost };
+  }, [events, totals]);
+  const sum = totals ?? ownTotals ?? { tokens: 0, cost: 0 };
 
-  let tokens = 0;
-  let cost = 0;
-  for (const e of events) {
-    tokens += e.tokens ?? 0;
-    cost += e.cost_usd ?? 0;
-  }
-
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (!e.agent) continue;
-    return {
-      phase: e.phase || '',
-      agent: e.agent,
-      taskID: e.task_id ?? '',
-      message: e.message ?? '',
-      model: e.model ?? '',
-      since: Date.parse(e.time) || Date.now(),
-      tokens,
-      cost,
-    };
-  }
-
-  const last = events[events.length - 1];
-  return {
-    phase: last.phase || '',
-    agent: '',
-    taskID: last.task_id ?? '',
-    message: last.message ?? '',
-    model: last.model ?? '',
-    since: Date.parse(last.time) || Date.now(),
-    tokens,
-    cost,
-  };
-}
-
-export default function NowBar({ events, running, squads }: NowBarProps) {
-  const now = useMemo(() => readNow(events), [events]);
+  const last = events.length > 0 ? events[events.length - 1] : null;
 
   // A clock that only re-renders when an event arrives is a clock that stops
   // exactly when it matters — during the four-minute gap this bar exists for.
+  // It runs only while someone is working: an idle bar has nothing to time.
+  const ticking = running && !!now;
   const [tick, setTick] = useState(() => Date.now());
   useEffect(() => {
-    if (!running) return undefined;
+    if (!ticking) return undefined;
+    setTick(Date.now());
     const id = window.setInterval(() => setTick(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [running]);
+  }, [ticking]);
 
-  if (!running || !now) return null;
+  if (!running || !last) return null;
 
-  const seconds = Math.max(0, Math.round((tick - now.since) / 1000));
-  const team = squads?.ok
-    ? (squads.squads ?? []).find((s) => s.id === teamOfTask(squads, now.taskID))
-    : undefined;
+  const seconds = now ? Math.max(0, Math.round((tick - now.since) / 1000)) : 0;
+  const teamID = now ? now.team || teamOfTask(squads, now.task) : '';
+  const team = squads?.ok && teamID ? (squads.squads ?? []).find((s) => s.id === teamID) : undefined;
   const color = teamColor(team?.id);
+  const phase = now ? '' : last.phase || '';
 
   return (
     <div
       role="status"
       aria-live="polite"
       className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-200 bg-brand-50/60 px-3 py-1.5 text-[11px] dark:border-gray-800 dark:bg-brand-950/20 sm:px-4"
+      data-testid="now-bar"
+      data-working={now ? 'true' : 'false'}
     >
-      <Loader2 size={13} className="shrink-0 animate-spin text-brand-500" aria-hidden="true" />
-
-      {now.agent && (
-        <span className="inline-flex shrink-0 items-center gap-1 font-semibold text-brand-700 dark:text-brand-300">
-          @{now.agent}
-        </span>
+      {now ? (
+        <Loader2 size={13} className="shrink-0 animate-spin text-brand-500" aria-hidden="true" />
+      ) : (
+        <Hourglass size={13} className="shrink-0 text-gray-400" aria-hidden="true" />
       )}
 
-      {now.taskID && (
-        <span className="inline-flex shrink-0 items-center gap-1 font-mono text-gray-600 dark:text-gray-300">
-          <ListTodo size={11} aria-hidden="true" />
-          {now.taskID}
-        </span>
+      {now?.agent && (
+        <EntityLink kind="agent" id={now.agent} label={`@${now.agent}`} params={{ team: teamID || undefined }} title={`Agent ${now.agent} — open on the floor`} />
+      )}
+
+      {now?.task && (
+        <EntityLink kind="task" id={now.task} params={{ team: teamID || undefined }} title={`Task ${now.task} — open on the floor`} />
       )}
 
       {team && (
-        <span
-          className={clsx('inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono font-semibold', color.badge)}
+        <EntityLink
+          kind="team"
+          id={team.id}
+          className={clsx('!border-transparent', color.badge)}
           title={`Team ${team.id}${team.manager ? ` · manager ${team.manager}` : ''}`}
-        >
-          <Users size={10} aria-hidden="true" />
-          {team.id}
-        </span>
+          label={
+            <span className="inline-flex items-center gap-1">
+              <Users size={10} aria-hidden="true" />
+              {team.id}
+            </span>
+          }
+          bare
+        />
       )}
 
       {/* The message is the only part allowed to be long, so it is the only
           part allowed to truncate. */}
-      <span className="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-400" title={now.message}>
-        {now.message || `${now.phase} in progress`}
+      <span className="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-400" title={now ? now.message : last.message}>
+        {now ? now.message || 'in progress' : `${phase ? `${phase}: ` : ''}nobody is working — waiting for the next step`}
       </span>
 
       {/* Everything from here is the "is it stuck" evidence. */}
-      <span
-        className={clsx(
-          'inline-flex shrink-0 items-center gap-1 font-mono tabular-nums',
-          // Past two minutes on one step, say so in a colour rather than
-          // leaving the reader to do the arithmetic. Local 30B calls really do
-          // take this long, and a user who knows that is a user who waits.
-          seconds >= 120 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500',
-        )}
-        title="Time on this step. A local 30B routinely takes minutes per call."
-      >
-        <Clock size={11} aria-hidden="true" />
-        {formatDuration(seconds)}
-      </span>
+      {now && (
+        <span
+          className={clsx(
+            'inline-flex shrink-0 items-center gap-1 font-mono tabular-nums',
+            // Past two minutes on one step, say so in a colour rather than
+            // leaving the reader to do the arithmetic. Local 30B calls really do
+            // take this long, and a user who knows that is a user who waits.
+            seconds >= 120 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500',
+          )}
+          title="Time on this step. A local 30B routinely takes minutes per call."
+        >
+          <Clock size={11} aria-hidden="true" />
+          {formatDuration(seconds)}
+        </span>
+      )}
 
-      {now.model && (
+      {now?.model && (
         <span
           className="hidden shrink-0 items-center gap-1 font-mono text-gray-400 sm:inline-flex"
           title={`Model: ${now.model}`}
@@ -171,13 +161,13 @@ export default function NowBar({ events, running, squads }: NowBarProps) {
         </span>
       )}
 
-      {now.tokens > 0 && (
+      {sum.tokens > 0 && (
         <span
           className="hidden shrink-0 items-center gap-1 font-mono tabular-nums text-gray-400 md:inline-flex"
-          title={`${now.tokens.toLocaleString()} tokens this run${now.cost > 0 ? ` · $${now.cost.toFixed(4)}` : ''}`}
+          title={`${sum.tokens.toLocaleString()} tokens this run${sum.cost > 0 ? ` · $${sum.cost.toFixed(4)}` : ''}`}
         >
           <Coins size={11} aria-hidden="true" />
-          {compactTokens(now.tokens)}
+          {compactTokens(sum.tokens)}
         </span>
       )}
     </div>

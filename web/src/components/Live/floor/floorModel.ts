@@ -98,6 +98,8 @@ export interface FloorNow {
   task: string;
   team: string;
   message: string;
+  /** The model that agent's line named, when it did. */
+  model: string;
   since: number;
 }
 
@@ -589,7 +591,7 @@ function facts(activity: Activity, agent: string, tickets: Set<string>): Pick<Fl
 
 // ── Reading the log ──────────────────────────────────────────────────────
 
-interface Activity {
+export interface Activity {
   /** task → the agent that most recently started on it. */
   holder: Map<string, string>;
   /** task → every agent that has touched it. */
@@ -598,6 +600,7 @@ interface Activity {
   lastAgent: string;
   lastTask: string;
   lastMessage: string;
+  lastModel: string;
   lastAt: number;
   /** Every agent that has appeared, in first-seen order. */
   speakers: string[];
@@ -614,7 +617,13 @@ interface Activity {
 /** An agent_start with no agent_end for this long is a crash, not work. */
 const WORKING_TTL_MS = 10 * 60_000;
 
-function readActivity(events: RunEvent[]): Activity {
+/**
+ * readActivity is the floor's reading of the log: who is inside an
+ * agent_start … agent_end pair right now, who spoke last, who holds which
+ * ticket. It is exported because the NowBar's clock keys on the same working
+ * set — when nobody is working, nothing is "in progress" to time.
+ */
+export function readActivity(events: RunEvent[]): Activity {
   const holder = new Map<string, string>();
   const touchedBy = new Map<string, Set<string>>();
   const seen = new Set<string>();
@@ -626,6 +635,7 @@ function readActivity(events: RunEvent[]): Activity {
   let lastAgent = '';
   let lastTask = '';
   let lastMessage = '';
+  let lastModel = '';
   let lastAt = 0;
   for (const e of events) {
     const agent = (e.agent ?? '').trim().toLowerCase();
@@ -664,28 +674,32 @@ function readActivity(events: RunEvent[]): Activity {
       if (lastAgent === agent) {
         lastAgent = '';
         lastTask = '';
+        lastModel = '';
       }
       continue;
     }
     lastAgent = agent;
     lastTask = e.task_id ?? '';
     lastMessage = e.message ?? '';
+    lastModel = e.model ?? '';
     lastAt = Date.parse(e.time) || lastAt;
     lastBy.set(agent, { message: lastMessage, at: lastAt, task: lastTask });
   }
   for (const [id, w] of working) {
     if (lastAt - w.at > WORKING_TTL_MS) working.delete(id);
   }
-  return { holder, touchedBy, lastAgent, lastTask, lastMessage, lastAt, speakers, lastBy, working, phase: cur.phase, phaseOf };
+  return { holder, touchedBy, lastAgent, lastTask, lastMessage, lastModel, lastAt, speakers, lastBy, working, phase: cur.phase, phaseOf };
 }
 
-function nowFor(activity: Activity, taskTeams: Record<string, string>, nowMs: number, crewTeam?: string): FloorNow | null {
+/** nowFor is what the floor's ticker says: who is working, on what, since when. */
+export function nowFor(activity: Activity, taskTeams: Record<string, string>, nowMs: number, crewTeam?: string): FloorNow | null {
   if (!activity.lastAgent) return null;
   return {
     agent: activity.lastAgent,
     task: activity.lastTask,
     team: crewTeam ?? (activity.lastTask ? taskTeams[activity.lastTask] ?? '' : ''),
     message: activity.lastMessage,
+    model: activity.lastModel,
     since: activity.lastAt || nowMs,
   };
 }

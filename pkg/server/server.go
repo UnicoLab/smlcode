@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,6 +88,13 @@ type Server struct {
 	// when it still matches, so a goroutine from a stopped run that finishes
 	// late cannot clobber the state of the run that replaced it.
 	runGen uint64
+	// runStartSeq is the sequence number of the current run's first event.
+	// /api/runs/latest and the current-run activity view scope their snapshot
+	// to it; the ring itself is never cleared, so SSE replay by Last-Event-ID
+	// keeps working across a stop → start.
+	runStartSeq uint64
+	// runCancel cancels the current run's context (POST /api/runs/stop).
+	runCancel context.CancelFunc
 	// lastPhase is the most recent phase seen on a structural event; the
 	// task_update events synthesized from the board hook carry it because the
 	// board itself does not know which phase moved the task.
@@ -95,6 +104,15 @@ type Server struct {
 	// hookRemovers undo the package-level change hooks installed by
 	// installChangeHooks; run in Shutdown.
 	hookRemovers []func()
+	// activityCache memoizes past runs' derived team timelines by event-log
+	// identity (see team_activity.go); activityOrder is insertion order for
+	// eviction.
+	activityMu    sync.Mutex
+	activityCache map[string]*activityCacheEntry
+	activityOrder []string
+	// usageCache memoizes per-query token/cost totals for GET /api/queries.
+	usageMu    sync.Mutex
+	usageCache map[string]usageCacheEntry
 	// runFn / resumeFn are the engine entry points POST /api/runs and
 	// /api/runs/resume drive. They default to the harness and are swappable so
 	// lifecycle tests can run a controllable fake instead of a model.
@@ -464,6 +482,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/tasks", s.handleAddTask)
 	s.mux.HandleFunc("PATCH /api/tasks/{id}", s.handlePatchTask)
 	s.mux.HandleFunc("DELETE /api/tasks/{id}", s.handleDeleteTask)
+	s.mux.HandleFunc("POST /api/tasks/{id}/retry", s.handleRetryTask)
 	s.mux.HandleFunc("GET /api/board", s.handleGetBoard)
 	s.mux.HandleFunc("GET /api/columns", s.handleColumns)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
@@ -892,6 +911,56 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"ok": "true"})
 }
 
+// errNoBoard is the 409 of POST /api/tasks/{id}/retry when nothing is loaded.
+var errNoBoard = errors.New("no board loaded")
+
+// handleRetryTask — POST /api/tasks/{id}/retry
+//
+// Puts a task back in front of the workers: column ready_to_dev, the ladder
+// retry counter reset, the error cleared, and "retried from Studio" appended
+// to attempt_log so the next attempt is told this is a retry. The board is
+// persisted through the live store and the change is published as a
+// task_update event through the board hook. 409 when no board is loaded, 404
+// for an unknown id. Responds with the task as GET /api/tasks renders it.
+func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	o := s.orch()
+	if o == nil || o.Board() == nil {
+		http.Error(w, errNoBoard.Error(), http.StatusConflict)
+		return
+	}
+	store := o.Board()
+	_ = store.Load()
+	if snap := store.Snapshot(); len(snap.Tasks) == 0 {
+		http.Error(w, errNoBoard.Error(), http.StatusConflict)
+		return
+	}
+	var out plan.Task
+	err := store.Update(func(b *plan.Board) error {
+		t, ok := b.Get(id)
+		if !ok {
+			return os.ErrNotExist
+		}
+		t.MoveTo(plan.ColReadyToDev)
+		t.Retries = 0
+		t.Error = ""
+		t.AttemptLog = append(t.AttemptLog, "retried from Studio")
+		t.Normalize()
+		b.UpdateTask(t)
+		out = t
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "task not found: "+id, http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, out)
+}
+
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	list, err := s.orch().Skills().List()
 	if err != nil {
@@ -987,16 +1056,15 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "query required", 400)
 		return
 	}
-	hitl.ClearAll(s.slmDir())
-	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
+	gen, ctx, ok := s.beginRun()
+	if !ok {
 		http.Error(w, "run already in progress", http.StatusConflict)
 		return
 	}
-	s.running = true
-	s.events = nil
-	s.mu.Unlock()
+	// Pending asks belong to the previous run and are swept only once THIS
+	// run owns the slot. Sweeping before the running check meant a second
+	// click on Run — a 409 — deleted the in-flight run's open shell ask.
+	hitl.ClearAll(s.slmDir())
 
 	// Per-run engine/specialist/skill selection. These belong on the Run call
 	// (see runOptions / "wiring required"), but until orchestrator.Run accepts
@@ -1014,8 +1082,6 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	s.runWG.Add(1)
 	go func() {
 		defer s.runWG.Done()
-		defer s.restoreRunOptions(saved)
-		ctx := s.runContext()
 		// Calibrate FIRST, because the model may have changed since the server
 		// started. Studio is where models get switched, and a switch that lands
 		// between launch and the first run would otherwise be governed by the
@@ -1027,25 +1093,80 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		// cold model can take a minute to measure, and that minute belongs in
 		// the event stream where the user can watch it, not in a hung request.
 		s.ensureCalibrated(ctx)
-		res, err := s.h.Run(ctx, query)
-		s.mu.Lock()
-		s.running = false
-		if res != nil {
-			s.lastRes = res
-		}
-		s.mu.Unlock()
-		phase := "done"
-		msg := "finished"
-		if err != nil {
-			phase = "error"
-			msg = err.Error()
-		} else if res != nil {
-			msg = res.Summary
-		}
-		s.emit(orchestrator.Event{Phase: phase, Kind: "run_end", Message: msg, Time: time.Now()})
+		res, err := s.run(ctx, query)
+		s.finishRun(gen, res, err, saved, "finished")
 	}()
 
 	writeJSON(w, map[string]string{"status": "started", "query": req.Query})
+}
+
+// run / resume are the engine entry points, overridable for tests.
+func (s *Server) run(ctx context.Context, query string) (*orchestrator.Result, error) {
+	if s.runFn != nil {
+		return s.runFn(ctx, query)
+	}
+	return s.h.Run(ctx, query)
+}
+
+func (s *Server) resume(ctx context.Context, id string) (*orchestrator.Result, error) {
+	if s.resumeFn != nil {
+		return s.resumeFn(ctx, id)
+	}
+	return s.h.Resume(ctx, id)
+}
+
+// beginRun claims the run slot. It returns the run's generation and context,
+// or ok=false when a run is in progress (including one that is still
+// unwinding after a stop). The event ring is NOT cleared: subscribers are
+// mid-stream on it, and /api/runs/latest scopes its snapshot by runStartSeq
+// instead.
+func (s *Server) beginRun() (gen uint64, ctx context.Context, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return 0, nil, false
+	}
+	s.running = true
+	s.stopping = false
+	s.runGen++
+	s.runStartSeq = s.seq + 1
+	s.lastPhase = ""
+	ctx, s.runCancel = context.WithCancel(s.runContext())
+	return s.runGen, ctx, true
+}
+
+// finishRun is the tail of every run goroutine. Only the goroutine whose
+// generation is still current may clear running, publish the result, restore
+// the per-run options and emit run_end: a goroutine from a stopped run that
+// unwinds late would otherwise clobber the run that replaced it.
+func (s *Server) finishRun(gen uint64, res *orchestrator.Result, err error, saved savedRunOptions, doneMsg string) {
+	s.mu.Lock()
+	current := s.runGen == gen
+	if current {
+		s.running = false
+		s.stopping = false
+		if s.runCancel != nil {
+			s.runCancel()
+			s.runCancel = nil
+		}
+		if res != nil {
+			s.lastRes = res
+		}
+	}
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	s.restoreRunOptions(saved)
+	phase := "done"
+	msg := doneMsg
+	if err != nil {
+		phase = "error"
+		msg = err.Error()
+	} else if res != nil {
+		msg = res.Summary
+	}
+	s.emit(orchestrator.Event{Phase: phase, Kind: "run_end", Message: msg, Time: time.Now()})
 }
 
 // runOptions carries the per-run overrides Studio sends with POST /api/runs.
@@ -1180,15 +1301,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 	id := strings.TrimSpace(req.ID)
-	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
+	// ctx derives from runContext(), NOT context.Background(): a resumed run
+	// used to be invisible to Shutdown, so Ctrl-C returned to the shell while
+	// the agent kept writing files.
+	gen, ctx, ok := s.beginRun()
+	if !ok {
 		http.Error(w, "run already in progress", http.StatusConflict)
 		return
 	}
-	s.running = true
-	s.events = nil
-	s.mu.Unlock()
 
 	s.wireOrchestratorEvents()
 	s.emit(orchestrator.Event{
@@ -1197,26 +1317,8 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	s.runWG.Add(1)
 	go func() {
 		defer s.runWG.Done()
-		// runContext(), NOT context.Background(): a resumed run used to be
-		// invisible to Shutdown, so Ctrl-C returned to the shell while the
-		// agent kept writing files.
-		ctx := s.runContext()
-		res, err := s.h.Resume(ctx, id)
-		s.mu.Lock()
-		s.running = false
-		if res != nil {
-			s.lastRes = res
-		}
-		s.mu.Unlock()
-		phase := "done"
-		msg := "resumed"
-		if err != nil {
-			phase = "error"
-			msg = err.Error()
-		} else if res != nil {
-			msg = res.Summary
-		}
-		s.emit(orchestrator.Event{Phase: phase, Kind: "run_end", Message: msg, Time: time.Now()})
+		res, err := s.resume(ctx, id)
+		s.finishRun(gen, res, err, savedRunOptions{}, "resumed")
 	}()
 
 	writeJSON(w, map[string]string{"status": "started", "id": id})
@@ -1791,12 +1893,27 @@ func (s *Server) handleClearFeedback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// handleStopRun — POST /api/runs/stop
+//
+// Stopping is a REQUEST: the engine is told to unwind and the run's context
+// is canceled, but running stays true (with stopping set) until the run
+// goroutine actually exits and finishRun clears it. Flipping running to false
+// here let a following POST /api/runs start a new run on top of the old one's
+// teardown, and the old goroutine then cleared the new run's state.
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
-	s.orch().Stop()
+	if orch := s.orch(); orch != nil {
+		orch.Stop()
+	}
 	s.mu.Lock()
-	was := s.running
-	s.running = false
+	was := s.running && !s.stopping
+	if s.running {
+		s.stopping = true
+	}
+	cancel := s.runCancel
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if was {
 		s.emit(orchestrator.Event{
 			Phase: "done", Kind: "run_stop", Message: "run stopped by user", Time: time.Now(),
@@ -1805,25 +1922,38 @@ func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "stopping"})
 }
 
+// handleLatestRun — GET /api/runs/latest
+//
+// The snapshot is COPIED under s.mu and encoded after it is released. The
+// orchestrator emits synchronously into Server.emit, which takes s.mu, so
+// encoding while holding the lock let one stalled browser fetch block a
+// worker mid-tool-call. Events are scoped to the current (or most recent)
+// run by sequence number; the ring itself is never cleared, so SSE
+// subscribers keep their replay window across runs.
 func (s *Server) handleLatestRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	events := make([]orchestrator.Event, 0, len(s.events))
 	seqs := make([]uint64, 0, len(s.events))
 	for _, se := range s.events {
+		if se.Seq < s.runStartSeq {
+			continue
+		}
 		events = append(events, se.Event)
 		seqs = append(seqs, se.Seq)
 	}
-	writeJSON(w, map[string]interface{}{
-		"running": s.running,
-		"result":  s.lastRes,
-		"events":  events,
+	snapshot := map[string]interface{}{
+		"running":  s.running,
+		"stopping": s.stopping,
+		"result":   s.lastRes,
+		"events":   events,
 		// event_seqs[i] is the SSE id of events[i]; the client uses the last
 		// one as its Last-Event-ID baseline so a snapshot + stream never
 		// double-renders.
 		"event_seqs": seqs,
 		"last_seq":   s.seq,
-	})
+	}
+	s.mu.Unlock()
+	writeJSON(w, snapshot)
 }
 
 // handleSSE streams run events.
@@ -1992,6 +2122,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	running := s.running
+	stopping := s.stopping
 	s.mu.Unlock()
 	skillCount := s.skillCount()
 	comp, ok, compErr := composer.LoadDynamic(s.slmDir())
@@ -2009,6 +2140,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"text":              st,
 		"running":           running,
+		"stopping":          stopping,
 		"readiness":         ready,
 		"composition":       s.savedCompositionView(compPtr),
 		"composition_error": compErrText,
@@ -2580,6 +2712,16 @@ func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
 		Interrupted bool   `json:"interrupted,omitempty"`
 		Phase       string `json:"phase,omitempty"`
 		ResumeFrom  string `json:"resume_from,omitempty"`
+		// Cheap per-run figures for the history list: wall time from the
+		// turn's timestamps, task counts from the stored board, team names
+		// from the tasks' squads, tokens/cost from a cached scan of the log.
+		DurationMS  int64    `json:"duration_ms"`
+		Tokens      int      `json:"tokens"`
+		CostUSD     float64  `json:"cost_usd"`
+		TasksTotal  int      `json:"tasks_total"`
+		TasksDone   int      `json:"tasks_done"`
+		FailedTasks int      `json:"failed_tasks"`
+		Teams       []string `json:"teams"`
 	}
 	var out []item
 	for _, e := range entries {
@@ -2590,17 +2732,98 @@ func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		out = append(out, item{
+		it := item{
 			ID: t.ID, Query: t.Query, Success: t.Success,
 			Summary: t.Summary, UpdatedAt: t.UpdatedAt,
 			Interrupted: t.Interrupted, Phase: t.Phase, ResumeFrom: t.ResumeFrom,
-		})
+			Teams: []string{},
+		}
+		if created, ok := parseAskCreatedAt(t.CreatedAt); ok {
+			if updated, ok := parseAskCreatedAt(t.UpdatedAt); ok && updated.After(created) {
+				it.DurationMS = updated.Sub(created).Milliseconds()
+			}
+		}
+		teams := map[string]bool{}
+		for _, task := range t.Board.Tasks {
+			task.Normalize()
+			it.TasksTotal++
+			switch {
+			case task.Column == plan.ColDone:
+				it.TasksDone++
+			case task.Column == plan.ColBlocked || task.Status == plan.StatusFailed || task.Error != "":
+				it.FailedTasks++
+			}
+			if sq := strings.TrimSpace(task.Squad); sq != "" && !teams[sq] {
+				teams[sq] = true
+				it.Teams = append(it.Teams, sq)
+			}
+		}
+		sort.Strings(it.Teams)
+		it.Tokens, it.CostUSD = s.queryUsage(t.ID)
+		out = append(out, it)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
 	if out == nil {
 		out = []item{}
 	}
 	writeJSON(w, out)
+}
+
+// usageCacheEntry memoizes one query's token/cost totals by log identity.
+type usageCacheEntry struct {
+	size    int64
+	modTime time.Time
+	tokens  int
+	cost    float64
+}
+
+// queryUsage sums tokens and cost_usd over a query's event log. The scan is
+// cached per (id, size, mtime), and only lines that can carry a figure are
+// decoded, so listing the history does not re-parse every token delta of
+// every past run on each request.
+func (s *Server) queryUsage(id string) (int, float64) {
+	path := session.EventsPath(s.slmDir(), id)
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0
+	}
+	s.usageMu.Lock()
+	if e, ok := s.usageCache[id]; ok && e.size == info.Size() && e.modTime.Equal(info.ModTime()) {
+		s.usageMu.Unlock()
+		return e.tokens, e.cost
+	}
+	s.usageMu.Unlock()
+
+	tokens, cost := 0, 0.0
+	if f, err := os.Open(path); err == nil { //nolint:gosec // harness state under SlmDir
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			if !bytes.Contains(line, []byte(`"tokens"`)) && !bytes.Contains(line, []byte(`"cost_usd"`)) {
+				continue
+			}
+			var rec struct {
+				Tokens  int     `json:"tokens"`
+				CostUSD float64 `json:"cost_usd"`
+			}
+			if json.Unmarshal(line, &rec) == nil {
+				tokens += rec.Tokens
+				cost += rec.CostUSD
+			}
+		}
+		_ = f.Close()
+	}
+	s.usageMu.Lock()
+	if s.usageCache == nil {
+		s.usageCache = map[string]usageCacheEntry{}
+	}
+	if len(s.usageCache) > 256 {
+		s.usageCache = map[string]usageCacheEntry{}
+	}
+	s.usageCache[id] = usageCacheEntry{size: info.Size(), modTime: info.ModTime(), tokens: tokens, cost: cost}
+	s.usageMu.Unlock()
+	return tokens, cost
 }
 
 func (s *Server) handleGetQuery(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -368,24 +369,36 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var sources []activitySource
 	queryID := strings.TrimSpace(r.URL.Query().Get("query"))
+	var cached *activityCacheEntry
 	if queryID != "" {
-		// ReadEvents keeps the FIRST n records; a run that streamed tokens
-		// has tens of thousands, and the gates and late triage that matter
-		// most sit at the end. Read the whole log.
-		recs, err := session.ReadEvents(s.slmDir(), queryID, pastRunEventCap)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		for _, rec := range recs {
-			sources = append(sources, activitySource{
-				Time: rec.Time, Phase: rec.Phase, Kind: rec.Kind, Agent: rec.Agent,
-				TaskID: rec.TaskID, Message: rec.Message,
-			})
+		// A past run's log is immutable once the run ended, and Studio
+		// re-requests this view on every Teams-page visit. The derived
+		// timeline is cached per (query, size, mtime) of the log so the
+		// second visit is a map lookup, not a re-parse of a 250k-line file.
+		if entry, ok := s.cachedActivity(queryID); ok {
+			cached = entry
+		} else {
+			// ReadEvents keeps the FIRST n records; a run that streamed tokens
+			// has tens of thousands, and the gates and late triage that matter
+			// most sit at the end. Read the whole log.
+			recs, err := session.ReadEvents(s.slmDir(), queryID, pastRunEventCap)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for _, rec := range recs {
+				sources = append(sources, activitySource{
+					Time: rec.Time, Phase: rec.Phase, Kind: rec.Kind, Agent: rec.Agent,
+					TaskID: rec.TaskID, Message: rec.Message,
+				})
+			}
 		}
 	} else {
 		s.mu.Lock()
 		for _, se := range s.events {
+			if se.Seq < s.runStartSeq {
+				continue // previous run; the ring is no longer cleared per run
+			}
 			sources = append(sources, activitySource{
 				Time: se.Event.Time.Format(time.RFC3339Nano), Phase: se.Event.Phase, Kind: se.Event.Kind,
 				Level: se.Event.Level, Agent: se.Event.Agent, TaskID: se.Event.TaskID, Message: se.Event.Message,
@@ -411,7 +424,15 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries := deriveTeamActivity(sources, planPtr, taskTeams)
+	var entries []ActivityEntry
+	if cached != nil {
+		entries = cached.entries
+	} else {
+		entries = deriveTeamActivity(sources, planPtr, taskTeams)
+		if queryID != "" {
+			s.storeActivity(queryID, entries)
+		}
+	}
 	if len(entries) > limit {
 		entries = entries[len(entries)-limit:]
 	}
@@ -441,6 +462,54 @@ func (s *Server) handleTeamActivity(w http.ResponseWriter, r *http.Request) {
 
 // pastRunEventCap bounds a past run's event log read for the timeline.
 const pastRunEventCap = 250000
+
+// activityCacheEntry is one derived timeline keyed by the event log's identity.
+type activityCacheEntry struct {
+	size    int64
+	modTime time.Time
+	entries []ActivityEntry
+}
+
+// maxActivityCache bounds the per-query cache; past this the oldest entry by
+// insertion is dropped (a re-derive, exactly today's cost).
+const maxActivityCache = 32
+
+// cachedActivity returns the derived timeline for queryID when the event log
+// still has the size and mtime it was derived from.
+func (s *Server) cachedActivity(queryID string) (*activityCacheEntry, bool) {
+	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID))
+	if err != nil {
+		return nil, false
+	}
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	e, ok := s.activityCache[queryID]
+	if !ok || e.size != info.Size() || !e.modTime.Equal(info.ModTime()) {
+		return nil, false
+	}
+	return e, true
+}
+
+func (s *Server) storeActivity(queryID string, entries []ActivityEntry) {
+	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID))
+	if err != nil {
+		return
+	}
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	if s.activityCache == nil {
+		s.activityCache = map[string]*activityCacheEntry{}
+		s.activityOrder = nil
+	}
+	if _, exists := s.activityCache[queryID]; !exists {
+		s.activityOrder = append(s.activityOrder, queryID)
+		for len(s.activityOrder) > maxActivityCache {
+			delete(s.activityCache, s.activityOrder[0])
+			s.activityOrder = s.activityOrder[1:]
+		}
+	}
+	s.activityCache[queryID] = &activityCacheEntry{size: info.Size(), modTime: info.ModTime(), entries: entries}
+}
 
 // planBelongsToBoard says whether the saved org chart is the one this board
 // was built under.

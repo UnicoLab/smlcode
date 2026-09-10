@@ -15,6 +15,9 @@ import { useToast } from './ui/Toast';
 import type { AgentSpec, AuthStatus, ModelCost } from '@/types';
 import clsx from 'clsx';
 
+/** Quiet time before a model-catalog search fires. */
+const MODEL_SEARCH_DEBOUNCE_MS = 200;
+
 export default function TopBar() {
   const ctx = useContext(AppContext);
   const navigate = useNavigate();
@@ -61,9 +64,25 @@ export default function TopBar() {
     }
   }, [showModelMenu]);
 
-  const fetchModels = async (q = '') => {
+  // The catalog search used to fire one request per keystroke and apply
+  // whichever answer landed last — not necessarily the one for the text in
+  // the box. Now: 200 ms of quiet first, and an AbortController per search
+  // so a superseded answer is dropped when it arrives. (The fetch itself
+  // runs to completion: the client does not take a signal.)
+  const modelSearchTimer = useRef<number | null>(null);
+  const modelSearchAbort = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      if (modelSearchTimer.current !== null) window.clearTimeout(modelSearchTimer.current);
+      modelSearchAbort.current?.abort();
+    },
+    [],
+  );
+
+  const fetchModels = async (q = '', signal?: AbortSignal) => {
     try {
       const res = await getModels(q ? { q, limit: 40 } : { limit: 40 });
+      if (signal?.aborted) return;
       setModels(res.models || []);
       setCurrentModel(res.current);
       setAuth(res.auth || null);
@@ -75,8 +94,20 @@ export default function TopBar() {
       });
       setModelCosts(costMap);
     } catch (err) {
+      if (signal?.aborted) return;
       toast.reportError(err, 'Could not load the model catalog');
     }
+  };
+
+  const searchModels = (q: string) => {
+    if (modelSearchTimer.current !== null) window.clearTimeout(modelSearchTimer.current);
+    modelSearchAbort.current?.abort();
+    const controller = new AbortController();
+    modelSearchAbort.current = controller;
+    modelSearchTimer.current = window.setTimeout(() => {
+      modelSearchTimer.current = null;
+      fetchModels(q, controller.signal);
+    }, MODEL_SEARCH_DEBOUNCE_MS);
   };
 
   const cycleEnabledModel = async () => {
@@ -227,7 +258,7 @@ export default function TopBar() {
                 value={modelFilter}
                 onChange={(e) => {
                   setModelFilter(e.target.value);
-                  fetchModels(e.target.value);
+                  searchModels(e.target.value);
                 }}
                 placeholder="Search models…"
                 className="input-mono text-xs h-8 w-full"

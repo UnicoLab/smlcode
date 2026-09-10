@@ -79,8 +79,50 @@ the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 | `/settings` | **Settings** | Provider, model, stacks, packs, HITL modes, parallelism, MCP, API keys |
 
 A global **HITL modal** surfaces clarify / plan-approve / continue / escalate / shell gates from
-any page — you no longer have to be on the Live view to answer one. A **connection badge** shows
-stream health, and an error boundary keeps one broken panel from blanking the app.
+any page — you no longer have to be on the Live view to answer one. It traps Tab and answers Esc
+by returning focus to the decision (a gate cannot be dismissed — the harness is waiting). A
+**connection badge** shows stream health, and an error boundary keeps one broken panel from
+blanking the app.
+
+### When a task gets stuck
+
+A blocked or failed card tells its story instead of showing one error line: the **Attempts**
+timeline (`attempt_log` — "attempt 2 failed because …"), the gate-retry count, the **review
+verdict**, and the structured **criteria** checklist. Under it, a next-step row:
+
+| Action | What it does |
+|---|---|
+| **Send back to Ready** | `PATCH /api/tasks/{id}` → column `ready_to_dev`; the next wave picks it up |
+| **Retry** | `POST /api/tasks/{id}/retry` — same, keeping the attempt log so the next try knows what failed (falls back to the Ready move on a server without the endpoint; `409` means no board is loaded) |
+| **Reassign team** | opens the edit form on the team control |
+| **Steer** | prefills the live-feedback composer with `@task:ID ` — from the board it navigates to Live first |
+
+The same row appears in the Live task panel, whose **Blocked / Failed** counters are filters over
+the list. The panel accepts a `focusTaskId` prop (and Live reads `/?task=ID`) to expand, scroll
+to and flash one task.
+
+### When a run ends
+
+The result panel's **What next** row offers whichever of these apply: **Resume interrupted run**,
+**Open blocked on Board** (`/board?column=blocked`), **Review N pending**, and **Run again with
+this prompt**. The app also fires a toast, flashes the tab title while the tab is hidden, sends a
+browser notification when the tab is hidden *and* permission was already granted (Studio never
+asks for it on its own), and throws a two-second confetti burst on a green run — not under
+`prefers-reduced-motion`.
+
+### Keyboard
+
+| Keys | Does |
+|---|---|
+| `?` | shortcut sheet |
+| `⌘K` / `Ctrl+K` | command palette — pages, tasks by id or title, agents, teams, recent runs, theme |
+| `/` | focus the run prompt |
+| `⌘↵` / `Ctrl+Enter` | run the prompt, while it is focused |
+| `⌘.` / `Ctrl+.` | stop the active run, while the prompt is focused |
+| `g` then `l` `b` `r` `p` `a` `t` `k` `f` `s` `h` `,` | go to Live, Board, Review, Pipeline, Agents, Teams, Blocks, Files, Skills, Runs, Settings |
+| `Esc` | close a dialog, the sheet or the palette |
+
+Plain-key shortcuts are inert while typing in a field; the modifier ones are not.
 
 ---
 
@@ -174,6 +216,9 @@ than resolved.
 - When events genuinely could not be replayed, an explicit `event: gap` frame is emitted with
   `{from, to}`, so the UI can say *"events N–M were dropped"* instead of quietly showing an
   incomplete run. A slow consumer is flagged rather than silently dropped.
+- Kind `run_end` (phase `done` or `error`, message = the summary) is what the run-end toast,
+  title flash and notification key on. Kind `review_pending` (`{pending: N}`) tells the Review
+  page to refresh while a run is still writing; without it the page polls every 15 s during a run.
 
 `GET /api/queries/{id}/events` replays a recorded run's log, and `GET /api/queries/{id}/trace`
 groups it into contiguous phase segments with totals — the numbers that matter when tuning a
@@ -342,6 +387,31 @@ otherwise.
 
 `react-hooks/exhaustive-deps` is an **error**, not a warning: a stale closure in the SSE handler
 once reduced the live event log to a single row, and that rule is what catches it.
+
+### Cross-component contracts
+
+A few interactions cross component boundaries without a shared parent. They go through
+`CustomEvent`s on `window`, all named in `web/src/components/ui/events.ts`. Every event is
+dispatched `cancelable`; a listener that handles it calls `preventDefault()`, and the dispatcher
+falls back to doing the work itself when nobody does.
+
+| Event | Fired by | Listened to by |
+|---|---|---|
+| `slmcode:focus-prompt` | `/` | Live view — focuses the prompt |
+| `slmcode:run-prompt` (`detail.query?`) | `⌘↵` in the prompt; the result panel's *Run again* | Live view — starts the prompt (or `detail.query`) with the chosen teams/specialist; the result panel calls `POST /api/runs` directly when unclaimed |
+| `slmcode:stop-run` | `⌘.` in the prompt | Live view — `POST /api/runs/stop` |
+| `slmcode:steer-task` (`detail.taskId`) | a task's *Steer* | `LiveFeedback` — prefills `@task:ID `; parked in `sessionStorage` when no composer is mounted |
+| `slmcode:command-palette` | anything | `Layout` — toggles the palette |
+
+The prompt input is recognised by its accessible name `Run prompt` (or a `data-run-prompt`
+attribute). URL parameters that pages read: `/board?column=blocked` (Board), `/files?path=a/b.go`
+(Files), `/runs?run=ID` (Runs), `/?task=ID` (Live → task panel `focusTaskId`),
+`/?run=ID&replay=1` (Runs → *Replay on the floor*; harmless when Live ignores it).
+
+Errors on every editor page go through `useToast().reportError`; list pages render
+`ui/ErrorState` with a Retry in place of the list when their load fails. Tab strips use
+`ui/useRovingTabs` (one Tab stop, arrows between tabs, `aria-controls` to the panel). Dialogs
+share `useFocusTrap` from `ui/Modal.tsx`.
 
 `make ui-react` builds and syncs `web/dist/` into `cmd/slmcode/ui/`, which is embedded with
 `go:embed all:ui`. `make bootstrap` does the same but only when the assets are missing.

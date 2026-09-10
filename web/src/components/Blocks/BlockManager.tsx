@@ -19,6 +19,7 @@ import {
 import clsx from 'clsx';
 import BlockEditor from './BlockEditor';
 import { useConfirm } from '@/components/ui/Modal';
+import { useRovingTabs } from '@/components/ui/useRovingTabs';
 
 const KIND_ICONS: Record<string, ReactNode> = {
   pack: <Package size={20} />,
@@ -164,6 +165,13 @@ export default function BlockManager() {
   };
 
   const blocks = getBlocksForTab();
+  const selectTab = useCallback((id: string) => {
+    setActiveTab(id);
+    setLoading(true);
+  }, []);
+  // 'all' stands in for the empty id: ids become element ids, which cannot be empty.
+  const tabs = TABS.map((t) => ({ id: t.id || 'all' }));
+  const { tabProps, panelProps, listProps } = useRovingTabs(tabs, activeTab || 'all', (id) => selectTab(id === 'all' ? '' : id));
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6 p-4 2xl:p-8">
@@ -194,13 +202,13 @@ export default function BlockManager() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
+      <div {...listProps} aria-label="Block kinds" className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => { setActiveTab(tab.id); setLoading(true); }}
+            {...tabProps(tab.id || 'all')}
             className={clsx(
-              'flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all duration-150',
+              'focus-ring flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all duration-150',
               activeTab === tab.id
                 ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
@@ -210,6 +218,8 @@ export default function BlockManager() {
           </button>
         ))}
       </div>
+
+      <div {...panelProps(activeTab || 'all')} className="space-y-6 focus:outline-none">
 
       {/* Notice */}
       {notice && (
@@ -238,12 +248,28 @@ export default function BlockManager() {
       {!loading && blocks.length === 0 && (
         <div className="text-center py-20 text-gray-400 dark:text-gray-500">
           <Package size={48} className="mx-auto mb-4 opacity-50" />
-          <p className="text-lg font-medium">No blocks found</p>
-          <p className="text-sm mt-1">
-            {activeTab
-              ? `Add YAML blocks to .slmcode/blocks/ or click "New ${KIND_TITLES[activeTab]}" above`
-              : 'Add YAML blocks to .slmcode/blocks/ or ~/.slmcode/blocks/'}
+          <p className="text-lg font-medium">
+            {activeTab ? `No ${KIND_TITLES[activeTab].toLowerCase()} blocks yet` : 'No blocks yet'}
           </p>
+          <p className="text-sm mt-1 mx-auto max-w-md">
+            Blocks are the YAML presets a run is assembled from: a pack picks a stack, a pipeline orders the
+            phases, agents fill the seats and quality blocks gate the work. They live in{' '}
+            <code className="font-mono">.slmcode/blocks/</code> (project) or <code className="font-mono">~/.slmcode/blocks/</code>.
+          </p>
+          {activeTab ? (
+            <button
+              type="button"
+              onClick={() => setEditor({ kind: activeTab, mode: 'create', block: null })}
+              className="btn-primary mx-auto mt-4 gap-1.5 text-sm"
+            >
+              <Plus size={15} />
+              New {KIND_TITLES[activeTab]}
+            </button>
+          ) : (
+            <button type="button" onClick={() => selectTab('pack')} className="btn-secondary mx-auto mt-4 text-sm">
+              Browse packs
+            </button>
+          )}
         </div>
       )}
 
@@ -392,6 +418,7 @@ export default function BlockManager() {
           ))}
         </div>
       )}
+      </div>
 
       {/* Create/Edit modal */}
       {editor && (

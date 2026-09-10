@@ -114,4 +114,29 @@ describe('HITLPopup', () => {
     rerender(<HITLPopup running askSignal={1} />);
     await waitFor(() => expect(getShellPending.mock.calls.length).toBeGreaterThan(before));
   });
+
+  // The dialog had the role but not the behaviour: Tab wandered into the page
+  // underneath, and Esc did nothing at all.
+  it('keeps Tab inside the gate and answers Esc without dismissing it', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">outside</button>
+        <HITLPopup running askSignal={0} />
+      </>,
+    );
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+    // Twenty tabs in either direction never leave the dialog.
+    for (let i = 0; i < 20; i++) await user.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 20; i++) await user.tab({ shift: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(await screen.findByText(/waits for an answer/i)).toBeInTheDocument();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
 });

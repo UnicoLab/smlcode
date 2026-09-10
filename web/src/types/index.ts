@@ -433,6 +433,14 @@ export interface DynamicTeamMember {
  * Mirrors pkg/composer.TeamChoice. Filled by the harness from the library,
  * never by the composer model.
  */
+/** One seat on a team, staffed — and where the agent came from. */
+export interface SeatFill {
+  role: 'worker' | 'reviewer' | 'tester' | 'manager' | string;
+  agent: string;
+  /** team = the team's own pick; pipeline = the pipeline's agent for that role; default = the harness default. */
+  source: 'team' | 'pipeline' | 'default' | string;
+}
+
 export interface TeamChoice {
   id: string;
   name?: string;
@@ -452,6 +460,10 @@ export interface TeamChoice {
   reason?: string;
   pinned?: boolean;
   score?: number;
+  /** How the four seats are actually staffed once the pipeline fills the empty ones. */
+  seats?: SeatFill[];
+  /** The borrowed working seats, in words. */
+  gaps?: string[];
 }
 
 /** What the chosen teams do to the run — see pkg/composer TeamMode*. */
@@ -1458,6 +1470,8 @@ export interface TeamStaffing {
   skills?: string[];
   owns?: string[];
   acceptance?: string;
+  seats?: SeatFill[];
+  gaps?: string[];
 }
 
 /** Why one team scored what it scored — see teams.Evidence in Go. */

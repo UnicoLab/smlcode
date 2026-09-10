@@ -320,6 +320,15 @@ func TestPreselectReportsModeAndStaffing(t *testing.T) {
 	if first["manager"] != "triage" || first["manager_default"] != true {
 		t.Fatalf("staffing=%v", first)
 	}
+	// Every seat is accounted for, with its source: the builtin names all
+	// three working seats itself, so nothing is borrowed.
+	seats, _ := first["seats"].([]interface{})
+	if len(seats) != 4 {
+		t.Fatalf("seats=%v", first["seats"])
+	}
+	if gaps, _ := first["gaps"].([]interface{}); len(gaps) != 0 {
+		t.Fatalf("a fully staffed builtin has no gaps: %v", gaps)
+	}
 
 	// A pin is additive: the workspace's own markers still put the other half
 	// on the run, and the pinned team leads.

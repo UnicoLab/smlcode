@@ -240,10 +240,26 @@ func composeTeams(comp *composer.Composition, td teamDecision) {
 		return
 	}
 	comp.Teams, comp.TeamMode, comp.TeamNote = td.Choices, td.Mode, td.Note
-	if td.Mode != composer.TeamModeSingle || len(td.Choices) == 0 {
+	if td.Mode == composer.TeamModeSingle && len(td.Choices) > 0 {
+		adoptTeamStaffing(comp, td.Choices[0])
+	}
+	fillTeamSeats(comp)
+}
+
+// fillTeamSeats writes, on every team, who actually sits in each seat once
+// the pipeline fills what the team left empty — and the gaps in words. Done
+// after adoption and the critical-phase repair so the pipeline roles it reads
+// are the ones the run will bind.
+func fillTeamSeats(comp *composer.Composition) {
+	if comp == nil {
 		return
 	}
-	adoptTeamStaffing(comp, td.Choices[0])
+	d := comp.SeatDefaultsOf()
+	for i := range comp.Teams {
+		t := &comp.Teams[i]
+		t.Seats = composer.FillSeats(t.Worker, t.Reviewer, t.Tester, t.Manager, t.ManagerDefault, d)
+		t.Gaps = composer.Gaps(t.ID, t.Seats)
+	}
 }
 
 func adoptTeamStaffing(comp *composer.Composition, t composer.TeamChoice) {
@@ -348,12 +364,15 @@ func teamHandoff(comp *composer.Composition) {
 	case composer.TeamModeSingle:
 		t := comp.Teams[0]
 		var staff []string
-		for _, s := range []struct{ role, id string }{
-			{"worker", t.Worker}, {"reviewer", t.Reviewer}, {"tester", t.Tester}, {"manager", t.Manager},
-		} {
-			if s.id != "" {
-				staff = append(staff, s.role+"="+s.id)
+		for _, s := range t.Seats {
+			if s.Agent == "" {
+				continue
 			}
+			entry := s.Role + "=" + s.Agent
+			if s.Borrowed() && s.Role != "manager" {
+				entry += " (" + s.Source + ")"
+			}
+			staff = append(staff, entry)
 		}
 		line := "Team " + t.ID + " staffs this run"
 		if len(staff) > 0 {
@@ -396,6 +415,13 @@ func teamSeats(comp *composer.Composition, skills map[string]bool) {
 		want := filterKnownSkills(t.Skills, skills)
 		ids := []string{t.Worker, t.Reviewer, t.Tester, t.Manager}
 		ids = append(ids, t.Agents...)
+		// A borrowed seat is on the team for this run: whoever the pipeline
+		// lends as tester loads the team's skills like the team's own would.
+		for _, seat := range t.Seats {
+			if seat.Borrowed() && seat.Role != "manager" {
+				ids = append(ids, seat.Agent)
+			}
+		}
 		for _, id := range ids {
 			id = strings.ToLower(strings.TrimSpace(id))
 			if id == "" {
@@ -495,6 +521,9 @@ func teamsMarkdown(c composer.Composition) string {
 			b.WriteString(" — " + t.Reason)
 		}
 		b.WriteString("\n")
+		for _, g := range t.Gaps {
+			b.WriteString("  - " + g + "\n")
+		}
 	}
 	b.WriteString("\n")
 	return b.String()

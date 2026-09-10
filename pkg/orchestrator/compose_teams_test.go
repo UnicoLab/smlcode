@@ -399,3 +399,58 @@ func TestPreviewWithPinsAppliesTheFactoryChecks(t *testing.T) {
 		t.Fatalf("preview leaked pins into the config: %v", o.cfg.Teams)
 	}
 }
+
+// A team without a tester on a pipeline with a test phase: the composition
+// says who tests its work and where they came from, and the charter phase
+// says the same thing out loud.
+func TestATeamWithoutATesterBorrowsThePipelines(t *testing.T) {
+	root := fullstackRoot(t)
+	teamsDir := filepath.Join(root, ".slmcode", "blocks", "teams")
+	if err := os.MkdirAll(teamsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Overrides the builtin: same id, no tester, no reviewer.
+	team := "api_version: blocks/v1\nkind: team\nid: backend-go\nname: Backend\nspec:\n  id: backend-go\n" +
+		"  owns: [cmd/**, go.mod]\n  worker: go-worker\n  match:\n    files: [go.mod]\n    extensions: [.go]\n"
+	if err := os.WriteFile(filepath.Join(teamsDir, "backend-go.yaml"), []byte(team), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o, err := New(config.Default(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp := o.PreviewComposition("add a Go API endpoint and the React page that calls it")
+	tc, ok := comp.TeamChoiceFor("backend-go")
+	if !ok {
+		t.Fatalf("teams=%+v", comp.Teams)
+	}
+	bySeat := map[string]composer.SeatFill{}
+	for _, s := range tc.Seats {
+		bySeat[s.Role] = s
+	}
+	if bySeat["worker"] != (composer.SeatFill{Role: "worker", Agent: "go-worker", Source: composer.SeatFromTeam}) {
+		t.Fatalf("worker=%+v", bySeat["worker"])
+	}
+	tester := bySeat["tester"]
+	if tester.Source != composer.SeatFromPipeline || tester.Agent == "" {
+		t.Fatalf("the tester should be borrowed from the pipeline's test phase: %+v (phases=%+v)", tester, comp.Phases)
+	}
+	if len(tc.Gaps) == 0 || !strings.Contains(strings.Join(tc.Gaps, "\n"), "names no tester") {
+		t.Fatalf("gaps=%v", tc.Gaps)
+	}
+	// The borrowed tester is on the roster with the team's skills.
+	roles := map[string]bool{}
+	for _, m := range comp.Team {
+		roles[m.Role] = true
+	}
+	if !roles[tester.Agent] {
+		t.Fatalf("borrowed tester %s not on the roster: %+v", tester.Agent, comp.Team)
+	}
+
+	// The charter phase reports the same gap from the pipeline it is bound to.
+	p := squads.Plan{Squads: []squads.Squad{{ID: "backend-go", Worker: "go-worker", Owns: []string{"cmd/**"}}}}
+	gaps := o.seatGaps(&p)
+	if len(gaps) != 2 || !strings.Contains(gaps[1], "team backend-go names no tester") {
+		t.Fatalf("charter gaps=%v", gaps)
+	}
+}

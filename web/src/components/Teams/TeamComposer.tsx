@@ -1,7 +1,7 @@
 import { Sparkles, Play, Pin, AlertTriangle, Users, Layers, Loader2, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
-import type { DynamicComposition, TeamPreselect, TeamSpec, TeamStaffing } from '@/types';
+import type { DynamicComposition, SeatFill, TeamPreselect, TeamSpec, TeamStaffing } from '@/types';
 
 // ── Sending a request to teams ───────────────────────────────────────────
 //
@@ -281,9 +281,9 @@ function PreselectSummary({
                   ) : null}
                 </div>
                 <dl className="space-y-0.5">
-                  <Seat label="worker" id={s.worker} />
-                  <Seat label="reviewer" id={s.reviewer} />
-                  <Seat label="tester" id={s.tester} />
+                  <Seat label="worker" id={s.worker} fill={s.seats?.find((f) => f.role === 'worker')} />
+                  <Seat label="reviewer" id={s.reviewer} fill={s.seats?.find((f) => f.role === 'reviewer')} />
+                  <Seat label="tester" id={s.tester} fill={s.seats?.find((f) => f.role === 'tester')} />
                   <div className="flex gap-1.5">
                     <dt className="w-14 shrink-0 text-gray-400">manager</dt>
                     <dd className="min-w-0 flex-1 text-gray-700 dark:text-gray-300">
@@ -302,6 +302,9 @@ function PreselectSummary({
                     </div>
                   )}
                 </dl>
+                {(s.gaps ?? []).map((g) => (
+                  <p key={g} className="mt-1 text-amber-700 dark:text-amber-300">{g}</p>
+                ))}
                 {ev && !ev.pinned && (ev.reasons ?? []).length > 0 && (
                   <p className="mt-1 text-gray-500 dark:text-gray-400">{ev.reasons!.join('; ')}</p>
                 )}
@@ -349,12 +352,23 @@ function PreselectSummary({
   );
 }
 
-function Seat({ label, id }: { label: string; id?: string }) {
+function Seat({ label, id, fill }: { label: string; id?: string; fill?: SeatFill }) {
+  // The seat as the run will staff it: the team's own, or the pipeline's
+  // agent for that role — named, not "pipeline default", because "who tests
+  // this team's work" deserves an answer.
   return (
     <div className="flex gap-1.5">
       <dt className="w-14 shrink-0 text-gray-400">{label}</dt>
       <dd className="min-w-0 flex-1 font-mono text-gray-700 dark:text-gray-300">
-        {id || <span className="font-sans text-gray-400">pipeline default</span>}
+        {id ? (
+          id
+        ) : fill?.agent ? (
+          <>
+            {fill.agent} <span className="font-sans text-amber-700 dark:text-amber-300">(from the {fill.source})</span>
+          </>
+        ) : (
+          <span className="font-sans text-gray-400">pipeline default</span>
+        )}
       </dd>
     </div>
   );

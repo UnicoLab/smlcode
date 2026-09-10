@@ -781,6 +781,20 @@ that decision: it does not ask the manager agent to invent a second team. Only
 a library with nothing to say (no team matched, nothing pinned) hands the
 question to the model.
 
+### When the pipeline needs a seat the team does not have
+
+A team is written once and a pipeline is chosen per run, so the two need not
+agree: the pipeline has a test phase and the team names no tester. The seat is
+**filled from the pipeline** — the test phase's agent, or the execute loop's
+worker or reviewer for those seats — and the fact is said everywhere the team
+is shown: the composition (`seats`, with a `source` of `team`, `pipeline` or
+`default`, and `gaps` in words), the run setup panel, the Teams page preview,
+the charter log line *team backend-go names no tester — the pipeline's
+go-tester takes its tester seat*, and the Live floor, where the borrowed tester
+sits at the team's table drawn as borrowed. Routing still prefers a specialist
+for the language of a task's own files over any seat; the seat is the answer
+when the files say nothing. Name the seat on the team to make it the team's own.
+
 ### The composer knows the teams
 
 The dynamic pipeline composer used to decide phases and loop roles with no idea

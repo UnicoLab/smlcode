@@ -254,19 +254,36 @@ slmcode run "add JWT validation"
 ```
 
 Each proposal is a `.slmcode/pending/<nano>_<kind>_<mangled-path>.patch.json` holding
-`{path, kind, content}`. Studio's **Review** page lists them with both sides of the diff and
-per-file apply/reject; the same queue is available from the terminal with `slmcode apply` and
-`slmcode reject`.
+`{path, kind, content}` plus, when the workspace knew them at record time, `from` (the source of a
+`ws_mv`), `task_id`, `agent` and `query_id`. Studio's **Review** page lists them with both sides of
+the diff and per-file apply/reject; the same queue is available from the terminal with
+`slmcode apply` and `slmcode reject`.
+
+**Apply honors the kind.** `write`/`edit`/`patch` write the content; `delete` removes the file;
+`mv` moves the source to the destination (falling back to writing the recorded content if the
+source is gone). Stale `shell` entries from older builds are never files: they are hidden from the
+listing, skipped by `{all: true}` and refused by id.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/review/pending?hunks=1&context=3` | list pending changes, optionally with hunks |
-| `GET /api/review/pending/{id}` | one change with its diff |
-| `POST /api/review/apply` | `{ids}` / `{id}` / `{all: true}` |
-| `POST /api/review/reject` | same shape |
+| `GET /api/review/pending?hunks=1&context=3` | list pending changes, optionally with hunks. Items carry `kind`, `from`, `task_id`, `agent`, `query_id` (empty when unknown) |
+| `GET /api/review/pending/{id}` | one change with its diff (a `delete` diffs to empty; an `mv` diffs source → content at the destination path) |
+| `POST /api/review/apply` | `{ids}` / `{id}` / `{all: true}` — emits `review_pending` |
+| `POST /api/review/reject` | same shape — emits `review_pending` |
 
 The queue id is a bare file name and is validated as one — a traversal attempt is rejected rather
 than resolved.
+
+### Board, tasks and history
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/tasks` | the live board; each task includes `attempt_log`, `gate_retries` and `criteria` when set |
+| `POST /api/tasks/{id}/retry` | move a task back to `ready_to_dev`, reset `retries`, clear `error`, append `"retried from Studio"` to `attempt_log`, persist, emit `task_update`. Returns the task. `409` when no board is loaded, `404` for an unknown id |
+| `GET /api/queries` | run history; every item also carries `duration_ms`, `tokens`, `cost_usd`, `tasks_total`, `tasks_done`, `failed_tasks` and `teams` (string list), computed from the stored turn, board and event log (usage totals are cached per log size/mtime) |
+| `GET /api/shell/pending` | `{pending, ask, asks: [...], count}` — `ask` is the oldest open shell ask (the shape the UI was built on); `asks` lists every open one, since a parallel wave can raise several |
+| `POST /api/shell/approve` | `{ask_id, decision: "approve" \| "deny"}` — `ask_id` picks which pending ask; it may be omitted only when exactly one is pending |
+| `POST /api/runs/stop` | asks the run to unwind. `running` stays `true` (with `stopping: true` in `/api/runs/latest` and `/api/status`) until the run goroutine has exited, so a new run cannot start on top of the old one's teardown |
 
 ---
 
@@ -284,6 +301,17 @@ than resolved.
 - Kind `run_end` (phase `done` or `error`, message = the summary) is what the run-end toast,
   title flash and notification key on. Kind `review_pending` (`{pending: N}`) tells the Review
   page to refresh while a run is still writing; without it the page polls every 15 s during a run.
+- The ring is **not** cleared when a run starts. `GET /api/runs/latest` scopes its snapshot to the
+  current run by sequence number, while a reconnecting stream can still replay across a
+  stop → start.
+
+Two kinds are synthesized by the server itself rather than emitted by the engine, and they sit in
+the ring and replay like every other event:
+
+| Kind | When | Shape |
+|---|---|---|
+| `task_update` | after any board task change (worker moves, a `PATCH /api/tasks/{id}`, a retry) | `phase` = the run's current phase, or `"board"` when no run is active; `task_id`; `message` = `"<id> -> <column>"` (`"<id> -> removed"` for a deletion); `data` = `{"task": {…task exactly as GET /api/tasks renders it…}}` |
+| `review_pending` | after a proposal is recorded by a running agent, and after every apply/reject | `phase` = `"review"`; `data` = `{"pending": N}` — the number of applicable entries in the queue |
 
 `GET /api/queries/{id}/events` replays a recorded run's log, and `GET /api/queries/{id}/trace`
 groups it into contiguous phase segments with totals — the numbers that matter when tuning a

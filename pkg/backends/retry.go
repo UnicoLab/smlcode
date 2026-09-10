@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
@@ -106,6 +107,12 @@ func Classify(err error) Classification {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return Classification{Class: ClassCanceled}
+	}
+	// A stream that already delivered output cannot be replayed: whatever the
+	// underlying failure was, another attempt would show the prefix twice.
+	var pse *partialStreamError
+	if errors.As(err, &pse) {
+		return Classification{Class: ClassPermanent}
 	}
 	var he *HTTPError
 	if errors.As(err, &he) {
@@ -547,18 +554,64 @@ func (p *retryProvider) CompleteWithMode(ctx context.Context, req llm.Completion
 	})
 }
 
-// CompleteStream is not retried: a partially delivered stream cannot be
-// replayed without the callback seeing the prefix twice.
+// CompleteStream retries exactly like Complete UNTIL the first delta reaches
+// the callback. It used to bypass retryDo entirely, on the grounds that a
+// partially delivered stream cannot be replayed — true, but the ReAct loop
+// takes this path whenever a token sink is attached (TUI, Studio), so a 429
+// or a connection refused by a model server that was still loading got zero
+// attempts precisely when someone was watching. A failure before any delta is
+// indistinguishable from a failed Complete and is retried the same way; once
+// a delta has been delivered the error is surfaced as-is.
 func (p *retryProvider) CompleteStream(ctx context.Context, req llm.CompletionRequest, cb llm.StreamCallback) error {
-	cctx, cancel := p.callCtx(ctx, req)
-	defer cancel()
-	return p.inner.CompleteStream(cctx, req, cb)
+	return p.streamWithRetry(ctx, req, cb, func(c context.Context, wrapped llm.StreamCallback) error {
+		return p.inner.CompleteStream(c, req, wrapped)
+	})
 }
 
 func (p *retryProvider) CompleteStreamWithMode(ctx context.Context, req llm.CompletionRequest, cb llm.StreamCallback, mode llm.StreamMode) error {
-	cctx, cancel := p.callCtx(ctx, req)
-	defer cancel()
-	return p.inner.CompleteStreamWithMode(cctx, req, cb, mode)
+	return p.streamWithRetry(ctx, req, cb, func(c context.Context, wrapped llm.StreamCallback) error {
+		return p.inner.CompleteStreamWithMode(c, req, wrapped, mode)
+	})
+}
+
+// partialStreamError marks a failure that happened after at least one delta
+// was delivered. Classify treats it as permanent so retryDo surfaces it
+// immediately; Unwrap keeps the original error visible to callers.
+type partialStreamError struct{ err error }
+
+func (e *partialStreamError) Error() string { return e.err.Error() }
+func (e *partialStreamError) Unwrap() error { return e.err }
+
+// streamWithRetry drives one streaming call per attempt through retryDo. Each
+// attempt gets a fresh deadline (callCtx) and a fresh delivered flag; the
+// caller's callback only ever sees deltas from the attempt that produced
+// output, so nothing is replayed.
+func (p *retryProvider) streamWithRetry(
+	ctx context.Context, req llm.CompletionRequest, cb llm.StreamCallback,
+	call func(ctx context.Context, cb llm.StreamCallback) error,
+) error {
+	_, err := retryDo(ctx, p.policy, func(ctx context.Context, _ int) (struct{}, error) {
+		cctx, cancel := p.callCtx(ctx, req)
+		defer cancel()
+		var delivered atomic.Bool
+		wrapped := func(chunk llm.CompletionResponse) error {
+			delivered.Store(true)
+			if cb == nil {
+				return nil
+			}
+			return cb(chunk)
+		}
+		err := call(cctx, wrapped)
+		if err != nil && delivered.Load() {
+			return struct{}{}, &partialStreamError{err: err}
+		}
+		return struct{}{}, err
+	})
+	var pse *partialStreamError
+	if errors.As(err, &pse) {
+		return pse.err
+	}
+	return err
 }
 
 func (p *retryProvider) IsHealthy(ctx context.Context) error      { return p.inner.IsHealthy(ctx) }

@@ -43,6 +43,10 @@ type TerminalGateHost struct {
 	// and in raw mode a fast typist could lose a keystroke the same way. One
 	// decoder for the whole terminal keeps every unconsumed byte in one place.
 	keys *KeyReader
+	// raw is the terminal mode handle held while read() is waiting for a key,
+	// so AskGate can restore the terminal when ctx ends before an answer.
+	rawMu sync.Mutex
+	raw   *RawMode
 }
 
 // NewTerminalGateHost returns a host bound to the process terminal.
@@ -144,8 +148,46 @@ func (h *TerminalGateHost) AskGate(ctx context.Context, g Gate) (GateAnswer, boo
 		}
 		return r.ans, r.ok
 	case <-ctx.Done():
+		// The read goroutine still owns the terminal: it put stdin into raw
+		// mode and is blocked in ReadKey. Returning without restoring left
+		// the shell in raw mode (no echo, no line editing) whenever a gate
+		// was abandoned by a stop or a shutdown rather than answered. Restore
+		// here; the goroutine's own Restore is idempotent.
+		h.restoreRaw()
 		write("\n")
 		return GateAnswer{}, false
+	}
+}
+
+// setRaw / restoreRaw track the RawMode handle held by the read goroutine so
+// the ctx.Done branch of AskGate can return the terminal to cooked mode.
+func (h *TerminalGateHost) setRaw(rm *RawMode) {
+	h.rawMu.Lock()
+	h.raw = rm
+	h.rawMu.Unlock()
+}
+
+func (h *TerminalGateHost) restoreRaw() {
+	h.rawMu.Lock()
+	rm := h.raw
+	h.raw = nil
+	h.rawMu.Unlock()
+	rm.Restore() // nil-safe
+}
+
+// releaseRaw is the read goroutine's own restore. A reader that was abandoned
+// by ctx.Done and wakes up only after a NEWER gate has put the terminal into
+// raw mode must not put it back into cooked mode under that gate, so it only
+// restores when its handle is still the current one (or already released).
+func (h *TerminalGateHost) releaseRaw(rm *RawMode) {
+	h.rawMu.Lock()
+	superseded := h.raw != nil && h.raw != rm
+	if h.raw == rm {
+		h.raw = nil
+	}
+	h.rawMu.Unlock()
+	if !superseded {
+		rm.Restore()
 	}
 }
 
@@ -168,29 +210,33 @@ func (h *TerminalGateHost) read(g Gate) (GateAnswer, bool) {
 	if err != nil || rm == nil {
 		return h.readLine(g, "")
 	}
+	// Published so AskGate's ctx.Done branch can restore the terminal while
+	// this goroutine is still blocked in ReadKey; restoreRaw is idempotent
+	// with the Restore calls below.
+	h.setRaw(rm)
 	kr := h.reader()
 	for {
 		k, kerr := kr.ReadKey()
 		if kerr != nil {
-			rm.Restore()
+			h.releaseRaw(rm)
 			return GateAnswer{}, false
 		}
 		switch k.Type {
 		case KeyCtrlC, KeyCtrlD, KeyEscape:
-			rm.Restore()
+			h.releaseRaw(rm)
 			return GateAnswer{Value: GateInterrupted}, true
 		case KeyEnter:
-			rm.Restore()
+			h.releaseRaw(rm)
 			return h.readLine(g, "")
 		}
 		if ans, ok := g.ResolveKey(k); ok {
-			rm.Restore()
+			h.releaseRaw(rm)
 			return ans, true
 		}
 		// A key that belongs to a freeform option, or any other printable
 		// character, starts a typed answer with that character already in.
 		if k.Type == KeyRune {
-			rm.Restore()
+			h.releaseRaw(rm)
 			_, _ = io.WriteString(h.out(), string(k.Rune))
 			return h.readLine(g, string(k.Rune))
 		}

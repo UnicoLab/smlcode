@@ -116,6 +116,53 @@ func TestJailEscapes(t *testing.T) {
 	if _, err := ws.resolve("etcx/passwd"); err == nil {
 		t.Errorf("agent-created symlink escape not blocked")
 	}
+
+	// 10. DANGLING symlink: the target does not exist, so EvalSymlinks fails —
+	// the check used to fall back to the lexical verdict and os.WriteFile then
+	// followed the link and CREATED the outside file.
+	t.Run("dangling_symlink", func(t *testing.T) {
+		victim := filepath.Join(outside, "victim.txt")
+		_ = os.Remove(victim)
+		_ = os.Symlink(victim, filepath.Join(root, "dangling.txt"))
+		_ = os.WriteFile(filepath.Join(root, "src.txt"), []byte("move me"), 0o644)
+		ws.markRead("src.txt")
+
+		s, err := advCall(t, ws.writeFile, map[string]interface{}{"path": "dangling.txt", "content": "PWNED"})
+		if err == nil && !strings.Contains(s, "escape") && !strings.Contains(s, "refus") {
+			t.Errorf("ws_write through dangling symlink not refused: %q", s)
+		}
+		if _, serr := os.Stat(victim); serr == nil {
+			t.Fatalf("ws_write created %s outside the root", victim)
+		}
+
+		s, err = advCall(t, ws.patchFile, map[string]interface{}{
+			"path":  "dangling.txt",
+			"patch": "<<<<<<< SEARCH\n=======\nPWNED\n>>>>>>> REPLACE",
+		})
+		if err == nil && !strings.Contains(s, "escape") && !strings.Contains(s, "refus") {
+			t.Errorf("ws_patch (create form) through dangling symlink not refused: %q", s)
+		}
+		if _, serr := os.Stat(victim); serr == nil {
+			t.Fatalf("ws_patch created %s outside the root", victim)
+		}
+
+		s, err = advCall(t, ws.moveFile, map[string]interface{}{"from": "src.txt", "to": "dangling.txt"})
+		if err == nil && !strings.Contains(s, "escape") && !strings.Contains(s, "refus") {
+			t.Errorf("ws_mv onto dangling symlink not refused: %q", s)
+		}
+		if _, serr := os.Stat(victim); serr == nil {
+			t.Fatalf("ws_mv created %s outside the root", victim)
+		}
+		if _, serr := os.Stat(filepath.Join(root, "src.txt")); serr != nil {
+			t.Fatalf("ws_mv source vanished: %v", serr)
+		}
+
+		// A dangling link whose target stays INSIDE the root is still usable.
+		_ = os.Symlink(filepath.Join(root, "inner-target.txt"), filepath.Join(root, "inner-link.txt"))
+		if _, err := ws.resolve("inner-link.txt"); err != nil {
+			t.Errorf("in-root dangling symlink wrongly refused: %v", err)
+		}
+	})
 }
 
 func TestSymlinkLoopAndProc(t *testing.T) {

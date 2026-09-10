@@ -26,23 +26,15 @@ func ApplyPatch(content, patch string) (next string, summary string, err error) 
 		return "", "", fmt.Errorf("rejected bad patch format — use a single SEARCH/REPLACE or one unified diff hunk (no prose, no multiple files)")
 	}
 
-	if strings.Contains(patch, "<<<<<<<") && strings.Contains(patch, ">>>>>>>") {
+	if strings.Contains(patch, "<<<<<<<") {
 		return applySearchReplace(content, patch)
 	}
-	if strings.Contains(patch, "=======") && (strings.Contains(patch, "SEARCH") || strings.Contains(patch, "REPLACE")) {
-		return applySearchReplace(content, patch)
-	}
-	// SEARCH / REPLACE without git conflict markers
-	if i := strings.Index(patch, "\n=======\n"); i >= 0 {
-		oldPart := strings.TrimPrefix(patch, "SEARCH\n")
-		if j := strings.Index(oldPart, "\n=======\n"); j >= 0 {
-			oldStr := strings.TrimPrefix(oldPart[:j], "SEARCH\n")
-			rest := oldPart[j+len("\n=======\n"):]
-			rest = strings.TrimPrefix(rest, "REPLACE\n")
-			rest = strings.TrimSuffix(rest, "\n>>>>>>> REPLACE")
-			rest = strings.TrimSuffix(rest, ">>>>>>> REPLACE")
-			return applyExact(content, strings.TrimRight(oldStr, "\n"), strings.TrimRight(rest, "\n"))
-		}
+	// SEARCH / REPLACE without the git conflict markers: "SEARCH\n…\n=======\n…"
+	// with or without a REPLACE header or a ">>>>>>> REPLACE" trailer. This
+	// form used to be routed to applySearchReplace (which insists on <<<<<<<)
+	// whenever the words SEARCH/REPLACE appeared, so it was unreachable.
+	if oldStr, newStr, ok := splitBareSearchReplace(patch); ok {
+		return applyExact(content, oldStr, newStr)
 	}
 	if strings.Contains(patch, "@@") || strings.HasPrefix(patch, "---") || looksLikeDiff(patch) {
 		return applyUnifiedHunks(content, patch)
@@ -73,6 +65,54 @@ func applySearchReplace(content, patch string) (string, string, error) {
 	oldBlock = strings.TrimRight(oldBlock, "\n")
 	newBlock = strings.TrimRight(newBlock, "\n")
 	return applyExact(content, oldBlock, newBlock)
+}
+
+// splitBareSearchReplace parses the marker-less SEARCH/REPLACE form. The
+// separator is a line that is exactly "=======" (the FIRST one — a later one
+// may be a Markdown rule inside the replacement). An optional "SEARCH" header
+// line, an optional "REPLACE" header line after the separator and an optional
+// ">>>>>>> REPLACE" trailer are all tolerated and dropped.
+func splitBareSearchReplace(patch string) (oldStr, newStr string, ok bool) {
+	lines := strings.Split(patch, "\n")
+	sep := -1
+	for i, ln := range lines {
+		// Exactly "=======" at column 0: a unified-diff context line reads
+		// " =======" and a removed one "-=======", neither is a separator.
+		if strings.TrimRight(ln, " \t\r") == "=======" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		return "", "", false
+	}
+	before := lines[:sep]
+	after := lines[sep+1:]
+	isHeader := func(ln, word string) bool {
+		t := strings.ToUpper(strings.TrimSpace(ln))
+		return t == word || t == word+":"
+	}
+	if len(before) > 0 && isHeader(before[0], "SEARCH") {
+		before = before[1:]
+	}
+	if len(after) > 0 && isHeader(after[0], "REPLACE") {
+		after = after[1:]
+	}
+	if n := len(after); n > 0 {
+		t := strings.TrimSpace(after[n-1])
+		if strings.HasPrefix(t, ">>>>>>>") || strings.EqualFold(t, "REPLACE") {
+			after = after[:n-1]
+		}
+	}
+	// The word SEARCH or REPLACE somewhere in the text is not enough on its
+	// own: a unified diff that happens to touch a line saying "=======" must
+	// still be a unified diff.
+	if strings.Contains(patch, "@@") && !strings.Contains(strings.ToUpper(patch), "SEARCH") {
+		return "", "", false
+	}
+	oldStr = strings.TrimRight(strings.Join(before, "\n"), "\n")
+	newStr = strings.TrimRight(strings.Join(after, "\n"), "\n")
+	return oldStr, newStr, true
 }
 
 // applyExact locates oldStr with the full match ladder and refuses to apply a
@@ -142,8 +182,26 @@ func ParseUnifiedHunks(patch string) ([]hunk, error) {
 	var hunks []hunk
 	var cur *hunk
 	seenHunk := false
+	// pending holds unprefixed lines that have not yet been proven to be
+	// context. An unprefixed line FOLLOWED by a real diff line is context a
+	// model forgot to prefix (blank lines especially); an unprefixed line at
+	// the END of a hunk is trailing prose ("This adds the check.") or a
+	// closing code fence, and the old parser turned both into context lines
+	// that could never match, failing the whole hunk.
+	var pending []string
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		for _, l := range pending {
+			cur.Old = append(cur.Old, l)
+			cur.New = append(cur.New, l)
+		}
+		pending = nil
+	}
 	for _, line := range lines {
 		if strings.HasPrefix(line, "@@") {
+			pending = nil // trailing prose of the previous hunk
 			if cur != nil {
 				hunks = append(hunks, *cur)
 			}
@@ -158,25 +216,35 @@ func ParseUnifiedHunks(patch string) ([]hunk, error) {
 		if line == `\ No newline at end of file` {
 			continue
 		}
-		if cur == nil {
-			// Bare -/+ block with no @@ header: open an anchorless hunk.
-			cur = &hunk{Header: "(no @@ header)"}
-			seenHunk = true
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			// A Markdown fence is never file content on either side.
+			continue
 		}
 		switch {
-		case strings.HasPrefix(line, "-"):
-			cur.Old = append(cur.Old, line[1:])
-		case strings.HasPrefix(line, "+"):
-			cur.New = append(cur.New, line[1:])
-		case strings.HasPrefix(line, " "):
-			cur.Old = append(cur.Old, line[1:])
-			cur.New = append(cur.New, line[1:])
+		case strings.HasPrefix(line, "-"), strings.HasPrefix(line, "+"), strings.HasPrefix(line, " "):
+			if cur == nil {
+				// Bare -/+ block with no @@ header: open an anchorless hunk.
+				cur = &hunk{Header: "(no @@ header)"}
+				seenHunk = true
+				// Leading prose ("Here is the diff:") is not context; a
+				// leading unprefixed CODE line is kept, as before.
+				pending = dropLeadingProse(pending)
+			}
+			flush()
+			switch line[0] {
+			case '-':
+				cur.Old = append(cur.Old, line[1:])
+			case '+':
+				cur.New = append(cur.New, line[1:])
+			default:
+				cur.Old = append(cur.Old, line[1:])
+				cur.New = append(cur.New, line[1:])
+			}
 		default:
-			// A completely empty line inside a hunk is an unprefixed blank
-			// CONTEXT line (many models emit "" instead of " "). Dropping it
-			// desynchronised both sides of the diff.
-			cur.Old = append(cur.Old, line)
-			cur.New = append(cur.New, line)
+			// An unprefixed line: blank context a model emitted as "" instead
+			// of " ", forgotten-prefix context, or prose. Decided when we see
+			// what follows it.
+			pending = append(pending, line)
 		}
 	}
 	if cur != nil {
@@ -442,27 +510,80 @@ func closestTextHint(content string, oldLines []string, near int) string {
 		fmt.Sprintf("\n(lines %d–%d — copy this text verbatim, no line numbers)", lo+1, hi)
 }
 
-// insertHunk places a pure-addition hunk at its @@ line, or appends.
+// dropLeadingProse trims blank lines and sentence-shaped lines ("Here is the
+// diff:") from the front of an anchorless hunk's unprefixed prefix, keeping a
+// leading code line the model merely forgot to prefix.
+func dropLeadingProse(pending []string) []string {
+	for len(pending) > 0 {
+		t := strings.TrimSpace(pending[0])
+		if t == "" || (strings.HasSuffix(t, ":") && strings.Contains(t, " ")) {
+			pending = pending[1:]
+			continue
+		}
+		break
+	}
+	return pending
+}
+
+// insertHunk places a pure-addition hunk, or appends when it has no anchor.
+//
+// A hunk with no removed lines ("@@ -N,0 +M,K @@") has unified-diff semantics
+// of "insert AFTER line N" (N = 0 means at the very top). It used to be
+// inserted BEFORE line N, one line too early — an import added "after line 3"
+// landed between lines 2 and 3. When the hunk does carry old lines that are
+// all blank (blank context around the insertion), those blank lines are
+// replaced in place when the file has them at the anchor, otherwise the block
+// goes before the anchor as before. The returned int is the 1-based line the
+// new text now starts on (0 for an unanchored append).
 func insertHunk(content string, h hunk, newStr string, lineDelta int) (string, int) {
-	if h.NewStart <= 0 && h.OldStart <= 0 {
+	appendAtEnd := func() string {
 		if content != "" && !strings.HasSuffix(content, "\n") {
 			content += "\n"
 		}
-		return content + newStr + "\n", 0
+		return content + newStr + "\n"
 	}
+	if h.NewStart <= 0 && h.OldStart <= 0 && !strings.HasPrefix(h.Header, "@@") {
+		// Headerless (anchorless) additions: nowhere to anchor, append.
+		return appendAtEnd(), 0
+	}
+	li := indexLines(content)
+	if len(h.Old) == 0 {
+		// Pure insertion: after line N.
+		after := h.OldStart + lineDelta
+		if after < 0 {
+			after = 0
+		}
+		if after >= len(li.starts) || (after == len(li.starts)-1 && li.text[after] == "" && strings.HasSuffix(content, "\n")) {
+			return appendAtEnd(), after + 1
+		}
+		off := li.starts[after]
+		return content[:off] + newStr + "\n" + content[off:], after + 1
+	}
+	// Blank context lines on the old side: replace them in place when they
+	// really are blank in the file at the anchor.
 	at := h.OldStart + lineDelta
 	if at <= 0 {
 		at = h.NewStart
 	}
-	li := indexLines(content)
 	if at < 1 {
 		at = 1
 	}
 	if at > len(li.starts) {
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
+		return appendAtEnd(), len(li.starts) + 1
+	}
+	if end := at - 1 + len(h.Old); end <= len(li.starts) {
+		blank := true
+		for i := at - 1; i < end; i++ {
+			if strings.TrimSpace(li.text[i]) != "" {
+				blank = false
+				break
+			}
 		}
-		return content + newStr + "\n", len(li.starts) + 1
+		if blank {
+			lo := li.starts[at-1]
+			hi := li.ends[end-1]
+			return content[:lo] + newStr + content[hi:], at
+		}
 	}
 	off := li.starts[at-1]
 	return content[:off] + newStr + "\n" + content[off:], at

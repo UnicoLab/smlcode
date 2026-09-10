@@ -108,6 +108,30 @@ func (w *Workspace) observed(name string, fn tools.ToolExecutor) tools.ToolExecu
 		if obs == nil {
 			return out, err
 		}
+		if rep, ok := selfRepaired(name, args, resultString(out), err); ok {
+			// The tool repaired the call itself (a ws_read gutter stripped
+			// from old_str). The self-improvement engine must still see the
+			// drift exactly as it would have before — a refusal, then a
+			// repaired retry that landed — so the failure is fingerprinted,
+			// the memory rule is credited and the metrics row moves. What
+			// must NOT happen is a second edit: the file already changed, so
+			// the observer's retry is reported, not re-run.
+			d := time.Since(start)
+			adv := obs(ctx, ToolCall{Tool: name, Args: args, Result: rep.refusal, Duration: d})
+			retryArgs := adv.RetryArgs
+			if len(retryArgs) == 0 {
+				retryArgs = rep.args
+			}
+			retry := ToolCall{Tool: name, Args: retryArgs, Result: resultString(out), Duration: d, Retried: true}
+			adv2 := obs(ctx, retry)
+			if sink != nil && len(adv.RetryArgs) > 0 {
+				sink(adv.RetryArgs, true, retry.Result)
+			}
+			if adv2.Guidance != "" {
+				return appendGuidance(retry.Result, adv2.Guidance), nil
+			}
+			return out, err
+		}
 		call := ToolCall{
 			Tool:     name,
 			Args:     args,
@@ -155,6 +179,42 @@ func (w *Workspace) observed(name string, fn tools.ToolExecutor) tools.ToolExecu
 		}
 		return out2, nil
 	}
+}
+
+// selfRepair describes a call the tool layer fixed on its own: the refusal it
+// would have produced before it learned to, and the arguments as repaired.
+type selfRepair struct {
+	refusal string
+	args    map[string]interface{}
+}
+
+// selfRepaired recognizes a result produced by an in-tool repair. Today that
+// is the ws_read gutter stripped from ws_edit/ws_patch input, marked by
+// GutterStrippedNote on the result.
+func selfRepaired(name string, args map[string]interface{}, result string, err error) (selfRepair, bool) {
+	if err != nil || !strings.Contains(result, GutterStrippedNote) {
+		return selfRepair{}, false
+	}
+	repaired := make(map[string]interface{}, len(args)+2)
+	for k, v := range args {
+		repaired[k] = v
+	}
+	switch name {
+	case "ws_edit":
+		if s, ok := stripReadGutter(strArgAny(args, oldStrKeys...)); ok {
+			repaired["old_str"] = s
+		}
+		if s, ok := stripReadGutter(strArgAny(args, newStrKeys...)); ok {
+			repaired["new_str"] = s
+		}
+	case "ws_patch":
+		if s, ok := stripReadGutterPatch(strArgAny(args, patchKeys...)); ok {
+			repaired["patch"] = s
+		}
+	default:
+		return selfRepair{}, false
+	}
+	return selfRepair{refusal: LineNumberedOldStrReason(strArg(args, "path")), args: repaired}, true
 }
 
 // resultString renders a tool result as the agent would see it.

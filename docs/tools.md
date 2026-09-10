@@ -70,8 +70,11 @@ Next page: ws_read {"path":"pkg/foo/bar.go","offset":121,"limit":120}. To jump s
 ```
 
 The `   42|` gutter is **display only**. Including it in `old_str` is the single most common
-small-model edit failure, so `ws_edit` detects and rejects it by name rather than reporting a
-generic miss.
+small-model edit failure. When **every** non-blank line of `old_str` (or of a `ws_patch` body)
+carries the gutter the intent is unambiguous: `ws_edit`/`ws_patch` strip it, apply the edit, and
+append `[stripped ws_read line numbers from old_str — do not include them]` to the result so the
+drift stays visible to `pkg/evolve`. A gutter on only *some* lines is not a paste and is still
+refused by name.
 
 Failure messages point at the recovery tool: a missing path suggests `ws_glob`/`ws_list`, a
 directory suggests `ws_list`, an out-of-range offset gives the valid range.
@@ -120,10 +123,13 @@ and how `pkg/evolve` learns which drift your model has.
 | Situation | Response |
 |---|---|
 | `old_str` empty or whitespace-only | Refused. Empty search used to pass `strings.Contains` and silently prepend. The message names the three real intents: create → `ws_write`; append → anchor on the last 2–3 lines; insert → repeat the anchor in `new_str`. |
-| `old_str` carries the `   42\|` gutter | Refused by name, with a before/after example. |
+| `old_str` carries the `   42\|` gutter on **every** line | Stripped and applied; the result ends with `[stripped ws_read line numbers from old_str — do not include them]`. |
+| `old_str` carries the gutter on only **some** lines | Refused by name, with a before/after example. |
 | `old_str == new_str` | `No-op edit refused — old_str and new_str are identical.` |
 | Exact match found N>1 times | `old_str found N times … pass replace_all:true, or include more surrounding context … Do NOT use ws_write.` |
-| A ladder strategy matched N>1 times | `Ambiguous edit refused — the search text matches N places … (strategy) match.` |
+| A ladder strategy matched N>1 times | `Ambiguous edit refused — the search text matches N places … (strategy) match.` With `replace_all:true` every span of that strategy is replaced instead (`edited … (N replacement(s)) [matched …]`). |
+| Argument spelled `old_string`/`search`/`old`, `new_string`/`replace`/`new` | Accepted as aliases of `old_str`/`new_str` (canonical key wins when both are present). `ws_write` likewise reads `contents`/`text`/`body`, `ws_patch` reads `diff`/`hunk`. |
+| `ws_write` with empty `content` on a new file | `Write refused — content is empty, so this would create <path> as a 0-byte file.` The message names the accepted body keys and any unrecognized key in the call. Emptying an existing file needs `allow_shrink:true`. |
 | No strategy matched | Not-found guidance plus a fuzzy hint at the closest span. |
 | Whole-file-style rewrite through `ws_edit` | Refused by the over-edit guard (`over_edit_guard`). |
 
@@ -135,8 +141,15 @@ Success: `edited pkg/foo/bar.go (1 replacement(s))` plus any strategy note and s
 {"path": "pkg/foo/bar.go", "patch": "@@ -10,3 +10,4 @@\n …"}
 ```
 
-Accepts a unified diff with `@@` hunks, a `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` block, or
-a bare `-`/`+` block treated as one anchorless hunk.
+Accepts a unified diff with `@@` hunks, a `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` block, the
+same block **without** the conflict markers (`SEARCH` / `=======` / `REPLACE` header lines, or just
+a bare `=======` separator), or a bare `-`/`+` block treated as one anchorless hunk.
+
+A pure-insertion hunk (`@@ -N,0 +M,K @@`, nothing removed) inserts **after** line N, as every
+unified-diff consumer does (`-0,0` means the top of the file). Trailing prose after a hunk ("This
+adds the check.") and Markdown fences around the diff are dropped rather than being read as
+context lines that can never match; an unprefixed line that is *followed* by a diff line is still
+treated as context the model forgot to prefix.
 
 Multi-hunk diffs are applied **hunk by hunk**, each anchored on its `@@` line numbers within a
 ±20-line window (`AnchorWindowLines`), with earlier hunks' line delta carried forward. The same

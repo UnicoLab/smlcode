@@ -4,6 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  # The same release, started by hand from the Actions tab. Pushing a tag stays
+  # the normal path (RELEASE.md step 2); this is for the two cases where there is
+  # no push to react to: re-running a release whose tag is already published but
+  # whose job failed partway, and cutting one from the UI without a local
+  # checkout. It changes nothing about what a release IS — the version still has
+  # to be committed, because check-version.sh below fails the run when the tag
+  # disagrees with version.go, the Makefile or the Formula.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release tag, e.g. v0.25.0. The bump must already be committed
+          (scripts/prepare-release.sh writes version.go, the Makefile and the
+          Formula). If this tag already exists the release is rebuilt from it;
+          if not, it is created on the branch selected above.
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -27,6 +44,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A manual run starts on the BRANCH picked in the Actions tab, not on a
+      # tag. When the tag already exists — re-running a release that published
+      # its tag and then failed — build from that tag: otherwise this job would
+      # publish whatever main happens to be now under a tag pointing at an older
+      # commit, and the assets would not be the release they claim to be. When
+      # the tag is new, stay on the selected ref; the Create GitHub Release step
+      # creates the tag here. fetch-depth: 0 above is what makes the tag local.
+      - name: Resolve the release tag (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Validated before it reaches git, and passed by env rather than
+          # interpolated into this script.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'${TAG}' is not a vX.Y.Z release tag (expected e.g. v0.25.0)"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null; then
+            echo "tag ${TAG} already exists — building from it, not from ${GITHUB_REF_NAME}"
+            git checkout --detach "refs/tags/${TAG}"
+          else
+            echo "tag ${TAG} is new — it will be created on ${GITHUB_REF_NAME} at this commit"
+          fi
+          git log -1 --format='building %h %s'
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -42,9 +86,19 @@ jobs:
 
       - name: Extract version
         id: ver
+        env:
+          # Empty on a tag push, the dispatch input on a manual run. By env, not
+          # interpolated into the script body.
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
+          # On a manual run GITHUB_REF_NAME is the branch that was selected, so
+          # the tag has to come from the input instead.
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${DISPATCH_TAG}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
           VERSION="${TAG#v}"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::tag ${TAG} is not a vX.Y.Z release tag" >&2

@@ -101,6 +101,24 @@ git push origin v0.20.0          # this is what starts the release
 Pushing the tag is the point of no return for the automation. Everything before it is
 reversible with `git tag -d` and `git reset`.
 
+### Starting it by hand instead
+
+The same workflow can be started from **Actions → Release → Run workflow**, which asks for
+the tag (`v0.20.0`) and the branch to run from. Use it when there is no push for the
+automation to react to:
+
+- **Re-running a release that failed partway.** The tag is already published, so
+  `git push origin v0.20.0` does nothing a second time. A manual run notices the tag
+  already exists and builds **from that tag**, not from whatever `main` has become since —
+  so the assets still match the commit the tag names. (If you need to move the tag itself,
+  that is the rollback in step 6, not this.)
+- **Cutting a release without a local checkout.**
+
+It is the same job with the same gates: the bump must already be committed, because
+`check-version.sh --tag` still fails the run when the tag disagrees with `version.go`, the
+Makefile or the Formula. A tag that does not exist yet is created on the branch you
+selected.
+
 ---
 
 ## 3. What CI does (watch it, do not skip ahead)
@@ -233,7 +251,10 @@ git tag -d v0.20.0
 git reset --hard origin/main
 ```
 
-**After the tag is pushed but CI failed** — no release exists, so just fix and re-tag:
+**After the tag is pushed but CI failed** — no release exists. If the tree is fine and the
+run died on something transient (a registry timeout, a runner hiccup), just start it again
+from **Actions → Release → Run workflow** with the same tag; it rebuilds from that tag.
+If the tree itself is at fault, fix and re-tag:
 
 ```bash
 git push --delete origin v0.20.0

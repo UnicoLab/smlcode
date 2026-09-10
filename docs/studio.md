@@ -135,7 +135,72 @@ pipeline*.
 
 Where WebGL is unavailable, or on request (the **3D / map** toggle), the same
 floor is drawn as a flat map with the same dossier and feed. Both honor
-`prefers-reduced-motion`.
+`prefers-reduced-motion`. On a touch device with no stored preference the map
+is the default; below the `sm` breakpoint the toggle sits in a strip under the
+floor and the feed opens from it as a bottom sheet. Every person and ticket in
+the 3D scene is also a visually hidden button, so the floor can be walked with
+a keyboard: a dossier takes focus when it opens and gives it back when it
+closes, and `Esc` closes it unless it was typed into a field.
+
+The scene keeps its state between visits. The **selection** lives in the URL —
+`/?task=T4` opens a ticket's dossier, `/?agent=go-worker` a person's, with an
+optional `&team=` — so a dossier survives navigating away, a reload, and being
+pasted to someone. The camera, **follow**, **spin** and the pulse feed live in
+a module-level store (mirrored to `sessionStorage`), so coming back from the
+Board finds the floor where it was left; **reset view** restores the camera
+through OrbitControls rather than remounting the scene. The render loop runs
+continuously only while something moves (a run, live tickets, fresh pulses,
+follow, spin, a camera glide), drops to on-demand when the floor is still, and
+stops while the tab is hidden. If the browser loses the WebGL context the page
+falls back to the flat map and says so.
+
+## One board, one stream
+
+Every page that shows tasks reads the same **board store** (`web/src/hooks/
+useBoardStore.ts`, provided from `App`): the Board, the Live floor, the ticker
+and the Teams page. It is seeded once from `GET /api/tasks` and
+`GET /api/squads`, then kept current by the live stream, and re-read every
+30 s as a safety net, on both edges of a run, and when the stream reconnects.
+Before the server's first push, a structural log line (a task starting or
+finishing, a run starting or ending) also triggers one debounced re-read, so a
+server without the events below still feels live. Pages call `refresh()`
+after a write and `upsertTask()` for the optimistic paint. Nothing polls on
+its own timer any more; the Sidebar's review badge comes from the stream too.
+
+Two SSE kinds are **board events**: they are folded into the store and never
+become rows in the log, since one row per column move would bury the story
+the log tells with `task_start` / `task_done`:
+
+| Kind | Payload | Effect |
+|---|---|---|
+| `task_update` | `task_id`, `data.task` — the task exactly as `GET /api/tasks` returns it | replaced by id in the store (appended if new); marks the store *live* |
+| `review_pending` | `data.pending` — the review queue's length | updates the Review badge at once |
+
+Their sequence ids still advance the reconnect cursor, and a replayed one is
+dropped like any other duplicate.
+
+The stream also keeps a **running derivation** of the log (`web/src/hooks/
+runDerived.ts`): phases seen, the active phase and agent, task ids, files
+written, token and cost totals, the newest composition — folded once per event
+as it arrives rather than re-scanned by each panel on every flush. The
+ticker's clock keys on the floor model's working set (an agent between its
+`agent_start` and `agent_end`), so it stops when nobody is working.
+
+### Links between pages
+
+Identifiers are chips that go somewhere (`web/src/components/shared/
+EntityLink.tsx`):
+
+| Kind | Goes to |
+|---|---|
+| task | `/?task=ID` — the ticket's dossier on the floor, and the Tasks rail |
+| agent | `/?agent=ID` — the person's dossier |
+| team | `/teams?team=ID` |
+| run | `/runs?run=ID` |
+| file | `/files?file=path` |
+
+The Board keeps its own filters in the URL as well: `?team=ID` (or the
+unassigned lane) and `?column=ID`.
 
 ## The review workflow
 

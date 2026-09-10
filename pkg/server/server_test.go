@@ -309,7 +309,7 @@ func TestHITLAnswersRequireCurrentAskIDForAllKinds(t *testing.T) {
 			name:     "shell",
 			endpoint: "/api/shell/approve",
 			writeAsk: func(h *harness.Harness, id string) error {
-				return hitl.WriteAsk(h.Config.SlmDir(), "shell", workspace.ShellAsk{
+				return hitl.WriteAskID(h.Config.SlmDir(), "shell", id, workspace.ShellAsk{
 					ID:        id,
 					Kind:      "shell",
 					Command:   "go test ./...",
@@ -456,7 +456,7 @@ func TestShellApproveRejectsInvalidDecision(t *testing.T) {
 		OnTimeout: "deny",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := hitl.WriteAsk(h.Config.SlmDir(), "shell", ask); err != nil {
+	if err := hitl.WriteAskID(h.Config.SlmDir(), "shell", ask.ID, ask); err != nil {
 		t.Fatal(err)
 	}
 
@@ -472,7 +472,7 @@ func TestShellApproveRejectsInvalidDecision(t *testing.T) {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
 	}
-	if ok, err := hitl.ReadAnswers(h.Config.SlmDir(), "shell", &workspace.ShellAnswer{}); err != nil || ok {
+	if ok, err := hitl.ReadAnswerID(h.Config.SlmDir(), "shell", ask.ID, &workspace.ShellAnswer{}); err != nil || ok {
 		t.Fatalf("invalid decision wrote answer ok=%v err=%v", ok, err)
 	}
 }

@@ -26,10 +26,17 @@ import (
 
 // PendingChange is one queued file change with both sides of the diff.
 type PendingChange struct {
-	ID        string     `json:"id"`
-	Path      string     `json:"path"`
-	Kind      string     `json:"kind"`
-	CreatedAt string     `json:"created_at"`
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	Kind      string `json:"kind"`
+	CreatedAt string `json:"created_at"`
+	// From is the source path of a ws_mv proposal; empty for other kinds.
+	From string `json:"from,omitempty"`
+	// TaskID / Agent / QueryID attribute the proposal to the board task, the
+	// role and the query that produced it, when the tool call carried them.
+	TaskID    string     `json:"task_id,omitempty"`
+	Agent     string     `json:"agent,omitempty"`
+	QueryID   string     `json:"query_id,omitempty"`
 	Exists    bool       `json:"exists"`
 	IsNew     bool       `json:"is_new"`
 	Before    string     `json:"before"`
@@ -41,10 +48,34 @@ type PendingChange struct {
 	Error     string     `json:"error,omitempty"`
 }
 
+// pendingFile is the on-disk queue entry. path/kind/content come from
+// permissions.RecordPending; the rest is stamped by pkg/workspace at record
+// time (workspace.PendingStamp) and is absent from older entries.
 type pendingFile struct {
 	Path    string `json:"path"`
 	Kind    string `json:"kind"`
 	Content string `json:"content"`
+	From    string `json:"from,omitempty"`
+	TaskID  string `json:"task_id,omitempty"`
+	Agent   string `json:"agent,omitempty"`
+	QueryID string `json:"query_id,omitempty"`
+}
+
+// Queue kinds. write/edit/patch all mean "the file's next content is
+// Content"; delete and mv are the two that must NOT be applied as a write —
+// doing so truncated a "deleted" file to zero bytes and left a moved file's
+// source in place. shell entries were never files at all (an older workspace
+// mirrored every shell ask into the queue); they are hidden and never applied.
+const (
+	pendingKindDelete = "delete"
+	pendingKindMove   = "mv"
+	pendingKindShell  = "shell"
+)
+
+// pendingKindApplicable reports whether a queue kind is something apply can
+// act on.
+func pendingKindApplicable(kind string) bool {
+	return kind != pendingKindShell
 }
 
 func (s *Server) pendingDir() string {
@@ -98,18 +129,41 @@ func (s *Server) readPending(id string, withHunks bool, context int) (PendingCha
 	}
 
 	ch := PendingChange{
-		ID:     id,
-		Path:   filepath.ToSlash(pf.Path),
-		Kind:   pf.Kind,
-		After:  pf.Content,
-		Bytes:  len(pf.Content),
-		Exists: true,
+		ID:      id,
+		Path:    filepath.ToSlash(pf.Path),
+		Kind:    pf.Kind,
+		From:    filepath.ToSlash(pf.From),
+		TaskID:  pf.TaskID,
+		Agent:   pf.Agent,
+		QueryID: pf.QueryID,
+		After:   pf.Content,
+		Bytes:   len(pf.Content),
+		Exists:  true,
 	}
 	if info, err := os.Stat(full); err == nil {
 		ch.CreatedAt = info.ModTime().UTC().Format(time.RFC3339)
 	}
 	if ts := leadingNanos(id); ts > 0 {
 		ch.CreatedAt = time.Unix(0, ts).UTC().Format(time.RFC3339)
+	}
+	if !pendingKindApplicable(pf.Kind) {
+		ch.Error = "not a file change (kind " + pf.Kind + ") — reject it"
+		ch.After = ""
+		ch.Bytes = 0
+		return ch, nil
+	}
+	if pf.Kind == pendingKindMove {
+		if strings.TrimSpace(pf.From) == "" {
+			ch.Error = "move entry has no source path"
+			return ch, nil
+		}
+		if herr := s.pendingTargetAllowed(pf.From); herr != nil {
+			ch.Error = "source: " + herr.Error()
+			ch.Exists = false
+			ch.After = ""
+			ch.Bytes = 0
+			return ch, nil
+		}
 	}
 
 	// A queue entry is a FILE in `.slmcode/pending/`, which means a cloned
@@ -140,6 +194,25 @@ func (s *Server) readPending(id string, withHunks bool, context int) (PendingCha
 		ch.Exists = false
 	} else {
 		ch.Before = string(before)
+	}
+	switch pf.Kind {
+	case pendingKindDelete:
+		// The diff of a delete is "everything removed"; the recorded content
+		// is empty by construction.
+		ch.After = ""
+		ch.Bytes = 0
+		ch.IsNew = false
+	case pendingKindMove:
+		// Rendered at the DESTINATION path: before is what the source holds
+		// now (the destination normally does not exist yet), after is the
+		// content that will land there.
+		if src, err := s.workspacePath(pf.From); err == nil {
+			if data, rerr := os.ReadFile(src); rerr == nil {
+				ch.Before = string(data)
+			} else if os.IsNotExist(rerr) && ch.Before == "" {
+				ch.Error = "source " + filepath.ToSlash(pf.From) + " no longer exists; the recorded content will be written instead"
+			}
+		}
 	}
 
 	d := ComputeDiff(ch.Before, ch.After, context)
@@ -199,6 +272,10 @@ func (s *Server) handleReviewPending(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		if !pendingKindApplicable(ch.Kind) {
+			// Stale shell mirrors from an older workspace: not a change.
+			continue
+		}
 		added += ch.Stat.Added
 		removed += ch.Stat.Removed
 		items = append(items, ch)
@@ -244,7 +321,20 @@ func (s *Server) reviewTargets(r *http.Request) ([]string, error) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 	if req.All {
-		return s.listPendingIDs()
+		ids, err := s.listPendingIDs()
+		if err != nil {
+			return nil, err
+		}
+		// "all" means every CHANGE; stale shell mirrors are hidden from the
+		// listing and are skipped here for the same reason.
+		out := ids[:0]
+		for _, id := range ids {
+			if ch, err := s.readPending(id, false, 0); err == nil && !pendingKindApplicable(ch.Kind) {
+				continue
+			}
+			out = append(out, id)
+		}
+		return out, nil
 	}
 	ids := append([]string(nil), req.IDs...)
 	if strings.TrimSpace(req.ID) != "" {
@@ -282,6 +372,7 @@ func (s *Server) handleReviewApply(w http.ResponseWriter, r *http.Request) {
 			Message: fmt.Sprintf("applied %d pending change(s) from Studio", len(applied)),
 			Output:  strings.Join(applied, "\n"), Time: time.Now(),
 		})
+		s.emitReviewPending()
 	}
 	writeJSON(w, map[string]any{
 		"ok": len(failed) == 0, "applied": applied, "failed": failed,
@@ -316,6 +407,7 @@ func (s *Server) handleReviewReject(w http.ResponseWriter, r *http.Request) {
 			Message: fmt.Sprintf("rejected %d pending change(s) from Studio", len(rejected)),
 			Time:    time.Now(),
 		})
+		s.emitReviewPending()
 	}
 	writeJSON(w, map[string]any{
 		"ok": len(failed) == 0, "rejected": rejected, "failed": failed,
@@ -355,13 +447,43 @@ func (s *Server) applyPending(id string) (string, error) {
 	if herr := s.pendingTargetAllowed(pf.Path); herr != nil {
 		return pf.Path, herr
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
-		return pf.Path, err
-	}
-	// target is a project source file (re-validated above to stay inside the
-	// workspace) — conventional perms, not secret state.
-	if err := os.WriteFile(target, []byte(pf.Content), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
-		return pf.Path, err
+	// The KIND decides what "apply" means. Every kind used to be applied as
+	// "write Content to Path": a delete entry (Content "") truncated the file
+	// instead of removing it, a move entry copied the destination and left the
+	// source behind, and a shell entry wrote shell.sh at the project root.
+	switch pf.Kind {
+	case pendingKindShell:
+		return pf.Path, errors.New("shell approvals are not file changes and cannot be applied; reject the entry")
+	case pendingKindDelete:
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return pf.Path, err
+		}
+	case pendingKindMove:
+		if strings.TrimSpace(pf.From) == "" {
+			return pf.Path, errors.New("move entry has no source path")
+		}
+		if herr := s.pendingTargetAllowed(pf.From); herr != nil {
+			return pf.Path, fmt.Errorf("source: %w", herr)
+		}
+		src, err := s.workspacePath(pf.From)
+		if err != nil {
+			return pf.Path, ErrPathEscape
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
+			return pf.Path, err
+		}
+		if err := movePendingFile(src, target, pf.Content); err != nil {
+			return pf.Path, err
+		}
+	default:
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
+			return pf.Path, err
+		}
+		// target is a project source file (re-validated above to stay inside
+		// the workspace) — conventional perms, not secret state.
+		if err := os.WriteFile(target, []byte(pf.Content), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
+			return pf.Path, err
+		}
 	}
 	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 		return pf.Path, err
@@ -369,9 +491,73 @@ func (s *Server) applyPending(id string) (string, error) {
 	return filepath.ToSlash(pf.Path), nil
 }
 
+// movePendingFile realises a queued ws_mv: rename when the source still
+// exists, else write the recorded content (the source was moved or deleted by
+// something else in the meantime, and the proposal's intent is the content at
+// the destination).
+func movePendingFile(src, dst, content string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("destination %s already exists", filepath.Base(dst))
+	}
+	if _, err := os.Lstat(src); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return os.WriteFile(dst, []byte(content), 0o644) //nolint:gosec // project source file, conventional perms
+	}
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	// Cross-device or otherwise un-renamable: copy, verify, then remove.
+	data, err := os.ReadFile(src) //nolint:gosec // src re-validated against the workspace root by the caller
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil { //nolint:gosec // project source file, conventional perms
+		return err
+	}
+	if st, err := os.Stat(dst); err != nil || st.Size() != int64(len(data)) {
+		_ = os.Remove(dst)
+		return errors.New("copy of the source was incomplete; source left in place")
+	}
+	return os.Remove(src)
+}
+
+// pendingCount is the number of applicable queue entries (shell mirrors from
+// an older workspace are not counted; the listing hides them too).
 func (s *Server) pendingCount() int {
 	ids, _ := s.listPendingIDs()
-	return len(ids)
+	n := 0
+	for _, id := range ids {
+		full, err := s.pendingIDPath(id)
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(full) //nolint:gosec // queue file under the harness state dir
+		if err != nil {
+			continue
+		}
+		var pf pendingFile
+		if json.Unmarshal(raw, &pf) == nil && !pendingKindApplicable(pf.Kind) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// emitReviewPending publishes the queue depth as a `review_pending` event
+// ({"pending": N}) so Studio's badge follows the queue without polling. It is
+// called after every apply/reject and, through the workspace hook installed in
+// NewWithOptions, after every proposal a running agent records.
+func (s *Server) emitReviewPending() {
+	n := s.pendingCount()
+	s.emit(orchestrator.Event{
+		Phase: "review", Kind: "review_pending", Level: "info",
+		Message: fmt.Sprintf("%d pending review change(s)", n),
+		Data:    map[string]any{"pending": n},
+		Time:    time.Now(),
+	})
 }
 
 func boolParam(r *http.Request, key string, def bool) bool {

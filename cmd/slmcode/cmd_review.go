@@ -30,23 +30,50 @@ type pendingPatch struct {
 	Path    string `json:"path"`
 	Kind    string `json:"kind"`
 	Content string `json:"content"`
+	// From is the source of a ws_mv proposal (stamped by pkg/workspace).
+	From string `json:"from,omitempty"`
+	// TaskID / Agent / QueryID attribute the proposal when known.
+	TaskID  string `json:"task_id,omitempty"`
+	Agent   string `json:"agent,omitempty"`
+	QueryID string `json:"query_id,omitempty"`
 }
+
+// Queue kinds that are not "write Content to Path". See writePatch.
+const (
+	pendingKindDelete = "delete"
+	pendingKindMove   = "mv"
+	pendingKindShell  = "shell"
+)
 
 // abs resolves the target file inside the project root.
 func (p pendingPatch) abs(root string) string { return filepath.Join(root, p.Path) }
 
-// before reads the on-disk content the patch would replace.
+// before reads the on-disk content the patch would replace. A move is diffed
+// against its SOURCE: the destination does not exist yet, and what the
+// reviewer needs to see is that the content is unchanged in transit.
 func (p pendingPatch) before(root string) string {
-	data, err := os.ReadFile(p.abs(root))
+	path := p.abs(root)
+	if p.Kind == pendingKindMove && p.From != "" {
+		path = filepath.Join(root, p.From)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // project path under root
 	if err != nil {
 		return ""
 	}
 	return string(data)
 }
 
+// after is the content the applier will leave at Path ("" for a delete).
+func (p pendingPatch) after() string {
+	if p.Kind == pendingKindDelete {
+		return ""
+	}
+	return p.Content
+}
+
 // diff computes the unified diff for this patch.
 func (p pendingPatch) diff(root string) cli.FileDiff {
-	fd := cli.Diff(p.Path, p.before(root), p.Content, 3)
+	fd := cli.Diff(p.Path, p.before(root), p.after(), 3)
 	if mode, ok := fileMode(p.abs(root)); ok && mode&0o111 != 0 {
 		fd.ModeNote = fmt.Sprintf("mode %04o", mode)
 	}
@@ -87,6 +114,11 @@ func loadPending(slmDir string) ([]pendingPatch, error) {
 		if json.Unmarshal(data, &p) != nil || strings.TrimSpace(p.Path) == "" {
 			continue
 		}
+		if p.Kind == pendingKindShell {
+			// An older workspace mirrored every shell ask into the queue;
+			// a command is not a file change and must never be "applied".
+			continue
+		}
 		p.File = e.Name()
 		out = append(out, p)
 	}
@@ -94,10 +126,58 @@ func loadPending(slmDir string) ([]pendingPatch, error) {
 	return out, nil
 }
 
-// writePatch applies one patch, preserving the existing file mode. A brand new
-// file gets 0o644; an existing executable keeps its +x bits.
+// writePatch applies one patch according to its KIND, preserving the existing
+// file mode for writes. A brand new file gets 0o644; an existing executable
+// keeps its +x bits.
+//
+// Every kind used to be applied as "write Content to Path", which truncated a
+// "deleted" file to zero bytes, copied a moved file while leaving its source
+// behind, and wrote a literal shell.sh for a shell approval.
 func writePatch(root string, p pendingPatch) error {
 	abs := p.abs(root)
+	switch p.Kind {
+	case pendingKindShell:
+		return errors.New("shell approvals are not file changes; reject the entry instead")
+	case pendingKindDelete:
+		if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	case pendingKindMove:
+		if strings.TrimSpace(p.From) == "" {
+			return errors.New("move entry has no source path")
+		}
+		src := filepath.Join(root, p.From)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
+			return err
+		}
+		if _, err := os.Stat(abs); err == nil {
+			return fmt.Errorf("destination %s already exists", p.Path)
+		}
+		if _, err := os.Lstat(src); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			// Source gone in the meantime: the intent is the content at the
+			// destination, which was recorded.
+			return os.WriteFile(abs, []byte(p.Content), 0o644) //nolint:gosec // project source file, conventional perms
+		}
+		if err := os.Rename(src, abs); err == nil {
+			return nil
+		}
+		data, err := os.ReadFile(src) //nolint:gosec // project path under root
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if m, ok := fileMode(src); ok {
+			mode = m
+		}
+		if err := os.WriteFile(abs, data, mode); err != nil {
+			return err
+		}
+		return os.Remove(src)
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil { //nolint:gosec // directory in the user's source tree — conventional 0755, not harness state
 		return err
 	}

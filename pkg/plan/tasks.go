@@ -142,32 +142,98 @@ func (b *Board) ReadyTasks() []Task {
 	return b.executableTasksLocked()
 }
 
+// BoardHook observes one task after a change to it has been applied. The
+// task is passed by value (a snapshot), and hooks run AFTER boardMu is
+// released, so a hook may read the board or emit an event without deadlocking.
+//
+// Hooks are package-level for the same reason boardMu is: Board is copied by
+// value at every boundary, so a hook stored on the struct would be lost in
+// the copy. Studio installs one to publish task_update events.
+type BoardHook func(t Task)
+
+var (
+	boardHookMu sync.RWMutex
+	boardHooks  = map[int]BoardHook{}
+	boardHookID int
+)
+
+// AddBoardHook registers fn and returns a function that removes it.
+func AddBoardHook(fn BoardHook) (remove func()) {
+	if fn == nil {
+		return func() {}
+	}
+	boardHookMu.Lock()
+	boardHookID++
+	id := boardHookID
+	boardHooks[id] = fn
+	boardHookMu.Unlock()
+	return func() {
+		boardHookMu.Lock()
+		delete(boardHooks, id)
+		boardHookMu.Unlock()
+	}
+}
+
+// fireBoardHooks calls every registered hook with t. Never call it while
+// holding boardMu.
+func fireBoardHooks(t Task) {
+	boardHookMu.RLock()
+	if len(boardHooks) == 0 {
+		boardHookMu.RUnlock()
+		return
+	}
+	hooks := make([]BoardHook, 0, len(boardHooks))
+	for _, h := range boardHooks {
+		hooks = append(hooks, h)
+	}
+	boardHookMu.RUnlock()
+	for _, h := range hooks {
+		h(t)
+	}
+}
+
 // UpdateTask replaces a task by ID.
 func (b *Board) UpdateTask(updated Task) {
 	updated.Normalize()
 	updated.UpdatedAt = time.Now().Format(time.RFC3339)
 	boardMu.Lock()
-	defer boardMu.Unlock()
+	replaced := false
 	for i, t := range b.Tasks {
 		if t.ID == updated.ID {
 			b.Tasks[i] = updated
-			return
+			replaced = true
+			break
 		}
 	}
-	b.Tasks = append(b.Tasks, updated)
+	if !replaced {
+		b.Tasks = append(b.Tasks, updated)
+	}
+	boardMu.Unlock()
+	fireBoardHooks(updated)
 }
 
 // RemoveTask deletes a task by ID.
 func (b *Board) RemoveTask(id string) bool {
 	boardMu.Lock()
-	defer boardMu.Unlock()
+	var removed *Task
 	for i, t := range b.Tasks {
 		if t.ID == id {
+			cp := t
+			removed = &cp
 			b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
-			return true
+			break
 		}
 	}
-	return false
+	boardMu.Unlock()
+	if removed == nil {
+		return false
+	}
+	// A removed task is reported with an empty column so a consumer can drop
+	// it from its view.
+	removed.Column = ""
+	removed.Status = ""
+	fireBoardHooks(*removed)
+	return true
 }
 
 // NextID generates a unique task id.
@@ -197,19 +263,24 @@ func (b *Board) nextIDLocked() string {
 // Returns the stored task.
 func (b *Board) AddTask(t Task) Task {
 	boardMu.Lock()
-	defer boardMu.Unlock()
 	if strings.TrimSpace(t.ID) == "" {
 		t.ID = b.nextIDLocked()
 	}
 	t.Normalize()
 	t.UpdatedAt = time.Now().Format(time.RFC3339)
+	replaced := false
 	for i := range b.Tasks {
 		if b.Tasks[i].ID == t.ID {
 			b.Tasks[i] = t
-			return t
+			replaced = true
+			break
 		}
 	}
-	b.Tasks = append(b.Tasks, t)
+	if !replaced {
+		b.Tasks = append(b.Tasks, t)
+	}
+	boardMu.Unlock()
+	fireBoardHooks(t)
 	return t
 }
 

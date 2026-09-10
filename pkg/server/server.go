@@ -77,8 +77,29 @@ type Server struct {
 	seq     uint64
 	lastRes *orchestrator.Result
 	running bool
-	subs    map[*subscriber]struct{}
-	closed  bool
+	// stopping is set by POST /api/runs/stop while the run goroutine is still
+	// unwinding. running stays true until that goroutine exits, so a new run
+	// cannot start on top of the old one's teardown.
+	stopping bool
+	// runGen counts run starts. The run goroutine captures the generation it
+	// was started under and only clears running / restores per-run options
+	// when it still matches, so a goroutine from a stopped run that finishes
+	// late cannot clobber the state of the run that replaced it.
+	runGen uint64
+	// lastPhase is the most recent phase seen on a structural event; the
+	// task_update events synthesized from the board hook carry it because the
+	// board itself does not know which phase moved the task.
+	lastPhase string
+	subs      map[*subscriber]struct{}
+	closed    bool
+	// hookRemovers undo the package-level change hooks installed by
+	// installChangeHooks; run in Shutdown.
+	hookRemovers []func()
+	// runFn / resumeFn are the engine entry points POST /api/runs and
+	// /api/runs/resume drive. They default to the harness and are swappable so
+	// lifecycle tests can run a controllable fake instead of a model.
+	runFn    func(ctx context.Context, query string) (*orchestrator.Result, error)
+	resumeFn func(ctx context.Context, id string) (*orchestrator.Result, error)
 
 	// cfgMu guards mutation of the shared *config.Config and of the
 	// Orchestrator pointer. Handlers must go through cfg()/orch()/
@@ -131,8 +152,28 @@ func NewWithOptions(h *harness.Harness, ui fs.FS, opts Options) *Server {
 		baseCancel: cancel,
 	}
 	s.wireOrchestratorEvents()
+	s.installChangeHooks()
 	s.routes()
 	return s
+}
+
+// installChangeHooks subscribes the server to the two package-level change
+// feeds it turns into SSE events: review-queue proposals recorded by a running
+// agent's workspace (review_pending) and board task changes (task_update).
+// Both hooks are removed again in Shutdown so a test that builds several
+// servers does not leak emitters between them.
+func (s *Server) installChangeHooks() {
+	s.hookRemovers = append(s.hookRemovers,
+		workspace.AddPendingHook(func(_, _, _ string) { s.emitReviewPending() }),
+		plan.AddBoardHook(func(t plan.Task) { s.emitTaskUpdate(t) }),
+	)
+}
+
+func (s *Server) removeChangeHooks() {
+	for _, rm := range s.hookRemovers {
+		rm()
+	}
+	s.hookRemovers = nil
 }
 
 // wireOrchestratorEvents keeps Studio SSE subscribed across config rebuilds.
@@ -146,11 +187,54 @@ func (s *Server) wireOrchestratorEvents() {
 	})
 }
 
+// taskUpdateKind is the SSE kind for a board task change; reviewPendingKind
+// announces the review-queue depth. Both are synthesized by the server from
+// the package-level hooks, not emitted by the engine.
+const (
+	taskUpdateKind    = "task_update"
+	reviewPendingKind = "review_pending"
+)
+
+// emitTaskUpdate publishes one task change as a task_update event:
+// Phase = the current run phase when one is known, else "board"; TaskID = the
+// task id; Message = "<id> -> <column>"; Data = {"task": <task JSON as GET
+// /api/tasks returns it>}. A removed task arrives with an empty column.
+func (s *Server) emitTaskUpdate(t plan.Task) {
+	s.mu.Lock()
+	phase := s.lastPhase
+	s.mu.Unlock()
+	if phase == "" {
+		phase = "board"
+	}
+	col := t.Column
+	if col == "" {
+		col = "removed"
+	}
+	s.emit(orchestrator.Event{
+		Phase: phase, Kind: taskUpdateKind, Level: "info", TaskID: t.ID,
+		Message: t.ID + " -> " + col,
+		Data:    map[string]any{"task": t},
+		Time:    time.Now(),
+	})
+}
+
 func (s *Server) emit(e orchestrator.Event) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
+	}
+	// Track the run's current phase for the synthesized task_update events.
+	// Only engine phases count: the synthesized kinds and the review
+	// endpoints' own "review" phase would otherwise mislabel later updates.
+	switch e.Kind {
+	case taskUpdateKind, reviewPendingKind, tokenKind:
+	case "run_end", "run_stop":
+		s.lastPhase = ""
+	default:
+		if e.Phase != "" && e.Phase != "review" {
+			s.lastPhase = e.Phase
+		}
 	}
 	s.seq++
 	se := seqEvent{Seq: s.seq, Event: e}
@@ -247,6 +331,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	case <-time.After(shutdownRunGrace):
 	}
 
+	s.removeChangeHooks()
 	s.mu.Lock()
 	s.closed = true
 	subs := make([]*subscriber, 0, len(s.subs))
@@ -1442,57 +1527,104 @@ func (s *Server) handleEscalateAnswer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "action": ans.Action})
 }
 
+// pendingShellAsks lists the shell asks that are still waiting for a decision,
+// oldest first. Expired asks are withdrawn on the way; answered ones are left
+// for their worker to collect and skipped.
+func (s *Server) pendingShellAsks() ([]workspace.ShellAsk, error) {
+	ids, err := hitl.ListAskIDs(s.slmDir(), "shell")
+	if err != nil {
+		return nil, err
+	}
+	fallback := s.cfg().ShellAskTimeout
+	var out []workspace.ShellAsk
+	for _, id := range ids {
+		var ask workspace.ShellAsk
+		ok, err := hitl.ReadAskID(s.slmDir(), "shell", id, &ask)
+		if err != nil || !ok {
+			continue
+		}
+		if ask.ID == "" {
+			ask.ID = id
+		}
+		askPath := hitl.AskIDPath(s.slmDir(), "shell", id)
+		if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, fallback, askPath) {
+			hitl.ClearID(s.slmDir(), "shell", id)
+			continue
+		}
+		if answered, expired := answeredAskState(hitl.AnswerIDPath(s.slmDir(), "shell", id), ask.ID, ask.CreatedAt, ask.TimeoutS, fallback, askPath); answered || expired {
+			if expired {
+				hitl.ClearID(s.slmDir(), "shell", id)
+			}
+			continue
+		}
+		out = append(out, ask)
+	}
+	return out, nil
+}
+
+// handleShellPending — GET /api/shell/pending
+//
+// Shell asks are per-ask files now (a parallel wave raises several at once),
+// so the response carries the whole list in `asks`. The single-ask shape the
+// UI was built on is kept: `pending` and `ask` describe the OLDEST open ask.
+//
+//	{"pending": true, "ask": {…first…}, "asks": [{…}, {…}], "count": 2}
+//	{"pending": false, "asks": [], "count": 0}
 func (s *Server) handleShellPending(w http.ResponseWriter, r *http.Request) {
-	var ask workspace.ShellAsk
-	ok, err := hitl.ReadAsk(s.slmDir(), "shell", &ask)
+	asks, err := s.pendingShellAsks()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if !ok {
-		writeJSON(w, map[string]any{"pending": false})
+	if len(asks) == 0 {
+		writeJSON(w, map[string]any{"pending": false, "asks": []workspace.ShellAsk{}, "count": 0})
 		return
 	}
-	if answered, expired := answeredAskState(hitl.AnswersPath(s.slmDir(), "shell"), ask.ID, ask.CreatedAt, ask.TimeoutS, s.cfg().ShellAskTimeout, hitl.AskPath(s.slmDir(), "shell")); answered || expired {
-		if expired {
-			hitl.Clear(s.slmDir(), "shell")
-			writeJSON(w, map[string]any{"pending": false, "expired": true})
-			return
-		}
-		writeJSON(w, map[string]any{"pending": false, "answered": true})
-		return
-	}
-	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.cfg().ShellAskTimeout, hitl.AskPath(s.slmDir(), "shell")) {
-		hitl.Clear(s.slmDir(), "shell")
-		writeJSON(w, map[string]any{"pending": false, "expired": true})
-		return
-	}
-	writeJSON(w, map[string]any{"pending": true, "ask": ask})
+	writeJSON(w, map[string]any{"pending": true, "ask": asks[0], "asks": asks, "count": len(asks)})
 }
 
+// handleShellApprove — POST /api/shell/approve {ask_id, decision}
+//
+// ask_id selects which of the pending asks is being decided. It may be omitted
+// only when exactly one ask is pending; with several, an unspecified or
+// unknown id is a 409 so a stale card can never approve a newer command.
 func (s *Server) handleShellApprove(w http.ResponseWriter, r *http.Request) {
 	var ans workspace.ShellAnswer
 	if err := json.NewDecoder(r.Body).Decode(&ans); err != nil {
 		http.Error(w, "invalid JSON", 400)
 		return
 	}
-	var ask workspace.ShellAsk
-	ok, err := hitl.ReadAsk(s.slmDir(), "shell", &ask)
+	asks, err := s.pendingShellAsks()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if !ok {
+	posted := strings.TrimSpace(ans.AskID)
+	// An id that already has a decision on file is a duplicate click, not a
+	// missing ask — even once the worker has collected it.
+	if posted != "" {
+		if ok, _ := hitl.ReadAnswerID(s.slmDir(), "shell", posted, &workspace.ShellAnswer{}); ok {
+			http.Error(w, "shell ask already answered", http.StatusConflict)
+			return
+		}
+	}
+	if len(asks) == 0 {
 		http.Error(w, "no pending shell ask", http.StatusNotFound)
 		return
 	}
-	if !requireMatchingAskID(w, ans.AskID, ask.ID) {
-		return
+	var ask *workspace.ShellAsk
+	for i := range asks {
+		if asks[i].ID == posted {
+			ask = &asks[i]
+			break
+		}
 	}
-	if askExpiredWithFallback(ask.CreatedAt, ask.TimeoutS, s.cfg().ShellAskTimeout, hitl.AskPath(s.slmDir(), "shell")) {
-		hitl.Clear(s.slmDir(), "shell")
-		http.Error(w, "shell ask expired", http.StatusGone)
-		return
+	if ask == nil {
+		if posted == "" && len(asks) == 1 {
+			ask = &asks[0]
+		} else if !requireMatchingAskID(w, posted, asks[0].ID) {
+			return
+		}
 	}
 	ans.Decision = strings.ToLower(strings.TrimSpace(ans.Decision))
 	if ans.Decision != "approve" && ans.Decision != "deny" {
@@ -1503,7 +1635,7 @@ func (s *Server) handleShellApprove(w http.ResponseWriter, r *http.Request) {
 	if ans.AnsweredAt == "" {
 		ans.AnsweredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if err := hitl.WriteAnswersOnce(s.slmDir(), "shell", ans); err != nil {
+	if err := hitl.WriteAnswerIDOnce(s.slmDir(), "shell", ask.ID, ans); err != nil {
 		if os.IsExist(err) {
 			http.Error(w, "shell ask already answered", http.StatusConflict)
 			return

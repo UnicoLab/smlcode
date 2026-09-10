@@ -1723,7 +1723,8 @@ func (r *Runner) fireTurn(taskID string, iter, maxIter int) {
 
 // noteUsage is the single choke point every agent result passes through, which
 // makes it the right place to fold the transcript into the edit ledger too —
-// wave results, sequential round-trips and the speculative race all land here.
+// wave results, review and correction round-trips and the speculate primitive
+// all land here.
 func (r *Runner) noteUsage(res ggagent.SubAgentResult, input, output string) {
 	r.noteEdits(res.Messages)
 	if r.OnUsage == nil {

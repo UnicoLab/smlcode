@@ -168,10 +168,10 @@ func specs(coding []string) []RoleSpec {
 		{ID: "manager", Title: "Engineering manager (squad assembly)", Description: "Splits a query into parallel squads with disjoint ownership and a frozen interface contract.", SystemPrompt: PromptManager, Tools: nil, MaxIter: 3, Temperature: 0.15, MaxTokens: 2048, SchemaRole: schema.RoleSquads},
 		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048, SchemaRole: schema.RoleComposition},
 
-		// reviewer-strict is the second reviewer the speculative review race in
-		// pkg/loop has always asked for. Until it was registered here,
-		// SubAgentExecutor answered "subagent 'reviewer-strict' not found" and
-		// the documented second opinion never ran.
+		// reviewer-strict is the sequential second opinion pkg/loop asks for
+		// when the primary reviewer returns no readable verdict. Until it was
+		// registered here, SubAgentExecutor answered "subagent 'reviewer-strict'
+		// not found" and the documented second opinion never ran.
 		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, TemperatureSet: true, MaxTokens: 768, SchemaRole: schema.RoleReview},
 
 		// Architect/editor pair (Aider's measured decomposition win). The
@@ -185,8 +185,8 @@ func specs(coding []string) []RoleSpec {
 
 // Built-in role ids added alongside the original 17-specialist roster.
 const (
-	// RoleReviewerStrict is the second reviewer used by the speculative review
-	// race in pkg/loop when max_parallel >= 3.
+	// RoleReviewerStrict is the second reviewer pkg/loop asks, sequentially,
+	// only when the primary reviewer produced no readable verdict.
 	RoleReviewerStrict = "reviewer-strict"
 	// RoleDescriber is the prose half of the architect/editor pair.
 	RoleDescriber = "describer"
@@ -574,7 +574,7 @@ func (f *Factory) AllSpecs() []RoleSpec {
 }
 
 // IsKnownRole reports whether id names a built-in specialist. Wire-up code that
-// names a slot role (pkg/loop's speculative review race, pipeline phase
+// names a slot role (pkg/loop's strict second-opinion reviewer, pipeline phase
 // bindings) should assert with this so a typo fails loudly at configuration
 // time instead of silently at runtime, the way "reviewer-strict" did for as
 // long as it went unregistered.

@@ -3,6 +3,8 @@ import { getPipeline, updatePipeline, resetPipeline, getBlocks, applyPipelinePre
 import { AppContext } from '@/App';
 import type { PipelineConfig, PipelineView, PhaseSpec, GroupMeta, Slot, ExecuteLoop, BlockCatalogEntry, TeamSpec } from '@/types';
 import BlockEditor from '@/components/Blocks/BlockEditor';
+import { useToast } from '@/components/ui/Toast';
+import ErrorState from '@/components/ui/ErrorState';
 import {
   RotateCcw,
   Save,
@@ -80,9 +82,11 @@ interface Notice {
 
 export default function PipelineEditor() {
   const confirm = useConfirm();
+  const toast = useToast();
   const ctx = useContext(AppContext);
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [presets, setPresets] = useState<any[]>([]);
   const [applyingPreset, setApplyingPreset] = useState(false);
@@ -101,8 +105,9 @@ export default function PipelineEditor() {
     try {
       const p = await getPipeline();
       setPipeline(p);
+      setLoadError(null);
     } catch (e) {
-      console.error('Failed to load pipeline:', e);
+      setLoadError(e);
     } finally {
       setLoading(false);
     }
@@ -254,13 +259,19 @@ export default function PipelineEditor() {
       const p = await resetPipeline();
       setPipeline(p);
       setNotice(null);
+      toast.success('Pipeline reset to defaults');
     } catch (e) {
-      console.error(e);
+      toast.reportError(e, 'Could not reset the pipeline');
     }
   };
 
   if (loading) return (
     <div className="flex items-center justify-center h-full"><div className="flex items-center gap-3 text-gray-400"><div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />Loading pipeline…</div></div>
+  );
+  if (loadError) return (
+    <div className="flex h-full items-center justify-center p-6">
+      <ErrorState error={loadError} what="the pipeline" onRetry={() => { setLoading(true); fetch(); }} className="w-full max-w-md" />
+    </div>
   );
   if (!pipeline) return (
     <div className="flex items-center justify-center h-full text-gray-400">No pipeline data.</div>

@@ -15,6 +15,7 @@ import {
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
+import ErrorState from '@/components/ui/ErrorState';
 
 const EMPTY_AGENT: AgentSpec = {
   id: '',
@@ -36,6 +37,7 @@ export default function AgentManager() {
   const toast = useToast();
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState<AgentSpec | null>(null);
   const [creating, setCreating] = useState(false);
@@ -48,8 +50,11 @@ export default function AgentManager() {
     try {
       const list = await getAgents();
       setAgents(list);
+      setLoadError(null);
     } catch (e) {
-      console.error('Failed to load agents:', e);
+      // Shown in place of the list with a Retry; an empty list over a dead
+      // backend used to read as "no custom agents defined yet".
+      setLoadError(e);
     } finally {
       setLoading(false);
     }
@@ -64,11 +69,11 @@ export default function AgentManager() {
     getSkills()
       .then((list) => setAllSkills(list || []))
       .catch((e) => {
-        console.error('Failed to load skills:', e);
+        toast.reportError(e, 'Could not load the skill list for the picker');
         setAllSkills([]);
       })
       .finally(() => setSkillsLoaded(true));
-  }, []);
+  }, [toast]);
 
   const toggleSkill = useCallback((name: string) => {
     setForm((f) => {
@@ -104,8 +109,13 @@ export default function AgentManager() {
       const detail = await getAgent(agent.id);
       setForm({ ...detail });
     } catch (e) {
-      console.error('Failed to load agent detail:', e);
-      // Fall back to list data (prompts may be missing)
+      // Fall back to list data (prompts may be missing) — and say so, or a
+      // save from this form silently blanks the system prompt.
+      toast.push({
+        tone: 'warning',
+        title: `Editing ${agent.title || agent.id} from the summary only`,
+        detail: `The full spec could not be loaded (${e instanceof Error ? e.message : String(e)}); prompts may be missing.`,
+      });
       setForm({ ...agent });
     } finally {
       setDetailLoading(false);
@@ -520,11 +530,20 @@ export default function AgentManager() {
           ))}
         </div>
 
-        {agents.length === 0 && !showForm && (
+        {loadError !== null && !showForm && <ErrorState error={loadError} what="agents" onRetry={fetch} />}
+
+        {!loadError && agents.length === 0 && !showForm && (
           <div className="text-center py-12 text-gray-400">
             <Bot size={48} className="mx-auto mb-3 opacity-50" />
-            <p className="text-sm">No custom agents defined yet.</p>
-            <p className="text-xs mt-1">Built-in specialists are always available.</p>
+            <p className="text-sm">No agents yet.</p>
+            <p className="text-xs mt-1">
+              An agent is a role with its own prompt, model and skills — the pipeline seats one per phase. Built-in
+              specialists are always available; add one here to override a builtin or introduce a new role.
+            </p>
+            <button type="button" onClick={handleCreate} className="btn-primary mx-auto mt-4 gap-2 text-sm">
+              <Plus size={14} />
+              Create your first agent
+            </button>
           </div>
         )}
       </div>

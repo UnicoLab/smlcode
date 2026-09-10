@@ -25,13 +25,20 @@ type RoleSpec struct {
 	Tools        []string `json:"tools,omitempty"`
 	MaxIter      int      `json:"max_iter"`
 	Temperature  float64  `json:"temperature"`
-	MaxTokens    int      `json:"max_tokens"`
-	Model        string   `json:"model,omitempty"`
-	Provider     string   `json:"provider,omitempty"`
-	Endpoint     string   `json:"endpoint,omitempty"`
-	Skills       []string `json:"skills,omitempty"`
-	Custom       bool     `json:"custom"`
-	Override     bool     `json:"override,omitempty"`
+	// TemperatureSet marks Temperature as deliberate even when it is 0. The
+	// request encoding treats a zero temperature as unset (GoLangGraph
+	// substitutes the provider default, the OpenAI-compatible body omits the
+	// key), so a role pinned at 0 was sampled at the server default. Only a
+	// spec that sets this gets its zero emitted; roles that never set a
+	// temperature keep the unset behavior.
+	TemperatureSet bool     `json:"temperature_set,omitempty"`
+	MaxTokens      int      `json:"max_tokens"`
+	Model          string   `json:"model,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Endpoint       string   `json:"endpoint,omitempty"`
+	Skills         []string `json:"skills,omitempty"`
+	Custom         bool     `json:"custom"`
+	Override       bool     `json:"override,omitempty"`
 
 	// JSONOnly marks a role whose entire output is one JSON document. Factory
 	// attaches constrained decoding (response_format / guided_json / GBNF) for
@@ -62,12 +69,14 @@ func (s RoleSpec) Directives() backends.Directives {
 		toolChoice = "auto"
 	}
 	return backends.Directives{
-		Role:          s.ID,
-		SchemaRole:    s.SchemaRole,
-		JSONOnly:      s.JSONOnly,
-		SerialTools:   s.SerialTools,
-		StopSequences: s.StopSequences,
-		ToolChoice:    toolChoice,
+		Role:           s.ID,
+		SchemaRole:     s.SchemaRole,
+		JSONOnly:       s.JSONOnly,
+		SerialTools:    s.SerialTools,
+		StopSequences:  s.StopSequences,
+		ToolChoice:     toolChoice,
+		Temperature:    s.Temperature,
+		TemperatureSet: s.TemperatureSet,
 	}
 }
 
@@ -159,11 +168,11 @@ func specs(coding []string) []RoleSpec {
 		{ID: "manager", Title: "Engineering manager (squad assembly)", Description: "Splits a query into parallel squads with disjoint ownership and a frozen interface contract.", SystemPrompt: PromptManager, Tools: nil, MaxIter: 3, Temperature: 0.15, MaxTokens: 2048, SchemaRole: schema.RoleSquads},
 		{ID: "composer", Title: "Dynamic pipeline composer", Description: "Assembles the right team, tools, and skills into a task-specific pipeline.", SystemPrompt: PromptComposer, Tools: nil, MaxIter: 3, Temperature: 0.2, MaxTokens: 2048, SchemaRole: schema.RoleComposition},
 
-		// reviewer-strict is the second reviewer the speculative review race in
-		// pkg/loop has always asked for. Until it was registered here,
-		// SubAgentExecutor answered "subagent 'reviewer-strict' not found" and
-		// the documented second opinion never ran.
-		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, MaxTokens: 768, SchemaRole: schema.RoleReview},
+		// reviewer-strict is the sequential second opinion pkg/loop asks for
+		// when the primary reviewer returns no readable verdict. Until it was
+		// registered here, SubAgentExecutor answered "subagent 'reviewer-strict'
+		// not found" and the documented second opinion never ran.
+		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, TemperatureSet: true, MaxTokens: 768, SchemaRole: schema.RoleReview},
 
 		// Architect/editor pair (Aider's measured decomposition win). The
 		// describer reasons with no format constraints and no tools; the editor
@@ -176,8 +185,8 @@ func specs(coding []string) []RoleSpec {
 
 // Built-in role ids added alongside the original 17-specialist roster.
 const (
-	// RoleReviewerStrict is the second reviewer used by the speculative review
-	// race in pkg/loop when max_parallel >= 3.
+	// RoleReviewerStrict is the second reviewer pkg/loop asks, sequentially,
+	// only when the primary reviewer produced no readable verdict.
 	RoleReviewerStrict = "reviewer-strict"
 	// RoleDescriber is the prose half of the architect/editor pair.
 	RoleDescriber = "describer"
@@ -388,6 +397,13 @@ type Factory struct {
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
 	ModelProfiles map[string]config.ModelProfile
+	// LiveElide is the live ReAct compaction policy: on every request a
+	// tool-using role sends, old tool results are elided deterministically
+	// once the transcript passes AtPercent of the model's context window.
+	// WindowTokens is resolved per role from the model profile when left 0.
+	// The zero value installs nothing; the orchestrator sets it from
+	// react_compact / react_compact_at_percent. See loop.LiveReactCompactionWired.
+	LiveElide backends.LiveElide
 	// Optional global fallback caps when ModelProfiles is empty.
 	ProfileMaxTokens int
 	ProfileMaxTurns  int
@@ -558,7 +574,7 @@ func (f *Factory) AllSpecs() []RoleSpec {
 }
 
 // IsKnownRole reports whether id names a built-in specialist. Wire-up code that
-// names a slot role (pkg/loop's speculative review race, pipeline phase
+// names a slot role (pkg/loop's strict second-opinion reviewer, pipeline phase
 // bindings) should assert with this so a typo fails loudly at configuration
 // time instead of silently at runtime, the way "reviewer-strict" did for as
 // long as it went unregistered.
@@ -755,7 +771,7 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	// response_format, stop, or tool_choice — but it does resolve the provider
 	// by the name set here, which is the one hook the read-only dependency
 	// leaves open. Everything downstream (orchestrator, loop) gets it for free.
-	cfg.Provider = backends.BindRole(f.LLM, cfg.Provider, spec.Directives())
+	cfg.Provider = backends.BindRole(f.LLM, cfg.Provider, f.directivesFor(spec, cfg.Model))
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature
@@ -802,6 +818,31 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	// and CreateAgent re-checks both for nil before building an agent.
 	_ = def.Initialize(f.LLM, f.Tools)
 	return def
+}
+
+// directivesFor is the role's decoding contract plus, for a tool-using role,
+// the live elision policy sized to the model it will actually run on.
+func (f *Factory) directivesFor(spec RoleSpec, model string) backends.Directives {
+	d := spec.Directives()
+	d.LiveElide = f.liveElideFor(spec, model)
+	return d
+}
+
+// liveElideFor sizes the live elision policy for one role. A tool-less role
+// has no tool results to elide, and a role whose model has no known context
+// window cannot be given a threshold, so both get the zero policy.
+func (f *Factory) liveElideFor(spec RoleSpec, model string) backends.LiveElide {
+	if len(spec.Tools) == 0 || f.LiveElide.AtPercent <= 0 {
+		return backends.LiveElide{}
+	}
+	e := f.LiveElide
+	if e.WindowTokens <= 0 {
+		e.WindowTokens = config.ResolveModelProfile(f.ModelProfiles, model).ContextLimit
+	}
+	if !e.Enabled() {
+		return backends.LiveElide{}
+	}
+	return e
 }
 
 // isCodingRole classifies by BASE role. An escalated worker that stopped

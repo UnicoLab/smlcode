@@ -141,8 +141,11 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 					if r.Executor == nil {
 						err = fmt.Errorf("nil executor")
 					} else {
-						slotTimeout := r.Timeout
-						if j.slot.Timeout > 0 {
+						// Runway-clamped like every other dispatch: a slot
+						// that outlives the run takes the finish path with
+						// it. A per-slot Timeout only ever shortens that.
+						slotTimeout := r.callTimeout(gctx)
+						if j.slot.Timeout > 0 && j.slot.Timeout < slotTimeout {
 							slotTimeout = j.slot.Timeout
 						}
 						// The racing reviewers stream too; the task id rides on
@@ -196,20 +199,4 @@ func (r *Runner) speculate(ctx context.Context, slots []SpecSlot) []SpecResult {
 		}
 	}
 	return results
-}
-
-// acceptanceProbe repeatedly checks a predicate so disk acceptance can cancel a
-// slower reviewer/tester LLM mid-flight.
-func acceptanceProbe(ctx context.Context, win func() bool, approveJSON string) (string, error) {
-	for i := 0; i < 8; i++ {
-		if win() {
-			return approveJSON, nil
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(30 * time.Millisecond):
-		}
-	}
-	return "", fmt.Errorf("no acceptance")
 }

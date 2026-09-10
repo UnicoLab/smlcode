@@ -428,12 +428,13 @@ func fixPatchIf(cond bool, kv ...interface{}) map[string]interface{} {
 // what the config asked for.
 //
 // It used to say "Document and ReAct compaction are enabled" whenever
-// context_compact and react_compact were both on. Only one of the two ReAct
-// call sites exists: the resume path compacts a restored checkpoint, and
-// nothing compacts a live 16-iteration worker mid-call (loop.CompactLiveMessages
-// has no caller — see loop.LiveReactCompactionWired). An operator reading a
-// green "Context Compaction" check concluded a long agent call could not
-// exhaust the window, which is the one thing this check did not cover.
+// context_compact and react_compact were both on, at a time when only the
+// resume path compacted anything: an operator reading a green "Context
+// Compaction" check concluded a long agent call could not exhaust the window,
+// which was the one thing the check did not cover. The message now comes from
+// loop.ReactCompactionStatus, which reads loop.LiveReactCompactionWired — the
+// constant of record for whether live requests are compacted (deterministic
+// elision of old tool results) — so the claim and the wiring cannot drift.
 func compactionCheck(cfg *config.Config) Check {
 	on := cfg.ContextCompact && cfg.ReactCompact
 	msg := boolMessage(on,

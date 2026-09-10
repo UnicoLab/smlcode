@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/evolve"
 	"github.com/UnicoLab/slmcode/pkg/memory"
@@ -350,41 +351,71 @@ func TestResolveRoleAndBuiltinSlot(t *testing.T) {
 	}
 }
 
-// TestStrictReviewerSlotIsOfferedAtCapacity asserts the second reviewer is now
-// really part of the race. speculate.go referenced "reviewer-strict" while no
-// such agent was registered, so every strict slot returned
-// "subagent 'reviewer-strict' not found" and the path never once ran.
-func TestStrictReviewerSlotIsOfferedAtCapacity(t *testing.T) {
-	r := &Runner{Log: func(string, ...interface{}) {}}
+// TestStrictReviewerIsASequentialSecondOpinion pins the cost of a review.
+//
+// The review used to be a race: at max_parallel>=3 it dispatched reviewer AND
+// reviewer-strict with the same prompt on EVERY review, and read the strict
+// answer only when the primary's was empty — two full reviewer prefills for
+// one verdict, on a server that runs inference serially. The strict reviewer
+// is now asked sequentially, and only in the one case its answer was ever
+// used: the primary said nothing readable.
+func TestStrictReviewerIsASequentialSecondOpinion(t *testing.T) {
+	task := plan.Task{
+		ID: "T1", Title: "Update a", Role: plan.RoleWorker,
+		Description: "update the greeting in a.go", Acceptance: "greeting updated",
+		Files:  []string{"a.go"},
+		Output: `{"status":"done","summary":"x","files_changed":["a.go"]}`,
+	}
 	cases := []struct {
 		name        string
 		maxParallel int
+		primary     string
 		resolve     func(string) string
-		wantRoles   []string
+		wantPrimary int
+		wantStrict  int
 	}{
-		{"two slots below capacity", 2, nil, []string{"acceptance", plan.RoleReviewer}},
-		{"strict joins at capacity", 3, nil,
-			[]string{"acceptance", plan.RoleReviewer, roleReviewerStrict}},
-		{"unregistered override is dropped, not dispatched", 4,
+		{"primary answers: exactly one reviewer request, no strict", 4,
+			`{"approved":false,"score":40,"summary":"needs a test"}`, nil, 1, 0},
+		{"primary answers below the old capacity threshold too", 2,
+			`{"approved":false,"score":40,"summary":"needs a test"}`, nil, 1, 0},
+		{"empty primary: strict asked once, sequentially", 4, "", nil, 1, 1},
+		{"unregistered strict override is dropped, not dispatched", 4, "",
 			func(id string) string {
 				if id == roleReviewerStrict {
 					return "no-such-agent"
 				}
 				return id
-			},
-			[]string{"acceptance", plan.RoleReviewer}},
+			}, 1, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			exec := &scriptedExec{answer: func(req ggagent.SubAgentRequest, _ int) string {
+				if req.AgentID == plan.RoleReviewer {
+					return tc.primary
+				}
+				return `{"approved":true,"score":88,"summary":"strict ok"}`
+			}}
+			r := NewRunner(exec, ggagent.NewSharedState())
 			r.MaxParallel = tc.maxParallel
 			r.ResolveRole = tc.resolve
-			slots := r.reviewSlots(plan.Task{ID: "T1"}, gateState{}, nil, "prompt", plan.RoleReviewer)
-			var roles []string
-			for _, s := range slots {
-				roles = append(roles, s.Role)
+			r.Timeout = time.Minute
+			r.Log = func(string, ...interface{}) {}
+			if _, _, err := r.llmReview(context.Background(), task, gateState{}); err != nil {
+				t.Fatalf("llmReview: %v", err)
 			}
-			if strings.Join(roles, ",") != strings.Join(tc.wantRoles, ",") {
-				t.Fatalf("slot roles = %v, want %v", roles, tc.wantRoles)
+			if got := exec.countFor(plan.RoleReviewer); got != tc.wantPrimary {
+				t.Fatalf("reviewer requests = %d, want %d", got, tc.wantPrimary)
+			}
+			if got := exec.countFor(roleReviewerStrict); got != tc.wantStrict {
+				t.Fatalf("reviewer-strict requests = %d, want %d", got, tc.wantStrict)
+			}
+			if got := exec.countFor("no-such-agent"); got != 0 {
+				t.Fatalf("an unregistered role was dispatched %d time(s)", got)
+			}
+			for _, p := range exec.promptsFor(roleReviewerStrict) {
+				if !strings.Contains(p, "STRICT:") {
+					t.Fatalf("strict reviewer was not told to be strict:\n%s", p)
+				}
 			}
 		})
 	}

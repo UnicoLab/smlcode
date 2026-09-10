@@ -29,6 +29,44 @@ func WorkerScopeRules() string {
 		"If ws_patch fails, re-read the file and retry a minimal SEARCH/REPLACE; never invent new root files.\n"
 }
 
+// FocusFilesSection renders the HARD SCOPE block: the focus-file list and the
+// scope rules that follow it, or "" when the task names no files.
+//
+// It is shared by the worker prompt and the corrector prompt on purpose. The
+// scope gate grades both agents against the same list, so both must be shown
+// the same list — the corrector used to be given only the review issues and a
+// clip of the previous output, and had to infer its scope from prose.
+func FocusFilesSection(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	return "\n## Focus files (HARD SCOPE)\nOnly edit these paths or files in the same package directory:\n- " +
+		strings.Join(files, "\n- ") + "\n" + WorkerScopeRules()
+}
+
+// Scoped-pack markers. The orchestrator prepends context.TaskPack.Render() —
+// which begins with ScopedPackHeader — to a task's description and separates
+// it from the task's own text with TaskInstructionsHeader.
+const (
+	ScopedPackHeader       = "# Scoped context"
+	TaskInstructionsHeader = "## Task instructions"
+)
+
+// SplitScopedPack separates a description that begins with a scoped context
+// pack into the pack and the task instructions. A description without a pack
+// comes back whole as the body with an empty pack.
+func SplitScopedPack(desc string) (pack, body string) {
+	trimmed := strings.TrimSpace(desc)
+	if !strings.HasPrefix(trimmed, ScopedPackHeader) {
+		return "", desc
+	}
+	idx := strings.Index(trimmed, TaskInstructionsHeader)
+	if idx < 0 {
+		return "", desc
+	}
+	return strings.TrimSpace(trimmed[:idx]), strings.TrimSpace(trimmed[idx+len(TaskInstructionsHeader):])
+}
+
 // WorkerTaskRules is the canonical "## Required finish" block for an
 // implementation role, with a language-appropriate smoke command.
 //
@@ -93,34 +131,52 @@ type WorkerPromptOptions struct {
 	Description string
 }
 
-// BuildWorkerPrompt renders the full task-adjacent worker prompt: task
-// identity, language, body, hard-scoped focus files, acceptance, checklist,
-// human notes and the required-finish rules for the task's role.
+// BuildWorkerPrompt renders the full task-adjacent worker prompt: scoped
+// context pack (when the description carries one), language, task identity,
+// body, hard-scoped focus files, acceptance, checklist, human notes and the
+// required-finish rules for the task's role.
 //
 // Both the inner loop's fallback and the orchestrator's production builder
 // should go through this, so a rule can never again exist in the gate but not
 // in the prompt.
+//
+// Order is load-bearing for KV-cache reuse. The scoped pack is rendered
+// most-stable-first (skills, docs, repo map, then file bodies) and is byte
+// identical across every task that shares it — but the prompt used to open
+// with "ID: T3 / Title: … / Column: …", which differs per task, so the shared
+// prefix was a few dozen bytes long and the whole pack was re-prefilled for
+// every task. The pack now comes first and the task header sits immediately
+// before the task's own instructions; the Column line, which changed between
+// attempts at the same task, is gone.
 func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
 	desc := opt.Description
 	if strings.TrimSpace(desc) == "" {
 		desc = t.Description
 	}
+	pack, body := SplitScopedPack(desc)
+	lang := ""
+	if h := strings.TrimSpace(opt.LangHint); h != "" {
+		lang = "## Project language\n" + h + "\n\n"
+	}
 
 	var b strings.Builder
-	b.WriteString("Atomic task — complete only this:\n\n")
-	fmt.Fprintf(&b, "ID: %s\nTitle: %s\nColumn: %s\nRole: %s\n\n", t.ID, t.Title, t.Column, t.Role)
-	if h := strings.TrimSpace(opt.LangHint); h != "" {
-		b.WriteString("## Project language\n" + h + "\n\n")
+	if pack != "" {
+		// Stable prefix first: the pack, then the project-wide language line.
+		b.WriteString(pack)
+		b.WriteString("\n\n")
+		b.WriteString(lang)
 	}
-	b.WriteString(desc)
+	b.WriteString("Atomic task — complete only this:\n\n")
+	fmt.Fprintf(&b, "ID: %s\nTitle: %s\nRole: %s\n\n", t.ID, t.Title, t.Role)
+	if pack != "" {
+		b.WriteString(TaskInstructionsHeader + "\n\n")
+	} else {
+		b.WriteString(lang)
+	}
+	b.WriteString(body)
 	b.WriteString("\n")
 
-	if len(t.Files) > 0 {
-		b.WriteString("\n## Focus files (HARD SCOPE)\nOnly edit these paths or files in the same package directory:\n- ")
-		b.WriteString(strings.Join(t.Files, "\n- "))
-		b.WriteString("\n")
-		b.WriteString(WorkerScopeRules())
-	}
+	b.WriteString(FocusFilesSection(t.Files))
 	if strings.TrimSpace(t.Acceptance) != "" {
 		b.WriteString("\nAcceptance criteria:\n")
 		b.WriteString(t.Acceptance)

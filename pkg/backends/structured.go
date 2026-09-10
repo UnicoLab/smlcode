@@ -39,6 +39,19 @@ type Directives struct {
 	StopSequences []string
 	// ToolChoice is passed through as `tool_choice` (normally "auto").
 	ToolChoice string
+	// Temperature is the role's sampling temperature, meaningful only when
+	// TemperatureSet is true. It exists because the request encoding treats a
+	// zero temperature as UNSET: GoLangGraph substitutes the provider's default
+	// and the OpenAI-compatible body omits the key, so a role that deliberately
+	// asked for 0 (reviewer-strict) was sampled at the server default instead.
+	// The structured path always emits `temperature` for a role that set one.
+	Temperature    float64
+	TemperatureSet bool
+	// LiveElide is the live ReAct compaction policy for this role: old tool
+	// results are elided deterministically on every request once the
+	// transcript passes the threshold. The zero value installs nothing. See
+	// live_elide.go.
+	LiveElide LiveElide
 }
 
 // backendMeta is what the direct structured path needs to talk to a server on
@@ -124,6 +137,9 @@ func BindRole(m *llm.ProviderManager, baseKey string, d Directives) string {
 			client:     &http.Client{},
 		}
 	}
+	// Outermost: the elided transcript must be what BOTH the delegate and the
+	// structured wrapper's direct constrained-decoding call send.
+	p = newLiveElide(p, d.Role, d.LiveElide)
 	if err := m.RegisterProvider(key, p); err != nil {
 		// A concurrent Create won the race — reuse whatever landed.
 		if _, gerr := m.GetProvider(key); gerr == nil {
@@ -386,8 +402,14 @@ func (p *structuredProvider) buildBody(req llm.CompletionRequest, spec schema.Sp
 		"messages": msgs,
 		"stream":   false,
 	}
-	if req.Temperature > 0 {
+	// A zero temperature is only "unset" for a role that never set one. A role
+	// whose spec pinned it — reviewer-strict at 0 — gets the key regardless,
+	// or the server samples at its own default and the pin was fiction.
+	switch {
+	case req.Temperature > 0:
 		body["temperature"] = req.Temperature
+	case p.directives.TemperatureSet:
+		body["temperature"] = p.directives.Temperature
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens

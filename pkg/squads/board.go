@@ -221,12 +221,48 @@ func ForeignPatterns(p *Plan, wave []plan.Task) []string {
 	return out
 }
 
-// BriefFor returns the squad brief for a task, or "" when it has no squad.
+// BriefFor returns the brief a task's worker is handed: its own squad's brief
+// when it has a squad, the seam brief when it has none because its files
+// belong to two or more squads, and "" for an unassigned task that touches no
+// owned territory.
+//
+// The seam case used to return "". A task the router left unassigned BECAUSE
+// it straddles the contract — an API client on the frontend side, a handler
+// on the backend side, one task — is the task that most needs the contract,
+// and it was the one task that got no word of it. The worker on the seam was
+// then the only agent on the run building without the interface spec.
 func BriefFor(p *Plan, t plan.Task) string {
-	if p == nil || t.Squad == "" {
+	if p == nil {
 		return ""
 	}
-	return p.Brief(t.Squad)
+	if t.Squad != "" {
+		return p.Brief(t.Squad)
+	}
+	owners := ownersOf(p, t.Files)
+	if len(owners) < 2 {
+		return ""
+	}
+	return p.SeamBrief(owners)
+}
+
+// ownersOf lists the squads whose territory the files fall in, in plan order.
+func ownersOf(p *Plan, files []string) []string {
+	if p == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if owner, ok := p.Owner(f); ok {
+			seen[owner] = true
+		}
+	}
+	var out []string
+	for _, s := range p.Squads {
+		if seen[s.ID] {
+			out = append(out, s.ID)
+		}
+	}
+	return out
 }
 
 // ── Contract enforcement ─────────────────────────────────────────────────

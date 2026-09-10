@@ -136,6 +136,64 @@ func (p *Plan) Brief(squadID string) string {
 	return b.String()
 }
 
+// Bounds on the seam brief. It is pasted into a worker prompt on a 30B-class
+// model, where attention is the scarce resource, so it carries the contract
+// and nothing else: no charters, no rosters, a clipped spec per interface and
+// a cap on how many interfaces are spelled out.
+const (
+	maxSeamInterfaces = 12
+	maxSeamSpecChars  = 320
+)
+
+// SeamBrief is the brief for a task that sits on the contract itself: its
+// files belong to two or more of the named squads, so no single squad's brief
+// applies and the whole interface list does. Interfaces only — every ID, its
+// provider and consumers, and a clipped spec — with no squad charter, because
+// the worker is on neither team and needs the seam, not the missions.
+func (p *Plan) SeamBrief(owners []string) string {
+	if p == nil || len(owners) < 2 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Seam task — this work spans squads %s\n\n", strings.Join(owners, " and "))
+	b.WriteString("It is on no single team because its files fall in more than one team's territory. " +
+		"Build BOTH sides to the frozen contract below; do not redesign the interface from either side.\n")
+	for _, id := range owners {
+		if s, ok := p.Squad(id); ok {
+			fmt.Fprintf(&b, "- `%s` owns %s\n", s.ID, joinCode(s.Owns))
+		}
+	}
+	if len(p.Contract.Interfaces) == 0 {
+		b.WriteString("\nThe plan froze no interfaces; keep the two sides agreeing on the shapes you introduce.\n")
+		return b.String()
+	}
+	b.WriteString("\n### The frozen contract (interfaces only)\n\n")
+	for i, in := range p.Contract.Interfaces {
+		if i >= maxSeamInterfaces {
+			fmt.Fprintf(&b, "- … and %d more in `%s`\n", len(p.Contract.Interfaces)-i, ContractFile)
+			break
+		}
+		fmt.Fprintf(&b, "- **%s**", in.ID)
+		if in.Provider != "" {
+			fmt.Fprintf(&b, " (provided by `%s`", in.Provider)
+			if len(in.Consumers) > 0 {
+				fmt.Fprintf(&b, ", consumed by `%s`", strings.Join(in.Consumers, "`, `"))
+			}
+			b.WriteString(")")
+		}
+		if spec := strings.Join(strings.Fields(in.Spec), " "); spec != "" {
+			if len(spec) > maxSeamSpecChars {
+				spec = spec[:maxSeamSpecChars] + "…"
+			}
+			b.WriteString(" — " + spec)
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "\nThe full contract is in `%s`. It is frozen: if it is wrong, report that "+
+		"in your output rather than diverging from it.\n", ContractFile)
+	return b.String()
+}
+
 func writeInterface(b *strings.Builder, in Interface) {
 	fmt.Fprintf(b, "- **%s**", in.ID)
 	if in.Spec != "" {

@@ -81,16 +81,102 @@ func (o *Orchestrator) runSmoke(ctx context.Context, cmd string) quality.SmokeRe
 
 // runSmokeIn is runSmoke with an explicit timeout (the build preflight uses a
 // much shorter one than a whole test suite).
+//
+// It is the ONE choke point every harness-run command passes through — the
+// deterministic pre-test, each team's acceptance, the integration command,
+// the QA gate's rounds, the objective probes, the bootstrap install — and so
+// it is where the run's smoke memo lives. A command asked of a tree nothing
+// has written to since it last answered gets that answer back instead of a
+// second run. Measured live, the objective command ran up to FOUR times per
+// finish on an unchanged tree (pre-test, team gate, QA round 1, final check);
+// on a suite that takes minutes that was most of the finish path's wall clock
+// spent re-proving one fact.
 func (o *Orchestrator) runSmokeIn(ctx context.Context, cmd string, timeout time.Duration) quality.SmokeResult {
+	sr, _ := o.runSmokeMemo(ctx, cmd, timeout)
+	return sr
+}
+
+// runSmokeMemo is runSmokeIn reporting whether the answer came from the memo.
+func (o *Orchestrator) runSmokeMemo(ctx context.Context, cmd string, timeout time.Duration) (quality.SmokeResult, bool) {
 	root := ""
 	if o != nil && o.cfg != nil {
 		root = o.cfg.Root
 	}
-	if o != nil && o.qaSmoke != nil {
-		return o.qaSmoke(ctx, root, cmd, timeout)
+	key, before := o.smokeMemoKey(cmd)
+	if sr, ok := o.memoizedSmoke(key); ok {
+		if o != nil {
+			o.emitFull("test", stream.KindDebug, "qa", "",
+				"reusing the last result of `"+truncate(cmd, 80)+"` — nothing has been written since it ran", "", "")
+		}
+		return sr, true
 	}
-	return quality.RunSmoke(ctx, root, cmd, timeout)
+	var sr quality.SmokeResult
+	if o != nil && o.qaSmoke != nil {
+		sr = o.qaSmoke(ctx, root, cmd, timeout)
+	} else {
+		sr = quality.RunSmoke(ctx, root, cmd, timeout)
+	}
+	o.rememberSmoke(key, before, timeout, sr)
+	return sr, false
 }
+
+// smokeMemoKey keys a command by what it was run against: the command text
+// and the tree fingerprint at the moment it started.
+func (o *Orchestrator) smokeMemoKey(cmd string) (key, fingerprint string) {
+	fingerprint = o.changedFingerprint()
+	return strings.TrimSpace(cmd) + "\x00" + fingerprint, fingerprint
+}
+
+// memoizedSmoke returns the remembered answer for key, if any.
+func (o *Orchestrator) memoizedSmoke(key string) (quality.SmokeResult, bool) {
+	if o == nil {
+		return quality.SmokeResult{}, false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	sr, ok := o.smokeMemo[key]
+	return sr, ok
+}
+
+// rememberSmoke stores a result worth reusing: one that actually ran, did not
+// hit its timeout (a killed command answers "it took at least this long", not
+// "it fails"), and whose tree did not move WHILE it ran — the baseline probe
+// runs alongside the first waves, and a result taken across a write describes
+// no tree the run will ever see again.
+func (o *Orchestrator) rememberSmoke(key, before string, timeout time.Duration, sr quality.SmokeResult) {
+	if o == nil || !sr.Ran {
+		return
+	}
+	if timeout > 0 && sr.Duration >= timeout {
+		return
+	}
+	if o.changedFingerprint() != before {
+		return
+	}
+	o.mu.Lock()
+	if o.smokeMemo == nil {
+		o.smokeMemo = map[string]quality.SmokeResult{}
+	}
+	o.smokeMemo[key] = sr
+	o.mu.Unlock()
+}
+
+// hasMemoizedSmoke reports whether key has a remembered answer.
+func (o *Orchestrator) hasMemoizedSmoke(key string) bool {
+	_, ok := o.memoizedSmoke(key)
+	return ok
+}
+
+// rememberSmokeNow stores sr against the tree AS IT IS NOW — for a command
+// that itself changed the tree (a dependency install), whose answer belongs
+// to the state it produced rather than the one it started from.
+func (o *Orchestrator) rememberSmokeNow(cmd string, sr quality.SmokeResult) {
+	key, fp := o.smokeMemoKey(cmd)
+	o.rememberSmoke(key, fp, 0, sr)
+}
+
+// resetSmokeMemo forgets every remembered command result. o.mu must be held.
+func (o *Orchestrator) resetSmokeMemoLocked() { o.smokeMemo = nil }
 
 // objectiveGate is ONE evaluation of the project's objective: the same command
 // runQAGate iterates, run once, classified the same way.
@@ -314,6 +400,8 @@ func (o *Orchestrator) resetObjectiveProbes() {
 	// an empty changed-file set, so even the fingerprint guard would agree they
 	// describe "the same" tree.
 	o.objectiveShell = nil
+	// Same argument for remembered command results.
+	o.resetSmokeMemoLocked()
 }
 
 // objectiveProbesSpent reports how many probes this run has used.
@@ -734,7 +822,13 @@ func (o *Orchestrator) objectiveMetBetweenWaves(ctx context.Context, board *plan
 // runQAGate iterates a project test/smoke command until green or max rounds.
 // On failure it asks the tester/corrector specialists to fix, then re-runs.
 // Returns true when the gate ends red (caller should rewrite plan/tasks).
-func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.Board) bool {
+//
+// pre is the deterministic pre-test's run of the same command, handed over so
+// round 1 reuses it when the tree has not moved since (its Fingerprint says
+// what it was taken against). The smoke memo would answer the same way; the
+// explicit hand-off makes the reuse visible in the gate's own events rather
+// than only in a debug line.
+func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.Board, pre preTest) bool {
 	if o == nil || o.cfg == nil || !o.cfg.QAGate {
 		return false
 	}
@@ -778,7 +872,13 @@ func (o *Orchestrator) runQAGate(ctx context.Context, query string, board *plan.
 
 		o.emitFull("test", stream.KindAgentStart, "qa", "",
 			fmt.Sprintf("qa_gate %d/%d: %s", round, max, cmd), "", "")
-		sr := o.runSmoke(ctx, cmd)
+		var sr quality.SmokeResult
+		if round == 1 && pre.reusableFor(cmd, o.changedFingerprint()) {
+			o.emit("test", "qa_gate: reusing the pre-test's run of "+cmd+" — nothing has been written since", "")
+			sr = *pre.Smoke
+		} else {
+			sr = o.runSmoke(ctx, cmd)
+		}
 		// classifySmoke, not a second opinion: the finish path and the mid-run
 		// early-finish check must agree about what green means.
 		v := classifySmoke(cmd, sr)
@@ -925,11 +1025,16 @@ func (o *Orchestrator) qaGateNoVerdict(cmd string) bool {
 	return false
 }
 
-// changedFingerprint identifies the set of files the run has written so far.
-// Two equal fingerprints mean no write happened in between, so any command that
-// was already run against the tree would answer the same way again.
+// changedFingerprint identifies what the run has written so far: the write
+// sequence and the set of files. Two equal fingerprints mean no write happened
+// in between, so any command that was already run against the tree would
+// answer the same way again.
+//
+// The sequence is part of it on purpose. A path set alone reads a corrector
+// rewriting an already-changed file as "wrote nothing", which is how a fix
+// pass that did fix something was scored as a stall.
 func (o *Orchestrator) changedFingerprint() string {
-	return strings.Join(o.changedFilesSnapshot(), "\n")
+	return fmt.Sprintf("%d\n%s", o.writeSequence(), strings.Join(o.changedFilesSnapshot(), "\n"))
 }
 
 // qaCommand resolves the project's test/smoke command.
@@ -997,6 +1102,9 @@ func (o *Orchestrator) formatWaveChanges(ctx context.Context) {
 	})
 	if fixOut != "" {
 		o.emit("test", "qa_gate: formatted changed files: "+truncate(fixOut, 200), "")
+		// The formatter rewrote files outside the tool layer's hook: a
+		// command result remembered before it must not be reused after it.
+		o.noteTreeMutation()
 	}
 }
 
@@ -1026,6 +1134,14 @@ func (o *Orchestrator) runQABootstrap(ctx context.Context, cmd string) {
 	o.emit("test", "qa_gate bootstrap: "+truncate(bp.Command, 120)+
 		" (policy="+string(bp.Policy)+")", "")
 
+	// Once per tree state. The pre-test and the QA gate both bootstrap, and
+	// the second install on a tree nothing has written to since is the same
+	// install; the memo entry below is what says it already happened.
+	if key, _ := o.smokeMemoKey(bp.Command); o.hasMemoizedSmoke(key) {
+		o.emitFull("test", stream.KindDebug, "qa", "",
+			"qa_gate bootstrap already applied to this tree — not re-running "+truncate(bp.Command, 80), "", "")
+		return
+	}
 	var sr quality.SmokeResult
 	if bp.NeedsApproval {
 		o.emitWarn("test", truncate(bp.Reason, 240), "")
@@ -1034,6 +1150,14 @@ func (o *Orchestrator) runQABootstrap(ctx context.Context, cmd string) {
 		// policy=auto: the operator opted in explicitly, so it runs unattended,
 		// exactly as quality.RunAcceptanceSmokeWithPolicy does for Run plans.
 		sr = o.runSmoke(ctx, bp.Command)
+	}
+	if sr.Ran {
+		// Dependencies landed outside the tool layer's hook: whatever the
+		// objective command answered BEFORE them no longer describes this
+		// tree. The install itself is remembered against the tree it
+		// produced, so it is not taken again for the same reason.
+		o.noteTreeMutation()
+		o.rememberSmokeNow(bp.Command, sr)
 	}
 	_ = o.store.Append(contextstore.DocScratch, "QA bootstrap",
 		fmt.Sprintf("cmd: %s\npolicy: %s\nran=%v ok=%v\n\n%s",

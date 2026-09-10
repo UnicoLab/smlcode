@@ -132,6 +132,18 @@ type Runner struct {
 	OnEventFull StructuredEvent
 	OnUsage     UsageEvent
 	BuildInput  BuildInput
+	// RoleTimeout returns the measured per-role budget for one request of
+	// role (an agent id; an escalation rung suffix is stripped before the
+	// lookup). The loop dispatches on min(callTimeout, RoleTimeout), so a
+	// reviewer that answers in 20s is given its measured floor rather than
+	// the whole task_timeout, and a stuck one is cut short accordingly. nil
+	// or a non-positive answer keeps the flat Timeout.
+	RoleTimeout func(ctx context.Context, role string) time.Duration
+	// OnRoleLatency reports how long one request of role took. evidence is
+	// true for a success or a timeout (a censored lower bound), false for
+	// any other failure — the same rule the orchestrator's phase roles use,
+	// so the samples land in the same latency memory on the same footing.
+	OnRoleLatency func(role string, d time.Duration, evidence bool)
 
 	// ── contract with the orchestrator ──────────────────────────────────────
 
@@ -1246,10 +1258,25 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 	if len(reqs) == 0 {
 		return nil, nil
 	}
+	// Each worker request is dispatched on the measured budget for ITS role and
+	// contributes a latency sample under it — the base agent id, so an
+	// escalation rung and the role it escalated from share one measurement.
+	for i := range reqs {
+		r.applyRoleTimeout(ctx, &reqs[i])
+	}
 	if len(reqs) == 1 {
 		defer r.streamTokens(reqs[0].AgentID, reqs[0].TaskID)()
-		return r.Executor.ExecuteSubAgents(
+		start := time.Now()
+		out, err := r.Executor.ExecuteSubAgents(
 			r.agentCtx(ctx, reqs[0].TaskID, reqs[0].AgentID), reqs, r.Shared)
+		var first ggagent.SubAgentResult
+		if len(out) > 0 {
+			first = out[0]
+		} else {
+			first = ggagent.SubAgentResult{Error: err}
+		}
+		r.noteRoleLatency(reqs[0].AgentID, time.Since(start), err, first)
+		return out, err
 	}
 
 	results := make([]ggagent.SubAgentResult, len(reqs))
@@ -1264,14 +1291,16 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 			// exactly what the terminal needs to keep four concurrent workers'
 			// deltas apart.
 			defer r.streamTokens(req.AgentID, req.TaskID)()
+			start := time.Now()
 			out, err := r.Executor.ExecuteSubAgents(
 				r.agentCtx(ctx, req.TaskID, req.AgentID), []ggagent.SubAgentRequest{req}, r.Shared)
 			errs[i] = err
 			if len(out) > 0 {
 				results[i] = out[0]
-				return
+			} else {
+				results[i] = ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: req.TaskID, Error: err}
 			}
-			results[i] = ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: req.TaskID, Error: err}
+			r.noteRoleLatency(req.AgentID, time.Since(start), err, results[i])
 		}(i)
 	}
 	wg.Wait()

@@ -129,6 +129,13 @@ type Orchestrator struct {
 	// never written into squads.json — that file is the org chart the next run
 	// inherits, not a record of what this one proved.
 	teamGates teamGates
+	// gate is the run-wide concurrency limit every model request passes
+	// through (see gate.go). Rebuilt per run from max_parallel; guarded by mu.
+	gate *runGate
+	// teamPick memoizes the library team selection for this run so the
+	// composer and the charter phase do not each rescan the workspace and
+	// reload the block library to reach the same answer. Guarded by mu.
+	teamPick *teamPick
 
 	// workspace / repoMap / tracker come from the tool layer so the
 	// orchestrator can reset the per-task loop guard and seed focus discovery.
@@ -208,7 +215,15 @@ type Orchestrator struct {
 	// changedFiles is the set of workspace paths this run has written, fed by
 	// the tool layer's OnFileChange hook. The QA gate formats exactly these —
 	// quality.FormatChangedFiles refuses to format anything else.
-	changedFiles map[string]bool
+	changedFiles map[string]int
+	// writeSeq counts every recorded write this run, so a fingerprint of the
+	// tree changes when an already-changed file is written again. Guarded by
+	// mu; see changedFingerprint.
+	writeSeq int
+	// smokeMemo remembers what each command answered on each tree state this
+	// run, so the objective/acceptance command is not re-run against a tree
+	// nothing has touched since. Guarded by mu; see runSmokeIn.
+	smokeMemo map[string]quality.SmokeResult
 
 	// qaSmoke executes the QA/acceptance command. Nil in production, where
 	// every call falls through to quality.RunSmoke; tests inject a fake so the
@@ -662,6 +677,7 @@ func (o *Orchestrator) Run(ctx context.Context, query string) (*Result, error) {
 	}
 	o.resetChangedFiles()
 	o.resetObjectiveProbes()
+	o.resetRunGate()
 	// Learn whether the objective command already passes, concurrently with the
 	// context/explore/plan phases that follow. This is the fact that decides
 	// whether a green result at the end is evidence or a coincidence, and it
@@ -1045,6 +1061,13 @@ func (o *Orchestrator) runSpecialist(ctx context.Context, runID, query string, s
 }
 
 func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack string, start time.Time) (*Result, error) {
+	// Team state is per run, and the orchestrator outlives a run in a
+	// long-lived Studio process: cleared before anything below can set it.
+	// This used to happen halfway down, after explore — and never on Resume —
+	// which is how one run's green team gates survived into the next run's
+	// verdict (see resetTeamState).
+	o.resetTeamState()
+
 	// 0 Auto-load AGENTS.md / CLAUDE.md / PROJECT instructions (Claude Code style).
 	//
 	// These used to be appended to SCRATCH.md — a write-only sink, written in 25
@@ -1091,7 +1114,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// context is fast (≤400 words CONTEXT.md); explore does a codebase deep-dive.
 	var exploreOut, archOut, docsOut string
 
-	parResults := runPhaseParallel(ctx,
+	parResults := o.runPhases(ctx,
 		func() phaseResult {
 			// --- 1 Context ---
 			if err := o.runPipelineSlots(ctx, "context", "before", query, "", ""); err != nil {
@@ -1220,12 +1243,6 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		return nil, r.err
 	}
 
-	// Team state is per run, and the orchestrator outlives a run in a
-	// long-lived Studio process: cleared before anything below can set it.
-	o.mu.Lock()
-	o.squadPlan, o.singleTeam = nil, nil
-	o.mu.Unlock()
-
 	// 2a Dynamic pipeline composition (optional): the composer specialist assembles
 	// a task-specific pipeline (phases, team, tools, skills) before design/plan.
 	if o.cfg.DynamicPipeline {
@@ -1238,7 +1255,12 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	// returns nil — meaning "one stream" — for every single-domain query and
 	// every failure mode.
 	if o.cfg.Squads {
-		o.squadPlan = o.assembleSquads(ctx, query, inventory, exploreOut, archOut)
+		// Under the lock: staffingPlan and the Studio poll read it there, and
+		// the explore phase's speculative digs may still be draining.
+		p := o.assembleSquads(ctx, query, inventory, exploreOut, archOut)
+		o.mu.Lock()
+		o.squadPlan = p
+		o.mu.Unlock()
 	}
 
 	// 2b+2c Architect + Clarify run in parallel after explore.
@@ -1247,7 +1269,7 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 	var clarify plan.ClarifyResult
 	var prd plan.ScopePRD
 
-	archClarifyResults := runPhaseParallel(ctx,
+	archClarifyResults := o.runPhases(ctx,
 		func() phaseResult {
 			// --- 2b Architect (skip if already ran in speculative digs) ---
 			archWhen := o.Pipeline().PhaseWhen("architect")
@@ -1613,12 +1635,20 @@ func (o *Orchestrator) runRoleTracked(ctx context.Context, role, taskID, input s
 		o.emit(role, fmt.Sprintf("fallback role %s → %s (agent not registered)", role, execRole), "")
 	}
 	o.emitFull(execRole, stream.KindAgentStart, execRole, taskID, "started", scopeFromInput(input), "")
-	o.bumpLLMCalls(1)
 	start := time.Now()
 	timeout := o.roleTimeoutWithin(ctx, execRole)
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	results, err := o.executor.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
+	// Through the run gate, not o.executor directly: this is the one place a
+	// phase role reaches the model, and the gate is what keeps a phase pair, a
+	// speculative dig and a review race from exceeding max_parallel together.
+	// The gate also counts the request toward llm_requests.
+	exec := o.gatedExecutor()
+	if exec == nil {
+		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID, "no executor", "", "", stream.LevelError)
+		return "", fmt.Errorf("no executor configured for %s", execRole)
+	}
+	results, err := exec.ExecuteSubAgents(rctx, []ggagent.SubAgentRequest{{
 		AgentID: execRole, Input: input, Timeout: timeout, ShareState: true,
 	}}, o.shared)
 	elapsed := time.Since(start)
@@ -1724,6 +1754,9 @@ func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID
 	}
 	o.think.SetPassTimeout(pass).SetBudget(budget).SetFactory(o.factory.Create)
 	o.think.OnCall = func(ci multipass.CallInfo) {
+		// Every pass is one real round-trip; the multipass runner bypasses the
+		// gated executor, so it is counted here.
+		o.bumpLLMCalls(1)
 		// Same evidence rule as the single-shot path: the per-call budget here
 		// IS roleTimeout(execRole), so these samples are directly comparable.
 		o.recordRoleLatency(execRole, ci.Elapsed, ci.Err == nil || isTimeoutError(ci.Err))
@@ -1739,6 +1772,16 @@ func (o *Orchestrator) runRoleMultipassTracked(ctx context.Context, role, taskID
 		scopeFromInput(input), "")
 	rctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	// The passes run one after another, so the whole cycle holds ONE slot of
+	// the run gate: a planner refining its draft is still one request in
+	// flight at the endpoint, and it must count against max_parallel like the
+	// single-shot roles it runs beside.
+	release, gerr := o.runGateFor().acquire(rctx, 1)
+	if gerr != nil {
+		o.emitFullL(execRole, stream.KindAgentEnd, execRole, taskID, "canceled before start", "", "", stream.LevelError)
+		return "", gerr
+	}
+	defer release()
 	start := time.Now()
 	// ExecuteRole caches and resets the agent instead of rebuilding it: a
 	// rebuild re-resolves the provider, tools and profile caps every call.
@@ -1908,6 +1951,52 @@ func (o *Orchestrator) applyCoordinatorActions(board *plan.Board, raw string) {
 	}
 }
 
+// waveEventful reports whether a finished wave gives the after-wave model
+// passes (memory distillation, the coordinator) anything to act on: a task
+// that failed, one that was escalated to a human, or a lesson worth a model's
+// attention. A wave of plain green tasks with nothing learned is not
+// eventful, and the reason is returned in words so the skip can be shown
+// rather than silently taken.
+func waveEventful(wave []plan.Task) (bool, string) {
+	if len(wave) == 0 {
+		return false, "the wave finished no tasks"
+	}
+	failed, escalated, lessons := 0, 0, 0
+	for _, t := range wave {
+		t.Normalize()
+		switch {
+		case t.Column == plan.ColBlocked || t.Status == plan.StatusFailed ||
+			(t.Error != "" && t.Column != plan.ColDone):
+			failed++
+		case taskEscalated(t):
+			escalated++
+		}
+		lessons += notableLessons(t)
+	}
+	if failed == 0 && escalated == 0 && lessons == 0 {
+		return false, fmt.Sprintf("all %d task(s) finished green with no failure, escalation or new lesson", len(wave))
+	}
+	return true, fmt.Sprintf("%d failed, %d escalated, %d lesson(s)", failed, escalated, lessons)
+}
+
+// notableLessons counts the lessons on a task that are worth a model pass: a
+// failure lesson, or a human note the task honored. learning.Extract also
+// emits a "success" lesson from every done task's output and a "convention"
+// one from its acceptance text; those are routine — every green task has them
+// — and counting them would make every wave "eventful" and the skip a no-op.
+func notableLessons(t plan.Task) int {
+	n := 0
+	for _, l := range learning.Extract(t) {
+		if l.Kind == "failure" {
+			n++
+		}
+	}
+	if t.Column == plan.ColDone && strings.TrimSpace(plan.PromptNotes(t.Notes)) != "" {
+		n++
+	}
+	return n
+}
+
 // evolveAfterWave updates CONTEXT + MEMORY from wave results and refreshes
 // pending task packs so later specialists see evolving project knowledge.
 func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack string, board *plan.Board, wave []plan.Task) {
@@ -1924,8 +2013,16 @@ func (o *Orchestrator) evolveAfterWave(ctx context.Context, query, skillPack str
 	}
 	md := learning.RenderMarkdown(lessons)
 
-	// Optional SLM distillation of the wave (cheap when think_passes>=2)
-	if o.cfg.ThinkPasses >= 2 && len(wave) > 0 {
+	// Optional SLM distillation of the wave (think_passes>=2) — and only of a
+	// wave that produced something to distill. A wave whose tasks all went
+	// green with no lesson extracted used to buy a memory round-trip that
+	// returned nothing new; on a local model that is a minute per wave for
+	// no information.
+	eventful, why := waveEventful(wave)
+	if o.cfg.ThinkPasses >= 2 && len(wave) > 0 && !eventful {
+		o.emit("learn", "wave distillation skipped — "+why, "")
+	}
+	if o.cfg.ThinkPasses >= 2 && len(wave) > 0 && eventful {
 		var brief strings.Builder
 		brief.WriteString("Wave results for learning:\n")
 		for _, t := range wave {

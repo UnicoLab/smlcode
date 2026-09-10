@@ -27,7 +27,7 @@ func TestCanceledQAGateReportsNoVerdict(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // the run is over before the gate starts
 
-	failed := o.runQAGate(ctx, "implement the thing", board)
+	failed := o.runQAGate(ctx, "implement the thing", board, preTest{})
 
 	if failed {
 		t.Fatal("a canceled gate reported QAFailed=true, which fabricates a " +
@@ -71,7 +71,7 @@ func TestStalledFixPassStopsInsteadOfReRunningAnUnchangedTree(t *testing.T) {
 		t.Skipf("qa_gate_rounds is %d — this test needs room for a second round", rounds)
 	}
 
-	failed := o.runQAGate(context.Background(), "implement the thing", midBoard())
+	failed := o.runQAGate(context.Background(), "implement the thing", midBoard(), preTest{})
 
 	if !failed {
 		t.Fatal("a red gate that stalled must still report red — stopping early " +

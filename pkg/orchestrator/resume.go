@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/knowledge"
 	"github.com/UnicoLab/slmcode/pkg/learning"
@@ -62,6 +63,12 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 	o.decisions = nil
 	o.gates = nil
 	o.mu.Unlock()
+	// Same per-run resets as Run. The team state in particular: Resume used
+	// to restore the saved plan OVER whatever the previous run left, so a
+	// Studio process that resumed after a two-team run kept that run's team
+	// gates and could report halves proved that this run never touched.
+	o.resetTeamState()
+	o.resetRunGate()
 	o.restoreSquadPlan(&board)
 	defer func() {
 		o.mu.Lock()
@@ -246,7 +253,7 @@ func (o *Orchestrator) finalizeAfterExecute(ctx context.Context, runID, query, s
 		return o.finishObjectiveMet(ctx, runID, query, skillPack, board, g, "after the corrective wave", start)
 	}
 
-	gate := o.runQualityGates(ctx, query, board, runner, testerRejected)
+	gate := o.runQualityGates(ctx, query, board, runner, testerRejected, pre)
 	board = gate.Board
 	testerRejected = gate.TesterRejected
 
@@ -298,6 +305,17 @@ type preTest struct {
 	// run of the objective command instead of paying for an identical second
 	// one. Nil when the pre-test did not run.
 	Smoke *quality.SmokeResult
+	// Fingerprint is the tree fingerprint the command was run against, so a
+	// later consumer (the QA gate's first round) can tell whether Smoke still
+	// describes the tree in front of it.
+	Fingerprint string
+}
+
+// reusableFor reports whether this pre-test's result can stand in for a run
+// of cmd against a tree whose fingerprint is now fp.
+func (p preTest) reusableFor(cmd, fp string) bool {
+	return p.Smoke != nil && p.Smoke.Ran && p.Ran &&
+		strings.TrimSpace(p.Cmd) == strings.TrimSpace(cmd) && p.Fingerprint == fp
 }
 
 func (o *Orchestrator) runDeterministicPreTest(ctx context.Context) preTest {
@@ -314,6 +332,7 @@ func (o *Orchestrator) runDeterministicPreTest(ctx context.Context) preTest {
 	// the permission layer, auto installs. A manifest the worker wrote moments
 	// ago is not consent to execute its install scripts.
 	o.runQABootstrap(ctx, cmd)
+	pt.Fingerprint = o.changedFingerprint()
 	sr := o.runSmoke(ctx, cmd)
 	sr.Command = cmd // the reuse check matches on it; RunSmoke sets it too
 	pt.Ran = true
@@ -626,7 +645,7 @@ type gateOutcome struct {
 // runQualityGates runs placeholder fill, the reference-bar completeness check
 // and the QA gate, then decides what a green gate is allowed to clear.
 func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board *plan.Board,
-	runner *loop.Runner, testerRejected bool) gateOutcome {
+	runner *loop.Runner, testerRejected bool, pre preTest) gateOutcome {
 
 	out := gateOutcome{Board: board, TesterRejected: testerRejected}
 	// Keep the run's mirrored verdict in step with whatever these gates decide.
@@ -690,7 +709,7 @@ func (o *Orchestrator) runQualityGates(ctx context.Context, query string, board 
 	}
 
 	out.QACmd = o.qaCommand()
-	qaFailed := o.runQAGate(ctx, query, out.Board)
+	qaFailed := o.runQAGate(ctx, query, out.Board, pre)
 	out.QAFailed = qaFailed || integrationFailed
 	if out.QAFailed {
 		out.TesterRejected = true
@@ -813,12 +832,27 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseMemory)
 	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
 	var lessonsMD string
-	if o.phaseEnabled("memory") {
+	// The distiller runs only when the run left something to distill: a
+	// lesson worth keeping (a failure, an honored human note — see
+	// notableLessons), a file the run changed, or a task that failed. A run
+	// that drained its board green without writing anything — an inquiry, a
+	// no-op, a rerun — used to spend a model call to be told there was nothing
+	// to remember.
+	var allLessons []learning.Lesson
+	notable := 0
+	for _, t := range board.Tasks {
+		allLessons = append(allLessons, learning.Extract(t)...)
+		notable += notableLessons(t)
+	}
+	changedN := len(o.changedFilesSnapshot())
+	failedN := board.FailedCount()
+	switch {
+	case !o.phaseEnabled("memory"):
+		o.emit("memory", "phase disabled — skipping memory distillation", "")
+	case notable == 0 && changedN == 0 && failedN == 0:
+		o.emit("memory", "memory distillation skipped — nothing to distill: no lessons, no changed files, no failed tasks", "")
+	default:
 		o.emitAgent("memory", "memory", "", "distilling long-term memory", "", "")
-		var allLessons []learning.Lesson
-		for _, t := range board.Tasks {
-			allLessons = append(allLessons, learning.Extract(t)...)
-		}
 		lessonsMD = learning.RenderMarkdown(allLessons)
 		if lessonsMD != "" {
 			_ = o.store.Append(contextstore.DocMemory, "Auto-lessons", lessonsMD)
@@ -842,8 +876,11 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 			memSkills = strings.TrimSpace(memSkills + "\n\n" + extra)
 		}
 		memPack, _ := o.packBuild("memory", query, contextstore.DefaultDocsForRole("memory"), nil, memSkills)
-		memOut, _ := o.runRoleMultipassTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
-			"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", board.FailedCount()))
+		// Single-shot. Distillation is a summary, not a plan: the critique and
+		// refine passes of the multipass cycle spent up to three more model
+		// calls polishing eight bullets.
+		memOut, _ := o.runRoleTracked(ctx, "memory", "", memPack.Render()+fmt.Sprintf(
+			"\nFailed: %d\nWrite ≤8 durable bullets under ## Lessons (conventions, pitfalls, paths).", failedN))
 		if strings.TrimSpace(memOut) != "" {
 			_ = o.store.Append(contextstore.DocMemory, "Session distillation", memOut)
 			lessonsMD = strings.TrimSpace(lessonsMD + "\n" + memOut)
@@ -859,8 +896,6 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 		// stays the human mirror; this is what gives a lesson confidence,
 		// contradiction handling, provenance and a prune policy.
 		o.recordLessonFacts(allLessons)
-	} else {
-		o.emit("memory", "phase disabled — skipping memory distillation", "")
 	}
 
 	o.emit("skills", "evolving SKILLS.md + learned skill", "")
@@ -1434,7 +1469,7 @@ func (o *Orchestrator) restoreSquadPlan(board *plan.Board) {
 		o.emitWarn("init", "could not read the saved team plan ("+err.Error()+") — resuming as a single stream", "")
 		return
 	}
-	if !ok || !p.Enabled() {
+	if !ok || len(p.Squads) == 0 {
 		return
 	}
 	stamped := false
@@ -1447,8 +1482,31 @@ func (o *Orchestrator) restoreSquadPlan(board *plan.Board) {
 	if !stamped {
 		return
 	}
+	// One squad in squads.json is a run a single library team STAFFED: its
+	// manager triages the resumed board's rejected work, exactly as it did
+	// before the interruption. It is not a squad plan — Enabled() needs two —
+	// so it is restored as the single team, not as o.squadPlan.
+	if !p.Enabled() {
+		st := teamChoiceFromSquad(p.Squads[0])
+		o.mu.Lock()
+		o.singleTeam = &st
+		o.mu.Unlock()
+		o.emit("init", "restored the staffing team for this run: "+st.ID, "")
+		return
+	}
 	o.mu.Lock()
 	o.squadPlan = &p
 	o.mu.Unlock()
 	o.emit("init", "restored the team plan for this run: "+p.Summarize(), "")
+}
+
+// teamChoiceFromSquad is the inverse of singleTeamPlan: the saved one-squad
+// plan read back as the composition's team choice.
+func teamChoiceFromSquad(s squads.Squad) composer.TeamChoice {
+	return composer.TeamChoice{
+		ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: append([]string(nil), s.Owns...),
+		Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer, Tester: s.Tester,
+		Manager: s.Manager, Agents: append([]string(nil), s.Agents...),
+		Skills: append([]string(nil), s.Skills...),
+	}
 }

@@ -48,8 +48,11 @@ beforeEach(() => {
 
 describe('TeamFloor', () => {
   it('draws every team as an island with its people and tickets', () => {
+    // The same clock the floor was built with: the bubble reads "T2 · 1s" off
+    // it. Without it the stage ticks on the real Date.now(), and the elapsed
+    // assertion below only holds in the minute after the fixed event time.
     const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 + 5000 });
-    render(<TeamFloor floor={floor} running />);
+    render(<TeamFloor floor={floor} running now={T0 + 5000} />);
 
     expect(screen.getByTestId('team-floor')).toBeInTheDocument();
     const backend = screen.getByTestId('island-backend-go');

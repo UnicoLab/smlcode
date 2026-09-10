@@ -61,7 +61,9 @@ export function isBoardEvent(ev: Pick<RunEvent, 'kind'>): boolean {
 }
 
 /** Log events after which a board that is not yet pushed to should re-read. */
-const STRUCTURAL_KINDS = new Set(['task_start', 'task_done', 'task_fail', 'wave', 'run_start', 'run_end', 'coord', 'split']);
+// agent_end is in the set because the engine emits no task_start/task_done of
+// its own: a task changes column when the role working on it finishes.
+const STRUCTURAL_KINDS = new Set(['task_start', 'task_done', 'task_fail', 'agent_end', 'wave', 'run_start', 'run_end', 'coord', 'split']);
 
 export function isStructuralEvent(ev: Pick<RunEvent, 'kind' | 'phase'>): boolean {
   return STRUCTURAL_KINDS.has(ev.kind) || ev.phase === 'done' || ev.phase === 'error';

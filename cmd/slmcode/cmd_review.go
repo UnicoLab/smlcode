@@ -135,6 +135,12 @@ func loadPending(slmDir string) ([]pendingPatch, error) {
 // behind, and wrote a literal shell.sh for a shell approval.
 func writePatch(root string, p pendingPatch) error {
 	abs := p.abs(root)
+	if !underRoot(root, abs) {
+		return fmt.Errorf("refusing %s: the path resolves outside the project", p.Path)
+	}
+	if p.Kind == pendingKindMove && p.From != "" && !underRoot(root, filepath.Join(root, p.From)) {
+		return fmt.Errorf("refusing %s: the source resolves outside the project", p.From)
+	}
 	switch p.Kind {
 	case pendingKindShell:
 		return errors.New("shell approvals are not file changes; reject the entry instead")
@@ -173,7 +179,7 @@ func writePatch(root string, p pendingPatch) error {
 		if m, ok := fileMode(src); ok {
 			mode = m
 		}
-		if err := os.WriteFile(abs, data, mode); err != nil {
+		if err := os.WriteFile(abs, data, mode); err != nil { //nolint:gosec // abs is checked against root above; a project source file
 			return err
 		}
 		return os.Remove(src)
@@ -867,4 +873,16 @@ func matchesAnyPrefix(rel string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// underRoot reports whether abs lies inside root (lexically: no ".." escape).
+// The pending entries are written by the tool layer, which already jails
+// paths; this is the applier's own guarantee that a hand-edited entry cannot
+// point it elsewhere.
+func underRoot(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

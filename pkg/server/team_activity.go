@@ -477,7 +477,7 @@ const maxActivityCache = 32
 // cachedActivity returns the derived timeline for queryID when the event log
 // still has the size and mtime it was derived from.
 func (s *Server) cachedActivity(queryID string) (*activityCacheEntry, bool) {
-	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID))
+	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID)) //nolint:gosec // session.TurnDir sanitizes the id; the path cannot leave the queries dir
 	if err != nil {
 		return nil, false
 	}
@@ -491,7 +491,7 @@ func (s *Server) cachedActivity(queryID string) (*activityCacheEntry, bool) {
 }
 
 func (s *Server) storeActivity(queryID string, entries []ActivityEntry) {
-	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID))
+	info, err := os.Stat(session.EventsPath(s.slmDir(), queryID)) //nolint:gosec // session.TurnDir sanitizes the id; the path cannot leave the queries dir
 	if err != nil {
 		return
 	}

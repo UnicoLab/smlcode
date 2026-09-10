@@ -25,13 +25,20 @@ type RoleSpec struct {
 	Tools        []string `json:"tools,omitempty"`
 	MaxIter      int      `json:"max_iter"`
 	Temperature  float64  `json:"temperature"`
-	MaxTokens    int      `json:"max_tokens"`
-	Model        string   `json:"model,omitempty"`
-	Provider     string   `json:"provider,omitempty"`
-	Endpoint     string   `json:"endpoint,omitempty"`
-	Skills       []string `json:"skills,omitempty"`
-	Custom       bool     `json:"custom"`
-	Override     bool     `json:"override,omitempty"`
+	// TemperatureSet marks Temperature as deliberate even when it is 0. The
+	// request encoding treats a zero temperature as unset (GoLangGraph
+	// substitutes the provider default, the OpenAI-compatible body omits the
+	// key), so a role pinned at 0 was sampled at the server default. Only a
+	// spec that sets this gets its zero emitted; roles that never set a
+	// temperature keep the unset behavior.
+	TemperatureSet bool     `json:"temperature_set,omitempty"`
+	MaxTokens      int      `json:"max_tokens"`
+	Model          string   `json:"model,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Endpoint       string   `json:"endpoint,omitempty"`
+	Skills         []string `json:"skills,omitempty"`
+	Custom         bool     `json:"custom"`
+	Override       bool     `json:"override,omitempty"`
 
 	// JSONOnly marks a role whose entire output is one JSON document. Factory
 	// attaches constrained decoding (response_format / guided_json / GBNF) for
@@ -62,12 +69,14 @@ func (s RoleSpec) Directives() backends.Directives {
 		toolChoice = "auto"
 	}
 	return backends.Directives{
-		Role:          s.ID,
-		SchemaRole:    s.SchemaRole,
-		JSONOnly:      s.JSONOnly,
-		SerialTools:   s.SerialTools,
-		StopSequences: s.StopSequences,
-		ToolChoice:    toolChoice,
+		Role:           s.ID,
+		SchemaRole:     s.SchemaRole,
+		JSONOnly:       s.JSONOnly,
+		SerialTools:    s.SerialTools,
+		StopSequences:  s.StopSequences,
+		ToolChoice:     toolChoice,
+		Temperature:    s.Temperature,
+		TemperatureSet: s.TemperatureSet,
 	}
 }
 
@@ -163,7 +172,7 @@ func specs(coding []string) []RoleSpec {
 		// pkg/loop has always asked for. Until it was registered here,
 		// SubAgentExecutor answered "subagent 'reviewer-strict' not found" and
 		// the documented second opinion never ran.
-		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, MaxTokens: 768, SchemaRole: schema.RoleReview},
+		{ID: RoleReviewerStrict, Title: "Strict second reviewer", Description: "Second opinion on a task: approves only on complete, demonstrated evidence.", SystemPrompt: PromptReviewerStrict, Tools: nil, MaxIter: 2, Temperature: 0.0, TemperatureSet: true, MaxTokens: 768, SchemaRole: schema.RoleReview},
 
 		// Architect/editor pair (Aider's measured decomposition win). The
 		// describer reasons with no format constraints and no tools; the editor

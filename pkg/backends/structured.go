@@ -39,6 +39,14 @@ type Directives struct {
 	StopSequences []string
 	// ToolChoice is passed through as `tool_choice` (normally "auto").
 	ToolChoice string
+	// Temperature is the role's sampling temperature, meaningful only when
+	// TemperatureSet is true. It exists because the request encoding treats a
+	// zero temperature as UNSET: GoLangGraph substitutes the provider's default
+	// and the OpenAI-compatible body omits the key, so a role that deliberately
+	// asked for 0 (reviewer-strict) was sampled at the server default instead.
+	// The structured path always emits `temperature` for a role that set one.
+	Temperature    float64
+	TemperatureSet bool
 }
 
 // backendMeta is what the direct structured path needs to talk to a server on
@@ -386,8 +394,14 @@ func (p *structuredProvider) buildBody(req llm.CompletionRequest, spec schema.Sp
 		"messages": msgs,
 		"stream":   false,
 	}
-	if req.Temperature > 0 {
+	// A zero temperature is only "unset" for a role that never set one. A role
+	// whose spec pinned it — reviewer-strict at 0 — gets the key regardless,
+	// or the server samples at its own default and the pin was fiction.
+	switch {
+	case req.Temperature > 0:
 		body["temperature"] = req.Temperature
+	case p.directives.TemperatureSet:
+		body["temperature"] = p.directives.Temperature
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens

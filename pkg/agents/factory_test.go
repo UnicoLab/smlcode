@@ -33,6 +33,38 @@ func TestSpecsRoster(t *testing.T) {
 	}
 }
 
+// TestStrictReviewerPinsTemperatureZeroDeliberately: reviewer-strict is the one
+// built-in that asks for temperature 0, and 0 is the float zero value. Without
+// an explicit "set" marker the request encoding dropped it and the strict
+// reviewer sampled at the server default. The marker must reach the provider
+// directives; roles that never set a temperature must not carry it.
+func TestStrictReviewerPinsTemperatureZeroDeliberately(t *testing.T) {
+	var strict, reviewer *RoleSpec
+	for i := range Specs() {
+		switch Specs()[i].ID {
+		case RoleReviewerStrict:
+			s := Specs()[i]
+			strict = &s
+		case plan.RoleReviewer:
+			s := Specs()[i]
+			reviewer = &s
+		}
+	}
+	if strict == nil || reviewer == nil {
+		t.Fatal("roster is missing reviewer or reviewer-strict")
+	}
+	if strict.Temperature != 0 || !strict.TemperatureSet {
+		t.Fatalf("reviewer-strict temperature=%v set=%v, want 0 set deliberately", strict.Temperature, strict.TemperatureSet)
+	}
+	d := strict.Directives()
+	if !d.TemperatureSet || d.Temperature != 0 {
+		t.Fatalf("directives lost the pin: %+v", d)
+	}
+	if reviewer.TemperatureSet || reviewer.Directives().TemperatureSet {
+		t.Fatal("a role that never pinned its temperature is marked as having set one")
+	}
+}
+
 func TestCodingAgentsAllowFindModelsAndMCP(t *testing.T) {
 	need := map[string]bool{"find_models": false, "mcp_call": false}
 	for _, s := range Specs() {

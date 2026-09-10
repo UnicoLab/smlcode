@@ -107,6 +107,15 @@ to its first tool call. The prompt asks for one; the transport guarantees it.
 Language-specialised ids fold back to their generic role (`go-worker` → `worker`,
 `python-tester` → `tester`), so YAML-defined agents inherit the right contract automatically.
 
+**Temperature 0 is a setting, not an absence.** The request encoding treats a zero temperature as
+unset — GoLangGraph substitutes the provider's default and the OpenAI-compatible body omits the
+key — so a role pinned at 0 (`reviewer-strict`) was in fact sampled at the server's default. A
+spec that sets a temperature deliberately marks it `TemperatureSet`, which travels with the role's
+directives, and the structured path then always emits `temperature` for that role, zero included.
+Roles that never set one keep the unset behavior. The delegated (non-structured) request path is
+built inside GoLangGraph and still applies its own default to a zero; the constrained-decoding
+path is the one `reviewer-strict` takes.
+
 ## 4. The repair ladder (`pkg/repair`)
 
 When output still arrives unconstrained, the ladder is tried in a fixed order, and the name of

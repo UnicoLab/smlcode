@@ -1,22 +1,27 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
   Bot,
   CheckCircle2,
   Clock,
+  Coins,
   FileText,
   GitBranch,
   ListChecks,
   Play,
   RefreshCw,
   Search,
+  Timer,
   XCircle,
 } from 'lucide-react';
 import { getQueries, getQuery, getQueryEvents, resumeRun } from '@/api/client';
 import type { DynamicComposition, QuerySession, QueryView, RunEvent, RunEventSummary, Task } from '@/types';
 import { AppContext } from '@/App';
 import EventLog from '@/components/Live/EventLog';
+import { useRovingTabs } from '@/components/ui/useRovingTabs';
+import { teamColor } from '@/components/Board/teamColor';
 import clsx from 'clsx';
 import TraceView from './TraceView';
 
@@ -32,8 +37,13 @@ const COLUMN_LABELS: Record<string, string> = {
 
 export default function RunHistory() {
   const ctx = useContext(AppContext);
+  const navigate = useNavigate();
+  // `/runs?run=<id>` opens that run — the command palette and the review
+  // queue's provenance link land here.
+  const [searchParams] = useSearchParams();
+  const requestedID = searchParams.get('run') || '';
   const [runs, setRuns] = useState<QuerySession[]>([]);
-  const [selectedID, setSelectedID] = useState('');
+  const [selectedID, setSelectedID] = useState(requestedID);
   const [selected, setSelected] = useState<QueryView | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [eventSummary, setEventSummary] = useState<RunEventSummary | null>(null);
@@ -60,6 +70,10 @@ export default function RunHistory() {
   useEffect(() => {
     loadRuns();
   }, []);
+
+  useEffect(() => {
+    if (requestedID) setSelectedID(requestedID);
+  }, [requestedID]);
 
   useEffect(() => {
     if (!selectedID) {
@@ -146,36 +160,28 @@ export default function RunHistory() {
 
         <div className="flex-1 overflow-auto p-2 space-y-1">
           {filteredRuns.map((run) => (
-            <button
-              key={run.id}
-              onClick={() => setSelectedID(run.id)}
-              className={clsx(
-                'w-full text-left p-3 rounded-lg border transition-colors',
-                selectedID === run.id
-                  ? 'border-brand-300 bg-brand-50 dark:border-brand-800 dark:bg-brand-950/30'
-                  : 'border-transparent hover:bg-gray-100 dark:hover:bg-gray-800',
-              )}
-            >
-              <div className="flex items-center gap-2">
-                {run.success ? (
-                  <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
-                ) : (
-                  <XCircle size={14} className="text-red-500 shrink-0" />
-                )}
-                <span className="font-mono text-[10px] text-gray-400 truncate">{run.id}</span>
-                {run.interrupted && <span className="badge-neutral ml-auto text-[10px]">Interrupted</span>}
-              </div>
-              <div className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-2">
-                {run.query || '(empty query)'}
-              </div>
-              <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-500">
-                <Clock size={11} />
-                <span>{formatDate(run.updated_at)}</span>
-              </div>
-            </button>
+            <RunListItem key={run.id} run={run} selected={selectedID === run.id} onSelect={() => setSelectedID(run.id)} />
           ))}
-          {!loadingList && filteredRuns.length === 0 && (
-            <div className="p-6 text-center text-xs text-gray-400">No archived runs match this filter.</div>
+          {!loadingList && filteredRuns.length === 0 && runs.length > 0 && (
+            <div className="p-6 text-center text-xs text-gray-400">
+              <p>No archived runs match “{filter.trim()}”.</p>
+              <button type="button" onClick={() => setFilter('')} className="mt-2 text-brand-600 hover:underline dark:text-brand-400">
+                Clear the filter
+              </button>
+            </div>
+          )}
+          {!loadingList && runs.length === 0 && !error && (
+            <div className="p-6 text-center text-xs text-gray-400">
+              <p className="font-medium text-gray-500 dark:text-gray-300">No runs yet.</p>
+              <p className="mt-1">
+                Every run is archived here with its plan, board, event log and a per-phase trace of time,
+                tokens and cost — the numbers to compare when tuning a local model.
+              </p>
+              <Link to="/" className="btn-primary mt-3 inline-flex h-8 items-center gap-1.5 px-3 text-xs">
+                <Play size={12} fill="currentColor" aria-hidden="true" />
+                Start your first run
+              </Link>
+            </div>
           )}
         </div>
       </aside>
@@ -201,6 +207,7 @@ export default function RunHistory() {
               resuming={resuming === selected?.id}
               running={!!ctx?.liveRunning}
               onResume={handleResume}
+              onReplay={(id) => navigate(`/?run=${encodeURIComponent(id)}&replay=1`)}
             />
             {compositionError && <CompositionWarning message={compositionError} />}
             {composition && <CompositionPanel composition={composition} />}
@@ -232,6 +239,111 @@ export default function RunHistory() {
   );
 }
 
+// ── One archived run in the list ──
+//
+// It used to be an icon, an id, the query and a date, so telling a
+// forty-second smoke run from a twenty-minute build meant opening each.
+// The archive's own numbers ride on the row when the server sends them.
+
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n)) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k tok`;
+  return `${n} tok`;
+}
+
+export function formatCost(usd: number): string {
+  if (!Number.isFinite(usd)) return '';
+  if (usd === 0) return '$0';
+  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
+function RunListItem({ run, selected, onSelect }: { run: QuerySession; selected: boolean; onSelect: () => void }) {
+  const hasTasks = typeof run.tasks_total === 'number' && run.tasks_total > 0;
+  const failed = run.failed_tasks ?? 0;
+  const facts: Array<{ key: string; icon: React.ReactNode; text: string; title: string; bad?: boolean }> = [];
+  if (typeof run.duration_ms === 'number' && run.duration_ms > 0) {
+    facts.push({ key: 'duration', icon: <Timer size={10} aria-hidden="true" />, text: formatDuration(run.duration_ms), title: 'Wall time' });
+  }
+  if (hasTasks) {
+    facts.push({
+      key: 'tasks',
+      icon: <ListChecks size={10} aria-hidden="true" />,
+      text: `${run.tasks_done ?? 0}/${run.tasks_total} done`,
+      title: 'Tasks done / total',
+    });
+  }
+  if (failed > 0) {
+    facts.push({ key: 'failed', icon: <XCircle size={10} aria-hidden="true" />, text: `${failed} failed`, title: 'Failed tasks', bad: true });
+  }
+  if (typeof run.tokens === 'number' && run.tokens > 0) {
+    facts.push({ key: 'tokens', icon: <Activity size={10} aria-hidden="true" />, text: formatTokens(run.tokens), title: 'Tokens' });
+  }
+  if (typeof run.cost_usd === 'number' && run.cost_usd > 0) {
+    facts.push({ key: 'cost', icon: <Coins size={10} aria-hidden="true" />, text: formatCost(run.cost_usd), title: 'Estimated cost' });
+  }
+  return (
+    <button
+      onClick={onSelect}
+      aria-current={selected ? 'true' : undefined}
+      className={clsx(
+        'w-full text-left p-3 rounded-lg border transition-colors',
+        selected
+          ? 'border-brand-300 bg-brand-50 dark:border-brand-800 dark:bg-brand-950/30'
+          : 'border-transparent hover:bg-gray-100 dark:hover:bg-gray-800',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        {run.success ? (
+          <CheckCircle2 size={14} className="text-emerald-500 shrink-0" aria-label="Succeeded" />
+        ) : (
+          <XCircle size={14} className="text-red-500 shrink-0" aria-label="Needs review" />
+        )}
+        <span className="font-mono text-[10px] text-gray-400 truncate">{run.id}</span>
+        {run.interrupted && <span className="badge-neutral ml-auto text-[10px]">Interrupted</span>}
+      </div>
+      <div className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100 line-clamp-2">
+        {run.query || '(empty query)'}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-gray-500">
+        <span className="inline-flex items-center gap-1">
+          <Clock size={11} aria-hidden="true" />
+          {formatDate(run.updated_at)}
+        </span>
+        {facts.map((f) => (
+          <span
+            key={f.key}
+            title={f.title}
+            className={clsx('inline-flex items-center gap-0.5 font-mono tabular-nums', f.bad && 'text-red-600 dark:text-red-400')}
+          >
+            {f.icon}
+            {f.text}
+          </span>
+        ))}
+      </div>
+      {run.teams && run.teams.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {run.teams.map((t) => (
+            <span key={t} className={clsx('rounded px-1.5 py-px font-mono text-[9px] font-semibold', teamColor(t).badge)} title={`Team ${t}`}>
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </button>
+  );
+}
+
 function RunHeader({
   run,
   loading,
@@ -239,6 +351,7 @@ function RunHeader({
   resuming,
   running,
   onResume,
+  onReplay,
 }: {
   run: QueryView | null;
   loading: boolean;
@@ -246,6 +359,7 @@ function RunHeader({
   resuming: boolean;
   running: boolean;
   onResume: (id: string) => void;
+  onReplay: (id: string) => void;
 }) {
   return (
     <section className="card p-4">
@@ -262,6 +376,18 @@ function RunHeader({
           {run?.summary && <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{run.summary}</p>}
         </div>
         <div className="flex items-center gap-2">
+          {run && (
+            <button
+              type="button"
+              onClick={() => onReplay(run.id)}
+              disabled={running}
+              className="btn-secondary gap-1.5 text-xs"
+              title="Open the Live floor with this run's archived events"
+            >
+              <Activity size={13} aria-hidden="true" />
+              Replay on the floor
+            </button>
+          )}
           {run?.interrupted && (
             <button
               onClick={() => onResume(run.id)}
@@ -427,35 +553,41 @@ function BoardSnapshot({ tasks, stats }: { tasks: Task[]; stats: TaskStats }) {
   );
 }
 
+const ARTIFACT_TABS = [
+  { id: 'summary_md', label: 'Summary' },
+  { id: 'plan_md', label: 'Plan' },
+  { id: 'tasks_md', label: 'Tasks' },
+] as const;
+type ArtifactTab = (typeof ARTIFACT_TABS)[number]['id'];
+
 function SummaryPanel({ run }: { run: QueryView | null }) {
-  const tabs = [
-    ['summary_md', 'Summary'],
-    ['plan_md', 'Plan'],
-    ['tasks_md', 'Tasks'],
-  ] as const;
-  const [active, setActive] = useState<(typeof tabs)[number][0]>('summary_md');
+  const [active, setActive] = useState<ArtifactTab>('summary_md');
+  const { tabProps, panelProps, listProps } = useRovingTabs<ArtifactTab>(ARTIFACT_TABS, active, setActive);
   const content = run?.[active] || '';
   return (
     <section className="card p-4">
       <div className="flex items-center gap-2 mb-3">
         <FileText size={16} className="text-sky-500" />
         <h2 className="text-sm font-bold">Artifacts</h2>
-        <div className="ml-auto flex items-center gap-1 rounded-lg bg-gray-100 p-1 dark:bg-gray-800">
-          {tabs.map(([id, label]) => (
+        <div {...listProps} aria-label="Run artifacts" className="ml-auto flex items-center gap-1 rounded-lg bg-gray-100 p-1 dark:bg-gray-800">
+          {ARTIFACT_TABS.map((tab) => (
             <button
-              key={id}
-              onClick={() => setActive(id)}
+              key={tab.id}
+              {...tabProps(tab.id)}
               className={clsx(
-                'rounded-md px-2 py-1 text-xs font-medium',
-                active === id ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500',
+                'focus-ring rounded-md px-2 py-1 text-xs font-medium',
+                active === tab.id ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500',
               )}
             >
-              {label}
+              {tab.label}
             </button>
           ))}
         </div>
       </div>
-      <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-950 dark:text-gray-300">
+      <pre
+        {...panelProps(active)}
+        className="focus-ring max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-950 dark:text-gray-300"
+      >
         {content || 'No artifact saved for this run.'}
       </pre>
     </section>

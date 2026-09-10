@@ -123,23 +123,25 @@ func TestSpeculateReportsARealInterrupt(t *testing.T) {
 	}
 }
 
-// TestSpeculativeReviewKeepsTheWinnersVerdict is the regression net for
-// defect 2. The reviewer's stream is cut short by the winner and comes back as
-// a truncated `{"approved":true,"score":92,"summ`. That is not a verdict —
-// preferring it over the strict reviewer's COMPLETE approval is how an
-// approved:true score:92 payload was rendered and acted on as
-// `approved=false score=0`, buying a correction round nobody needed.
-func TestSpeculativeReviewKeepsTheWinnersVerdict(t *testing.T) {
+// TestReviewKeepsTheStrictVerdictWhenThePrimarySaysNothing is the regression
+// net for defect 2 under the sequential contract. The primary reviewer answers
+// nothing; the strict second opinion is a COMPLETE approval. That verdict must
+// be the one acted on — dropping it is how an approved:true score:92 payload
+// was rendered and acted on as `approved=false score=0`, buying a correction
+// round nobody needed.
+func TestReviewKeepsTheStrictVerdictWhenThePrimarySaysNothing(t *testing.T) {
 	exec := &streamingRaceExec{
 		delay: map[string]time.Duration{
-			plan.RoleReviewer:  2 * time.Second,
+			plan.RoleReviewer:  2 * time.Millisecond,
 			roleReviewerStrict: 2 * time.Millisecond,
 		},
-		full:    map[string]string{roleReviewerStrict: `{"approved":true,"score":92,"summary":"acceptance met"}`},
-		partial: map[string]string{plan.RoleReviewer: `{"approved":true,"score":92,"summ`},
+		full: map[string]string{
+			plan.RoleReviewer:  "",
+			roleReviewerStrict: `{"approved":true,"score":92,"summary":"acceptance met"}`,
+		},
 	}
 	r := NewRunner(exec, ggagent.NewSharedState())
-	r.MaxParallel = 4 // the shipped default; >=3 also arms the strict slot
+	r.MaxParallel = 4 // the shipped default
 	r.Timeout = 30 * time.Second
 	r.Log = func(string, ...interface{}) {}
 
@@ -149,16 +151,16 @@ func TestSpeculativeReviewKeepsTheWinnersVerdict(t *testing.T) {
 		Files:  []string{"a.go"},
 		Output: `{"status":"done","summary":"x","files_changed":["a.go"]}`,
 	}
-	review, raw, err := r.speculativeReview(context.Background(), cur, gateState{}, map[string]string{})
+	review, raw, err := r.llmReview(context.Background(), cur, gateState{})
 	if err != nil {
-		t.Fatalf("speculativeReview: %v", err)
+		t.Fatalf("llmReview: %v", err)
 	}
 	if !review.Approved || review.Score != 92 {
-		t.Fatalf("winner's verdict dropped: approved=%v score=%d raw=%q",
+		t.Fatalf("strict verdict dropped: approved=%v score=%d raw=%q",
 			review.Approved, review.Score, raw)
 	}
-	if strings.Contains(raw, `"summ`) && !strings.Contains(raw, `"summary"`) {
-		t.Fatalf("the truncated loser's body was used as the verdict: %q", raw)
+	if !strings.Contains(raw, "acceptance met") {
+		t.Fatalf("the raw verdict is not the strict reviewer's: %q", raw)
 	}
 }
 

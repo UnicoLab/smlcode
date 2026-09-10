@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { patchTask, deleteTask } from '@/api/client';
 import { teamColor } from './teamColor';
+import { AttemptsTimeline, CriteriaChecklist, ReviewVerdict, TaskActionRow, isStuck } from './TaskStory';
 import type { Task } from '@/types';
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
@@ -49,9 +50,28 @@ interface TaskDraft {
   notes: string;
 }
 
+// Colour plus a word: the ring around a failed card and a lone red triangle
+// read as decoration to anyone who cannot see red, so each state also says
+// its name.
 const STATUS_ICON: Record<string, ReactNode> = {
-  done: <CheckCircle size={12} className="text-emerald-500" />,
-  failed: <AlertTriangle size={12} className="text-red-500" />,
+  done: (
+    <span className="badge-success flex items-center gap-1 text-[9px]" title="Status: done">
+      <CheckCircle size={10} aria-hidden="true" />
+      done
+    </span>
+  ),
+  failed: (
+    <span className="badge-error flex items-center gap-1 text-[9px]" title="Status: failed">
+      <AlertTriangle size={10} aria-hidden="true" />
+      failed
+    </span>
+  ),
+  blocked: (
+    <span className="badge-error flex items-center gap-1 text-[9px]" title="Status: blocked">
+      <AlertTriangle size={10} aria-hidden="true" />
+      blocked
+    </span>
+  ),
 };
 
 const STATUS_OPTIONS = ['todo', 'scoped', 'ready', 'running', 'review', 'correcting', 'blocked', 'failed', 'done'];
@@ -64,6 +84,10 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<TaskDraft>(() => taskToDraft(task));
   const titleFieldRef = useRef<HTMLTextAreaElement>(null);
+  const teamFieldRef = useRef<HTMLSelectElement>(null);
+  // "Reassign team" opens the edit form on the team control rather than the
+  // title. A ref, not state: the flag must not re-run the focus effect.
+  const focusTeamRef = useRef(false);
   const ticket = ticketInfo(task);
 
   useEffect(() => {
@@ -71,10 +95,21 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
   }, [task]);
 
   useEffect(() => {
-    if (editing) {
-      titleFieldRef.current?.focus();
+    if (!editing) return;
+    const wantTeam = focusTeamRef.current;
+    focusTeamRef.current = false;
+    if (wantTeam && teamFieldRef.current) {
+      teamFieldRef.current.focus();
+      return;
     }
+    titleFieldRef.current?.focus();
   }, [editing]);
+
+  const handleReassign = () => {
+    focusTeamRef.current = true;
+    setEditing(true);
+    setExpanded(true);
+  };
 
   const {
     attributes,
@@ -354,6 +389,7 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
                   <label>
                     <span className="label">Team</span>
                     <select
+                      ref={teamFieldRef}
                       value={draft.squad}
                       onChange={(e) => setDraft((d) => ({ ...d, squad: e.target.value }))}
                       className="input text-xs"
@@ -451,16 +487,41 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
                   <ul className="space-y-1">
                     {task.checklist.map((item, i) => (
                       <li key={item.id || i} className="flex items-start gap-1 text-xs text-gray-600 dark:text-gray-400">
-                        <span className={item.done ? 'text-green-500' : 'text-gray-300'}>-</span>
+                        {item.done ? (
+                          <CheckCircle size={12} className="mt-0.5 shrink-0 text-emerald-500" aria-hidden="true" />
+                        ) : (
+                          <span aria-hidden="true" className="mt-1 h-2.5 w-2.5 shrink-0 rounded-sm border border-gray-300 dark:border-gray-600" />
+                        )}
+                        <span className="sr-only">{item.done ? 'done:' : 'open:'}</span>
                         <span className="break-words">{typeof item === 'string' ? item : item.text}</span>
                       </li>
                     ))}
                   </ul>
                 </div>
               )}
+              <CriteriaChecklist criteria={task.criteria} />
               {task.error && (
-                <div className="whitespace-pre-wrap break-words rounded-lg bg-red-50 p-2 text-xs text-red-600 dark:bg-red-900/20 dark:text-red-400">
-                  {task.error}
+                <div
+                  role="note"
+                  className="flex items-start gap-1.5 whitespace-pre-wrap break-words rounded-lg bg-red-50 p-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300"
+                >
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    <span className="font-semibold">Last error: </span>
+                    {task.error}
+                  </span>
+                </div>
+              )}
+              <AttemptsTimeline task={task} />
+              <ReviewVerdict review={task.review} />
+              {isStuck(task) && (
+                <div className="rounded-lg border border-dashed border-gray-200 p-2 dark:border-gray-700">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase text-gray-400">Next step</div>
+                  <TaskActionRow
+                    task={task}
+                    onUpdate={onUpdate}
+                    onReassign={teams.length > 0 || task.squad ? handleReassign : undefined}
+                  />
                 </div>
               )}
               {task.output && (

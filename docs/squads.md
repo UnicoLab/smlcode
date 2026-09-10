@@ -257,6 +257,15 @@ stay **unassigned**, exactly as before:
   A file nobody owns cannot go to a piece, and dropping it would silently narrow
   the work, so the whole task is left alone.
 
+A task that stays unassigned **because** it straddles is still handed the
+contract. It used to get no brief at all — a worker on no team got no squad
+brief, and the one agent on the run building both sides of the seam was the one
+building without the interface spec. It now gets a **seam brief**: the squads it
+spans and what each owns, then every interface of the frozen contract with its
+provider, consumers and a clipped spec. Interfaces only, no charters — the
+worker is on neither team and needs the seam, not the missions — capped at a
+dozen interfaces so it stays a brief on a 30B-class prompt.
+
 ### 3d. The halves stop waiting on each other
 
 Letting both teams build **at once** is the point of freezing the seam. The
@@ -500,6 +509,42 @@ nothing:
 
 The result is on the board, per team: **proved green**, **half is red**, or
 **unverified** with the reason.
+
+### A lane is proved the moment it finishes
+
+The finish path proves every half once the *whole* board has drained. On a
+two-team run that is late: the backend can finish in wave 1 with a broken build
+and sit green-on-the-board for every wave the frontend still needs, its ticket
+raised only after the frontend's last task — a whole extra wave the run may no
+longer have time for. So a half is also proved **between waves**, as soon as
+`squads.Progress` reports its lane complete and the run has written inside its
+territory since it was last proved:
+
+```text
+verify  team backend-go finished its lane — proving its half before the next wave
+verify  team backend-go is RED — its own half does not pass: FAIL: TestMain
+verify  raised a correction ticket for team backend-go
+verify  team backend-go's correction ticket rides the next wave
+```
+
+Three rules keep this cheap and bounded:
+
+- **Once per lane state.** A team is re-proved only when *its own* changed files
+  moved (a rewrite of an already-changed file counts; the other team's writes do
+  not). Nothing written in its territory yet means nothing to prove yet.
+- **Once per tree state, across every gate.** Command results are remembered per
+  (command, tree fingerprint) for the run, so the finish-path gate on a tree
+  nothing has touched since costs no second run — nor does the QA gate's first
+  round after the pre-test, nor the integration command after the halves.
+- **Two tickets per defect, then a human.** The same acceptance failing again
+  after its ticket was worked to done is a defect the team cannot fix alone;
+  a third ticket is refused and said so. Without the cap a half that stays red
+  would be ticketed on every wave until the run hit its ceiling.
+
+A gate that would not fit in the time left is skipped with a reason and the half
+reported UNVERIFIED, for the between-wave gate, the finish-path gate and the
+integration command alike — overrunning the report is worse than one unproved
+half.
 
 ### A failing run says which halves were proved
 

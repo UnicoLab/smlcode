@@ -131,3 +131,30 @@ func strArg(args map[string]interface{}, key string) string {
 		return ""
 	}
 }
+
+// Argument aliases. Small models mix vocabularies from every editing tool they
+// were trained on — old_string/new_string, search/replace, plain old/new — and
+// a strict key match turned each of those into a wasted turn ("old_str is
+// required"). The canonical key always wins; an alias is consulted only when
+// the canonical key is absent or empty.
+var (
+	oldStrKeys  = []string{"old_str", "old_string", "search", "old", "old_text", "before"}
+	newStrKeys  = []string{"new_str", "new_string", "replace", "new", "new_text", "replacement", "after"}
+	contentKeys = []string{"content", "contents", "text", "body", "data"}
+	patchKeys   = []string{"patch", "diff", "hunk"}
+)
+
+// strArgAny returns the first non-empty string among keys (see strArg).
+func strArgAny(args map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v := strArg(args, k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// aliasList renders the accepted spellings for an error message.
+func aliasList(keys []string) string {
+	return strings.Join(keys, " / ")
+}

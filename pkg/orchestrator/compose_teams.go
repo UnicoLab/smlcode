@@ -119,8 +119,34 @@ func (o *Orchestrator) decideTeams(query string, inventory []string, pins []stri
 	}
 }
 
+// teamPick is one run's library team selection, computed once.
+//
+// decideTeams (the composer) and teamsFromLibrary (the charter phase) both
+// used to call preselectTeams, and each call listed up to 2000 workspace
+// files and reloaded the block library to reach the same deterministic
+// answer. The selection is a pure function of the query, the tree and the
+// pins, none of which change between those two phases, so it is memoized
+// for the run and cleared with the rest of the team state.
+type teamPick struct {
+	query  string
+	sel    teams.Selection
+	roster []teams.Team
+}
+
 // preselectTeamsWith is preselectTeams with the run-level pin overridden.
+//
+// Only the run path (pins == nil) is memoized: a preview asks about pins the
+// run does not have, and must not be answered from the run's cache nor
+// pollute it.
 func (o *Orchestrator) preselectTeamsWith(query string, inventory []string, pins []string) (teams.Selection, []teams.Team) {
+	if pins == nil {
+		o.mu.Lock()
+		cached := o.teamPick
+		o.mu.Unlock()
+		if cached != nil && cached.query == query {
+			return cached.sel, cached.roster
+		}
+	}
 	roster := o.teamRoster()
 	if len(roster) == 0 {
 		return teams.Selection{}, nil
@@ -132,6 +158,11 @@ func (o *Orchestrator) preselectTeamsWith(query string, inventory []string, pins
 	sel := teams.Select(roster, teams.Signals{Query: query, Files: files}, teams.Options{
 		Pinned: o.pinnedTeamsWith(pins),
 	})
+	if pins == nil {
+		o.mu.Lock()
+		o.teamPick = &teamPick{query: query, sel: sel, roster: roster}
+		o.mu.Unlock()
+	}
 	return sel, roster
 }
 

@@ -112,7 +112,7 @@ func TestGateSaysWhyItStoppedEarly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
-	_ = o.runQAGate(ctx, "implement the thing", midBoard())
+	_ = o.runQAGate(ctx, "implement the thing", midBoard(), preTest{})
 
 	joined := strings.Join(events, "\n")
 	if !strings.Contains(joined, "not enough time left") {

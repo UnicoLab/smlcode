@@ -481,6 +481,12 @@ type Workspace struct {
 	todoMu sync.Mutex
 	todos  []TodoItem
 
+	// syntaxMemo remembers the last syntax verdict per path, keyed by a hash
+	// of the content it was computed for, so the "before" check of the next
+	// edit to the same file is a lookup rather than a fourth checker process.
+	syntaxMu   sync.Mutex
+	syntaxMemo map[string]syntaxMemoEntry
+
 	rootOnce sync.Once
 	realRoot string
 
@@ -578,7 +584,11 @@ func (w *Workspace) capResult(s string) string {
 			len(s), max)
 }
 
-func (w *Workspace) guardWrite(path, kind, content string) (string, bool, error) {
+// guardWrite is the permission gate for a proposed change to path. In review
+// mode the proposal is recorded to the queue — stamped with the task, role and
+// query from ctx (see pending.go) — and from names the source of a ws_mv so
+// the applier can move rather than copy.
+func (w *Workspace) guardWrite(ctx context.Context, path, kind, content, from string) (string, bool, error) {
 	switch permissions.Normalize(w.Permission) {
 	case permissions.ModeDryRun:
 		return fmt.Sprintf("dry-run: would %s %s (%d bytes)", kind, path, len(content)), true, nil
@@ -586,7 +596,7 @@ func (w *Workspace) guardWrite(path, kind, content string) (string, bool, error)
 		if w.SlmDir == "" {
 			w.SlmDir = filepath.Join(w.Root, ".slmcode")
 		}
-		p, err := permissions.RecordPending(w.SlmDir, path, kind, content)
+		p, err := w.recordPending(ctx, path, kind, content, from)
 		if err != nil {
 			return "", true, err
 		}
@@ -644,12 +654,23 @@ func (w *Workspace) resolvedRoot() string {
 }
 
 func (w *Workspace) checkSymlinkEscape(abs, rel string) error {
+	return w.checkSymlinkEscapeDepth(abs, rel, 0)
+}
+
+// maxDanglingSymlinkHops bounds how many dangling links in a row are chased
+// lexically before the path is refused outright.
+const maxDanglingSymlinkHops = 8
+
+func (w *Workspace) checkSymlinkEscapeDepth(abs, rel string, depth int) error {
 	real := w.resolvedRoot()
 	// Walk up to the deepest component that actually exists; components that
 	// do not exist yet cannot be symlinks.
 	p := abs
+	var info os.FileInfo
 	for {
-		if _, err := os.Lstat(p); err == nil {
+		st, err := os.Lstat(p)
+		if err == nil {
+			info = st
 			break
 		}
 		parent := filepath.Dir(p)
@@ -660,8 +681,47 @@ func (w *Workspace) checkSymlinkEscape(abs, rel string) error {
 	}
 	evaluated, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		// Cannot evaluate (permissions, race) → fall back to the lexical check.
-		return nil
+		if info == nil || info.Mode()&os.ModeSymlink == 0 {
+			// Not a link and not evaluable (permissions, race) → the lexical
+			// check above is all there is.
+			return nil
+		}
+		// A DANGLING symlink: EvalSymlinks fails because the target does not
+		// exist yet, but os.WriteFile / os.Create would happily follow it and
+		// create that target — anywhere on the host. This used to be the one
+		// gap in the jail: `ln -s /elsewhere/victim.txt link.txt` followed by
+		// ws_write link.txt created /elsewhere/victim.txt. Resolve the link
+		// text ourselves and judge the target lexically; when the target sits
+		// inside the root it is re-checked in case it chains through another
+		// link. Anything that cannot be judged is refused — fail closed.
+		if depth >= maxDanglingSymlinkHops {
+			return fmt.Errorf(
+				"path escapes workspace via symlink: %s is a chain of unresolved symlinks. "+
+					"Pick a path that names a real file inside the project", rel)
+		}
+		target, rerr := os.Readlink(p)
+		if rerr != nil {
+			return fmt.Errorf(
+				"path refused: %s is a symlink whose target cannot be resolved (%v). "+
+					"Pick a path that names a real file inside the project", rel, rerr)
+		}
+		parent := filepath.Dir(p)
+		if pr, perr := filepath.EvalSymlinks(parent); perr == nil {
+			parent = pr
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(parent, target)
+		}
+		target = filepath.Clean(target)
+		if target != real && !strings.HasPrefix(target, real+string(os.PathSeparator)) {
+			return fmt.Errorf(
+				"path escapes workspace via symlink: %s → %s (target does not exist yet). "+
+					"The harness only operates on real files inside the project root; "+
+					"pick a path that stays in the project", rel, target)
+		}
+		// The (missing) target is inside the root lexically; make sure no
+		// existing ancestor of it is itself a link out of the jail.
+		return w.checkSymlinkEscapeDepth(target, rel, depth+1)
 	}
 	if evaluated == real || strings.HasPrefix(evaluated, real+string(os.PathSeparator)) {
 		return nil
@@ -809,7 +869,7 @@ func readErrorHint(path string, err error) string {
 
 func (w *Workspace) writeFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	path := w.normalizeRelPath(strArg(args, "path"))
-	content := strArg(args, "content")
+	content := strArgAny(args, contentKeys...)
 	allowShrink := boolArg(args, "allow_shrink", false)
 	if strings.TrimSpace(path) == "" {
 		return "ws_write: path is required, e.g. {\"path\":\"pkg/foo/bar.go\",\"content\":\"…\"}.", nil
@@ -826,12 +886,20 @@ func (w *Workspace) writeFile(ctx context.Context, args map[string]interface{}) 
 	// of `prev` and the write derived from it.
 	defer w.lockPath(path)()
 	prev, existed := readIfExists(abs)
+	// An empty body on a NEW file is, in practice, never the intent — it is a
+	// model that put the text under a key this tool does not read. Writing a
+	// 0-byte file and reporting "wrote" sent the loop on to the next step with
+	// an empty source file in the tree. The same trap truncates an existing
+	// file, so that case needs the explicit allow_shrink escape hatch.
+	if content == "" && (!existed || !allowShrink) {
+		return EmptyContentReason(path, existed, args), nil
+	}
 	if w.WriteGuard {
 		if refuse, reason := w.checkOverwrite(path, abs, existed, prev, content, allowShrink); refuse {
 			return reason, nil
 		}
 	}
-	if msg, stop, err := w.guardWrite(path, "write", content); stop {
+	if msg, stop, err := w.guardWrite(ctx, path, "write", content, ""); stop {
 		kind := "review"
 		if strings.HasPrefix(msg, "dry-run:") {
 			kind = "dry-run"
@@ -897,10 +965,10 @@ func readIfExists(abs string) (string, bool) {
 	return string(data), true
 }
 
-func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (out interface{}, err error) {
 	path := w.normalizeRelPath(strArg(args, "path"))
-	oldStr := strArg(args, "old_str")
-	newStr := strArg(args, "new_str")
+	oldStr := strArgAny(args, oldStrKeys...)
+	newStr := strArgAny(args, newStrKeys...)
 	replaceAll := boolArg(args, "replace_all", false)
 	if strings.TrimSpace(path) == "" {
 		return "ws_edit: path is required, e.g. {\"path\":\"pkg/foo/bar.go\",\"old_str\":\"…\",\"new_str\":\"…\"}.", nil
@@ -911,9 +979,31 @@ func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (
 	if strings.TrimSpace(oldStr) == "" {
 		return EmptyOldStrReason(path), nil
 	}
+	// Text pasted straight out of a ws_read result carries the "   42|"
+	// gutter. When EVERY non-blank line carries it the intent is unambiguous,
+	// so the gutter is stripped and the edit proceeds; the note stays on the
+	// result so evolve still sees the drift and can learn the rule. A partial
+	// gutter is still refused — that is not a paste, that is confusion.
+	var gutterNote string
 	if lineNumberPrefixRe.MatchString(oldStr) {
-		return LineNumberedOldStrReason(path), nil
+		stripped, ok := stripReadGutter(oldStr)
+		if !ok {
+			return LineNumberedOldStrReason(path), nil
+		}
+		oldStr = stripped
+		if ns, ok := stripReadGutter(newStr); ok {
+			newStr = ns
+		}
+		gutterNote = GutterStrippedNote
+		if strings.TrimSpace(oldStr) == "" {
+			return EmptyOldStrReason(path), nil
+		}
 	}
+	defer func() {
+		if s, ok := out.(string); ok && gutterNote != "" {
+			out = s + gutterNote
+		}
+	}()
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
@@ -959,6 +1049,16 @@ func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (
 			exact, path,
 		) + augment.FailureRecovery("ws_edit", path), nil
 	default:
+		// replace_all with a drifted old_str: every span the first matching
+		// rung finds is replaced. Honoring the flag only on an exact hit
+		// meant "found 3 places (indentation-normalized) — ambiguous" for a
+		// caller who had explicitly asked for all of them.
+		if replaceAll {
+			if drifted, n, via := ReplaceAllDrifted(text, oldStr, newStr); n > 0 {
+				next, count, strategy = drifted, n, via
+				break
+			}
+		}
 		// Exact match missed: run the tolerant fallback ladder.
 		res := FindEditMatch(text, oldStr)
 		if !res.Found {
@@ -977,7 +1077,7 @@ func (w *Workspace) editFile(ctx context.Context, args map[string]interface{}) (
 	}
 
 	snippet := diffSnippet(oldStr, newStr)
-	if msg, stop, err := w.guardWrite(path, "edit", next); stop {
+	if msg, stop, err := w.guardWrite(ctx, path, "edit", next, ""); stop {
 		if msg != "" && strings.HasPrefix(msg, "dry-run:") {
 			out := fmt.Sprintf("dry-run: would edit %s (%d replacement(s))", path, count)
 			w.notify(path, "dry-run", snippet)
@@ -1028,9 +1128,105 @@ func LineNumberedOldStrReason(path string) string {
 		path)
 }
 
-func (w *Workspace) patchFile(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+// GutterStrippedNote is appended to a ws_edit / ws_patch result whose search
+// text arrived with ws_read's line-number gutter on every line. The edit went
+// ahead; the note is what pkg/evolve keys its strip_line_number_prefix rule on.
+const GutterStrippedNote = "\n[stripped ws_read line numbers from old_str — do not include them]"
+
+// gutterLineRe is lineNumberPrefixRe anchored for one line, capturing the text
+// after the "|" so the original indentation survives.
+var gutterLineRe = regexp.MustCompile(`^\s*\d+\|(.*)$`)
+
+// stripReadGutter removes the "   42|" prefix from every line of s. It reports
+// ok=false when any non-blank line lacks the gutter — a mixed block is not a
+// paste from ws_read and is left for the caller to refuse by name.
+func stripReadGutter(s string) (string, bool) {
+	if s == "" {
+		return s, false
+	}
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		m := gutterLineRe.FindStringSubmatch(ln)
+		if m == nil {
+			return s, false
+		}
+		lines[i] = m[1]
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+// stripReadGutterPatch is stripReadGutter for ws_patch input. Marker lines
+// (<<<<<<<, =======, >>>>>>>, @@) never carry a gutter and are skipped; every
+// other non-blank line must, or the whole text is left alone (ok=false). A
+// unified-diff "+"/"-" sign in front of the gutter is kept; a space sign is
+// indistinguishable from the gutter's own padding and simply becomes an
+// unprefixed context line, which the hunk parser already accepts.
+func stripReadGutterPatch(s string) (string, bool) {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "" || strings.HasPrefix(t, "<<<<<<<") || strings.HasPrefix(t, "=======") ||
+			strings.HasPrefix(t, ">>>>>>>") || strings.HasPrefix(t, "@@") {
+			continue
+		}
+		sign, rest := "", ln
+		if strings.HasPrefix(ln, "+") || strings.HasPrefix(ln, "-") {
+			sign, rest = ln[:1], ln[1:]
+		}
+		m := gutterLineRe.FindStringSubmatch(rest)
+		if m == nil {
+			return s, false
+		}
+		lines[i] = sign + m[1]
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+// EmptyContentReason explains a refused empty ws_write and names every key the
+// tool reads for the body, since the usual cause is the text sitting under a
+// key that was never looked at.
+func EmptyContentReason(path string, existed bool, args map[string]interface{}) string {
+	var extra []string
+	for k := range args {
+		switch k {
+		case "path", "allow_shrink":
+			continue
+		}
+		known := false
+		for _, c := range contentKeys {
+			if k == c {
+				known = true
+				break
+			}
+		}
+		if !known {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	msg := fmt.Sprintf(
+		"Write refused — content is empty, so this would create %s as a 0-byte file.\n"+
+			"ws_write reads the file body from one of: %s. ", path, aliasList(contentKeys))
+	if existed {
+		msg = fmt.Sprintf(
+			"Write refused — content is empty, so this would truncate %s to 0 bytes.\n"+
+				"ws_write reads the file body from one of: %s. "+
+				"To really empty the file, repeat the call with \"allow_shrink\": true. ",
+			path, aliasList(contentKeys))
+	}
+	if len(extra) > 0 {
+		msg += fmt.Sprintf("Unrecognized argument(s) in this call: %s. ", strings.Join(extra, ", "))
+	}
+	msg += "Repeat the call with the full file text under \"content\"."
+	return msg
+}
+
+func (w *Workspace) patchFile(ctx context.Context, args map[string]interface{}) (out interface{}, err error) {
 	path := w.normalizeRelPath(strArg(args, "path"))
-	patch := strArg(args, "patch")
+	patch := strArgAny(args, patchKeys...)
 	if strings.TrimSpace(path) == "" {
 		return "ws_patch: path is required, e.g. {\"path\":\"pkg/foo/bar.go\",\"patch\":\"@@ …\"}.", nil
 	}
@@ -1038,9 +1234,23 @@ func (w *Workspace) patchFile(ctx context.Context, args map[string]interface{}) 
 		return "ws_patch: patch is required — supply a unified diff with @@ hunks, or a " +
 			"<<<<<<< SEARCH / ======= / >>>>>>> REPLACE block.", nil
 	}
+	// Same rule as ws_edit: a ws_read gutter on every content line is
+	// stripped (marker and @@ lines are exempt from the "every line" test);
+	// anything less uniform is refused by name.
+	var gutterNote string
 	if lineNumberPrefixRe.MatchString(patch) {
-		return LineNumberedOldStrReason(path), nil
+		stripped, ok := stripReadGutterPatch(patch)
+		if !ok {
+			return LineNumberedOldStrReason(path), nil
+		}
+		patch = stripped
+		gutterNote = GutterStrippedNote
 	}
+	defer func() {
+		if s, ok := out.(string); ok && gutterNote != "" {
+			out = s + gutterNote
+		}
+	}()
 	abs, err := w.resolve(path)
 	if err != nil {
 		return nil, err
@@ -1076,7 +1286,7 @@ func (w *Workspace) patchFile(ctx context.Context, args map[string]interface{}) 
 			}
 		}
 	}
-	if msg, stop, err := w.guardWrite(path, "patch", next); stop {
+	if msg, stop, err := w.guardWrite(ctx, path, "patch", next, ""); stop {
 		kind := "review"
 		if strings.HasPrefix(msg, "dry-run:") {
 			kind = "dry-run"
@@ -1157,7 +1367,7 @@ func (w *Workspace) moveFile(ctx context.Context, args map[string]interface{}) (
 	if readErr != nil {
 		return fmt.Sprintf("ws_mv: cannot read %s: %v. Fix the path or permissions, then retry.", from, readErr), nil
 	}
-	if msg, stop, err := w.guardWrite(to, "mv", string(content)); stop {
+	if msg, stop, err := w.guardWrite(ctx, to, "mv", string(content), from); stop {
 		kind := "review"
 		if strings.HasPrefix(msg, "dry-run:") {
 			kind = "dry-run"
@@ -1239,7 +1449,7 @@ func (w *Workspace) deleteFile(ctx context.Context, args map[string]interface{})
 		return fmt.Sprintf(
 			"ws_delete: %s is a directory. This tool deletes single files only.", path), nil
 	}
-	if msg, stop, err := w.guardWrite(path, "delete", ""); stop {
+	if msg, stop, err := w.guardWrite(ctx, path, "delete", "", ""); stop {
 		kind := "review"
 		if strings.HasPrefix(msg, "dry-run:") {
 			kind = "dry-run"
@@ -1807,17 +2017,20 @@ func (w *Workspace) waitShellApproval(ctx context.Context, command string) (bool
 		OnTimeout: "deny",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := hitl.WriteAsk(w.SlmDir, "shell", ask); err != nil {
+	// One file per ask (hitl.WriteAskID): parallel workers each wait on their
+	// own answer instead of sharing — and clobbering — a single slot. The
+	// command is deliberately NOT mirrored into the review queue any more: a
+	// queue entry is a file write, and `slmcode apply --all` used to land a
+	// literal shell.sh at the project root for every ask.
+	if err := hitl.WriteAskID(w.SlmDir, "shell", ask.ID, ask); err != nil {
 		return false, err
 	}
-	// Also record classic pending for apply CLI visibility.
-	_, _ = permissions.RecordPending(w.SlmDir, "shell.sh", "shell", command)
 	if w.OnShellAsk != nil {
 		w.OnShellAsk(ask)
 	}
 	var ans ShellAnswer
-	ok, err := hitl.WaitAnswersForID(ctx, w.SlmDir, "shell", ask.ID, timeout, &ans)
-	hitl.Clear(w.SlmDir, "shell")
+	ok, err := hitl.WaitAnswerID(ctx, w.SlmDir, "shell", ask.ID, timeout, &ans)
+	hitl.ClearID(w.SlmDir, "shell", ask.ID)
 	if err != nil {
 		return false, err
 	}

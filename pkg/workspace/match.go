@@ -83,6 +83,77 @@ func FindEditMatchIn(content, search string, lo, hi int) MatchOutcome {
 	return out
 }
 
+// FindAllEditMatches runs the ladder and returns EVERY span of the first
+// strategy that matches at least once, plus that strategy's name. It is the
+// replace_all counterpart of FindEditMatch: when the exact search misses but a
+// tolerant rung finds the drifted text in N places, the caller asked for all of
+// them and should get all of them. Spans are ordered by offset and never
+// overlap.
+func FindAllEditMatches(content, search string) ([]EditMatch, string) {
+	if search == "" || content == "" {
+		return nil, ""
+	}
+	for _, strategy := range matchLadder {
+		spans := matchStrategy(content, search, 0, len(content), strategy)
+		if len(spans) > 0 {
+			return disjointSpans(spans), strategy
+		}
+	}
+	return nil, ""
+}
+
+// disjointSpans keeps the earliest of any overlapping spans (exactSpans
+// advances one byte at a time, so "aa" in "aaa" yields two overlapping hits).
+func disjointSpans(spans []EditMatch) []EditMatch {
+	out := spans[:0:0]
+	end := -1
+	for _, sp := range spans {
+		if sp.Start < end {
+			continue
+		}
+		out = append(out, sp)
+		end = sp.End
+	}
+	return out
+}
+
+// ReplaceAllDrifted is replace_all for the case where the exact search misses:
+// every span of the first ladder strategy that matches is replaced, then the
+// ladder is run again until nothing matches (the per-strategy scans cap their
+// hit lists, so one pass is not guaranteed to be exhaustive). It returns the
+// new content, how many spans were replaced and which strategy found them.
+// A replacement that still matches its own search under the tolerant strategy
+// is bounded by the round limit and the unchanged-content check rather than
+// looping forever.
+func ReplaceAllDrifted(content, oldStr, newStr string) (string, int, string) {
+	total := 0
+	first := ""
+	for round := 0; round < 16; round++ {
+		spans, strategy := FindAllEditMatches(content, oldStr)
+		if len(spans) == 0 {
+			break
+		}
+		if first == "" {
+			first = strategy
+		}
+		next := content
+		for i := len(spans) - 1; i >= 0; i-- {
+			next = ApplyEditReplacement(next, spans[i], oldStr, newStr)
+		}
+		if next == content {
+			break
+		}
+		content = next
+		total += len(spans)
+		// Only a capped scan can have left matches behind (lineSpans stops
+		// at 9, exactSpans at 65); a shorter list was already exhaustive.
+		if len(spans) < 9 {
+			break
+		}
+	}
+	return content, total, first
+}
+
 func matchStrategy(content, search string, lo, hi int, strategy string) []EditMatch {
 	switch strategy {
 	case MatchExact:

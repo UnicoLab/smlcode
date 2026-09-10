@@ -1,23 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getDoc, updateDoc } from '@/api/client';
+import { ApiError, getDoc, updateDoc } from '@/api/client';
 import { Save, FileText, Loader } from 'lucide-react';
+import { useToast } from '@/components/ui/Toast';
+import ErrorState from '@/components/ui/ErrorState';
 
 export default function MarkdownEditor() {
   const { docId } = useParams<{ docId: string }>();
+  const toast = useToast();
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const fetchDoc = useCallback(async () => {
     if (!docId) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const d = await getDoc(docId);
       setContent(d.content || '');
     } catch (e) {
-      console.error('Failed to load doc:', e);
+      // A 404 is a document that does not exist yet: start it empty. Anything
+      // else is a real failure the editor must not paper over with a blank page.
+      if (e instanceof ApiError && e.status === 404) {
+        setContent('');
+      } else {
+        setLoadError(e);
+      }
     } finally {
       setLoading(false);
     }
@@ -36,11 +47,19 @@ export default function MarkdownEditor() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
-      console.error('Save failed:', e);
+      if (e instanceof ApiError && e.isConflict) {
+        toast.push({
+          tone: 'warning',
+          title: `${docId} not saved`,
+          detail: 'A run is active and owns this document — stop it before editing. Your text is kept in the editor.',
+        });
+      } else {
+        toast.reportError(e, `Could not save ${docId}`);
+      }
     } finally {
       setSaving(false);
     }
-  }, [docId, content]);
+  }, [docId, content, toast]);
 
   // Keyboard shortcut: Cmd/Ctrl + S
   useEffect(() => {
@@ -59,6 +78,14 @@ export default function MarkdownEditor() {
       <div className="flex items-center justify-center h-full text-gray-400">
         <Loader size={20} className="animate-spin mr-2" />
         Loading…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <ErrorState error={loadError} what={docId} onRetry={fetchDoc} className="w-full max-w-md" />
       </div>
     );
   }

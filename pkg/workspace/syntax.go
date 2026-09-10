@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -183,28 +184,90 @@ func (w *Workspace) applyWithSyntaxGuard(ctx context.Context, rel, abs, prev, ne
 		return "", false, nil
 	}
 	// Establish the "before" verdict from the in-memory previous content so we
-	// never blame an edit for a break that was already there.
+	// never blame an edit for a break that was already there. The verdict is
+	// memoized per path by content hash: a worker editing the same file three
+	// times in a row used to spawn two checkers per edit (before + after),
+	// although the "before" of edit N+1 is byte-identical to the "after" of
+	// edit N. Now consecutive edits cost one checker each after the first.
 	before := SyntaxResult{Status: SyntaxSkipped}
 	if existed {
-		before = w.checkSyntaxOfText(ctx, abs, prev)
+		if memo, ok := w.syntaxMemoLookup(rel, prev); ok {
+			before = memo
+		} else {
+			before = w.checkSyntaxOfText(ctx, abs, prev)
+			w.syntaxMemoStore(rel, prev, before)
+		}
 	}
 	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil { //nolint:gosec // project source file, conventional perms
 		return "", false, err
 	}
-	after := CheckSyntax(ctx, abs, w.syntaxTimeout())
+	after := checkSyntaxFn(ctx, abs, w.syntaxTimeout())
 	if after.Status != SyntaxBroken {
+		w.syntaxMemoStore(rel, next, after)
 		return "", false, nil
 	}
 	if before.Status == SyntaxOK {
 		// Regression introduced by this edit → put the file back.
 		if rerr := os.WriteFile(abs, []byte(prev), 0o644); rerr != nil { //nolint:gosec // project source file, conventional perms
 			// Could not restore: keep the broken file but say so loudly.
+			w.syntaxMemoStore(rel, next, after)
 			return SyntaxWarning(rel, after) +
 				"\n(NOTE: automatic revert failed: " + rerr.Error() + ")", false, nil
 		}
+		// File is back to prev, whose verdict is already memoized.
 		return SyntaxRevertMessage(rel, after), true, nil
 	}
+	w.syntaxMemoStore(rel, next, after)
 	return SyntaxWarning(rel, after), false, nil
+}
+
+// checkSyntaxFn is the checker the guard invokes. A variable so tests can
+// count invocations with a fake instead of spawning gofmt/python/node.
+var checkSyntaxFn = CheckSyntax
+
+// syntaxMemoEntry is one memoized verdict: the hash of the content it was
+// computed for and the verdict itself.
+type syntaxMemoEntry struct {
+	hash   [32]byte
+	result SyntaxResult
+}
+
+// maxSyntaxMemoPaths bounds the memo; a run touches a handful of files, and
+// past that the oldest entries are simply dropped (worst case: one extra
+// checker, exactly today's cost).
+const maxSyntaxMemoPaths = 256
+
+func (w *Workspace) syntaxMemoLookup(rel, content string) (SyntaxResult, bool) {
+	if w == nil {
+		return SyntaxResult{}, false
+	}
+	h := sha256.Sum256([]byte(content))
+	w.syntaxMu.Lock()
+	defer w.syntaxMu.Unlock()
+	e, ok := w.syntaxMemo[rel]
+	if !ok || e.hash != h || e.result.Status == SyntaxSkipped {
+		return SyntaxResult{}, false
+	}
+	return e.result, true
+}
+
+func (w *Workspace) syntaxMemoStore(rel, content string, res SyntaxResult) {
+	if w == nil || res.Status == SyntaxSkipped {
+		// A timed-out / unavailable checker is not a verdict worth keeping.
+		return
+	}
+	w.syntaxMu.Lock()
+	defer w.syntaxMu.Unlock()
+	if w.syntaxMemo == nil {
+		w.syntaxMemo = map[string]syntaxMemoEntry{}
+	}
+	if _, exists := w.syntaxMemo[rel]; !exists && len(w.syntaxMemo) >= maxSyntaxMemoPaths {
+		for k := range w.syntaxMemo {
+			delete(w.syntaxMemo, k)
+			break
+		}
+	}
+	w.syntaxMemo[rel] = syntaxMemoEntry{hash: sha256.Sum256([]byte(content)), result: res}
 }
 
 func (w *Workspace) syntaxTimeout() time.Duration {
@@ -229,5 +292,5 @@ func (w *Workspace) checkSyntaxOfText(ctx context.Context, abs, text string) Syn
 	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil { //nolint:gosec // tmp is our own os.MkdirTemp-generated private scratch path, not external input
 		return SyntaxResult{Status: SyntaxSkipped}
 	}
-	return CheckSyntax(ctx, tmp, w.syntaxTimeout())
+	return checkSyntaxFn(ctx, tmp, w.syntaxTimeout())
 }

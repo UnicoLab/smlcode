@@ -170,6 +170,27 @@ That last one is the delicate one, so it has three guardrails:
   The seed can only ever tighten a budget for a model fast enough that a role
   provably does not need the whole ceiling.
 
+Where the two numbers are enforced:
+
+* **`max_parallel` is one run-wide limit.** Every model request the harness
+  makes — the phase roles, the execute loop's workers, reviewers and
+  correctors, self-critique, triage, the speculative review race, the planner's
+  multipass cycle — takes a slot of a single gate sized `max_parallel`. It used
+  to bound only the execute wave, while context ran beside explore and a review
+  race added slots of its own, so a `max_parallel: 1` endpoint still saw two or
+  three requests queue on each other and every measured role timeout was
+  inflated by queueing the harness itself created. At `max_parallel: 1` the
+  phase pairs also run sequentially instead of racing for the one slot.
+* **Role latency memory covers the execute loop too.** The measured budget
+  (`p95 × 1.5`, floored per role class, capped at `task_timeout`) used to apply
+  only to the phase roles; workers, reviewers and correctors ran on the flat
+  `task_timeout` and recorded no samples, so `reviewer` had none after a
+  hundred runs. Each loop request is now dispatched on
+  `min(task_timeout clamped to the runway, measured budget)` and records a
+  sample under its base role (an escalation rung shares its base role's
+  series). A reviewer measured at 20s is given its 60s floor, not the whole
+  ceiling.
+
 ## Commands
 
 ```

@@ -25,19 +25,24 @@ import (
 // structured role on that endpoint degraded to prompt-only + repair for a week.
 func TestSlowEndpointDoesNotPoisonCapabilitiesForAWeek(t *testing.T) {
 	var calls int64
-	// Every request costs 100ms — a stand-in for a model still loading weights.
-	// The first one fits inside the budget and succeeds; the rest cannot.
+	restore := ProbeTimeout
+	ProbeTimeout = 150 * time.Millisecond
+	defer func() { ProbeTimeout = restore }()
+
+	// The first request answers at once — it must succeed whatever the load on
+	// the test machine — and every later one sleeps past the shared deadline: a
+	// stand-in for a model that answered the plain probe and then went off to
+	// load weights. (An earlier version slept 100ms on every request against
+	// the 150ms budget; under a busy `go test ./...` the first request alone
+	// could miss the window and the test failed for the wrong reason.)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt64(&calls, 1)
-		time.Sleep(100 * time.Millisecond)
+		if atomic.AddInt64(&calls, 1) > 1 {
+			time.Sleep(2 * ProbeTimeout)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
 	}))
 	defer srv.Close()
-
-	restore := ProbeTimeout
-	ProbeTimeout = 150 * time.Millisecond
-	defer func() { ProbeTimeout = restore }()
 
 	// runProbe directly: Probe() memoises per key and would hide a second call.
 	got := runProbe(context.Background(), "omlx", srv.URL, "slow-model", "k")

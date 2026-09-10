@@ -539,12 +539,12 @@ type Config struct {
 	ContextCompact bool `yaml:"context_compact" json:"context_compact"`
 	// ContextCompactEngine: heuristic | llm | auto (LLM with heuristic fallback).
 	ContextCompactEngine string `yaml:"context_compact_engine" json:"context_compact_engine"`
-	// ReactCompact enables ReAct conversation compaction at CHECKPOINT and
-	// RESUME — it does NOT compact a live agent call between its iterations.
-	// loop.LiveReactCompactionWired is the constant of record (it is false, and
-	// nothing an operator sets changes it); loop.ReactCompactionStatus renders
-	// the honest one-line claim. This setting says what was asked for, not what
-	// the harness does.
+	// ReactCompact enables ReAct conversation compaction: deterministic elision
+	// of old tool results on LIVE requests (pkg/backends.LiveElide, installed
+	// for tool-using roles) and elision-then-digest at CHECKPOINT and RESUME.
+	// loop.LiveReactCompactionWired is the constant of record for the live
+	// half; loop.ReactCompactionStatus renders the honest one-line claim. This
+	// setting says what was asked for; the constant says what exists.
 	ReactCompact bool `yaml:"react_compact" json:"react_compact"`
 	// ReactCompactAtPercent triggers ReAct compaction at this % of MaxContextKB
 	// (little-coder default 80). <=0 or >=100 disables.

@@ -13,6 +13,7 @@ import {
   AlertOctagon,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useFocusTrap } from '@/components/ui/Modal';
 import PlanEditor from './PlanEditor';
 import {
   getClarifyPending,
@@ -332,6 +333,19 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
     };
   }, [pending, currentPendingKey]);
 
+  // ── Tab stays inside the gate; Esc returns to the decision ──
+  //
+  // A gate cannot be dismissed — the harness is waiting for an answer, and
+  // closing the dialog would only hide the countdown. So Esc does the one
+  // safe thing: it puts focus back on the first action and says why the
+  // dialog is still there. The trap itself is Modal's.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onEscape = useCallback(() => {
+    firstActionRef.current?.focus();
+    setSyncNotice('This gate waits for an answer — pick an action, or let the timer apply the default.');
+  }, []);
+  useFocusTrap(panelRef, { active: Boolean(pending), onEscape, manageInitialFocus: false });
+
   // ── Countdown timer ──
   useEffect(() => {
     if (!pending || countdown <= 0) return;
@@ -455,6 +469,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
 
       {/* Modal */}
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

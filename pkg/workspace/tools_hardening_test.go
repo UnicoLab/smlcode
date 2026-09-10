@@ -87,20 +87,34 @@ func TestAssessOverEditDoesNotMaskEmptyOldStr(t *testing.T) {
 
 // ── item 11: line-number prefixes ──────────────────────────────────────────
 
+// A gutter on EVERY line is a paste from ws_read: the edit proceeds with the
+// gutter stripped and the note appended (see TestEditStripsGutterAutomatically).
+// A gutter on only SOME lines is still refused by name.
 func TestEditRejectsLineNumberedOldStr(t *testing.T) {
-	cases := []struct{ name, oldStr string }{
-		{"single line", "     3|func F() {}"},
-		{"multi line", "     1|package a\n     2|"},
-		{"no padding", "3|func F() {}"},
+	cases := []struct {
+		name, oldStr string
+		stripped     bool
+	}{
+		{"single line", "     3|func F() {}", true},
+		{"multi line", "     1|package a\n     2|", true},
+		{"no padding", "3|func F() {}", true},
+		{"mixed", "     3|func F() {}\nfunc F() {}", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, root := newTestWS(t)
+			w.SyntaxCheck = false
 			mustWrite(t, filepath.Join(root, "a.go"), "package a\n\nfunc F() {}\n")
 			w.Reads.Mark("a.go")
 			out := strOut(w.editFile(context.Background(), map[string]interface{}{
 				"path": "a.go", "old_str": tc.oldStr, "new_str": "func G() {}",
 			}))
+			if tc.stripped {
+				if !strings.Contains(out, "[stripped ws_read line numbers") {
+					t.Fatalf("expected gutter to be stripped with a note, got %q", out)
+				}
+				return
+			}
 			if !strings.Contains(out, "line-number prefix") {
 				t.Fatalf("expected line-number diagnosis, got %q", out)
 			}

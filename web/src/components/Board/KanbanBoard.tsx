@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -10,24 +11,14 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { getBoard, getSquads, patchTask, addTask } from '@/api/client';
-import type { Board as BoardType, SquadsView, Task } from '@/types';
+import { patchTask, addTask } from '@/api/client';
+import type { Task } from '@/types';
+import { useBoardStore } from '@/hooks/useBoardStore';
+import { COLUMN_LABELS, COLUMN_ORDER, columnLabel } from '@/components/shared/labels';
 import TaskCard from './TaskCard';
 import TeamStrip, { UNASSIGNED_FILTER } from './TeamStrip';
 import clsx from 'clsx';
 import { Loader2, Plus, RefreshCw, X } from 'lucide-react';
-
-const COLUMN_LABELS: Record<string, string> = {
-  to_scope: 'To Scope',
-  scoped: 'Scoped',
-  ready_to_dev: 'Ready',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  blocked: 'Blocked',
-  done: 'Done',
-};
-
-const COLUMN_ORDER = ['to_scope', 'scoped', 'ready_to_dev', 'in_progress', 'in_review', 'blocked', 'done'];
 
 interface NewTaskDraft {
   title: string;
@@ -50,39 +41,48 @@ const EMPTY_DRAFT: NewTaskDraft = {
 };
 
 export default function KanbanBoard() {
-  const [board, setBoard] = useState<BoardType | null>(null);
+  // The board and the org chart come from the shared store — seeded once,
+  // kept current by the stream's task_update events, re-read every 30 s as a
+  // safety net. This page used to poll both every 3 s for as long as it was
+  // open. See hooks/useBoardStore.
+  const board = useBoardStore();
+  const { tasks: allTasks, squads, refresh: fetchBoard, refreshing, upsertTask } = board;
+  const loading = !board.ready;
   const [activeTask, setActiveTask] = useState<Task | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [draft, setDraft] = useState<NewTaskDraft>(EMPTY_DRAFT);
   const [savingAdd, setSavingAdd] = useState(false);
   const [addError, setAddError] = useState('');
-  // The org chart this board is executing against. Null on a single-stream run,
-  // which is most of them — the strip hides itself rather than showing an empty
-  // header nobody can act on.
-  const [squads, setSquads] = useState<SquadsView | null>(null);
-  // The org chart's team ids, so a card can be assigned to one.
+  // The org chart's team ids, so a card can be assigned to one. Null on a
+  // single-stream run, which is most of them — the strip hides itself rather
+  // than showing an empty header nobody can act on.
   const teamIDs = useMemo(() => (squads?.ok ? (squads.squads ?? []).map((s) => s.id) : []), [squads]);
-  const [teamFilter, setTeamFilter] = useState('');
+  // Both filters live in the URL (?team, ?column), so a filtered board can be
+  // linked to and survives a reload.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const teamFilter = searchParams.get('team') ?? '';
+  const columnFilter = searchParams.get('column') ?? '';
+  const setParam = useCallback(
+    (key: 'team' | 'column', value: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (value) next.set(key, value);
+          else next.delete(key);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  const setTeamFilter = useCallback((v: string) => setParam('team', v), [setParam]);
+  const setColumnFilter = useCallback((v: string) => setParam('column', v), [setParam]);
   const addTitleRef = useRef<HTMLInputElement>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
-
-  const fetchBoard = useCallback(async () => {
-    try {
-      setRefreshing(true);
-      const b = await getBoard();
-      setBoard(b);
-    } catch (e) {
-      console.error('Failed to load board:', e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
 
   useEffect(() => {
     if (showAdd) {
@@ -90,56 +90,35 @@ export default function KanbanBoard() {
     }
   }, [showAdd]);
 
-  // The org chart moves far more slowly than the board — it is written once per
-  // run — so it rides the same poll rather than getting its own timer.
-  const fetchSquads = useCallback(async () => {
-    try {
-      setSquads(await getSquads());
-    } catch {
-      // No org chart is the normal state, not an error.
-      setSquads(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchBoard();
-    void fetchSquads();
-    const interval = setInterval(() => {
-      fetchBoard();
-      void fetchSquads();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [fetchBoard, fetchSquads]);
-
   const columns = useMemo(() => {
-    const fromBoard = board?.columns?.length ? board.columns : [];
+    const fromBoard = board.columns.length ? board.columns : [];
     return [...new Set([...COLUMN_ORDER, ...fromBoard])];
-  }, [board?.columns]);
+  }, [board.columns]);
+  const shownColumns = useMemo(
+    () => (columnFilter && columns.includes(columnFilter) ? [columnFilter] : columns),
+    [columns, columnFilter],
+  );
 
   // Filtering happens BEFORE grouping, so a filtered column shows its own
   // count rather than the whole board's — "the backend's four, and they are all
   // blocked" is the sentence this page exists to make readable.
   const visibleTasks = useMemo(() => {
-    const all = board?.tasks || [];
-    if (teamFilter === '') return all;
-    if (teamFilter === UNASSIGNED_FILTER) return all.filter((t) => !t.squad);
-    return all.filter((t) => t.squad === teamFilter);
-  }, [board?.tasks, teamFilter]);
+    if (teamFilter === '') return allTasks;
+    if (teamFilter === UNASSIGNED_FILTER) return allTasks.filter((t) => !t.squad);
+    return allTasks.filter((t) => t.squad === teamFilter);
+  }, [allTasks, teamFilter]);
   const byColumn = useMemo(() => groupTasks(visibleTasks, columns), [visibleTasks, columns]);
-  const totalTasks = board?.tasks?.length || 0;
+  const totalTasks = allTasks.length;
 
   const handleDragStart = (event: DragStartEvent) => {
     const taskId = event.active.id as string;
-    if (board) {
-      const task = board.tasks.find((t) => t.id === taskId);
-      setActiveTask(task || null);
-    }
+    setActiveTask(allTasks.find((t) => t.id === taskId) || null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     setActiveTask(null);
     const { active, over } = event;
-    if (!over || !board) return;
+    if (!over) return;
 
     const taskId = active.id as string;
     const overId = over.id as string;
@@ -149,24 +128,22 @@ export default function KanbanBoard() {
     if (columns.includes(overId)) {
       targetCol = overId;
     } else {
-      const overTask = board.tasks.find((t) => t.id === overId);
+      const overTask = allTasks.find((t) => t.id === overId);
       if (!overTask) return;
       targetCol = overTask.column;
     }
 
-    const task = board.tasks.find((t) => t.id === taskId);
+    const task = allTasks.find((t) => t.id === taskId);
     if (!task || task.column === targetCol) return;
 
-    // Optimistic update
-    const newTasks = board.tasks.map((t) =>
-      t.id === taskId ? { ...t, column: targetCol } : t,
-    );
-    setBoard({ ...board, tasks: newTasks, by_column: groupTasks(newTasks, columns) });
-
+    // Optimistic: paint the move now; the server's task_update (or the
+    // refresh on failure) is the truth.
+    upsertTask({ ...task, column: targetCol });
     try {
-      await patchTask(taskId, { column: targetCol });
+      const saved = await patchTask(taskId, { column: targetCol });
+      if (saved && saved.id) upsertTask(saved);
     } catch {
-      fetchBoard(); // revert
+      void fetchBoard(); // revert
     }
   };
 
@@ -195,10 +172,7 @@ export default function KanbanBoard() {
         acceptance: draft.acceptance.trim(),
         files: splitList(draft.files),
       });
-      if (board) {
-        const tasks = [created, ...(board.tasks || [])];
-        setBoard({ ...board, tasks, by_column: groupTasks(tasks, columns) });
-      }
+      if (created && created.id) upsertTask(created);
       setShowAdd(false);
       setDraft(EMPTY_DRAFT);
       await fetchBoard();
@@ -220,12 +194,15 @@ export default function KanbanBoard() {
     );
   }
 
-  if (!board) {
+  if (board.error && totalTasks === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center space-y-3">
           <p className="text-gray-400">No board data yet.</p>
-          <p className="text-xs text-gray-500">Run a query to populate the kanban board.</p>
+          <p className="text-xs text-gray-500">{board.error}</p>
+          <button onClick={() => void fetchBoard()} className="btn-secondary h-8 text-xs">
+            Try again
+          </button>
         </div>
       </div>
     );
@@ -243,6 +220,17 @@ export default function KanbanBoard() {
                 {visibleTasks.length} in {teamFilter === UNASSIGNED_FILTER ? 'no team' : teamFilter}
               </span>
             )}
+            {columnFilter !== '' && (
+              <button
+                type="button"
+                onClick={() => setColumnFilter('')}
+                className="badge-brand focus-ring inline-flex items-center gap-1 text-[10px]"
+                title="Show every column"
+              >
+                {columnLabel(columnFilter)} only
+                <X size={10} aria-hidden="true" />
+              </button>
+            )}
           </div>
           {board.plan?.summary && (
             <p className="mt-1 max-w-4xl text-sm text-gray-500 dark:text-gray-400">
@@ -252,7 +240,7 @@ export default function KanbanBoard() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
-            onClick={fetchBoard}
+            onClick={() => void fetchBoard()}
             disabled={refreshing}
             className="btn-secondary h-9 gap-2 px-3 text-xs"
             title="Refresh board"
@@ -309,7 +297,7 @@ export default function KanbanBoard() {
                 className="input"
               >
                 {columns.map((col) => (
-                  <option key={col} value={col}>{COLUMN_LABELS[col] || col}</option>
+                  <option key={col} value={col}>{columnLabel(col)}</option>
                 ))}
               </select>
             </label>
@@ -383,7 +371,7 @@ export default function KanbanBoard() {
 
       <TeamStrip
         view={squads}
-        tasks={board?.tasks || []}
+        tasks={allTasks}
         filter={teamFilter}
         onFilter={setTeamFilter}
       />
@@ -395,7 +383,7 @@ export default function KanbanBoard() {
         onDragEnd={handleDragEnd}
       >
         <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-4">
-          {columns.map((col) => {
+          {shownColumns.map((col) => {
             const tasks = byColumn[col] || [];
             return (
               <div
@@ -410,14 +398,22 @@ export default function KanbanBoard() {
               >
                 <div className="mb-2 flex items-center justify-between gap-2 px-1">
                   <h3 className={clsx('text-xs font-bold uppercase tracking-wider', `col-${col}`)}>
-                    {COLUMN_LABELS[col] || col}
+                    <button
+                      type="button"
+                      onClick={() => setColumnFilter(columnFilter === col ? '' : col)}
+                      className="focus-ring rounded hover:underline"
+                      aria-pressed={columnFilter === col}
+                      title={columnFilter === col ? 'Show every column' : `Show only ${columnLabel(col)}`}
+                    >
+                      {columnLabel(col)}
+                    </button>
                   </h3>
                   <div className="flex items-center gap-1">
                     <span className="badge-neutral text-[10px]">{tasks.length}</span>
                     <button
                       onClick={() => handleOpenAdd(col)}
                       className="btn-ghost rounded-md p-1"
-                      title={`Add task to ${COLUMN_LABELS[col] || col}`}
+                      title={`Add task to ${columnLabel(col)}`}
                     >
                       <Plus size={12} />
                     </button>
@@ -430,7 +426,7 @@ export default function KanbanBoard() {
                 >
                   <div className="flex-1 space-y-2 overflow-y-auto min-h-[60px]">
                     {tasks.map((task) => (
-                      <TaskCard key={task.id} task={task} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={fetchBoard} />
+                      <TaskCard key={task.id} task={task} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={() => void fetchBoard()} />
                     ))}
                     {tasks.length === 0 && (
                       <div className="flex items-center justify-center h-16 text-[10px] text-gray-400 italic border border-dashed rounded-lg border-gray-300 dark:border-gray-700">
@@ -447,7 +443,7 @@ export default function KanbanBoard() {
         <DragOverlay>
           {activeTask && (
             <div className="opacity-90 rotate-2">
-              <TaskCard task={activeTask} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={fetchBoard} isDragOverlay />
+              <TaskCard task={activeTask} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={() => void fetchBoard()} isDragOverlay />
             </div>
           )}
         </DragOverlay>

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import TeamFloor from './TeamFloor';
 import { buildFloor } from './floorModel';
+import { resetFloorStore } from './floorStore';
 import type { RunEvent, SquadsView, Task } from '@/types';
 
 // jsdom has no WebGL, so the wrapper renders the flat stage — which draws the
@@ -40,6 +41,9 @@ const events: RunEvent[] = [
 
 beforeEach(() => {
   localStorage.clear();
+  // The floor remembers pulses and the last floor across mounts, by design;
+  // each test starts from an empty memory.
+  resetFloorStore();
 });
 
 describe('TeamFloor', () => {
@@ -198,6 +202,98 @@ describe('TeamFloor', () => {
     const floor = buildFloor({ squads: null, tasks: [], events: [], composition: null, running: false, now: T0 });
     render(<TeamFloor floor={floor} running={false} />);
     expect(screen.getByTestId('team-floor-idle')).toHaveTextContent('The floor is empty');
+  });
+
+  // The page keeps the selection in the URL and passes it down; the floor
+  // draws it and reports clicks, but does not own it.
+  it('draws a controlled selection and reports changes instead of keeping its own', () => {
+    const onSelect = vi.fn();
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    const { rerender } = render(<TeamFloor floor={floor} running selection={{ kind: 'ticket', id: 'T2', team: 'backend-go' }} onSelect={onSelect} now={T0} />);
+    expect(screen.getByTestId('floor-dossier')).toHaveAttribute('aria-label', 'About T2');
+    expect(screen.getByTestId('ticket-T2')).toHaveAttribute('data-selected', 'true');
+
+    fireEvent.click(screen.getByTestId('agent-go-worker'));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'agent', id: 'go-worker', team: 'backend-go' });
+    // Still T2 until the owner says otherwise.
+    expect(screen.getByTestId('floor-dossier')).toHaveAttribute('aria-label', 'About T2');
+
+    rerender(<TeamFloor floor={floor} running selection={{ kind: 'agent', id: 'go-worker', team: 'backend-go' }} onSelect={onSelect} now={T0} />);
+    expect(screen.getByTestId('floor-dossier')).toHaveAttribute('aria-label', 'About go-worker');
+
+    rerender(<TeamFloor floor={floor} running selection={null} onSelect={onSelect} now={T0} />);
+    expect(screen.queryByTestId('floor-dossier')).not.toBeInTheDocument();
+  });
+
+  // Leaving the Live page unmounts the floor. What happened while the user was
+  // on the Board must still be in the feed when they come back, and the first
+  // floor after the return must be diffed against the last one seen.
+  it('keeps its pulses and its last floor across an unmount', () => {
+    const before = buildFloor({ squads: chart, tasks, events: [], composition: null, running: true, now: T0 });
+    const { unmount } = render(<TeamFloor floor={before} running now={T0} />);
+    unmount();
+
+    const after = buildFloor({
+      squads: chart,
+      tasks: [...tasks.slice(0, 1), task('T2', { status: 'done', column: 'done' }), tasks[2]],
+      events,
+      composition: null,
+      running: true,
+      now: T0 + 3000,
+    });
+    render(<TeamFloor floor={after} running now={T0 + 3000} />);
+    const feed = screen.getByTestId('floor-feed');
+    expect(within(feed).getByText(/^T2 done ✓/)).toBeInTheDocument();
+  });
+
+  // A keyboard user who opens a dossier lands inside it, and is handed back to
+  // where they were when it closes — not dropped at the top of the document.
+  it('moves focus into the dossier on open and back on close', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    render(
+      <>
+        <button type="button">opener</button>
+        <TeamFloor floor={floor} running now={T0} />
+      </>,
+    );
+    // jsdom does not focus SVG elements, so the opener stands in for the
+    // focused ticket, feed card or sr-only button a real keyboard would use.
+    const opener = screen.getByRole('button', { name: 'opener' });
+    opener.focus();
+    fireEvent.click(screen.getByTestId('ticket-T2'));
+    const close = within(screen.getByTestId('floor-dossier')).getByRole('button', { name: 'Close' });
+    expect(document.activeElement).toBe(close);
+    fireEvent.click(close);
+    expect(screen.queryByTestId('floor-dossier')).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  // Esc in a text field means "clear what I typed", not "close the dossier".
+  it('ignores Esc typed into a field', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    render(
+      <>
+        <input aria-label="a field" />
+        <TeamFloor floor={floor} running now={T0} />
+      </>,
+    );
+    fireEvent.click(screen.getByTestId('ticket-T2'));
+    const field = screen.getByLabelText('a field');
+    field.focus();
+    fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.getByTestId('floor-dossier')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('floor-dossier')).not.toBeInTheDocument();
+  });
+
+  it('puts the feed in a bottom sheet for a phone', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    render(<TeamFloor floor={floor} running now={T0} />);
+    const strip = screen.getByTestId('floor-mobile-strip');
+    expect(strip).toHaveClass('sm:hidden');
+    expect(screen.queryByTestId('floor-sheet')).not.toBeInTheDocument();
+    fireEvent.click(within(strip).getByRole('button', { name: /feed/ }));
+    expect(screen.getByTestId('floor-sheet')).toBeInTheDocument();
   });
 
   it('offers no 3D toggle where WebGL is absent', () => {

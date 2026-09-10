@@ -19,6 +19,12 @@ Aliases accepted: `allow`/`yes` → `auto`; `dryrun`/`dry` → `dry-run`; `ask`/
 In `review` mode, a tool result reads
 `review: staged pkg/foo/bar.go → 1712…_edit_pkg__foo__bar.go.patch.json (run \`slmcode apply\`)`.
 
+Each queue entry records its `kind` (`write`/`edit`/`patch`/`delete`/`mv`) and, when known, the
+`from` path of a move plus the `task_id`, `agent` and `query_id` that produced it. Both appliers
+act on the kind: a `delete` removes the file, an `mv` moves the source, and a shell approval is
+never a queue entry at all (it is answered through `slmcode`'s shell-ask prompt or Studio, one file
+per ask under `.slmcode/shell/asks/`).
+
 ```bash
 slmcode config set permission review
 slmcode apply             # interactive per-file review

@@ -194,12 +194,32 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 		return nil, err
 	}
 	splitAgent := o.phaseAgent("split", "splitter")
+	// Discovery first: it does not depend on the splitter, and whether the
+	// splitter is worth a model call depends on it.
+	discovered := plan.DiscoverRelevantFiles(o.cfg.Root, in.Query, in.ExploreOut)
+	if len(in.Discovered) > 0 {
+		discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, in.Discovered...), in.Inventory)
+	}
+	if rm := o.repoMapNow(); rm != nil {
+		// The ranked symbol index finds targets that filename matching misses.
+		discovered = plan.FilterExisting(o.cfg.Root,
+			mergeUnique(discovered, rm.RankFilesFor(in.Query, 8)))
+	}
 	var tasksOut string
+	trivial := false
 	if o.Pipeline().HasReplace("split") {
 		if err := o.runPipelineSlots(ctx, "split", "replace", in.Query, in.ExploreOut, planOut); err != nil {
 			return nil, err
 		}
 		tasksOut = `{"tasks":[]}`
+	} else if o.phaseEnabled("split") && trivialPlan(pl, discovered) {
+		// A one-step plan over one or two known files has nothing to split.
+		// The splitter is the slowest role after the planner (a multipass
+		// call), and on this input it returns the plan's one step back as one
+		// task — the board fallbackTasks builds deterministically.
+		trivial = true
+		o.emit("split", fmt.Sprintf("splitter skipped — a %d-step plan over %d known file(s) is one task; "+
+			"building the board directly", len(pl.Steps), len(discovered)), "")
 	} else if o.phaseEnabled("split") {
 		o.emitAgent("split", splitAgent, "", "atomic task split", "", "")
 		splitPrompt := o.buildSplitterPrompt(in.Query, splitAgent, planOut, in.PRD, in.Clarify, replanNotes)
@@ -220,15 +240,18 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 	tasks, err := plan.ParseTasksJSON(tasksOut)
 	if err != nil || len(tasks) == 0 {
 		tasks = fallbackTasks(pl)
-	}
-	discovered := plan.DiscoverRelevantFiles(o.cfg.Root, in.Query, in.ExploreOut)
-	if len(in.Discovered) > 0 {
-		discovered = plan.ReconcileFiles(o.cfg.Root, append(discovered, in.Discovered...), in.Inventory)
-	}
-	if rm := o.repoMapNow(); rm != nil {
-		// The ranked symbol index finds targets that filename matching misses.
-		discovered = plan.FilterExisting(o.cfg.Root,
-			mergeUnique(discovered, rm.RankFilesFor(in.Query, 8)))
+		if trivial {
+			// The known files ARE the scope, and a scoped task is ready:
+			// fallbackTasks marks its tasks pending (→ to_scope, human
+			// scoping) because it normally has no idea where they land. Here
+			// it does. Without this the splitter skip would park the one task
+			// it was meant to save.
+			for i := range tasks {
+				tasks[i].Files = append([]string(nil), discovered...)
+				tasks[i].Column = plan.ColReadyToDev
+				tasks[i].Status = plan.StatusReady
+			}
+		}
 	}
 	tasks = plan.SanitizeTasksIn(tasks, in.ExploreOut+"\n"+strings.Join(discovered, "\n"), in.Query, o.cfg.Root)
 	tasks = plan.EnsureTaskPRDs(tasks, in.PRD, in.Query)
@@ -287,6 +310,19 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 		board.Tasks[i] = t
 	}
 	return board, nil
+}
+
+// maxTrivialPlanFiles is the most discovered files a plan may involve and still
+// be split deterministically: with one step and at most two files the split is
+// the step itself, and the splitter can only return it or invent scope.
+const maxTrivialPlanFiles = 2
+
+// trivialPlan reports whether the plan needs no splitter: at most one step and
+// between one and maxTrivialPlanFiles known target files. With NO known file
+// the splitter is still asked — it may resolve a target discovery missed, and
+// a task with no scope would only be parked for human scoping.
+func trivialPlan(pl plan.Plan, discovered []string) bool {
+	return len(pl.Steps) <= 1 && len(discovered) >= 1 && len(discovered) <= maxTrivialPlanFiles
 }
 
 // blockUnscopedTask parks a task whose targets could not be resolved.

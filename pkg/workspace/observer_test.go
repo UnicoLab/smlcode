@@ -97,7 +97,7 @@ func TestObserverRepairsAndRetriesInPlace(t *testing.T) {
 	}, nil)
 
 	out := callTool(t, reg, "ws_edit", map[string]interface{}{
-		"path": "a.go", "old_str": "   3|var A = 1", "new_str": "var A = 2",
+		"path": "a.go", "old_str": "   3|var A = 1\nvar B", "new_str": "var A = 2",
 	})
 	if !strings.Contains(out, "edited a.go") {
 		t.Fatalf("the repaired retry did not land: %s", out)
@@ -163,7 +163,7 @@ func TestRetrySinkReportsTheVerdict(t *testing.T) {
 		called, gotOK = true, ok
 	})
 	callTool(t, reg, "ws_edit", map[string]interface{}{
-		"path": "a.go", "old_str": "  1|var A = 1", "new_str": "var A = 2",
+		"path": "a.go", "old_str": "  1|var A = 1\nvar B", "new_str": "var A = 2",
 	})
 	if !called {
 		t.Fatal("the retry sink was never called")
@@ -201,7 +201,7 @@ func TestRetrySinkReportsAFailedRepairAsFailed(t *testing.T) {
 		called, gotOK = true, ok
 	})
 	callTool(t, reg, "ws_edit", map[string]interface{}{
-		"path": "a.go", "old_str": "  1|var A = 1", "new_str": "var A = 2",
+		"path": "a.go", "old_str": "  1|var A = 1\nvar B", "new_str": "var A = 2",
 	})
 	if !called {
 		t.Fatal("the retry sink was never called")

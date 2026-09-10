@@ -1,7 +1,8 @@
 import { useState, useContext, useEffect } from 'react';
 import { AppContext } from '@/App';
-import { getAuthStatus, getMCPStatus, putAuthKey, updateConfig } from '@/api/client';
+import { ApiError, getAuthStatus, getMCPStatus, putAuthKey, updateConfig } from '@/api/client';
 import type { AuthStatus, ConfigPatch, MCPStatus } from '@/types';
+import { useToast } from '@/components/ui/Toast';
 import StackSelector from './StackSelector';
 import PackSelector from './PackSelector';
 import ReadinessPanel from './ReadinessPanel';
@@ -22,6 +23,7 @@ import clsx from 'clsx';
 
 export default function SettingsPanel() {
   const ctx = useContext(AppContext);
+  const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState<ConfigPatch>({});
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -68,9 +70,21 @@ export default function SettingsPanel() {
       await updateConfig(local);
       setLocal({});
       ctx?.refresh();
+      toast.success('Settings saved');
       getAuthStatus().then(setAuth).catch(() => {});
     } catch (e) {
-      console.error('Save failed:', e);
+      // The server answers 409 while a run is active. This used to be a
+      // console.error, so Save appeared to do nothing and the edits stayed
+      // pending with no explanation.
+      if (e instanceof ApiError && e.isConflict) {
+        toast.push({
+          tone: 'warning',
+          title: 'Settings not saved',
+          detail: 'A run is active — stop it before changing the configuration. Your edits are kept.',
+        });
+      } else {
+        toast.reportError(e, 'Could not save settings');
+      }
     } finally {
       setSaving(false);
     }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createEventSource, getHealth, getLatestRun } from '@/api/client';
 import type { ConnectionState, LatestRunResponse, RunEvent } from '@/types';
+import { createDerived, deriveAll, foldDerived, snapshotDerived, type RunDerived, type RunDerivedAcc } from './runDerived';
+import { isBoardEvent } from './useBoardStore';
 
 // ── The live event stream ──
 //
@@ -48,6 +50,17 @@ export interface LiveStream {
   askSignal: number;
   /** Concatenated token deltas for the current agent turn (capability B). */
   tokenStream: string;
+  /**
+   * What the log adds up to — phases seen, who is active, tasks and files
+   * touched, token totals — folded once per event rather than re-scanned by
+   * every consumer on every flush. See hooks/runDerived.
+   */
+  derived: RunDerived;
+  /**
+   * The review queue's length: from the health poll, and from the server's
+   * `review_pending` event the moment it changes. Null until either answers.
+   */
+  pendingReview: number | null;
   latest: LatestRunResponse | null;
   setRunning: (running: boolean) => void;
   /** Clear the log — used when a new run starts from this tab. */
@@ -76,6 +89,12 @@ interface StreamOptions {
   /** Persist hook — called with the current log after each batch. */
   onEvents?: (events: RunEvent[]) => void;
   onRunning?: (running: boolean) => void;
+  /**
+   * Receives BOARD events — `task_update`, `review_pending` — which are folded
+   * into the board store and kept out of the log. See hooks/useBoardStore for
+   * why they do not become rows.
+   */
+  onBoardEvent?: (ev: RunEvent) => void;
   /** Disable network work (tests, storybook). */
   enabled?: boolean;
 }
@@ -98,8 +117,11 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
   const tokenDirtyRef = useRef(false);
   const onEventsRef = useRef(opts.onEvents);
   const onRunningRef = useRef(opts.onRunning);
+  const onBoardEventRef = useRef(opts.onBoardEvent);
   onEventsRef.current = opts.onEvents;
   onRunningRef.current = opts.onRunning;
+  onBoardEventRef.current = opts.onBoardEvent;
+  const derivedRef = useRef<RunDerivedAcc>(deriveAll(eventsRef.current));
 
   const [events, setEvents] = useState<RunEvent[]>(eventsRef.current);
   const [running, setRunningState] = useState(runningRef.current);
@@ -108,6 +130,8 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
   const [gap, setGap] = useState<string | null>(null);
   const [askSignal, setAskSignal] = useState(0);
   const [tokenStream, setTokenStream] = useState('');
+  const [derived, setDerived] = useState<RunDerived>(() => snapshotDerived(derivedRef.current));
+  const [pendingReview, setPendingReview] = useState<number | null>(null);
   const [latest, setLatest] = useState<LatestRunResponse | null>(null);
 
   /**
@@ -141,6 +165,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
         // A fresh identity is what tells React the log changed; producing one
         // for a token-only frame would re-render EventLog for nothing.
         setEvents(next.slice());
+        setDerived(snapshotDerived(derivedRef.current));
         onEventsRef.current?.(next);
       }
       if (tokenDirtyRef.current) {
@@ -178,12 +203,16 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
     }
     const next = eventsRef.current.concat(ev);
     eventsRef.current = next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
+    // The accumulator keeps every event's contribution, trimmed rows included:
+    // the token total of a long run must not shrink when the log rolls over.
+    foldDerived(derivedRef.current, ev);
     return true;
   }, []);
 
   const reset = useCallback(() => {
     eventsRef.current = [];
     tokenRef.current = '';
+    derivedRef.current = createDerived();
     eventsDirtyRef.current = false;
     tokenDirtyRef.current = false;
     // A frame queued by the previous run would repaint its log over the empty
@@ -197,6 +226,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
     if (mountedRef.current) {
       setEvents([]);
       setTokenStream('');
+      setDerived(snapshotDerived(derivedRef.current));
     }
     onEventsRef.current?.([]);
   }, []);
@@ -282,6 +312,22 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
         tokenRef.current = '';
         if (mountedRef.current) setTokenStream('');
       }
+      if (isBoardEvent(data)) {
+        // Board bookkeeping: folded into the board store (task_update) or the
+        // review badge (review_pending), never a row in the log.
+        if (seq > 0 && seenRef.current.has(seq)) return;
+        if (seq > 0) {
+          seenRef.current.add(seq);
+          if (seq > lastSeqRef.current) lastSeqRef.current = seq;
+        }
+        if (data.kind === 'review_pending') {
+          const n = data.data?.pending;
+          if (typeof n === 'number' && mountedRef.current) setPendingReview(n);
+        }
+        onBoardEventRef.current?.(data);
+        scheduleFlush();
+        return;
+      }
 
       if (!append(data, seq)) return;
       publish();
@@ -317,7 +363,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
         if (esRef.current === es) connect();
       }, delay);
     };
-  }, [append, enabled, publish, publishTokens, reset, setRunning]);
+  }, [append, enabled, publish, publishTokens, reset, scheduleFlush, setRunning]);
 
   const reconnect = useCallback(() => {
     attemptsRef.current = 0;
@@ -347,6 +393,7 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
             if (!isTokenEvent(ev)) kept.push(ev);
           });
           eventsRef.current = kept.slice(-MAX_EVENTS);
+          derivedRef.current = deriveAll(kept);
           publish();
         } else if (typeof r.last_seq === 'number' && r.last_seq > lastSeqRef.current) {
           lastSeqRef.current = r.last_seq;
@@ -398,10 +445,15 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
         if (typeof h.running === 'boolean' && h.running !== runningRef.current) {
           setRunning(h.running);
         }
+        if (typeof h.pending === 'number') setPendingReview(h.pending);
       } catch {
         if (!cancelled && mountedRef.current) setConnection('down');
       }
     };
+    // Once now, for the review badge, then on the interval. The connection
+    // state is only ever promoted from a poll when the EventSource is open,
+    // so an early tick cannot misreport a stream that has not connected.
+    void tick();
     const id = window.setInterval(tick, HEALTH_POLL_MS);
     return () => {
       cancelled = true;
@@ -418,6 +470,8 @@ export function useLiveStream(opts: StreamOptions = {}): LiveStream {
     clearGap,
     askSignal,
     tokenStream,
+    derived,
+    pendingReview,
     latest,
     setRunning,
     reset,

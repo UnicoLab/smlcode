@@ -49,6 +49,81 @@ func TestAWorkerKeepsTheWorkerFinishContract(t *testing.T) {
 	}
 }
 
+// ── The scoped pack is the shared byte prefix ─────────────────────────────
+//
+// context.TaskPack.Render is written most-stable-first so that every task
+// sharing a pack shares a KV-cache prefix. The prompt used to open with
+// "ID: T1 / Title: … / Column: …" BEFORE the pack, so the shared prefix ended
+// at "Atomic task — complete only this:\n\nID: T" and the whole pack was
+// re-prefilled for every task.
+
+func TestTasksSharingAPackShareItAsABytePrefix(t *testing.T) {
+	pack := "# Scoped context for role=worker\n\n## Doc: README\n\nUse the store.\n\n" +
+		"## File: internal/store.go\n\n```go\npackage store\n```"
+	mk := func(id, title, body string) plan.Task {
+		return plan.Task{
+			ID: id, Title: title, Role: plan.RoleWorker, Column: plan.ColInProgress,
+			Description: pack + "\n## Task instructions\n\n" + body,
+			Files:       []string{"internal/store.go"},
+			Acceptance:  "go test ./... passes",
+		}
+	}
+	opt := WorkerPromptOptions{LangHint: "Project language: Go."}
+	a := BuildWorkerPrompt(mk("T1", "add List", "Add List to the store."), opt)
+	b := BuildWorkerPrompt(mk("T2", "add Delete", "Add Delete to the store."), opt)
+
+	common := 0
+	for common < len(a) && common < len(b) && a[common] == b[common] {
+		common++
+	}
+	if common < len(pack) {
+		t.Fatalf("shared byte prefix is %d bytes; the %d-byte pack must be inside it:\n%q", common, len(pack), a[:common])
+	}
+	if !strings.HasPrefix(a, "# Scoped context for role=worker") {
+		t.Errorf("prompt does not open with the pack:\n%s", a[:120])
+	}
+	// The language line is project-wide, so it belongs to the shared prefix too.
+	if !strings.Contains(a[:common], "## Project language\nProject language: Go.") {
+		t.Error("the language hint is outside the shared prefix")
+	}
+	// The task header sits immediately before the task's own instructions.
+	header := strings.Index(a, "Atomic task — complete only this:\n\nID: T1\nTitle: add List\nRole: worker\n\n## Task instructions\n\nAdd List to the store.")
+	if header < 0 {
+		t.Errorf("task header is not immediately before the instructions:\n%s", a)
+	}
+	if strings.Contains(a, "Column:") {
+		t.Error("the Column line varies between attempts and must not be in the prompt")
+	}
+	// Nothing the gates enforce was lost in the reorder.
+	for _, want := range []string{"## Focus files (HARD SCOPE)", "internal/store.go", "Acceptance criteria:", "## Required finish", `"files_changed"`} {
+		if !strings.Contains(a, want) {
+			t.Errorf("prompt lost %q", want)
+		}
+	}
+}
+
+// A description without a pack keeps the historical shape: header first.
+func TestPromptWithoutAPackOpensWithTheTaskHeader(t *testing.T) {
+	task := plan.Task{ID: "T1", Title: "x", Role: plan.RoleWorker, Description: "Do it.", Files: []string{"a.go"}}
+	got := BuildWorkerPrompt(task, WorkerPromptOptions{LangHint: "Project language: Go."})
+	if !strings.HasPrefix(got, "Atomic task — complete only this:\n\nID: T1\nTitle: x\nRole: worker\n\n## Project language\nProject language: Go.\n\nDo it.\n") {
+		t.Errorf("unexpected shape:\n%s", got)
+	}
+	if strings.Contains(got, "## Task instructions") {
+		t.Error("a pack-less prompt grew a Task instructions heading")
+	}
+}
+
+func TestSplitScopedPack(t *testing.T) {
+	pack, body := SplitScopedPack("# Scoped context for role=worker\n\nbig pack\n\n## Task instructions\n\nDo the thing\n")
+	if pack != "# Scoped context for role=worker\n\nbig pack" || body != "Do the thing" {
+		t.Fatalf("pack=%q body=%q", pack, body)
+	}
+	if pack, body := SplitScopedPack("plain description"); pack != "" || body != "plain description" {
+		t.Fatalf("pack-less split: pack=%q body=%q", pack, body)
+	}
+}
+
 func tail(s string) string {
 	if len(s) < 600 {
 		return s

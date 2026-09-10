@@ -379,6 +379,40 @@ func TestBuildBodyOmitsEmptyFields(t *testing.T) {
 	}
 }
 
+// TestBuildBodyEmitsAnExplicitlySetZeroTemperature: reviewer-strict pins
+// temperature 0, and 0 is the float zero value — so "omit when zero" silently
+// dropped the one temperature that was set on purpose and the server sampled
+// at its default. A role that SET a temperature always gets the key.
+func TestBuildBodyEmitsAnExplicitlySetZeroTemperature(t *testing.T) {
+	p := &structuredProvider{
+		meta:       backendMeta{Provider: "openai", Endpoint: "http://x/v1"},
+		directives: Directives{Role: "reviewer-strict", Temperature: 0, TemperatureSet: true},
+	}
+	spec, _ := schema.For(schema.RoleReview)
+	body := p.buildBody(llm.CompletionRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
+	}, spec, MechJSONObject, "m")
+	got, ok := body["temperature"]
+	if !ok {
+		t.Fatal("an explicitly set temperature of 0 was omitted from the body")
+	}
+	if got != 0.0 {
+		t.Fatalf("temperature = %v, want 0", got)
+	}
+	b, err := json.Marshal(body)
+	if err != nil || !strings.Contains(string(b), `"temperature":0`) {
+		t.Errorf("body = %s err=%v", b, err)
+	}
+	// A request that carries its own non-zero temperature still wins.
+	body = p.buildBody(llm.CompletionRequest{
+		Messages:    []llm.Message{{Role: "user", Content: "hi"}},
+		Temperature: 0.3,
+	}, spec, MechJSONObject, "m")
+	if body["temperature"] != 0.3 {
+		t.Errorf("request temperature overridden: %v", body["temperature"])
+	}
+}
+
 func TestStructuredPathObservesThroughput(t *testing.T) {
 	ResetCapabilityCache()
 	GlobalThroughput.Reset()

@@ -15,11 +15,15 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
+import { useToast } from '@/components/ui/Toast';
+import ErrorState from '@/components/ui/ErrorState';
 
 export default function SkillManager() {
   const confirm = useConfirm();
+  const toast = useToast();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
@@ -42,8 +46,9 @@ export default function SkillManager() {
     try {
       const list = await getSkills();
       setSkills(list);
+      setLoadError(null);
     } catch (e) {
-      console.error('Failed to load skills:', e);
+      setLoadError(e);
     } finally {
       setLoading(false);
     }
@@ -74,11 +79,11 @@ export default function SkillManager() {
         setAllAgents(deduped);
       })
       .catch((e) => {
-        console.error('Failed to load agents:', e);
+        toast.reportError(e, 'Could not load the agent list for the picker');
         setAllAgents([]);
       })
       .finally(() => setAgentsLoaded(true));
-  }, []);
+  }, [toast]);
 
   const toggleAgent = (selected: string[], id: string): string[] =>
     selected.includes(id) ? selected.filter((a) => a !== id) : [...selected, id];
@@ -197,7 +202,11 @@ export default function SkillManager() {
         body: full.body || '',
       });
     } catch (e) {
-      console.error('Failed to load skill detail:', e);
+      toast.push({
+        tone: 'warning',
+        title: `Editing ${skill.name} from the summary only`,
+        detail: `The full skill could not be loaded (${e instanceof Error ? e.message : String(e)}); the body may be missing.`,
+      });
       setEditForm({
         name: skill.name,
         description: skill.description || '',
@@ -514,11 +523,20 @@ export default function SkillManager() {
           })}
         </div>
 
-        {skills.length === 0 && (
+        {loadError !== null && <ErrorState error={loadError} what="skills" onRetry={fetch} />}
+
+        {!loadError && skills.length === 0 && (
           <div className="text-center py-12 text-gray-400">
             <Puzzle size={48} className="mx-auto mb-3 opacity-50" />
-            <p className="text-sm">No skill packs defined.</p>
-            <p className="text-xs mt-1">Create custom skills that agents can load with @skill:name.</p>
+            <p className="text-sm">No skill packs yet.</p>
+            <p className="text-xs mt-1">
+              A skill is a SKILL.md an agent loads on demand — house rules, a library's quirks, a checklist.
+              Reference one in a prompt with @skill:name, or pin it to an agent.
+            </p>
+            <button type="button" onClick={() => setCreating(true)} className="btn-primary mx-auto mt-4 gap-2 text-sm">
+              <Plus size={14} />
+              Create your first skill
+            </button>
           </div>
         )}
       </div>

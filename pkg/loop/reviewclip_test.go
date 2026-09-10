@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,6 +44,53 @@ func TestReviewerAlwaysSeesHarnessEvidenceEvenWhenProseIsHuge(t *testing.T) {
 	}
 	if !strings.Contains(got, "The worker reasons") {
 		t.Error("review prompt dropped the worker answer entirely; the reviewer still needs the claim")
+	}
+}
+
+// TestCorrectorAlwaysSeesHarnessEvidenceEvenWhenProseIsHuge mirrors the
+// reviewer guard above for the CORRECTOR. formatCorrectPrompt clipped the
+// previous output head-first at 2.5 KB while runGates appends the failing
+// command's section and observation to the END of it — so a verbose worker
+// meant the corrector was told to fix a smoke failure it was never shown. The
+// prompt must carry the FAILED evidence, the focus files it is scoped to, the
+// acceptance and the project language.
+func TestCorrectorAlwaysSeesHarnessEvidenceEvenWhenProseIsHuge(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module demo\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prose := strings.Repeat("The worker reasons at length about the change. ", 400) // ~19 KB
+	failed := quality.SmokeSectionHeader + "\n" + quality.SmokeFailedMarker + " cmd: go test ./...\n" +
+		"--- FAIL: TestMedian (0.00s)\n    stats_test.go:12: got 2, want 3\n"
+	out := prose + "\n\n" + failed
+	if strings.Contains(truncate(out, correctorOutputBudget), quality.SmokeFailedMarker) {
+		t.Fatal("fixture no longer reproduces the defect — head clip kept the evidence")
+	}
+
+	r := NewRunner(nil, nil)
+	r.Root = root
+	task := plan.Task{
+		ID: "T1", Title: "Implement Median", Role: plan.RoleWorker,
+		Description: "Implement Median in stats.go.", Acceptance: "go test ./... passes",
+		Files:  []string{"pkg/stats/stats.go", "pkg/stats/stats_test.go"},
+		Output: out,
+	}
+	got := r.formatCorrectPrompt(task, plan.ReviewResult{
+		Summary: "rejected: deterministic smoke failed",
+		Issues:  []string{"deterministic smoke command failed — corrector must fix"},
+	})
+	for _, want := range []string{
+		quality.SmokeSectionHeader, quality.SmokeFailedMarker, "--- FAIL: TestMedian", "got 2, want 3",
+		"## Focus files (HARD SCOPE)", "pkg/stats/stats.go", "pkg/stats/stats_test.go",
+		"## Acceptance\ngo test ./... passes", "## Project language\nProject language: Go.",
+		"## Review issues\n- deterministic smoke command failed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("corrector prompt lost %q — it cannot fix a failure it cannot see", want)
+		}
+	}
+	if !strings.Contains(got, "The worker reasons") {
+		t.Error("corrector prompt dropped the previous answer entirely")
 	}
 }
 

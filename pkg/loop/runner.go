@@ -132,6 +132,18 @@ type Runner struct {
 	OnEventFull StructuredEvent
 	OnUsage     UsageEvent
 	BuildInput  BuildInput
+	// RoleTimeout returns the measured per-role budget for one request of
+	// role (an agent id; an escalation rung suffix is stripped before the
+	// lookup). The loop dispatches on min(callTimeout, RoleTimeout), so a
+	// reviewer that answers in 20s is given its measured floor rather than
+	// the whole task_timeout, and a stuck one is cut short accordingly. nil
+	// or a non-positive answer keeps the flat Timeout.
+	RoleTimeout func(ctx context.Context, role string) time.Duration
+	// OnRoleLatency reports how long one request of role took. evidence is
+	// true for a success or a timeout (a censored lower bound), false for
+	// any other failure — the same rule the orchestrator's phase roles use,
+	// so the samples land in the same latency memory on the same footing.
+	OnRoleLatency func(role string, d time.Duration, evidence bool)
 
 	// ── contract with the orchestrator ──────────────────────────────────────
 
@@ -1246,10 +1258,25 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 	if len(reqs) == 0 {
 		return nil, nil
 	}
+	// Each worker request is dispatched on the measured budget for ITS role and
+	// contributes a latency sample under it — the base agent id, so an
+	// escalation rung and the role it escalated from share one measurement.
+	for i := range reqs {
+		r.applyRoleTimeout(ctx, &reqs[i])
+	}
 	if len(reqs) == 1 {
 		defer r.streamTokens(reqs[0].AgentID, reqs[0].TaskID)()
-		return r.Executor.ExecuteSubAgents(
+		start := time.Now()
+		out, err := r.Executor.ExecuteSubAgents(
 			r.agentCtx(ctx, reqs[0].TaskID, reqs[0].AgentID), reqs, r.Shared)
+		var first ggagent.SubAgentResult
+		if len(out) > 0 {
+			first = out[0]
+		} else {
+			first = ggagent.SubAgentResult{Error: err}
+		}
+		r.noteRoleLatency(reqs[0].AgentID, time.Since(start), err, first)
+		return out, err
 	}
 
 	results := make([]ggagent.SubAgentResult, len(reqs))
@@ -1264,14 +1291,16 @@ func (r *Runner) dispatchWave(ctx context.Context, reqs []ggagent.SubAgentReques
 			// exactly what the terminal needs to keep four concurrent workers'
 			// deltas apart.
 			defer r.streamTokens(req.AgentID, req.TaskID)()
+			start := time.Now()
 			out, err := r.Executor.ExecuteSubAgents(
 				r.agentCtx(ctx, req.TaskID, req.AgentID), []ggagent.SubAgentRequest{req}, r.Shared)
 			errs[i] = err
 			if len(out) > 0 {
 				results[i] = out[0]
-				return
+			} else {
+				results[i] = ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: req.TaskID, Error: err}
 			}
-			results[i] = ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: req.TaskID, Error: err}
+			r.noteRoleLatency(req.AgentID, time.Since(start), err, results[i])
 		}(i)
 	}
 	wg.Wait()
@@ -1307,7 +1336,11 @@ func (r *Runner) collectWaveResults(ctx context.Context, board *plan.Board, ws *
 		t.Output = outputString(res)
 
 		if isTimeoutResult(execErr, res) {
-			r.handleTaskTimeout(board, *t, role, res, timeoutErr(execErr, res))
+			var budget time.Duration
+			if j < len(reqs) {
+				budget = reqs[j].Timeout
+			}
+			r.handleTaskTimeout(ctx, board, *t, role, res, timeoutErr(execErr, res), budget)
 			continue
 		}
 		// Per-RESULT, not per-wave: execErr is the first error across the whole
@@ -1394,41 +1427,38 @@ func (r *Runner) handleTaskCancel(board *plan.Board, t *plan.Task, role string,
 		strings.Join(t.Files, ", "), t.Error, stream.LevelWarn)
 }
 
-// recoverWaveError handles a failed worker result. A context overflow shrinks
-// the pack and retries once; anything else blocks the task. The overflow test
-// is backends.IsContextOverflow, which classifies the provider's error rather
-// than pattern-matching a generic HTTP 400.
+// recoverWaveError handles a failed worker result.
+//
+// The conversation is checkpointed FIRST, so every retry below resumes it via
+// applyResumeRequest instead of cold-starting the task: the overflow retry used
+// to save the checkpoint only after it had already re-dispatched, so the one
+// attempt that most needed the transcript never had it.
+//
+// Then, by what backends.Classify says the error is: a context overflow shrinks
+// the pack and retries once; a transient or rate-limited failure — the classes
+// Classify marks Retryable — retries once after the server's Retry-After;
+// anything else blocks the task. Classify reads the provider's own error
+// rather than pattern-matching a generic HTTP 400.
 func (r *Runner) recoverWaveError(ctx context.Context, board *plan.Board, t *plan.Task,
 	role string, res ggagent.SubAgentResult, execErr error) (ggagent.SubAgentResult, bool) {
+	if len(res.Messages) > 0 {
+		r.saveReactFromResult(t.ID, role, res)
+	}
 	class := backends.Classify(res.Error)
-	overflow := backends.IsContextOverflow(res.Error)
-	if overflow && r.OnOverflowCompact != nil {
-		r.logf("%s context overflow (%s) — compacting and retrying once", t.ID, class.Class)
-		adv := r.noteFailure(evolve.Signal{
-			Message: res.Error.Error(), Phase: "execute", Role: role,
-			Language: detectSignalLanguage(r.Root),
-		}, "")
-		if cerr := r.OnOverflowCompact(ctx); cerr != nil {
-			r.logf("%s overflow compact: %v", t.ID, cerr)
-		} else {
-			retryReq := ggagent.SubAgentRequest{
-				AgentID: role, Input: r.taskInputFor(board, *t), Timeout: r.callTimeout(ctx),
-				ShareState: true, TaskID: t.ID,
-			}
-			if r.applyResumeRequest(&retryReq, t.ID) {
-				r.ResumedReact = true
-			}
-			retryRes, ok := r.execOne(ctx, t.ID, "overflow retry", retryReq)
-			if ok && retryRes.Error == nil && strings.TrimSpace(outputString(retryRes)) != "" {
-				r.noteResolved(adv, "context compacted, retried once")
-				return retryRes, true
-			}
-			if ok && retryRes.Error != nil {
-				r.logf("%s overflow retry still failed: %v", t.ID, retryRes.Error)
-				res = retryRes
-			}
+	switch {
+	case backends.IsContextOverflow(res.Error) && r.OnOverflowCompact != nil:
+		if retried, ok := r.retryAfterOverflow(ctx, board, t, role, res, class); ok {
+			return retried, true
+		} else if retried.Error != nil {
+			res = retried
 		}
-	} else if res.Error != nil {
+	case res.Error != nil && class.Retryable() && !r.runwaySpent(ctx):
+		if retried, ok := r.retryAfterTransient(ctx, board, t, role, res, class); ok {
+			return retried, true
+		} else if retried.Error != nil {
+			res = retried
+		}
+	case res.Error != nil:
 		r.noteFailure(evolve.Signal{
 			Message: res.Error.Error(), Phase: "execute", Role: role,
 			Language: detectSignalLanguage(r.Root),
@@ -1451,6 +1481,100 @@ func (r *Runner) recoverWaveError(ctx context.Context, board *plan.Board, t *pla
 		r.reportTaskFailure(board, *t, res.Error, 0, "execute", false)
 	}
 	return res, false
+}
+
+// retryAfterOverflow compacts the task's context and re-dispatches the worker
+// once. It returns the retry's result and whether it produced a usable answer;
+// a retry that failed again is returned with its own error so the caller
+// blocks the task on the fresher failure.
+func (r *Runner) retryAfterOverflow(ctx context.Context, board *plan.Board, t *plan.Task,
+	role string, res ggagent.SubAgentResult, class backends.Classification) (ggagent.SubAgentResult, bool) {
+	r.logf("%s context overflow (%s) — compacting and retrying once", t.ID, class.Class)
+	adv := r.noteFailure(evolve.Signal{
+		Message: res.Error.Error(), Phase: "execute", Role: role,
+		Language: detectSignalLanguage(r.Root),
+	}, "")
+	if cerr := r.OnOverflowCompact(ctx); cerr != nil {
+		r.logf("%s overflow compact: %v", t.ID, cerr)
+		return res, false
+	}
+	retryRes, ok := r.redispatch(ctx, board, t, role, "overflow retry")
+	if ok && retryRes.Error == nil && strings.TrimSpace(outputString(retryRes)) != "" {
+		r.noteResolved(adv, "context compacted, retried once")
+		return retryRes, true
+	}
+	if ok && retryRes.Error != nil {
+		r.logf("%s overflow retry still failed: %v", t.ID, retryRes.Error)
+		return retryRes, false
+	}
+	return res, false
+}
+
+// maxTransientRetryDelay caps the wait a Retry-After hint can impose before the
+// one transient retry: a hint of minutes would spend the runway on waiting.
+const maxTransientRetryDelay = 30 * time.Second
+
+// transientRetryDelay is how long to wait before the transient retry: the
+// server's Retry-After when it sent one, a short pause for a 429 that sent
+// none, nothing for a plain connection failure.
+func transientRetryDelay(c backends.Classification) time.Duration {
+	wait := c.RetryAfter
+	if wait <= 0 && c.Class == backends.ClassRateLimited {
+		wait = time.Second
+	}
+	if wait > maxTransientRetryDelay {
+		wait = maxTransientRetryDelay
+	}
+	return wait
+}
+
+// retryAfterTransient re-dispatches a worker ONCE after a transport-level or
+// rate-limit failure, honoring the server's Retry-After.
+//
+// A local inference server that has just finished loading a model refuses
+// connections for a few seconds; a shared endpoint answers 429 under load. The
+// old path classified both and then blocked the task anyway, cascading the
+// block to every dependent, over a failure the classifier had already said was
+// worth one more attempt.
+func (r *Runner) retryAfterTransient(ctx context.Context, board *plan.Board, t *plan.Task,
+	role string, res ggagent.SubAgentResult, class backends.Classification) (ggagent.SubAgentResult, bool) {
+	r.logf("%s %s failure (%v) — retrying once", t.ID, class.Class, res.Error)
+	adv := r.noteFailure(evolve.Signal{
+		Message: res.Error.Error(), Phase: "execute", Role: role,
+		Language: detectSignalLanguage(r.Root),
+	}, "")
+	if wait := transientRetryDelay(class); wait > 0 {
+		r.logf("%s waiting %s before the retry (Retry-After)", t.ID, wait)
+		select {
+		case <-ctx.Done():
+			return res, false
+		case <-time.After(wait):
+		}
+	}
+	retryRes, ok := r.redispatch(ctx, board, t, role, "transient retry")
+	if ok && retryRes.Error == nil && strings.TrimSpace(outputString(retryRes)) != "" {
+		r.noteResolved(adv, "transient failure, retried once")
+		return retryRes, true
+	}
+	if ok && retryRes.Error != nil {
+		r.logf("%s transient retry still failed: %v", t.ID, retryRes.Error)
+		return retryRes, false
+	}
+	return res, false
+}
+
+// redispatch sends a task to its worker again, resuming from the ReAct
+// checkpoint when one exists, under the runway-clamped call budget.
+func (r *Runner) redispatch(ctx context.Context, board *plan.Board, t *plan.Task, role, what string) (
+	ggagent.SubAgentResult, bool) {
+	req := ggagent.SubAgentRequest{
+		AgentID: role, Input: r.taskInputFor(board, *t), Timeout: r.callTimeout(ctx),
+		ShareState: true, TaskID: t.ID,
+	}
+	if r.applyResumeRequest(&req, t.ID) {
+		r.ResumedReact = true
+	}
+	return r.execOne(ctx, t.ID, what, req)
 }
 
 // driveCritique refines every weak task, in parallel when there is more than one.
@@ -1507,7 +1631,20 @@ func (r *Runner) driveReview(ctx context.Context, board *plan.Board, ws *waveSta
 	return canceled
 }
 
-func (r *Runner) handleTaskTimeout(board *plan.Board, t plan.Task, role string, res ggagent.SubAgentResult, err error) {
+// handleTaskTimeout handles a worker that ran out of its per-call budget.
+//
+// budget is the timeout the request was actually dispatched with — the
+// runway-clamped callTimeout, not r.Timeout — so the message says how long the
+// worker really had.
+//
+// A timed-out worker is not a failed one: measured, it is most often a worker
+// midway through a long tool loop whose checkpoint is already on disk. Under
+// the attempt ceiling and with runway left, the task goes back to ready_to_dev
+// and the next wave RESUMES it from that checkpoint (applyResumeRequest)
+// instead of parking it for a human on the first attempt. Only at the ceiling,
+// or with no runway left to spend on it, does it park in to_scope.
+func (r *Runner) handleTaskTimeout(ctx context.Context, board *plan.Board, t plan.Task, role string,
+	res ggagent.SubAgentResult, err error, budget time.Duration) {
 	if err == nil {
 		err = context.DeadlineExceeded
 	}
@@ -1516,11 +1653,33 @@ func (r *Runner) handleTaskTimeout(board *plan.Board, t plan.Task, role string, 
 	}
 	scope := strings.Join(t.Files, ", ")
 	baseOut := strings.TrimSpace(outputString(res))
-	after := r.Timeout
-	if after <= 0 {
-		after = 12 * time.Minute
+	if budget <= 0 {
+		budget = r.callTimeout(ctx)
 	}
-	timeoutMsg := fmt.Sprintf("task timed out after %s: %s", after.Round(time.Second), err.Error())
+	if budget <= 0 {
+		budget = 12 * time.Minute
+	}
+	timeoutMsg := fmt.Sprintf("task timed out after %s: %s", budget.Round(time.Second), err.Error())
+
+	attempt := r.waveAttempts.get(t.ID)
+	ceiling := r.maxTaskAttempts()
+	if attempt < ceiling && !r.runwaySpent(ctx) {
+		note := fmt.Sprintf("RETRY-AFTER-TIMEOUT: attempt %d timed out after %s; re-queued to resume "+
+			"from the ReAct checkpoint (attempt %d of %d).",
+			attempt, budget.Round(time.Second), attempt+1, ceiling)
+		t.Output = strings.TrimSpace(baseOut + "\n\n## Harness timeout\n" + note)
+		t.Error = ""
+		t.Notes = strings.TrimSpace(t.Notes + "\n" + note)
+		t.MoveTo(plan.ColReadyToDev)
+		board.UpdateTask(t)
+		r.persist(board)
+		r.logf("%s %s", t.ID, note)
+		r.fireLevel(stream.KindAgentEnd, role, t.ID,
+			fmt.Sprintf("timed out — re-queued to resume (attempt %d/%d)", attempt+1, ceiling),
+			scope, timeoutMsg, stream.LevelWarn)
+		return
+	}
+
 	if baseOut == "" {
 		t.Output = fmt.Sprintf(`{"status":"blocked","summary":%q,"files_changed":[],"notes":"harness timeout; retry with smaller scope or lower concurrency"}`, timeoutMsg)
 	} else {
@@ -1593,7 +1752,8 @@ func (r *Runner) fireTurn(taskID string, iter, maxIter int) {
 
 // noteUsage is the single choke point every agent result passes through, which
 // makes it the right place to fold the transcript into the edit ledger too —
-// wave results, sequential round-trips and the speculative race all land here.
+// wave results, review and correction round-trips and the speculate primitive
+// all land here.
 func (r *Runner) noteUsage(res ggagent.SubAgentResult, input, output string) {
 	r.noteEdits(res.Messages)
 	if r.OnUsage == nil {
@@ -1795,10 +1955,9 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 	return g
 }
 
-// decideReview produces the review verdict: the disk fast path, the speculative
-// race, or a single reviewer LLM call.
-func (r *Runner) decideReview(ctx context.Context, current plan.Task, g gateState,
-	baseline map[string]string) (plan.ReviewResult, string, error) {
+// decideReview produces the review verdict: the disk fast path, the harness
+// fast-reject, or the reviewer LLM.
+func (r *Runner) decideReview(ctx context.Context, current plan.Task, g gateState) (plan.ReviewResult, string, error) {
 	if g.fastPath(current.Role) {
 		review := plan.ReviewResult{Approved: true, Score: 85}
 		switch {
@@ -1812,166 +1971,171 @@ func (r *Runner) decideReview(ctx context.Context, current plan.Task, g gateStat
 		r.logf("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
 		return review, "", nil
 	}
-	if r.MaxParallel >= 2 {
-		return r.speculativeReview(ctx, current, g, baseline)
+	if review, ok := g.fastReject(current); ok {
+		r.logf("%s review fast-reject (skip reviewer LLM): %s", current.ID, review.Summary)
+		return review, "", nil
 	}
-	return r.plainReview(ctx, current, g)
+	return r.llmReview(ctx, current, g)
 }
 
-// reviewerStrictDelay gives the primary reviewer a head start before the
-// strict second reviewer is even dispatched. A real LLM essentially never
-// answers this fast, so production still fans out to both reviewers exactly
-// as before; the delay only matters against a fast/local answer (disk
-// evidence, a quick model, a test double), where it lets the race actually
-// skip the second slot instead of firing it and discarding the result.
-const reviewerStrictDelay = 20 * time.Millisecond
-
-// speculativeReview races a disk/acceptance probe against the reviewer LLM (and
-// a strict second reviewer when capacity allows).
-func (r *Runner) speculativeReview(ctx context.Context, current plan.Task, g gateState,
-	baseline map[string]string) (plan.ReviewResult, string, error) {
-	// One race is one review attempt against the task's budget, however many
-	// speculative paths it fans out to. Without this the DEFAULT configuration
-	// (MaxParallel=4, which always takes this branch) would never be budgeted
-	// at all — reviews are exactly where the round-trip ladder lives.
-	if !r.spend(current.ID, "review") {
-		return r.slmApprovalFallback(plan.ReviewResult{
-			Approved: false, Summary: "review skipped: per-task call budget exhausted",
-		}, current, g, ""), "", nil
+// fastReject reports a rejection the harness can already state without asking
+// a reviewer, so no LLM round-trip is spent on a verdict that could only come
+// out one way.
+//
+// Two cases. A hard gate fired: applyHardGates overturns any approval the
+// reviewer gives in that state (same role and rename exemptions), so the
+// reviewer's answer could not change the outcome — it could only cost a
+// request. Or the worker's own finalize says it is blocked and nothing on disk
+// contradicts it: the worker has already said, in its own words, what a
+// rejection would say.
+//
+// Testers are exempt for the reason applyHardGates exempts them: a tester's
+// failing command IS its finding, not a defect in its work.
+func (g gateState) fastReject(current plan.Task) (plan.ReviewResult, bool) {
+	if plan.IsTesterRole(current.Role) || g.renameDisk {
+		return plan.ReviewResult{}, false
 	}
-	reviewIn := r.formatReviewPrompt(current)
-	revRole := r.resolveRole(r.reviewerID())
-	slots := r.reviewSlots(current, g, baseline, reviewIn, revRole)
-	r.fire(stream.KindAgentStart, revRole, current.ID, "speculative review race",
-		strings.Join(current.Files, ", "), "")
-	// Budget honesty: the race costs ONE unit but issues one real LLM request
-	// per non-local slot — reviewer plus reviewer-strict at the default
-	// max_parallel=4. Against a server that runs inference serially a 10-unit
-	// budget is therefore up to ~13 round-trips, and the operator waits on the
-	// round-trips. spend() already counted one; record the rest so the budget
-	// event reports both numbers instead of understating the wait.
-	llmSlots := 0
-	for _, sl := range slots {
-		if sl.Local == nil {
-			llmSlots++
-		}
+	if g.blocking() {
+		summary, issue := g.rejectReason()
+		return plan.ReviewResult{Approved: false, Score: 20, Summary: summary, Issues: []string{issue}}, true
 	}
-	if llmSlots > 1 {
-		r.noteExtraRequests(current.ID, llmSlots-1)
+	if why, ok := workerReportedBlocked(current.Output); ok && !g.hasEvidence() && !g.satisfied {
+		return plan.ReviewResult{
+			Approved: false, Score: 10,
+			Summary: "rejected: worker reported blocked — " + why,
+			Issues:  []string{why},
+		}, true
 	}
-	r.logf("%s speculative review (%d paths, %d LLM requests, 1 budget unit, max_parallel=%d)",
-		current.ID, len(slots), llmSlots, r.MaxParallel)
-	res := r.speculate(r.taskCtx(ctx, current.ID), slots)
-
-	// Only a slot that RAN TO COMPLETION carries a verdict. A racer the winner
-	// canceled comes back Skipped (see speculate), and a streaming one can
-	// come back with a partial body: reading `{"approved":true,"score":92,` off
-	// a cut-short stream and calling it a verdict is how the winner's complete
-	// approval was rendered and acted on as `approved=false score=0`, costing a
-	// correction round the model never needed.
-	var acceptOut, revOut, strictOut string
-	var revErr error
-	for _, sr := range res {
-		done := !sr.Skipped && sr.Err == nil && strings.TrimSpace(sr.Output) != ""
-		switch sr.Role {
-		case "acceptance":
-			if done {
-				acceptOut = sr.Output
-			}
-		case revRole:
-			revErr = sr.Err
-			if done {
-				revOut = sr.Output
-			}
-		default:
-			if done {
-				strictOut = sr.Output
-			}
-		}
-	}
-	if strings.TrimSpace(acceptOut) != "" {
-		r.logf("%s review acceptance won — canceled reviewer LLM", current.ID)
-		return plan.ParseReviewJSON(acceptOut), acceptOut, nil
-	}
-	reviewRaw := revOut
-	if strings.TrimSpace(reviewRaw) == "" {
-		reviewRaw = strictOut
-	}
-	if revErr != nil && strings.TrimSpace(reviewRaw) == "" {
-		return plan.ReviewResult{}, "", revErr
-	}
-	review := r.parseReviewOutput(ctx, current, reviewRaw, revRole, reviewIn)
-	return r.slmApprovalFallback(review, current, g, reviewRaw), reviewRaw, nil
+	return plan.ReviewResult{}, false
 }
 
-// reviewSlots builds the speculative review race: a local disk/acceptance probe,
-// the reviewer LLM, and — when capacity allows — a strict second reviewer.
-func (r *Runner) reviewSlots(current plan.Task, g gateState, baseline map[string]string,
-	reviewIn, revRole string) []SpecSlot {
-	cur := current
-	base := baseline
-	// Use a shorter reviewer timeout when disk evidence already exists — the
-	// acceptance probe should win quickly; the full 12 min is excessive.
-	revTimeout := r.Timeout
-	if g.hasEvidence() {
-		revTimeout = 3 * time.Minute
+// workerReportedBlocked reads a `{"status":"blocked", …}` finalize out of the
+// model's half of a task output and returns the worker's own summary.
+func workerReportedBlocked(output string) (string, bool) {
+	raw := strings.TrimSpace(stripPostSections(output))
+	if raw == "" {
+		return "", false
 	}
-	slots := []SpecSlot{{
-		Role: "acceptance", Required: false,
-		Local: func(ctx context.Context) (string, error) {
-			return acceptanceProbe(ctx, func() bool {
-				return renameOK(r.Root, cur) || alreadySatisfied(r.Root, cur, base) ||
-					r.hasRealWriteEvidence(cur, base)
-			}, `{"approved":true,"score":85,"summary":"auto-approved: acceptance race won"}`)
-		},
-	}, {
-		Role: revRole, Prompt: reviewIn, Required: false, Timeout: revTimeout,
-	}}
-	// Second reviewer when capacity allows. reviewer-strict went unregistered
-	// for as long as this code referenced it, so the path never ran; assert the
-	// role is real instead of failing silently at runtime.
-	if r.MaxParallel >= 3 {
-		if strict, ok := r.resolveBuiltinSlot(roleReviewerStrict); ok {
-			slots = append(slots, SpecSlot{
-				Role: strict, Required: false,
-				Prompt:  reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON.",
-				Timeout: revTimeout,
-				// A genuine head start for the primary reviewer: a real LLM
-				// almost never answers inside this window, so production
-				// still races both reviewers as before. But it means the
-				// strict slot's dispatch — and its real budget/wall-clock
-				// cost — is actually skippable, not just cancelable after
-				// the fact, whenever the primary reviewer is fast enough to
-				// have already decided the race.
-				Delay: reviewerStrictDelay,
-			})
-		}
+	fixed, _, err := repair.RepairRole(raw, plan.RoleWorker)
+	if err != nil {
+		return "", false
 	}
-	return slots
+	var st struct {
+		Status  string `json:"status"`
+		Summary string `json:"summary"`
+	}
+	if json.Unmarshal(fixed, &st) != nil || !strings.EqualFold(strings.TrimSpace(st.Status), "blocked") {
+		return "", false
+	}
+	why := strings.TrimSpace(st.Summary)
+	if why == "" {
+		why = "worker reported status blocked without a summary"
+	}
+	return why, true
 }
 
-// plainReview runs one reviewer LLM call.
-func (r *Runner) plainReview(ctx context.Context, current plan.Task, g gateState) (
+// reviewEvidenceTimeout caps a reviewer call once disk evidence already exists:
+// the verdict is then mostly confirmation, and the full task timeout is
+// excessive for it.
+const reviewEvidenceTimeout = 3 * time.Minute
+
+// reviewTimeout is the per-call budget for a reviewer dispatch: the runway clamp
+// first — a review that outlives the run kills the finish path exactly as a
+// worker that does — then the evidence cap.
+func (r *Runner) reviewTimeout(ctx context.Context, g gateState) time.Duration {
+	t := r.callTimeout(ctx)
+	if g.hasEvidence() && t > reviewEvidenceTimeout {
+		return reviewEvidenceTimeout
+	}
+	return t
+}
+
+// llmReview asks the reviewer for a verdict: ONE request, and a strict second
+// opinion only when the first came back empty or unreadable.
+//
+// This used to be a speculative race. At the default max_parallel it fanned
+// out to a local "acceptance" probe, the reviewer and reviewer-strict all at
+// once, then read them in that order — two costs and one hole:
+//
+//   - reviewer-strict was dispatched on EVERY review and its answer used only
+//     when the primary's was empty, so at max_parallel>=3 each review cost two
+//     full reviewer prefills for one verdict;
+//   - the acceptance probe re-tested a subset of fastPath's conditions with
+//     none of its guards — no criteriaOpen, no scope check, no blocking gates,
+//     no tester exemption — so a task with an open must-criterion and a disk
+//     write could be approved "acceptance race won" with no reviewer at all,
+//     right after fastPath had declined to approve it for exactly that reason.
+//
+// Only decideReview's fastPath approves without a reviewer now, and the second
+// reviewer runs only in the one case its answer was ever used. Every dispatch
+// goes through execOne, so the runway and budget checks apply here as they do
+// to every other loop-side call.
+func (r *Runner) llmReview(ctx context.Context, current plan.Task, g gateState) (
 	plan.ReviewResult, string, error) {
 	revRole := r.resolveRole(r.reviewerID())
 	r.fire(stream.KindAgentStart, revRole, current.ID, "self-critic review",
 		strings.Join(current.Files, ", "), "")
 	reviewIn := r.formatReviewPrompt(current)
 	res, ok := r.execOne(ctx, current.ID, "review", ggagent.SubAgentRequest{
-		AgentID: revRole, Input: reviewIn, Timeout: r.callTimeout(ctx), ShareState: true, TaskID: current.ID,
+		AgentID: revRole, Input: reviewIn, Timeout: r.reviewTimeout(ctx, g),
+		ShareState: true, TaskID: current.ID,
 	})
 	if !ok {
-		// Budget exhausted: approve on evidence or reject — never loop.
+		// Out of budget or out of runway: approve on evidence or reject — never loop.
 		return r.slmApprovalFallback(plan.ReviewResult{
-			Approved: false, Summary: "review skipped: per-task call budget exhausted",
+			Approved: false, Summary: r.reviewSkippedSummary(ctx),
 		}, current, g, ""), "", nil
 	}
 	reviewRaw := outputString(res)
-	if res.Error != nil && reviewRaw == "" {
+	if res.Error != nil && strings.TrimSpace(reviewRaw) == "" {
 		return plan.ReviewResult{}, "", res.Error
 	}
 	review := r.parseReviewOutput(ctx, current, reviewRaw, revRole, reviewIn)
+	if review.NoVerdict {
+		if second, raw, ok := r.strictSecondOpinion(ctx, current, g, reviewIn); ok {
+			review, reviewRaw = second, raw
+		}
+	}
 	return r.slmApprovalFallback(review, current, g, reviewRaw), reviewRaw, nil
+}
+
+// reviewSkippedSummary names why a review was not dispatched at all.
+func (r *Runner) reviewSkippedSummary(ctx context.Context) string {
+	if r.runwaySpent(ctx) {
+		return "review skipped: out of runway"
+	}
+	return "review skipped: per-task call budget exhausted"
+}
+
+// strictSecondOpinion asks reviewer-strict when the primary reviewer produced
+// no readable verdict. Sequential, not raced: it is one more real request
+// against the task's budget, spent only in the case its answer is used.
+func (r *Runner) strictSecondOpinion(ctx context.Context, current plan.Task, g gateState,
+	reviewIn string) (plan.ReviewResult, string, bool) {
+	strict, ok := r.resolveBuiltinSlot(roleReviewerStrict)
+	if !ok {
+		return plan.ReviewResult{}, "", false
+	}
+	r.logf("%s primary reviewer produced no verdict — asking %s once", current.ID, strict)
+	r.fire(stream.KindAgentStart, strict, current.ID, "strict second opinion",
+		strings.Join(current.Files, ", "), "")
+	strictIn := reviewIn + "\n\nSTRICT: reject unless focus files + acceptance clearly met. Return JSON."
+	res, ok := r.execOne(ctx, current.ID, "review (strict second opinion)", ggagent.SubAgentRequest{
+		AgentID: strict, Input: strictIn, Timeout: r.reviewTimeout(ctx, g),
+		ShareState: true, TaskID: current.ID,
+	})
+	if !ok {
+		return plan.ReviewResult{}, "", false
+	}
+	raw := outputString(res)
+	if strings.TrimSpace(raw) == "" {
+		return plan.ReviewResult{}, "", false
+	}
+	review := r.parseReviewOutput(ctx, current, raw, strict, strictIn)
+	if review.NoVerdict {
+		return plan.ReviewResult{}, "", false
+	}
+	return review, raw, true
 }
 
 // parseReviewOutput repairs the reviewer's JSON against the reviewer schema.
@@ -2316,10 +2480,14 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 		}
 
 		g := r.gatherGateSignals(ctx, &current, baseline)
-		review, reviewRaw, err := r.decideReview(ctx, current, g, baseline)
+		review, reviewRaw, err := r.decideReview(ctx, current, g)
 		if err != nil {
-			// The reviewer never produced a verdict. That is still an attempt
-			// that happened, and the next one must be able to see it.
+			review, reviewRaw, err = r.recoverReviewError(ctx, current, g, err)
+		}
+		if err != nil {
+			// The reviewer never produced a verdict, and neither the evidence
+			// nor a second ask could stand in for one. That is still an
+			// attempt that happened, and the next one must be able to see it.
 			//
 			// NoVerdict is set for the same reason parseReviewOutput sets it on
 			// an empty reply: without it this result is byte-identical to a
@@ -2327,12 +2495,8 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			// TIMED OUT would be read as a reviewer that judged the work
 			// worthless. The distinction has to survive as far as the ledger,
 			// because that is what the next attempt reads.
-			lin.record(current, g, plan.ReviewResult{
-				Summary: err.Error(), Issues: []string{err.Error()}, NoVerdict: true,
-			}, plan.AttemptError, startedAt)
-			current.MoveTo(plan.ColBlocked)
-			current.Error = err.Error()
-			return current, nil, err
+			lin.record(current, g, review, plan.AttemptError, startedAt)
+			return r.escalateReviewerUnavailable(current, err)
 		}
 		review = r.applyHardGates(&current, review, g, baseline)
 
@@ -2530,6 +2694,59 @@ func (r *Runner) escalateTask(current plan.Task, review plan.ReviewResult, attem
 	r.fireIntervention(current.ID, "escalate",
 		fmt.Sprintf("%s needs human review", current.ID), detail)
 	return current, &escalation{detail: detail, attempt: attempt, review: review}, nil
+}
+
+// recoverReviewError handles a reviewer that returned a transport error instead
+// of a verdict.
+//
+// It used to block the task outright — and PropagateBlocked then cascaded the
+// block to every dependent — over an error that says nothing about the work:
+// the reviewer's endpoint hiccupped after the worker had finished and every
+// gate had run, and the gathered gate signals were thrown away with it.
+//
+// The harness evidence is judged first, exactly as it is for a reviewer whose
+// reply could not be read: a task with disk write evidence and a clean gate
+// pass is approved on that evidence. When the evidence does not carry it and
+// the budget and runway allow, the reviewer is asked ONCE more. Only when that
+// fails too does the task leave the ladder — and it goes to the human backlog
+// as "reviewer unavailable", not to blocked as a failure of the work.
+func (r *Runner) recoverReviewError(ctx context.Context, current plan.Task, g gateState, err error) (
+	plan.ReviewResult, string, error) {
+	r.logf("%s reviewer unavailable (%v) — judging on harness evidence first", current.ID, err)
+	noVerdict := plan.ReviewResult{Summary: err.Error(), Issues: []string{err.Error()}, NoVerdict: true}
+	if review := r.slmApprovalFallback(noVerdict, current, g, ""); review.Approved {
+		return review, "", nil
+	}
+	if r.runwaySpent(ctx) || r.budgetExhausted(current.ID) {
+		return noVerdict, "", err
+	}
+	r.logf("%s re-asking the reviewer once after a transport error", current.ID)
+	again, raw, err2 := r.llmReview(ctx, current, g)
+	if err2 != nil {
+		return plan.ReviewResult{Summary: err2.Error(), Issues: []string{err2.Error()}, NoVerdict: true}, "", err2
+	}
+	return again, raw, nil
+}
+
+// escalateReviewerUnavailable parks a task whose reviewer could not be reached
+// in the human backlog.
+//
+// The work is not known to be wrong — nothing judged it — so it must not land
+// in blocked, where it reads as a failure of the work and PropagateBlocked
+// strands every dependent behind it. to_scope is human-owned: dependents stay
+// where they are, and promoting the task back to ready_to_dev reviews it again.
+// The error is still returned so the caller reports the failure and does not
+// hand the task to another specialist as if a reviewer had rejected it.
+func (r *Runner) escalateReviewerUnavailable(current plan.Task, err error) (plan.Task, *escalation, error) {
+	why := "reviewer unavailable: " + err.Error()
+	current.MoveTo(plan.ColToScope)
+	current.Error = why
+	current.Notes = strings.TrimSpace(current.Notes + "\nESCALATED: reviewer unavailable (" + err.Error() +
+		"). The work was not judged — check the model endpoint, then promote back to ready_to_dev to review it again.")
+	r.logf("%s escalated to to_scope: %s", current.ID, why)
+	r.fireIntervention(current.ID, "escalate",
+		fmt.Sprintf("%s needs human review — reviewer unavailable", current.ID), why)
+	return current, nil, err
 }
 
 // rootDir is the nil-safe project root.

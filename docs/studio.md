@@ -79,8 +79,50 @@ the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 | `/settings` | **Settings** | Provider, model, stacks, packs, HITL modes, parallelism, MCP, API keys |
 
 A global **HITL modal** surfaces clarify / plan-approve / continue / escalate / shell gates from
-any page — you no longer have to be on the Live view to answer one. A **connection badge** shows
-stream health, and an error boundary keeps one broken panel from blanking the app.
+any page — you no longer have to be on the Live view to answer one. It traps Tab and answers Esc
+by returning focus to the decision (a gate cannot be dismissed — the harness is waiting). A
+**connection badge** shows stream health, and an error boundary keeps one broken panel from
+blanking the app.
+
+### When a task gets stuck
+
+A blocked or failed card tells its story instead of showing one error line: the **Attempts**
+timeline (`attempt_log` — "attempt 2 failed because …"), the gate-retry count, the **review
+verdict**, and the structured **criteria** checklist. Under it, a next-step row:
+
+| Action | What it does |
+|---|---|
+| **Send back to Ready** | `PATCH /api/tasks/{id}` → column `ready_to_dev`; the next wave picks it up |
+| **Retry** | `POST /api/tasks/{id}/retry` — same, keeping the attempt log so the next try knows what failed (falls back to the Ready move on a server without the endpoint; `409` means no board is loaded) |
+| **Reassign team** | opens the edit form on the team control |
+| **Steer** | prefills the live-feedback composer with `@task:ID ` — from the board it navigates to Live first |
+
+The same row appears in the Live task panel, whose **Blocked / Failed** counters are filters over
+the list. The panel accepts a `focusTaskId` prop (and Live reads `/?task=ID`) to expand, scroll
+to and flash one task.
+
+### When a run ends
+
+The result panel's **What next** row offers whichever of these apply: **Resume interrupted run**,
+**Open blocked on Board** (`/board?column=blocked`), **Review N pending**, and **Run again with
+this prompt**. The app also fires a toast, flashes the tab title while the tab is hidden, sends a
+browser notification when the tab is hidden *and* permission was already granted (Studio never
+asks for it on its own), and throws a two-second confetti burst on a green run — not under
+`prefers-reduced-motion`.
+
+### Keyboard
+
+| Keys | Does |
+|---|---|
+| `?` | shortcut sheet |
+| `⌘K` / `Ctrl+K` | command palette — pages, tasks by id or title, agents, teams, recent runs, theme |
+| `/` | focus the run prompt |
+| `⌘↵` / `Ctrl+Enter` | run the prompt, while it is focused |
+| `⌘.` / `Ctrl+.` | stop the active run, while the prompt is focused |
+| `g` then `l` `b` `r` `p` `a` `t` `k` `f` `s` `h` `,` | go to Live, Board, Review, Pipeline, Agents, Teams, Blocks, Files, Skills, Runs, Settings |
+| `Esc` | close a dialog, the sheet or the palette |
+
+Plain-key shortcuts are inert while typing in a field; the modifier ones are not.
 
 ---
 
@@ -135,7 +177,72 @@ pipeline*.
 
 Where WebGL is unavailable, or on request (the **3D / map** toggle), the same
 floor is drawn as a flat map with the same dossier and feed. Both honor
-`prefers-reduced-motion`.
+`prefers-reduced-motion`. On a touch device with no stored preference the map
+is the default; below the `sm` breakpoint the toggle sits in a strip under the
+floor and the feed opens from it as a bottom sheet. Every person and ticket in
+the 3D scene is also a visually hidden button, so the floor can be walked with
+a keyboard: a dossier takes focus when it opens and gives it back when it
+closes, and `Esc` closes it unless it was typed into a field.
+
+The scene keeps its state between visits. The **selection** lives in the URL —
+`/?task=T4` opens a ticket's dossier, `/?agent=go-worker` a person's, with an
+optional `&team=` — so a dossier survives navigating away, a reload, and being
+pasted to someone. The camera, **follow**, **spin** and the pulse feed live in
+a module-level store (mirrored to `sessionStorage`), so coming back from the
+Board finds the floor where it was left; **reset view** restores the camera
+through OrbitControls rather than remounting the scene. The render loop runs
+continuously only while something moves (a run, live tickets, fresh pulses,
+follow, spin, a camera glide), drops to on-demand when the floor is still, and
+stops while the tab is hidden. If the browser loses the WebGL context the page
+falls back to the flat map and says so.
+
+## One board, one stream
+
+Every page that shows tasks reads the same **board store** (`web/src/hooks/
+useBoardStore.ts`, provided from `App`): the Board, the Live floor, the ticker
+and the Teams page. It is seeded once from `GET /api/tasks` and
+`GET /api/squads`, then kept current by the live stream, and re-read every
+30 s as a safety net, on both edges of a run, and when the stream reconnects.
+Before the server's first push, a structural log line (a task starting or
+finishing, a run starting or ending) also triggers one debounced re-read, so a
+server without the events below still feels live. Pages call `refresh()`
+after a write and `upsertTask()` for the optimistic paint. Nothing polls on
+its own timer any more; the Sidebar's review badge comes from the stream too.
+
+Two SSE kinds are **board events**: they are folded into the store and never
+become rows in the log, since one row per column move would bury the story
+the log tells with `task_start` / `task_done`:
+
+| Kind | Payload | Effect |
+|---|---|---|
+| `task_update` | `task_id`, `data.task` — the task exactly as `GET /api/tasks` returns it | replaced by id in the store (appended if new); marks the store *live* |
+| `review_pending` | `data.pending` — the review queue's length | updates the Review badge at once |
+
+Their sequence ids still advance the reconnect cursor, and a replayed one is
+dropped like any other duplicate.
+
+The stream also keeps a **running derivation** of the log (`web/src/hooks/
+runDerived.ts`): phases seen, the active phase and agent, task ids, files
+written, token and cost totals, the newest composition — folded once per event
+as it arrives rather than re-scanned by each panel on every flush. The
+ticker's clock keys on the floor model's working set (an agent between its
+`agent_start` and `agent_end`), so it stops when nobody is working.
+
+### Links between pages
+
+Identifiers are chips that go somewhere (`web/src/components/shared/
+EntityLink.tsx`):
+
+| Kind | Goes to |
+|---|---|
+| task | `/?task=ID` — the ticket's dossier on the floor, and the Tasks rail |
+| agent | `/?agent=ID` — the person's dossier |
+| team | `/teams?team=ID` |
+| run | `/runs?run=ID` |
+| file | `/files?file=path` |
+
+The Board keeps its own filters in the URL as well: `?team=ID` (or the
+unassigned lane) and `?column=ID`.
 
 ## The review workflow
 
@@ -147,19 +254,36 @@ slmcode run "add JWT validation"
 ```
 
 Each proposal is a `.slmcode/pending/<nano>_<kind>_<mangled-path>.patch.json` holding
-`{path, kind, content}`. Studio's **Review** page lists them with both sides of the diff and
-per-file apply/reject; the same queue is available from the terminal with `slmcode apply` and
-`slmcode reject`.
+`{path, kind, content}` plus, when the workspace knew them at record time, `from` (the source of a
+`ws_mv`), `task_id`, `agent` and `query_id`. Studio's **Review** page lists them with both sides of
+the diff and per-file apply/reject; the same queue is available from the terminal with
+`slmcode apply` and `slmcode reject`.
+
+**Apply honors the kind.** `write`/`edit`/`patch` write the content; `delete` removes the file;
+`mv` moves the source to the destination (falling back to writing the recorded content if the
+source is gone). Stale `shell` entries from older builds are never files: they are hidden from the
+listing, skipped by `{all: true}` and refused by id.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/review/pending?hunks=1&context=3` | list pending changes, optionally with hunks |
-| `GET /api/review/pending/{id}` | one change with its diff |
-| `POST /api/review/apply` | `{ids}` / `{id}` / `{all: true}` |
-| `POST /api/review/reject` | same shape |
+| `GET /api/review/pending?hunks=1&context=3` | list pending changes, optionally with hunks. Items carry `kind`, `from`, `task_id`, `agent`, `query_id` (empty when unknown) |
+| `GET /api/review/pending/{id}` | one change with its diff (a `delete` diffs to empty; an `mv` diffs source → content at the destination path) |
+| `POST /api/review/apply` | `{ids}` / `{id}` / `{all: true}` — emits `review_pending` |
+| `POST /api/review/reject` | same shape — emits `review_pending` |
 
 The queue id is a bare file name and is validated as one — a traversal attempt is rejected rather
 than resolved.
+
+### Board, tasks and history
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/tasks` | the live board; each task includes `attempt_log`, `gate_retries` and `criteria` when set |
+| `POST /api/tasks/{id}/retry` | move a task back to `ready_to_dev`, reset `retries`, clear `error`, append `"retried from Studio"` to `attempt_log`, persist, emit `task_update`. Returns the task. `409` when no board is loaded, `404` for an unknown id |
+| `GET /api/queries` | run history; every item also carries `duration_ms`, `tokens`, `cost_usd`, `tasks_total`, `tasks_done`, `failed_tasks` and `teams` (string list), computed from the stored turn, board and event log (usage totals are cached per log size/mtime) |
+| `GET /api/shell/pending` | `{pending, ask, asks: [...], count}` — `ask` is the oldest open shell ask (the shape the UI was built on); `asks` lists every open one, since a parallel wave can raise several |
+| `POST /api/shell/approve` | `{ask_id, decision: "approve" \| "deny"}` — `ask_id` picks which pending ask; it may be omitted only when exactly one is pending |
+| `POST /api/runs/stop` | asks the run to unwind. `running` stays `true` (with `stopping: true` in `/api/runs/latest` and `/api/status`) until the run goroutine has exited, so a new run cannot start on top of the old one's teardown |
 
 ---
 
@@ -174,6 +298,20 @@ than resolved.
 - When events genuinely could not be replayed, an explicit `event: gap` frame is emitted with
   `{from, to}`, so the UI can say *"events N–M were dropped"* instead of quietly showing an
   incomplete run. A slow consumer is flagged rather than silently dropped.
+- Kind `run_end` (phase `done` or `error`, message = the summary) is what the run-end toast,
+  title flash and notification key on. Kind `review_pending` (`{pending: N}`) tells the Review
+  page to refresh while a run is still writing; without it the page polls every 15 s during a run.
+- The ring is **not** cleared when a run starts. `GET /api/runs/latest` scopes its snapshot to the
+  current run by sequence number, while a reconnecting stream can still replay across a
+  stop → start.
+
+Two kinds are synthesized by the server itself rather than emitted by the engine, and they sit in
+the ring and replay like every other event:
+
+| Kind | When | Shape |
+|---|---|---|
+| `task_update` | after any board task change (worker moves, a `PATCH /api/tasks/{id}`, a retry) | `phase` = the run's current phase, or `"board"` when no run is active; `task_id`; `message` = `"<id> -> <column>"` (`"<id> -> removed"` for a deletion); `data` = `{"task": {…task exactly as GET /api/tasks renders it…}}` |
+| `review_pending` | after a proposal is recorded by a running agent, and after every apply/reject | `phase` = `"review"`; `data` = `{"pending": N}` — the number of applicable entries in the queue |
 
 `GET /api/queries/{id}/events` replays a recorded run's log, and `GET /api/queries/{id}/trace`
 groups it into contiguous phase segments with totals — the numbers that matter when tuning a
@@ -342,6 +480,31 @@ otherwise.
 
 `react-hooks/exhaustive-deps` is an **error**, not a warning: a stale closure in the SSE handler
 once reduced the live event log to a single row, and that rule is what catches it.
+
+### Cross-component contracts
+
+A few interactions cross component boundaries without a shared parent. They go through
+`CustomEvent`s on `window`, all named in `web/src/components/ui/events.ts`. Every event is
+dispatched `cancelable`; a listener that handles it calls `preventDefault()`, and the dispatcher
+falls back to doing the work itself when nobody does.
+
+| Event | Fired by | Listened to by |
+|---|---|---|
+| `slmcode:focus-prompt` | `/` | Live view — focuses the prompt |
+| `slmcode:run-prompt` (`detail.query?`) | `⌘↵` in the prompt; the result panel's *Run again* | Live view — starts the prompt (or `detail.query`) with the chosen teams/specialist; the result panel calls `POST /api/runs` directly when unclaimed |
+| `slmcode:stop-run` | `⌘.` in the prompt | Live view — `POST /api/runs/stop` |
+| `slmcode:steer-task` (`detail.taskId`) | a task's *Steer* | `LiveFeedback` — prefills `@task:ID `; parked in `sessionStorage` when no composer is mounted |
+| `slmcode:command-palette` | anything | `Layout` — toggles the palette |
+
+The prompt input is recognised by its accessible name `Run prompt` (or a `data-run-prompt`
+attribute). URL parameters that pages read: `/board?column=blocked` (Board), `/files?path=a/b.go`
+(Files), `/runs?run=ID` (Runs), `/?task=ID` (Live → task panel `focusTaskId`),
+`/?run=ID&replay=1` (Runs → *Replay on the floor*; harmless when Live ignores it).
+
+Errors on every editor page go through `useToast().reportError`; list pages render
+`ui/ErrorState` with a Retry in place of the list when their load fails. Tab strips use
+`ui/useRovingTabs` (one Tab stop, arrows between tabs, `aria-controls` to the panel). Dialogs
+share `useFocusTrap` from `ui/Modal.tsx`.
 
 `make ui-react` builds and syncs `web/dist/` into `cmd/slmcode/ui/`, which is embedded with
 `go:embed all:ui`. `make bootstrap` does the same but only when the assets are missing.

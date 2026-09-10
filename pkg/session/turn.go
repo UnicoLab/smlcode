@@ -125,6 +125,8 @@ func WriteTurnSummary(slmDir string, t *Turn, board plan.Board, extraNotes strin
 		return "", err
 	}
 	_ = appendSummariesIndex(slmDir, t, body)
+	// The turn is over: make its event log durable and release the appender.
+	CloseEventLog(slmDir, t.ID)
 	return path, nil
 }
 

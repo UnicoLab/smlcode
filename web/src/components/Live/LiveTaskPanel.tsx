@@ -14,6 +14,7 @@ import {
 } from '@/api/client';
 import type { Task, AgentSpec, Board } from '@/types';
 import clsx from 'clsx';
+import { AttemptsTimeline, ReviewVerdict, TaskActionRow, isStuck } from '@/components/Board/TaskStory';
 import {
   Plus,
   Trash2,
@@ -111,14 +112,29 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
+type AttentionFilter = 'blocked' | 'failed' | null;
+
+export interface LiveTaskPanelProps {
+  /**
+   * A task to bring into view: the panel expands it, scrolls it into view and
+   * flashes it once. The Live view passes the id of a ticket clicked on the
+   * floor or a `?task=` parameter; a new value re-triggers the scroll.
+   */
+  focusTaskId?: string;
+}
+
 // ── Component ──
-export default function LiveTaskPanel() {
+export default function LiveTaskPanel({ focusTaskId }: LiveTaskPanelProps = {}) {
   // ── App context ──
   const ctx = useContext(AppContext);
   const config = ctx?.config;
 
   // ── State: tasks ──
   const [board, setBoard] = useState<Board | null>(null);
+  // Blocked/Failed counters double as filters over the list below.
+  const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [locallyAddedIds, setLocallyAddedIds] = useState<Set<string>>(new Set());
   const [optimisticTasks, setOptimisticTasks] = useState<Task[]>([]);
@@ -428,6 +444,41 @@ export default function LiveTaskPanel() {
   const allTasks = useMemo(() => board?.tasks || [], [board?.tasks]);
   const taskCount = allTasks.length;
   const taskHealth = useMemo(() => summarizeTaskHealth(allTasks), [allTasks]);
+  const matchesFilter = useCallback(
+    (task: Task) =>
+      attentionFilter === null ||
+      (attentionFilter === 'blocked' ? isBlockedTask(task) : isFailedTask(task)),
+    [attentionFilter],
+  );
+  const toggleFilter = (f: Exclude<AttentionFilter, null>) =>
+    setAttentionFilter((cur) => (cur === f ? null : f));
+
+  // Bring one task into view: expand it, scroll to it, flash it once.
+  const revealTask = useCallback((id: string) => {
+    setAttentionFilter(null);
+    setExpandedTasks((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    setFlashId(id);
+    window.setTimeout(() => {
+      const rows = listRef.current?.querySelectorAll<HTMLElement>('[data-task-id]') ?? [];
+      for (const row of rows) {
+        if (row.dataset.taskId === id) {
+          row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          break;
+        }
+      }
+    }, 0);
+  }, []);
+
+  useEffect(() => {
+    if (!focusTaskId || tasksLoading) return;
+    revealTask(focusTaskId);
+  }, [focusTaskId, tasksLoading, revealTask]);
+
+  useEffect(() => {
+    if (!flashId) return undefined;
+    const t = window.setTimeout(() => setFlashId(null), 1700);
+    return () => window.clearTimeout(t);
+  }, [flashId]);
 
   // ── Render ──
   return (
@@ -642,22 +693,52 @@ export default function LiveTaskPanel() {
 
           <div className="grid grid-cols-4 gap-1.5">
             <TaskMetric label="Active" value={taskHealth.active} tone={taskHealth.active > 0 ? 'info' : 'neutral'} />
-            <TaskMetric label="Blocked" value={taskHealth.blocked} tone={taskHealth.blocked > 0 ? 'error' : 'neutral'} />
-            <TaskMetric label="Failed" value={taskHealth.failed} tone={taskHealth.failed > 0 ? 'error' : 'neutral'} />
+            <TaskMetric
+              label="Blocked"
+              value={taskHealth.blocked}
+              tone={taskHealth.blocked > 0 ? 'error' : 'neutral'}
+              pressed={attentionFilter === 'blocked'}
+              onToggle={() => toggleFilter('blocked')}
+            />
+            <TaskMetric
+              label="Failed"
+              value={taskHealth.failed}
+              tone={taskHealth.failed > 0 ? 'error' : 'neutral'}
+              pressed={attentionFilter === 'failed'}
+              onToggle={() => toggleFilter('failed')}
+            />
             <TaskMetric label="Retries" value={taskHealth.retries} tone={taskHealth.retries > 0 ? 'warning' : 'neutral'} />
           </div>
+
+          {attentionFilter && (
+            <div className="mt-2 flex items-center gap-2 text-[10px] text-gray-500">
+              <span>Showing only {attentionFilter} tasks.</span>
+              <button type="button" onClick={() => setAttentionFilter(null)} className="text-brand-600 hover:underline dark:text-brand-400">
+                Show all
+              </button>
+            </div>
+          )}
 
           {taskHealth.attention.length > 0 ? (
             <div className="mt-2 space-y-1">
               {taskHealth.attention.map((task) => (
                 <div
                   key={task.id}
-                  className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300"
-                  title={task.title}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300"
                 >
-                  <AlertCircle size={11} className="shrink-0" />
-                  <span className="truncate font-medium">{task.title}</span>
-                  <span className="ml-auto shrink-0 font-mono opacity-70">{taskStateLabel(task)}</span>
+                  <button
+                    type="button"
+                    onClick={() => revealTask(task.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left hover:underline"
+                    title={`${task.title} — show details`}
+                  >
+                    <AlertCircle size={11} className="shrink-0" aria-hidden="true" />
+                    <span className="truncate font-medium">{task.title}</span>
+                    <span className="ml-auto shrink-0 font-mono opacity-70">{taskStateLabel(task)}</span>
+                  </button>
+                  {isStuck(task) && (
+                    <TaskActionRow task={task} onUpdate={fetchTasks} compact actions={['retry']} />
+                  )}
                 </div>
               ))}
             </div>
@@ -770,7 +851,7 @@ export default function LiveTaskPanel() {
       {/* ═══════════════════════════════════════════════════ */}
       {/* ── SECTION 1: Task List ── */}
       {/* ═══════════════════════════════════════════════════ */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
         {tasksLoading && taskCount === 0 && optimisticTasks.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-[10px] text-gray-400">
             <Loader2 size={12} className="animate-spin mr-2" />
@@ -790,7 +871,7 @@ export default function LiveTaskPanel() {
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-800/50">
             {(columns || []).map((col) => {
-              const tasks = byColumn[col] || [];
+              const tasks = (byColumn[col] || []).filter(matchesFilter);
               if (tasks.length === 0) return null;
 
               const colColors = COLUMN_COLORS[col] || COLUMN_COLORS.scoped;
@@ -822,9 +903,11 @@ export default function LiveTaskPanel() {
                     return (
                       <div
                         key={task.id}
+                        data-task-id={task.id}
                         className={clsx(
                           'px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors border-b border-gray-50 dark:border-gray-800/30',
                           isPending && 'bg-amber-50/50 dark:bg-amber-900/10',
+                          flashId === task.id && 'flash-focus',
                         )}
                       >
                         {/* Compact row */}
@@ -1056,6 +1139,19 @@ export default function LiveTaskPanel() {
                               </div>
                             )}
 
+                            {/* Why it is stuck, and what to do about it */}
+                            {task.error && (
+                              <div className="rounded bg-red-50 px-1.5 py-1 text-[10px] text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                                <span className="font-semibold">Last error: </span>
+                                {task.error}
+                              </div>
+                            )}
+                            <AttemptsTimeline task={task} compact />
+                            <ReviewVerdict review={task.review} compact />
+                            {isStuck(task) && (
+                              <TaskActionRow task={task} onUpdate={fetchTasks} compact actions={['ready', 'retry', 'steer']} />
+                            )}
+
                             {/* Output */}
                             {task.output && (
                               <div>
@@ -1132,13 +1228,18 @@ function TaskMetric({
   label,
   value,
   tone,
+  pressed,
+  onToggle,
 }: {
   label: string;
   value: number;
   tone: 'neutral' | 'info' | 'warning' | 'error';
+  /** When given, the counter is a filter toggle over the task list. */
+  pressed?: boolean;
+  onToggle?: () => void;
 }) {
-  return (
-    <div className="rounded-md bg-white/70 px-2 py-1.5 dark:bg-gray-900/50">
+  const body = (
+    <>
       <div className="text-[9px] uppercase text-gray-400">{label}</div>
       <div
         className={clsx(
@@ -1151,7 +1252,26 @@ function TaskMetric({
       >
         {value}
       </div>
-    </div>
+    </>
+  );
+  if (!onToggle) {
+    return <div className="rounded-md bg-white/70 px-2 py-1.5 dark:bg-gray-900/50">{body}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={pressed}
+      title={pressed ? `Stop filtering by ${label.toLowerCase()}` : `Show only ${label.toLowerCase()} tasks`}
+      className={clsx(
+        'focus-ring rounded-md px-2 py-1.5 text-left transition-colors',
+        pressed
+          ? 'bg-white ring-2 ring-brand-500 dark:bg-gray-900'
+          : 'bg-white/70 hover:bg-white dark:bg-gray-900/50 dark:hover:bg-gray-900',
+      )}
+    >
+      {body}
+    </button>
   );
 }
 

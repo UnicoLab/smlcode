@@ -19,9 +19,11 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { addTask, getWorkspaceFile, getWorkspaceTree } from '@/api/client';
 import type { RunEvent } from '@/types';
 import clsx from 'clsx';
+import { useToast } from '@/components/ui/Toast';
 
 // ── Types ──
 
@@ -178,9 +180,22 @@ function genId(): string { return `${Date.now()}-${Math.random().toString(36).sl
 // ── Component ──
 
 export default function FileInspector({ events, running }: Props) {
+  const toast = useToast();
+  // `/files?path=a/b/c.go` opens that file with its ancestors expanded — the
+  // review queue's "Open in Files" link lands here.
+  const [searchParams] = useSearchParams();
+  const initialPath = searchParams.get('path') || null;
+
   // ── State ──
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set(['']));
+  const [selectedFile, setSelectedFile] = useState<string | null>(initialPath);
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
+    const dirs = new Set(['']);
+    if (initialPath) {
+      const parts = initialPath.split('/');
+      for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+    }
+    return dirs;
+  });
   const [tree, setTree] = useState<Record<string, TreeEntry[]>>({});
   const [treeLoading, setTreeLoading] = useState(true);
   const [content, setContent] = useState<string | null>(null);
@@ -188,7 +203,6 @@ export default function FileInspector({ events, running }: Props) {
   const [lineComments, setLineComments] = useState<Record<string, Record<number, LineComment[]>>>({});
   const [activeLine, setActiveLine] = useState<{ file: string; line: number } | null>(null);
   const [draftComment, setDraftComment] = useState('');
-  const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [showOnlyModified, setShowOnlyModified] = useState(false);
   // Dot-entries are shown by default: `.slmcode/pending/` is the review queue
   // and `.github/` is real project content. `.git` stays hidden server-side.
@@ -213,6 +227,13 @@ export default function FileInspector({ events, running }: Props) {
 
   useEffect(() => { setTree({}); loadDir(''); }, [loadDir]);
 
+  // A deep link's ancestors are expanded but not yet loaded.
+  useEffect(() => {
+    if (!initialPath) return;
+    const parts = initialPath.split('/');
+    for (let i = 1; i < parts.length; i++) loadDir(parts.slice(0, i).join('/'));
+  }, [initialPath, loadDir]);
+
   // ── Load file content ──
   useEffect(() => {
     if (!selectedFile) { setContent(null); return; }
@@ -231,11 +252,15 @@ export default function FileInspector({ events, running }: Props) {
     if (activeLine) setTimeout(() => draftInputRef.current?.focus(), 50);
   }, [activeLine]);
 
-  // ── Toast ──
-  const flash = useCallback((ok: boolean, msg: string) => {
-    setToast({ ok, msg });
-    setTimeout(() => setToast(null), 4000);
-  }, []);
+  // ── Notices go through the shared toast, like every other page ──
+  const flash = useCallback(
+    (ok: boolean, msg: string, err?: unknown) => {
+      if (ok) toast.success(msg);
+      else if (err !== undefined) toast.reportError(err, msg);
+      else toast.push({ tone: 'error', title: msg });
+    },
+    [toast],
+  );
 
   // ── Tree helpers ──
   const toggleDir = useCallback(async (dirPath: string) => {
@@ -344,7 +369,7 @@ export default function FileInspector({ events, running }: Props) {
     try {
       await addTask({ title: `Review: ${filePath}:L${comment.line}`, description: comment.text, role: 'worker', files: [filePath] });
       flash(true, `Task created for ${filePath}:L${comment.line}`);
-    } catch { flash(false, 'Failed to create task'); }
+    } catch (err) { flash(false, 'Could not create the task', err); }
   }, [flash]);
 
   // ── Content lines ──
@@ -356,14 +381,6 @@ export default function FileInspector({ events, running }: Props) {
   // ── Render ──
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Toast */}
-      {toast && (
-        <div className={clsx('mx-4 mt-3 px-4 py-2.5 rounded-lg text-xs font-medium animate-slide-up border shadow-sm',
-          toast.ok ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200')}>
-          {toast.msg}
-        </div>
-      )}
-
       {/* Header */}
       <div className="shrink-0 px-5 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
         <div className="flex items-center gap-3">

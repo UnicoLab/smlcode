@@ -9,6 +9,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/memory"
 
+	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
 	"github.com/UnicoLab/slmcode/pkg/evolve"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
@@ -296,7 +297,7 @@ func (r *Runner) critiquePass(ctx context.Context, t *plan.Task, role string,
 	})
 	res, ok := r.execOne(ctx, t.ID, "self-critique", ggagent.SubAgentRequest{
 		AgentID: r.correctorID(), Input: corrIn,
-		Timeout: r.Timeout, ShareState: true, TaskID: t.ID,
+		Timeout: r.callTimeout(ctx), ShareState: true, TaskID: t.ID,
 	})
 	if !ok {
 		// Budget exhausted: escalate rather than loop.
@@ -425,14 +426,38 @@ func (r *Runner) focusDiff(t plan.Task, maxBytes int) string {
 	return textutil.TruncateDefault(diff, maxBytes)
 }
 
+// correctorOutputBudget bounds the previous output shown to the corrector. The
+// harness evidence inside it is budgeted separately by clipForReview.
+const correctorOutputBudget = 2500
+
 // formatCorrectPrompt builds the corrector prompt. Unlike the old package-level
 // helper it varies per attempt: it carries the real diff of the previous
 // attempt and names the fixes that were already tried and did not work.
+//
+// The previous output is clipped the way the reviewer's is (clipForReview):
+// the model's prose is budgeted and the harness-appended evidence — the
+// `## Deterministic smoke` / `## Acceptance criteria` sections and the failing
+// command's observation that runGates puts at the END of Task.Output — is kept
+// whole. A head-first clip used to delete exactly that once the prose passed
+// 2.5 KB, so the corrector was told "fix the smoke failure" and never shown
+// the failing command or its output.
+//
+// It also carries the same HARD SCOPE list, acceptance and language hint the
+// worker was given: the scope gate grades the corrector against them too.
 func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) string {
 	var b strings.Builder
 	b.WriteString("Fix task " + t.ID + " after failed review.\n\n")
 	b.WriteString("## Original task\n" + StripScopedPack(t.Description) + "\n\n")
-	b.WriteString("## Previous output\n" + truncate(t.Output, 2500) + "\n\n")
+	if h := detectProjectLangHint(r.rootDir()); h != "" {
+		b.WriteString("## Project language\n" + h + "\n\n")
+	}
+	if sec := agents.FocusFilesSection(t.Files); sec != "" {
+		b.WriteString(strings.TrimLeft(sec, "\n") + "\n")
+	}
+	if strings.TrimSpace(t.Acceptance) != "" {
+		b.WriteString("## Acceptance\n" + t.Acceptance + "\n\n")
+	}
+	b.WriteString("## Previous output\n" + clipForReview(t.Output, correctorOutputBudget) + "\n\n")
 	if diff := r.focusDiff(t, 1500); diff != "" {
 		b.WriteString("## What the previous attempt actually changed (git diff)\n" +
 			"```diff\n" + diff + "\n```\n\n")

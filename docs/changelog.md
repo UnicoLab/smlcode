@@ -85,6 +85,117 @@ run happens to assemble some — and the Live view shows them working.
 - A run started after `squads` was switched off in a long-lived Studio
   process could inherit the previous run's org chart.
 
+### Efficiency — fewer, shorter, better-aimed model calls
+
+A review of where a run's wall clock and tokens actually went, then the fixes.
+The execute loop owns most of both, so most of this is there.
+
+- **One reviewer per review.** The review used to be a race: a local
+  "acceptance" probe, the reviewer and a strict second reviewer all dispatched
+  at once, the strict verdict then discarded unless the first came back empty.
+  Now the fast path decides what it can, hard gates that already failed reject
+  without a model, one reviewer is asked, and the strict opinion is sought
+  only when the first answer is unreadable. The acceptance probe could also
+  approve a task with an unverified must-criterion and no reviewer; it is gone.
+- **The corrector sees why it was rejected.** Its prompt head-clipped the
+  worker's output, so a long reasoning trace hid the failing command and its
+  output appended at the end. It now keeps the harness evidence whole and
+  carries the focus files, acceptance and language, the same split the
+  reviewer already had.
+- **The worker prompt puts the stable pack first** and the task header just
+  before the instructions, so every task in a wave shares the packed prefix
+  and the server's KV cache is reused instead of re-prefilled per task.
+- **Old tool results are elided on live requests.** A worker's transcript
+  re-sent every `ws_read` verbatim on every later turn; a deterministic wrapper
+  now keeps the last five tool results and elides the rest, per request,
+  without touching the system message or the tool-call pairs.
+  `react_compact` is finally what the docs said it was.
+- **One run-wide concurrency limit.** The measured knee (`max_parallel`) was
+  enforced only in the execute wave; prepare phases, speculation, reviews and
+  critique all ran past it. One gate at the executor boundary now covers every
+  model call, and paired phases run sequentially at `max_parallel: 1`.
+- **Measured role budgets reach the loop.** Workers, reviewers and correctors
+  ran on the flat `task_timeout`; they now get the per-role p95 budget the
+  phase roles already had, and their latencies feed the same store.
+- **The acceptance command runs once per tree state.** A finish used to re-run
+  it up to four times on an unchanged tree (pre-test, team gates, integration,
+  QA round one); a per-run memo keyed by the tree fingerprint answers the
+  repeats, and team and integration commands check the runway first.
+- **Phases with nothing to do are skipped**, and say so: the memory
+  distillation with no lessons, no changes and no failures; the per-wave
+  distill and coordinator after an uneventful wave; the splitter for a
+  one-step plan.
+- A finished team is proved as soon as it finishes, between waves, so its
+  correction ticket rides the next wave instead of waiting for the whole
+  board. A seam task that straddles two teams is handed the whole contract.
+- Every dispatch path honors the run's remaining runway; an explicitly set
+  temperature of 0 is sent rather than treated as unset; the steer a resumed
+  worker is given reaches the model even when its checkpoint ends on pending
+  tool calls.
+
+### Robustness
+
+- **A reviewer that times out or errors no longer blocks the task** and every
+  task behind it. The gathered evidence is judged, the reviewer is re-asked
+  once when the budget allows, and only then is the task parked for a person.
+- **A worker that times out is resumed, not parked**, from its checkpoint,
+  until the attempt ceiling; transient provider errors get one bounded retry
+  honoring `Retry-After`, on the streaming path too (which never retried
+  while someone was watching).
+- **The path jail held for symlinks but not dangling ones.** A link whose
+  target did not exist passed the check and the write followed it outside the
+  workspace. Refused now.
+- Studio's Run and Stop no longer race: a stop leaves the run marked as
+  stopping until it has really exited, a new run cannot inherit or clobber the
+  old one's state, and a second click on Run cannot delete a pending ask.
+- `slmcode apply` and the Review page apply proposals by kind: a proposed
+  delete deletes (it used to truncate the file to nothing), a move moves, and
+  shell approvals are no longer written to the tree as `shell.sh`.
+- Parallel workers asking for shell approval each get their own ask and answer
+  file; one used to overwrite the other and the loser deleted the winner's
+  answer.
+- `ws_edit`/`ws_write` are kinder to small models: `old_string`/`search`,
+  `new_string`/`replace` and `contents`/`text` are accepted; a `ws_read` line
+  gutter in `old_str` is stripped and noted instead of refused; writing a new
+  file with no content is refused with the accepted keys named;
+  `replace_all` works on drifted matches. `ws_patch` inserts a pure-addition
+  hunk after the line it names (it landed one line early), the bare
+  `SEARCH/=======/REPLACE` form works, and trailing prose is ignored.
+- Team gates, the squad plan and the single team are reset per run; a
+  long-lived Studio process could carry a green gate into the next run's
+  verdict.
+- The event log is written through one buffered appender per run and token
+  deltas are not persisted; `/api/runs/latest` no longer encodes under the
+  lock that the run's own emits need; the syntax guard runs one checker per
+  edit, not two.
+
+### Studio
+
+- **The board is live.** `task_update` and `review_pending` stream events
+  replace the four pollers; the Board, the floor, the Teams page and the Review
+  badge change the moment a task moves.
+- **Everything links.** Task, agent, team, run and file identifiers are one
+  chip everywhere and lead to the same place: a task or a person opens on the
+  Live floor with its dossier (`?task=`, `?agent=`), and the selection survives
+  navigation and reload. Board filters live in the URL too.
+- **A stuck task tells its story**: attempts, the reviewer's verdict and the
+  criteria, with Retry (`POST /api/tasks/{id}/retry`), Send back to Ready,
+  Reassign and Steer. Blocked and Failed counters are filters.
+- **A run's end is a beginning**: Resume, open the blocked tasks, review the
+  pending changes, or run again; a toast, a title flash and (when granted) a
+  notification if you are on another page; a short celebration on green.
+- Saves and loads that used to fail silently (Settings during a run, docs,
+  agents, skills, pipeline, files) now say what happened and offer a retry.
+  Dialogs trap focus and close on Esc; tabs roam with the arrow keys; the 3D
+  floor can be walked by keyboard and reads out its people and tickets.
+- The floor remembers its camera, follow and pulses across pages, renders on
+  demand when nothing moves, allocates nothing per frame, falls back to the
+  map if WebGL is lost, and fits a phone. The log is windowed and the run's
+  derived state is folded per event, so a two-hour run stays smooth.
+- Keyboard: `g t` for Teams, `⌘/Ctrl+Enter` to run and `⌘/Ctrl+.` to stop
+  from the prompt, `⌘/Ctrl+K` command palette. The Runs list shows duration,
+  tokens, cost, tasks and teams; Review shows who proposed each change.
+
 ## v0.24.0 — 2026-09-01
 
 Ten defects found by running v0.23.0 against a local 30B, thirteen times. Nearly

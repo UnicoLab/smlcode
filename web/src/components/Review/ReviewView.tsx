@@ -1,10 +1,14 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
+  Bot,
   Check,
   CheckCheck,
   Columns2,
   FileDiff,
   FilePlus2,
+  FolderOpen,
+  ListChecks,
   Loader2,
   RefreshCw,
   Rows3,
@@ -24,6 +28,9 @@ import DiffView, { type DiffMode } from './DiffView';
 // .slmcode/pending/*.patch.json and waits for a human. Until now the only way
 // to act on that queue was `slmcode apply`, which applies *everything* blind.
 // This is the per-file diff review that was missing.
+
+/** Poll interval while a run is writing, for servers without the SSE nudge. */
+const REVIEW_POLL_MS = 15_000;
 
 export default function ReviewView() {
   const ctx = useContext(AppContext);
@@ -58,11 +65,26 @@ export default function ReviewView() {
     load();
   }, [load]);
 
-  // A run that writes new pending changes should refresh the queue.
+  // A run that writes new pending changes should refresh the queue — as it
+  // writes them, not only when it stops. The server announces each new patch
+  // with a `review_pending` event; a slow poll covers a server without it.
   const runEnded = ctx?.liveRunning === false;
   useEffect(() => {
     if (runEnded) load({ quiet: true });
   }, [runEnded, load]);
+
+  const events = ctx?.liveEvents;
+  const lastEvent = events && events.length > 0 ? events[events.length - 1] : null;
+  useEffect(() => {
+    if (lastEvent?.kind === 'review_pending') load({ quiet: true });
+  }, [lastEvent, load]);
+
+  const running = ctx?.liveRunning === true;
+  useEffect(() => {
+    if (!running) return undefined;
+    const id = window.setInterval(() => load({ quiet: true }), REVIEW_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [running, load]);
 
   const selected = useMemo(
     () => queue?.items.find((i) => i.id === selectedId) ?? null,
@@ -201,7 +223,26 @@ export default function ReviewView() {
             </div>
           )}
           {!loading && queue?.count === 0 && (
-            <p className="px-4 py-6 text-xs text-gray-400">Nothing waiting for review.</p>
+            <div className="px-4 py-6 text-xs text-gray-400">
+              <p className="font-medium text-gray-500 dark:text-gray-300">Nothing waiting for review.</p>
+              {isReviewMode ? (
+                <p className="mt-1">
+                  Every file an agent writes during a run lands here first. Start a run from Live and the
+                  queue fills as they work.
+                </p>
+              ) : (
+                <p className="mt-1">
+                  Agents write directly in <code className="font-mono">{queue?.permission || 'auto'}</code> mode.
+                  Switch permission to <code className="font-mono">review</code> to approve each file here.
+                </p>
+              )}
+              <Link
+                to={isReviewMode ? '/' : '/settings'}
+                className="btn-secondary focus-ring mt-3 inline-flex h-7 items-center gap-1.5 px-2.5 text-[11px]"
+              >
+                {isReviewMode ? 'Start a run' : 'Open Settings'}
+              </Link>
+            </div>
           )}
           <ul>
             {queue?.items.map((item) => (
@@ -228,6 +269,11 @@ export default function ReviewView() {
                       {item.is_new && <span className="mr-1 text-emerald-600">new</span>}
                       <span className="text-emerald-600">+{item.stat.added}</span>{' '}
                       <span className="text-red-600">−{item.stat.removed}</span>
+                      {(item.task_id || item.agent) && (
+                        <span className="ml-1 text-gray-400">
+                          · {[item.task_id, item.agent].filter(Boolean).join(' @')}
+                        </span>
+                      )}
                       {item.error && <span className="ml-1 text-red-600">· {item.error}</span>}
                     </span>
                   </span>
@@ -248,6 +294,41 @@ export default function ReviewView() {
             <>
               <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-gray-200 bg-surface px-4 py-2 dark:border-gray-800">
                 <code className="min-w-0 flex-1 truncate font-mono text-xs">{selected.path}</code>
+                {/* Where the change came from: the task that asked for it and
+                    the agent that wrote it. A diff without an author is a
+                    guess; with one it is a decision. */}
+                {selected.task_id && (
+                  <Link
+                    to={`/?task=${encodeURIComponent(selected.task_id)}`}
+                    className="focus-ring inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 hover:text-brand-700 dark:bg-gray-800 dark:text-gray-300"
+                    title="Open the task on the Live panel"
+                  >
+                    <ListChecks size={11} aria-hidden="true" />
+                    {selected.task_id}
+                  </Link>
+                )}
+                {selected.agent && (
+                  <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:bg-gray-800 dark:text-gray-300" title="Agent that proposed the change">
+                    <Bot size={11} aria-hidden="true" />
+                    {selected.agent}
+                  </span>
+                )}
+                {selected.query_id && (
+                  <Link
+                    to={`/runs?run=${encodeURIComponent(selected.query_id)}`}
+                    className="focus-ring font-mono text-[10px] text-gray-400 hover:text-brand-700"
+                    title="Open the run this change belongs to"
+                  >
+                    {selected.query_id}
+                  </Link>
+                )}
+                <Link
+                  to={`/files?path=${encodeURIComponent(selected.path)}`}
+                  className="btn-secondary focus-ring inline-flex items-center gap-1 text-xs"
+                  title="Open the file as it is on disk"
+                >
+                  <FolderOpen size={12} aria-hidden="true" /> Open in Files
+                </Link>
                 <span className="font-mono text-[10px] text-gray-500">{selected.bytes} B</span>
                 <button
                   type="button"

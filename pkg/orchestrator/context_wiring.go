@@ -177,14 +177,19 @@ func (o *Orchestrator) noteChangedFiles(paths ...string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.changedFiles == nil {
-		o.changedFiles = map[string]bool{}
+		o.changedFiles = map[string]int{}
 	}
 	for _, p := range paths {
 		rel := strings.TrimSpace(p)
 		if rel == "" {
 			continue
 		}
-		o.changedFiles[rel] = true
+		// Every write advances the sequence and the path's own count, a
+		// rewrite of an already-changed file included: the path SET is what
+		// the formatter needs, the counts are what "has this moved since"
+		// needs — for the whole tree (writeSeq) and for one team's lane.
+		o.writeSeq++
+		o.changedFiles[rel]++
 	}
 }
 
@@ -209,6 +214,53 @@ func (o *Orchestrator) resetChangedFiles() {
 		return
 	}
 	o.mu.Lock()
-	o.changedFiles = map[string]bool{}
+	o.changedFiles = map[string]int{}
+	o.writeSeq = 0
+	o.mu.Unlock()
+}
+
+// changedFileWrites returns, for each changed path, how many times the run
+// has written it. Sorted by path.
+func (o *Orchestrator) changedFileWrites() []fileWrites {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]fileWrites, 0, len(o.changedFiles))
+	for p, n := range o.changedFiles {
+		out = append(out, fileWrites{Path: p, Writes: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// fileWrites is one changed path and its write count.
+type fileWrites struct {
+	Path   string
+	Writes int
+}
+
+// writeSequence is how many writes the run has recorded so far.
+func (o *Orchestrator) writeSequence() int {
+	if o == nil {
+		return 0
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.writeSeq
+}
+
+// noteTreeMutation records that something OTHER than an agent write changed
+// the tree or its ability to run — the formatter rewriting changed files, a
+// dependency install — so a command result taken before it is not reused
+// after it. It adds no path to the changed set: those passes touch nothing
+// the run should be asked to format again.
+func (o *Orchestrator) noteTreeMutation() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.writeSeq++
 	o.mu.Unlock()
 }

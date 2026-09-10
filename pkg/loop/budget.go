@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/stream"
@@ -206,18 +207,78 @@ func (r *Runner) spend(taskID, what string) bool {
 	return false
 }
 
-// noteExtraRequests records LLM round-trips a task issued beyond the budget
-// units it spent — the extra speculative slots of a review race.
-func (r *Runner) noteExtraRequests(taskID string, n int) {
-	if r == nil {
-		return
-	}
-	r.budget().note(taskID, n)
-}
-
 // budgetExhausted reports whether a task has no calls left.
 func (r *Runner) budgetExhausted(taskID string) bool {
 	return r != nil && taskID != "" && r.budget().remaining(taskID) == 0
+}
+
+// roleBudget is the measured budget for one request of role, ignoring the
+// run's remaining runway: min(Timeout, RoleTimeout(base role)). It is for a
+// site with no ctx to hand; requestTimeout is the ctx-aware version every
+// dispatch should use.
+func (r *Runner) roleBudget(role string) time.Duration {
+	if r == nil {
+		return 0
+	}
+	budget := r.Timeout
+	if r.RoleTimeout == nil {
+		return budget
+	}
+	base, _ := agents.BaseRoleID(role)
+	if measured := r.RoleTimeout(nil, base); measured > 0 && (budget <= 0 || measured < budget) {
+		return measured
+	}
+	return budget
+}
+
+// requestTimeout is the budget for one request of role right now:
+// callTimeout (the flat Timeout clamped to the runway) capped by the measured
+// per-role budget. The measured value can only TIGHTEN the flat one — the
+// orchestrator's policy already floors it per role class and ceilings it at
+// task_timeout, so nothing here can hand out more than Timeout.
+func (r *Runner) requestTimeout(ctx context.Context, role string) time.Duration {
+	if r == nil {
+		return 0
+	}
+	budget := r.callTimeout(ctx)
+	if r.RoleTimeout == nil {
+		return budget
+	}
+	base, _ := agents.BaseRoleID(role)
+	if measured := r.RoleTimeout(ctx, base); measured > 0 && (budget <= 0 || measured < budget) {
+		return measured
+	}
+	return budget
+}
+
+// applyRoleTimeout tightens req.Timeout to the measured budget for its role.
+// A request that arrived with no timeout gets the measured one; one that
+// arrived with a larger budget is cut down; a smaller one is left alone.
+func (r *Runner) applyRoleTimeout(ctx context.Context, req *ggagent.SubAgentRequest) {
+	if r == nil || req == nil {
+		return
+	}
+	want := r.requestTimeout(ctx, req.AgentID)
+	if want <= 0 {
+		return
+	}
+	if req.Timeout <= 0 || want < req.Timeout {
+		req.Timeout = want
+	}
+}
+
+// noteRoleLatency reports one request's duration to OnRoleLatency under the
+// BASE role (an escalation rung is the same role on a bigger model, and the
+// budget is looked up under the base too). Evidence follows the orchestrator's
+// rule: a success measures the role, a timeout is a censored lower bound worth
+// keeping, any other failure says nothing about how long the role needs.
+func (r *Runner) noteRoleLatency(role string, d time.Duration, err error, res ggagent.SubAgentResult) {
+	if r == nil || r.OnRoleLatency == nil || d <= 0 {
+		return
+	}
+	base, _ := agents.BaseRoleID(role)
+	failed := err != nil || res.Error != nil
+	r.OnRoleLatency(base, d, !failed || isTimeoutResult(err, res))
 }
 
 // execOne runs a single subagent request under the task's ctx tag, after
@@ -245,12 +306,20 @@ func (r *Runner) execOne(ctx context.Context, taskID, what string, req ggagent.S
 		return ggagent.SubAgentResult{Error: fmt.Errorf("nil executor")}, true
 	}
 	defer r.streamTokens(req.AgentID, taskID)()
+	// The measured per-role budget, not the flat task ceiling: reviewers and
+	// correctors own most of a run's wall clock and used to be the only roles
+	// that never contributed a latency sample nor received a measured budget.
+	r.applyRoleTimeout(ctx, &req)
+	start := time.Now()
 	res, err := r.Executor.ExecuteSubAgents(r.agentCtx(ctx, taskID, req.AgentID),
 		[]ggagent.SubAgentRequest{req}, r.Shared)
+	elapsed := time.Since(start)
 	if len(res) == 0 {
+		r.noteRoleLatency(req.AgentID, elapsed, err, ggagent.SubAgentResult{Error: err})
 		return ggagent.SubAgentResult{AgentID: req.AgentID, TaskID: taskID, Error: err}, true
 	}
 	out := res[0]
+	r.noteRoleLatency(req.AgentID, elapsed, err, out)
 	if out.Error == nil && err != nil && outputString(out) == "" {
 		out.Error = err
 	}

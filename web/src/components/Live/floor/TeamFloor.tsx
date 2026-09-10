@@ -173,4 +173,3 @@ export default function TeamFloor({ floor, running, events = NO_EVENTS, onTicket
     </div>
   );
 }
-

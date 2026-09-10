@@ -9,9 +9,17 @@
 # See RELEASE.md for the whole sequence.
 #
 # Usage:
-#   scripts/prepare-release.sh <x.y.z> [--dry-run] [--no-changelog]
+#   scripts/prepare-release.sh <x.y.z|auto> [--bump L] [--dry-run] [--no-changelog]
 #   scripts/prepare-release.sh 0.14.0 --dry-run   # show changes, commit nothing
+#   scripts/prepare-release.sh auto               # read the version off the commits
 #
+#   auto             Let scripts/next-version.sh choose the version from the
+#                    conventional commits since the last tag, instead of naming
+#                    it. "feat:" makes it a minor, a breaking change a major
+#                    (held inside 0.x), anything else a patch.
+#   --bump L         With `auto`, force the level: patch, minor or major.
+#   --no-gate        Skip `make check` here because the caller already runs it.
+#                    For the release workflow only — see the note at the gate.
 #   --dry-run        Print what would run; restore the working tree at the end.
 #   --no-changelog   Do not generate a changelog entry. Implied when
 #                    docs/changelog.md already has a "## v<version>" heading —
@@ -22,18 +30,34 @@ set -euo pipefail
 VERSION=""
 DRY=0
 NO_CHANGELOG=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY=1 ;;
-    --no-changelog) NO_CHANGELOG=1 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-    -*) echo "unknown option: $arg" >&2; exit 2 ;;
-    *) VERSION="$arg" ;;
+NO_GATE=0
+BUMP="auto"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --no-changelog) NO_CHANGELOG=1; shift ;;
+    --no-gate) NO_GATE=1; shift ;;
+    --bump) BUMP="${2:-}"; shift 2 ;;
+    --bump=*) BUMP="${1#*=}"; shift ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) VERSION="$1"; shift ;;
   esac
 done
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# `auto` resolves to a real number here, before anything else runs, so every
+# step below — the guard, the gate, the tag — sees the same explicit version a
+# human would have typed. The reasoning goes to stderr where it is visible in a
+# terminal and in a workflow log.
+if [[ "$VERSION" == "auto" ]]; then
+  VERSION="$("${HERE}/next-version.sh" --bump "$BUMP" --explain)"
+  echo "auto-selected version: ${VERSION}"
+fi
+
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: prepare-release.sh <x.y.z> [--dry-run] [--no-changelog]" >&2
+  echo "usage: prepare-release.sh <x.y.z|auto> [--bump L] [--dry-run] [--no-changelog]" >&2
   exit 1
 fi
 if git tag -l "v${VERSION}" | grep -q .; then
@@ -158,7 +182,17 @@ fi
 # The one gate, not two thirds of it: `make check` is what CONTRIBUTING tells
 # contributors to run and what CI runs, and it degrades with a named skip where
 # a step genuinely cannot run here.
-run make check
+#
+# --no-gate exists for ONE caller: the release workflow, which runs `make check`
+# as its own step against this same tree. Running it here as well would run the
+# whole gate twice in a job that has to build six binaries inside sixty minutes.
+# It is not a way to skip the gate — it is a way to not run it twice. Anywhere
+# else, leave it alone.
+if [[ "$NO_GATE" == 1 ]]; then
+  echo "gate: skipped (--no-gate) — the caller is responsible for running it"
+else
+  run make check
+fi
 
 if [[ -n "$changed" ]]; then
   run git add "${TOUCHED[@]}"

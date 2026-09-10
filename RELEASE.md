@@ -7,6 +7,12 @@ The short version: **you tag; CI does the rest.** Everything between the tag lan
 the release appearing is `.github/workflows/release.yml`. Your job is to make sure the
 tree deserves the tag, and to verify the published result afterwards.
 
+The shorter version, when the tree is already in good shape: **Actions → Release → Run
+workflow**, leave the tag empty, and the same workflow picks the version off the commits,
+bumps it and publishes. Steps 0 and 4 below still apply — something has to decide the tree
+deserves a release, and somebody has to look at what came out. See
+[Starting it from the Actions tab](#starting-it-from-the-actions-tab-instead).
+
 > **Repo slug.** The GitHub repository is `UnicoLab/smlcode`. The Go module is
 > `github.com/UnicoLab/slmcode`. Those two strings differ by two letters and both are
 > correct. `scripts/check-repo-refs.sh` exists to stop the module path leaking into a
@@ -67,6 +73,15 @@ scripts/prepare-release.sh 0.20.0 --dry-run     # look at the diff; nothing is c
 scripts/prepare-release.sh 0.20.0               # for real
 ```
 
+Or let it pick the number from the commits, the same way the one-button release does:
+
+```bash
+scripts/next-version.sh --explain               # just show the reasoning and the version
+scripts/prepare-release.sh auto --dry-run       # choose, bump, gate — commit nothing
+scripts/prepare-release.sh auto                 # for real
+scripts/prepare-release.sh auto --bump minor    # override the level it chose
+```
+
 What it does, in order:
 
 1. Refuses if the tag exists or if any of the four release files are already dirty.
@@ -101,23 +116,46 @@ git push origin v0.20.0          # this is what starts the release
 Pushing the tag is the point of no return for the automation. Everything before it is
 reversible with `git tag -d` and `git reset`.
 
-### Starting it by hand instead
+### Starting it from the Actions tab instead
 
-The same workflow can be started from **Actions → Release → Run workflow**, which asks for
-the tag (`v0.20.0`) and the branch to run from. Use it when there is no push for the
-automation to react to:
+**Actions → Release → Run workflow** runs the same job, and it has two modes.
 
-- **Re-running a release that failed partway.** The tag is already published, so
-  `git push origin v0.20.0` does nothing a second time. A manual run notices the tag
-  already exists and builds **from that tag**, not from whatever `main` has become since —
-  so the assets still match the commit the tag names. (If you need to move the tag itself,
-  that is the rollback in step 6, not this.)
-- **Cutting a release without a local checkout.**
+**Leave the tag empty — the whole release, one button.** There is nothing to do
+beforehand: no local checkout, no bump, no tag. The job reads the version off the
+conventional commits since the last tag (`scripts/next-version.sh`), runs
+`prepare-release.sh` to bump `version.go`, the Makefile, the Formula, `docs/install.md`
+and the changelog, and commits it — **in the runner's tree only**. The bump and its tag are
+pushed at the very end, after the gate has passed, the Studio UI is verified embedded, all
+six binaries are built and the linux/amd64 one has been asked what version it reports. A
+release that fails before then leaves `main` untouched: no bump, no tag, nothing to roll
+back.
 
-It is the same job with the same gates: the bump must already be committed, because
-`check-version.sh --tag` still fails the run when the tag disagrees with `version.go`, the
-Makefile or the Formula. A tag that does not exist yet is created on the branch you
-selected.
+The `bump` dropdown forces the level when you disagree with the commits:
+
+| Commits since the last tag | Version chosen |
+|---|---|
+| any `feat!:` / `BREAKING CHANGE:` | major — but **held inside 0.x** (0.24.0 → 0.25.0) |
+| any `feat:` | minor (0.24.0 → 0.25.0) |
+| only `fix:` / `perf:` | patch (0.24.0 → 0.24.1) |
+| only `chore:`, `docs:`, `ci:` … | patch |
+| subjects that are not conventional at all | counted, but they drive nothing |
+
+Cutting 1.0.0 is deliberate, never automatic: on a 0.x line a breaking change moves the
+minor. Run `scripts/next-version.sh --bump major --allow-zero-major` locally, commit the
+bump, and release it with an explicit tag.
+
+**Give a tag — release a version that is already committed.** For re-running a release
+that published its tag and then died: the job notices the tag exists and builds **from that
+tag**, not from whatever `main` has become since, so the assets still match the commit the
+tag names. `check-version.sh --tag` still fails the run when that tag disagrees with
+`version.go`, the Makefile or the Formula. A tag that does not exist yet is created on the
+branch you selected. (Moving a tag that already published is the rollback in step 6, not
+this.)
+
+> The changelog an automatic release writes is a dump of commit subjects. That is fine for
+> a patch; for anything bigger, write the `## vX.Y.Z` entry in `docs/changelog.md` by hand
+> first and commit it — `prepare-release.sh` keeps an entry that is already there rather
+> than shadowing it.
 
 ---
 

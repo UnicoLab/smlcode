@@ -4,23 +4,42 @@ on:
   push:
     tags:
       - "v*"
-  # The same release, started by hand from the Actions tab. Pushing a tag stays
-  # the normal path (RELEASE.md step 2); this is for the two cases where there is
-  # no push to react to: re-running a release whose tag is already published but
-  # whose job failed partway, and cutting one from the UI without a local
-  # checkout. It changes nothing about what a release IS — the version still has
-  # to be committed, because check-version.sh below fails the run when the tag
+  # The same release, started by hand from the Actions tab, in two flavours.
+  #
+  # With an empty tag it is the whole release: scripts/next-version.sh reads the
+  # version off the conventional commits since the last tag, prepare-release.sh
+  # bumps version.go, the Makefile, the Formula and the changelog, and the bump
+  # and its tag are pushed only AFTER the gate and the six builds have passed —
+  # so a failed release leaves main untouched rather than carrying a version
+  # nothing was ever published for.
+  #
+  # With a tag it releases a version that is already committed: re-running a
+  # release whose tag published before the job died, or cutting one from the UI
+  # without a local checkout. check-version.sh still fails the run when that tag
   # disagrees with version.go, the Makefile or the Formula.
+  #
+  # Pushing a tag by hand (RELEASE.md step 2) keeps working and is unchanged.
   workflow_dispatch:
     inputs:
       tag:
         description: >-
-          Release tag, e.g. v0.25.0. The bump must already be committed
-          (scripts/prepare-release.sh writes version.go, the Makefile and the
-          Formula). If this tag already exists the release is rebuilt from it;
-          if not, it is created on the branch selected above.
-        required: true
+          Leave EMPTY for a normal release — the version is read off the
+          conventional commits since the last tag and bumped for you. Give a
+          tag (v0.25.0) only to release a version that is already committed: an
+          existing tag is rebuilt from itself, a new one is created on the
+          branch selected above.
+        required: false
+        default: ""
         type: string
+      bump:
+        description: >-
+          Ignored unless tag is empty. auto reads the commits (feat -> minor,
+          breaking -> major, held inside 0.x until someone cuts 1.0.0);
+          patch/minor/major force the level.
+        required: false
+        default: auto
+        type: choice
+        options: [auto, patch, minor, major]
 
 permissions:
   contents: write
@@ -52,7 +71,7 @@ jobs:
       # the tag is new, stay on the selected ref; the Create GitHub Release step
       # creates the tag here. fetch-depth: 0 above is what makes the tag local.
       - name: Resolve the release tag (manual runs)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
         env:
           TAG: ${{ inputs.tag }}
         run: |
@@ -84,17 +103,51 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # An automatic release chooses its own version and commits the bump HERE,
+      # in the working tree only. Nothing reaches the remote until the gate and
+      # all six builds have passed — see "Publish the version bump" near the
+      # end — so a release that fails partway leaves main exactly as it was,
+      # rather than carrying a bump for a version nobody can download.
+      #
+      # next-version.sh prints only the number on stdout (its reasoning goes to
+      # stderr, so it shows up in the log), and that number is then handed to
+      # prepare-release.sh explicitly rather than letting it resolve `auto` a
+      # second time — two resolutions of the same thing can disagree.
+      #
+      # --no-gate because "Run the full gate (make check)" below runs it against
+      # this very tree; without it the job would run the whole gate twice and
+      # never finish inside its timeout.
+      - name: Choose the version and bump it (automatic releases)
+        id: auto
+        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          version="$(./scripts/next-version.sh --bump "$BUMP" --explain)"
+          echo "selected ${version} for release"
+          ./scripts/prepare-release.sh "$version" --no-gate
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
       - name: Extract version
         id: ver
         env:
           # Empty on a tag push, the dispatch input on a manual run. By env, not
           # interpolated into the script body.
           DISPATCH_TAG: ${{ inputs.tag }}
+          # Set only when the step above chose the version; empty otherwise.
+          AUTO_TAG: ${{ steps.auto.outputs.tag }}
         run: |
           set -euo pipefail
-          # On a manual run GITHUB_REF_NAME is the branch that was selected, so
-          # the tag has to come from the input instead.
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+          # An automatic release already knows its tag. Otherwise: on a manual
+          # run GITHUB_REF_NAME is the branch that was selected, so the tag has
+          # to come from the input instead.
+          if [[ -n "${AUTO_TAG}" ]]; then
+            TAG="${AUTO_TAG}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             TAG="${DISPATCH_TAG}"
           else
             TAG="${GITHUB_REF_NAME}"
@@ -279,6 +332,33 @@ jobs:
               sys.exit(1)
           print("binary reports version=%s commit=%s built=%s" % (info["version"], info["commit"], info["built"]))
           PY
+
+      # The point of no return for an automatic release, and deliberately the
+      # last thing before publishing: the gate has passed, the Studio UI is
+      # verified embedded, all six binaries are built and the linux/amd64 one
+      # has been run and asked what version it thinks it is. Only now do the
+      # bump and its tag leave this runner.
+      #
+      # A rejected push means the branch moved during the ~40 minutes this took.
+      # That is NOT something to force past: the binaries above were built from
+      # THIS tree, and forcing would publish them under a branch that no longer
+      # contains the commit they came from. Fail and let a person look.
+      #
+      # Pushing the tag here does not start a second Release run: events raised
+      # by GITHUB_TOKEN do not trigger workflows. That restriction is usually a
+      # nuisance; here it is what keeps one button from producing two releases.
+      - name: Publish the version bump (automatic releases)
+        if: steps.auto.outputs.tag != ''
+        env:
+          TAG: ${{ steps.auto.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "::error::${GITHUB_REF_NAME} moved while this release was building, so the bump could not be fast-forwarded. Nothing has been published and no tag exists. Re-run the release — the new run reads the newer commits and picks its version again."
+            exit 1
+          fi
+          git push origin "refs/tags/${TAG}"
+          echo "pushed the bump and ${TAG} to ${GITHUB_REF_NAME}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

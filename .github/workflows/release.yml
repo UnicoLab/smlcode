@@ -122,8 +122,20 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
         env:
           BUMP: ${{ inputs.bump }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          # An automatic release pushes its bump to the branch it ran from, but
+          # "Sync Homebrew formula + prebuilt binaries" below always targets the
+          # default branch. From anywhere else those two land on different
+          # branches, and main ends up advertising a version whose bump it never
+          # received. Releasing another branch is still possible — with an
+          # explicit tag, where the bump is already committed and nothing here
+          # has to guess where it belongs.
+          if [[ "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
+            echo "::error::an automatic release (empty tag) runs from ${DEFAULT_BRANCH} only — this run is on ${GITHUB_REF_NAME}. Give an explicit tag to release another branch."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           version="$(./scripts/next-version.sh --bump "$BUMP" --explain)"

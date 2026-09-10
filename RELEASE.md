@@ -144,6 +144,11 @@ Cutting 1.0.0 is deliberate, never automatic: on a 0.x line a breaking change mo
 minor. Run `scripts/next-version.sh --bump major --allow-zero-major` locally, commit the
 bump, and release it with an explicit tag.
 
+An automatic release runs from **`main` only**, and says so if you point it elsewhere. It
+pushes its bump to the branch it ran from, while the Homebrew sync always targets `main`;
+from another branch those two would land in different places. Release another branch with
+an explicit tag, where the bump is already committed.
+
 **Give a tag — release a version that is already committed.** For re-running a release
 that published its tag and then died: the job notices the tag exists and builds **from that
 tag**, not from whatever `main` has become since, so the assets still match the commit the

@@ -36,17 +36,36 @@ slmcode doctor --json
 These arrive **in-band**, as the tool result the model sees. They are also what you will see in
 the Live view and the run trace.
 
+### `[stripped ws_read line numbers from old_str — do not include them]`
+
+The commonest small-model failure, now handled in-band. `ws_read` renders a `   42|` gutter for
+navigation; it is not in the file. When **every** non-blank line of `old_str` (or a `ws_patch`
+body) carries it, the gutter is stripped, the edit is applied, and this note is appended to the
+result so the drift stays visible. `pkg/evolve` ships a rule
+(`transform_args: strip_line_number_prefix`) keyed on it that stops the model doing it again.
+
 ### `Edit refused — old_str still contains ws_read's line-number prefix (like `   42|`)`
 
-The commonest small-model failure. `ws_read` renders a `   42|` gutter for navigation; it is not
-in the file. The message shows a before/after. `pkg/evolve` ships a rule
-(`transform_args: strip_line_number_prefix`) that fixes this automatically after the first time.
+Only **some** lines carry the gutter, so this was not a paste from `ws_read` and cannot be fixed
+by stripping. The message shows a before/after; copy the span again without the numbers.
 
 ### `Edit refused — old_str is empty (or only whitespace)`
 
 An empty search used to pass `strings.Contains` and silently prepend `new_str`. The message names
 the three real intents: create → `ws_write`; append → anchor on the last 2–3 lines; insert →
 repeat the anchor at the end of `new_str`.
+
+### `Write refused — content is empty, so this would create <path> as a 0-byte file`
+
+`ws_write` reads the file body from `content` (also `contents` / `text` / `body`). The usual cause is
+the text sitting under a key the tool does not read (`code`, `source`, …) — the message lists any
+unrecognized key in the call. Truncating an *existing* file to zero bytes needs `allow_shrink: true`.
+
+### `old_str is required` after a call that clearly had one
+
+Older builds matched argument names exactly. `ws_edit` now also accepts `old_string` / `search` /
+`old` and `new_string` / `replace` / `new`; `ws_patch` accepts `diff` / `hunk`. The canonical key
+wins when both are present.
 
 ### `old_str found N times in <path>`
 

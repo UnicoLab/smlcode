@@ -131,9 +131,19 @@ func (r *Runner) applyResumeRequest(req *ggagent.SubAgentRequest, taskID string)
 		// the restored transcript routinely ENDS on an assistant tool_calls
 		// message. A user message may not sit between that and the tool results
 		// the executor is about to append — every OpenAI-compatible server
-		// answers HTTP 400. The steer still reaches the model through req.Input.
+		// answers HTTP 400.
+		//
+		// The steer used to be left to req.Input on that path, and it never
+		// arrived: the agent library adds Input as a user turn on a COLD start
+		// only and, on a seeded conversation, keeps it out of the transcript.
+		// So the one resume that most needs the turn-budget warning — a worker
+		// interrupted deep in its tool loop — was the one that never saw it.
+		// A system message is legal at any position, so it goes in right after
+		// the leading system message (the technique
+		// compact.CompactChatMessagesWithDigest uses for its digest).
 		if trailingUnansweredToolCalls(msgs) {
-			r.logf("%s finalize-steer kept out of the transcript: tool calls still pending", taskID)
+			req.Messages = injectSystemSteer(req.Messages, steer)
+			r.logf("%s finalize-steer injected as a system message: tool calls still pending", taskID)
 		} else {
 			req.Messages = append(req.Messages, llm.Message{Role: "user", Content: steer})
 		}
@@ -145,6 +155,21 @@ func (r *Runner) applyResumeRequest(req *ggagent.SubAgentRequest, taskID string)
 		r.logf("%s resuming ReAct with %d messages (iter=%d) — no cold replan", taskID, len(req.Messages), req.Iteration)
 	}
 	return true
+}
+
+// injectSystemSteer places steer as a system message immediately after the
+// transcript's leading system message, or first when there is none. It never
+// appends: the tail of a resumed transcript is an assistant tool_calls message
+// whose results the executor is about to add, and nothing may sit between them.
+func injectSystemSteer(msgs []llm.Message, steer string) []llm.Message {
+	at := 0
+	if len(msgs) > 0 && strings.EqualFold(msgs[0].Role, compact.RoleSystem) {
+		at = 1
+	}
+	out := make([]llm.Message, 0, len(msgs)+1)
+	out = append(out, msgs[:at]...)
+	out = append(out, llm.Message{Role: compact.RoleSystem, Content: steer})
+	return append(out, msgs[at:]...)
 }
 
 // reactCompactMinMessages is the floor below which compaction never triggers.
@@ -219,42 +244,33 @@ func (r *Runner) maybeCompactReact(msgs []session.ReactMessage, agentID string, 
 // LiveReactCompactionWired reports whether per-iteration ReAct compaction is
 // actually installed in the request path.
 //
-// It is FALSE, and it is a constant rather than a config field because nothing
-// an operator can set changes it: the call site does not exist. Every consumer
-// that describes compaction to a human — pkg/readiness, the config docstring,
-// the run notice — must read this rather than react_compact, because
-// react_compact says what the operator ASKED FOR and this says what the harness
-// DOES. Telling someone their 16-iteration worker is protected from context
-// exhaustion when only the resume path compacts is worse than telling them
-// nothing.
+// It is TRUE. ggagent's SubAgentRequest carries no per-iteration callback and
+// its Middleware interface is BeforeRun/AfterRun only, so nothing in THIS
+// package sees iteration N of a 16-iteration worker — but a ReAct iteration is
+// exactly one llm.Provider completion, and every role is bound to its own
+// provider registration. pkg/backends.BindRole therefore stacks a
+// liveElideProvider (pkg/backends/live_elide.go) outermost over every
+// tool-using role whose factory carries a LiveElide policy; the orchestrator
+// sets that policy from react_compact / react_compact_at_percent, and the
+// window comes from the model profile's context_limit. The same wall was hit
+// by live token streaming and the way round it was the same wrapper route.
 //
-// What IS wired, with react_compact on:
-//   - document (CONTEXT.md) compaction — pkg/compact, driven by the orchestrator;
-//   - ReAct compaction at CHECKPOINT and RESUME — maybeCompactReact, called from
-//     saveReactFromResult and applyResumeRequest.
+// It stays a constant rather than a config field because nothing an operator
+// sets changes whether the call site EXISTS — react_compact says whether it
+// is used. Every consumer that describes compaction to a human — pkg/readiness,
+// the config docstring, the run notice — must read this rather than
+// react_compact.
 //
-// What is not: compaction between iterations of a live agent call.
-//
-// The blocker and the way through, so the next person does not re-derive it:
-// ggagent's SubAgentRequest carries no per-iteration callback and its
-// Middleware interface is BeforeRun/AfterRun only, so nothing in this package
-// sees iteration N of a 16-iteration worker. The same wall was hit by live
-// token streaming, and the way round it was a PROVIDER WRAPPER — a ReAct
-// iteration is exactly one llm.Provider.Complete call, so a wrapper registered
-// under the role-bound key (pkg/backends.BindRole, which already stacks
-// structuredProvider over streamTeeProvider over retryProvider) sees every
-// iteration's full transcript and can rewrite req.Messages.
-//
-// That wrapper is NOT this method, and it is why this is still false: the
-// policy below is written for a CHECKPOINT transcript, and
-// compact.CompactChatMessagesWithDigest folds the head of the conversation into
-// a system digest and appends a "resuming" user turn. On a live request the
-// head is the role's system prompt — the tool contract — and dropping it
-// mid-call would break the agent far more reliably than a long context does.
-// Wiring this needs a live variant that pins the leading system message and
-// omits the resume notice; that belongs beside the other provider wrappers in
-// pkg/backends.
-const LiveReactCompactionWired = false
+// What the live path does, and deliberately does not do: it elides old tool
+// RESULTS deterministically (the last compact.DefaultElideKeepLast stay
+// verbatim), keeping every tool call, every tool_call_id pair, the leading
+// system message and every user/assistant turn. It never summarizes.
+// maybeCompactReact below may fold the head of a CHECKPOINT transcript into a
+// system digest, but on a live request the head is the role's tool contract,
+// and dropping it mid-call would break the agent more reliably than a long
+// context does. Summarization therefore stays where it was: at checkpoint and
+// resume, after the same elision has been tried first.
+const LiveReactCompactionWired = true
 
 // ReactCompactionStatus describes, in one line, what compaction the harness is
 // actually performing for a given react_compact setting. Consumers that show
@@ -264,17 +280,17 @@ func ReactCompactionStatus(reactCompact bool) string {
 		return "ReAct compaction is off"
 	}
 	if LiveReactCompactionWired {
-		return "ReAct compaction is on for live iterations, checkpoints and resume"
+		return "ReAct compaction is on for live iterations (old tool results elided deterministically), checkpoints and resume"
 	}
 	return "ReAct compaction runs at checkpoint/resume only — a single long agent call is not compacted mid-flight"
 }
 
-// CompactLiveMessages is the LIVE per-iteration compaction entry point.
+// CompactLiveMessages applies the CHECKPOINT policy — deterministic elision,
+// then the structured digest — to an in-memory transcript.
 //
-// It is the POLICY half of a protection whose call site does not exist yet —
-// see LiveReactCompactionWired for the blocker, the proposed provider-wrapper
-// design, and the reason this policy cannot simply be pointed at a live
-// transcript as written.
+// It is exposed for embedders that hold a transcript between calls of their
+// own. The harness's live path is the provider wrapper described at
+// LiveReactCompactionWired, which elides only and does not go through here.
 func (r *Runner) CompactLiveMessages(agentID string, iteration int, msgs []llm.Message) []llm.Message {
 	if r == nil || !r.ReactCompact || len(msgs) < reactCompactMinMessages {
 		return msgs

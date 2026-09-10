@@ -27,6 +27,80 @@ export interface ModalProps {
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+interface FocusTrapOptions {
+  /** The trap is inert while false. */
+  active: boolean;
+  /** Called on Escape. Omit for a dialog that cannot be dismissed (a HITL gate). */
+  onEscape?: () => void;
+  /** Element focused when the trap activates. Falls back to the first control. */
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
+  /** Skip moving focus in on activation (the caller does it). */
+  manageInitialFocus?: boolean;
+}
+
+/**
+ * useFocusTrap keeps Tab inside `panelRef` while active, moves focus in on
+ * activation and restores it on release, and routes Escape to `onEscape`.
+ * Modal uses it; so does the HITL gate, which has a dialog role but used to
+ * let Tab wander into the page underneath.
+ */
+export function useFocusTrap(
+  panelRef: React.RefObject<HTMLElement | null>,
+  { active, onEscape, initialFocusRef, manageInitialFocus = true }: FocusTrapOptions,
+) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = manageInitialFocus
+      ? window.setTimeout(() => {
+          const target =
+            initialFocusRef?.current ??
+            panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ??
+            panelRef.current;
+          target?.focus();
+        }, 0)
+      : null;
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      previous?.focus();
+    };
+  }, [active, initialFocusRef, manageInitialFocus, panelRef]);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (!onEscape) return;
+        e.stopPropagation();
+        onEscape();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = panel.contains(document.activeElement);
+      if (!inside) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [active, onEscape, panelRef]);
+}
+
 export function Modal({
   open,
   title,
@@ -41,52 +115,8 @@ export function Modal({
   const titleId = useId();
   const descId = useId();
 
-  // Focus management: move focus in on open, restore it on close.
-  useEffect(() => {
-    if (!open) return undefined;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const timer = window.setTimeout(() => {
-      const target =
-        initialFocusRef?.current ??
-        panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ??
-        panelRef.current;
-      target?.focus();
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      previous?.focus();
-    };
-  }, [open, initialFocusRef]);
-
-  // Esc closes; Tab is trapped inside the dialog.
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-        (el) => el.offsetParent !== null || el === document.activeElement,
-      );
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [open, onClose]);
+  // Focus in on open, restore on close; Esc closes; Tab stays inside.
+  useFocusTrap(panelRef, { active: open, onEscape: onClose, initialFocusRef });
 
   if (!open) return null;
 

@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MessageSquareText, Send, Trash2, Loader2 } from 'lucide-react';
 import { getFeedback, postFeedback, clearFeedback } from '@/api/client';
 import type { FeedbackState } from '@/types';
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
+import { STEER_TASK_EVENT, on, steerPrefix, takePendingSteer, type SteerTaskDetail } from '@/components/ui/events';
 
 interface LiveFeedbackProps {
   /** Called with the newly active feedback text (or '') after set/clear. */
@@ -33,6 +34,7 @@ export default function LiveFeedback({ onChanged, compact = false }: LiveFeedbac
   const [sending, setSending] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Show any existing active feedback so it survives page navigation.
   useEffect(() => {
@@ -42,6 +44,29 @@ export default function LiveFeedback({ onChanged, compact = false }: LiveFeedbac
         setSetAt(f.set_at || undefined);
       })
       .catch(() => { /* backend may not expose feedback yet — treat as none */ });
+  }, []);
+
+  // "Steer" on a stuck task prefills `@task:ID ` here and focuses the box —
+  // live when this composer is mounted, or parked in sessionStorage by a card
+  // on the board and picked up when the Live page mounts.
+  useEffect(() => {
+    const prefill = (taskId: string) => {
+      const prefix = steerPrefix(taskId);
+      setText((t) => (t.startsWith(prefix) ? t : prefix + t.replace(/^@task:\S+\s*/, '')));
+      window.setTimeout(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }, 0);
+    };
+    const parked = takePendingSteer();
+    if (parked) prefill(parked);
+    return on<SteerTaskDetail>(STEER_TASK_EVENT, (detail, ev) => {
+      if (!detail?.taskId) return;
+      ev.preventDefault();
+      prefill(detail.taskId);
+    });
   }, []);
 
   const refreshFromServer = async () => {
@@ -128,6 +153,7 @@ export default function LiveFeedback({ onChanged, compact = false }: LiveFeedbac
       {/* Composer */}
       <div className="flex items-end gap-2">
         <textarea
+          ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

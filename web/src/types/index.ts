@@ -37,6 +37,28 @@ export interface Task {
   error: string;
   updated_at: string;
   notes: string;
+  /**
+   * One line per failed attempt ("attempt 2 failed because …"), oldest first.
+   * The story of a blocked task lives here, not in `error`, which only keeps
+   * the last line.
+   */
+  attempt_log?: string[];
+  /** Escalate-gate retries used so far. */
+  gate_retries?: number;
+  /** Structured acceptance criteria — the checklist a reviewer judges. */
+  criteria?: TaskCriterion[];
+}
+
+/** One acceptance criterion; mirrors plan.Criterion. */
+export interface TaskCriterion {
+  id: string;
+  text: string;
+  /** Shell command that proves the condition, or empty. */
+  verify?: string;
+  /** must | should | nice */
+  priority?: string;
+  /** Set when the server has judged it; absent means not yet checked. */
+  met?: boolean;
 }
 
 export interface ChecklistItem {
@@ -677,6 +699,15 @@ export interface QuerySession {
   interrupted?: boolean;
   phase?: string;
   resume_from?: string;
+  /** Wall time of the run, when the archive recorded it. */
+  duration_ms?: number;
+  tokens?: number;
+  cost_usd?: number;
+  tasks_total?: number;
+  tasks_done?: number;
+  failed_tasks?: number;
+  /** Teams the run was sent to. */
+  teams?: string[];
 }
 
 export interface QueryView {
@@ -1130,6 +1161,10 @@ export interface PendingChange {
   hunks?: DiffHunk[];
   truncated?: boolean;
   error?: string;
+  /** Provenance: which task and agent proposed the change, and in which run. */
+  task_id?: string;
+  agent?: string;
+  query_id?: string;
 }
 
 export interface ReviewQueue {

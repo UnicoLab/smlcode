@@ -177,6 +177,31 @@
   }
 }
 
+/* A green run's two-second burst (ui/Confetti.tsx). Not rendered at all under
+   prefers-reduced-motion; the keyframes are here so the pieces need no JS. */
+.confetti-piece {
+  animation-name: confettiFall;
+  animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1);
+  animation-fill-mode: forwards;
+}
+@keyframes confettiFall {
+  0%   { opacity: 1; transform: translate3d(0, -12px, 0) rotate(0deg); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(var(--confetti-drift, 24px), 100vh, 0) rotate(540deg); }
+}
+
+/* A card scrolled into view from elsewhere (LiveTaskPanel focusTaskId). */
+.flash-focus {
+  animation: flashFocus 1.6s ease-out 1;
+}
+@keyframes flashFocus {
+  0%   { box-shadow: 0 0 0 0 rgb(99 102 241 / 0.7); background-color: rgb(99 102 241 / 0.12); }
+  100% { box-shadow: 0 0 0 8px rgb(99 102 241 / 0); background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flash-focus { animation: none; outline: 2px solid rgb(99 102 241 / 0.7); }
+}
+
 /* Column colors */
 .col-to_scope { @apply text-sky-500; }
 .col-scoped { @apply text-indigo-500; }

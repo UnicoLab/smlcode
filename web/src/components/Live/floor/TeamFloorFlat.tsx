@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
-import type { FloorAgent, FloorHandoff, FloorModel, FloorPhase, FloorPulse, FloorStageSeat, FloorTeam, FloorTicket, SeatKind, TicketState } from './floorModel';
-import { ago, type FloorSelection } from './floorShared';
+import type { FloorAgent, FloorHandoff, FloorModel, FloorPhase, FloorPulse, FloorStageSeat, FloorTeam, FloorTicket, TicketState } from './floorModel';
+import { LEGEND_STATES, TICKET_LABEL, ago, glyphFor, type FloorSelection } from './floorShared';
 
 // ── The team floor ───────────────────────────────────────────────────────
 //
@@ -44,32 +44,6 @@ const HEX: Record<string, string> = {
   gray: '#9ca3af',
 };
 
-const SEAT_GLYPH: Record<SeatKind, string> = {
-  manager: '👔',
-  worker: '🔧',
-  reviewer: '👁️',
-  tester: '🧪',
-  member: '🤖',
-};
-
-const ROLE_GLYPH: Record<string, string> = {
-  planner: '📋',
-  splitter: '✂️',
-  explorer: '🔍',
-  architect: '🏗️',
-  coordinator: '🎯',
-  docs: '📖',
-  memory: '💾',
-  context: '📝',
-  composer: '🎼',
-  triage: '👔',
-  corrector: '✏️',
-  deep: '🧠',
-  reviewer: '👁️',
-  tester: '🧪',
-  worker: '🔧',
-};
-
 const TICKET_FILL: Record<TicketState, string> = {
   queued: '#cbd5e1',
   working: '#f59e0b',
@@ -77,15 +51,6 @@ const TICKET_FILL: Record<TicketState, string> = {
   blocked: '#ef4444',
   done: '#10b981',
   failed: '#dc2626',
-};
-
-const TICKET_LABEL: Record<TicketState, string> = {
-  queued: 'queued',
-  working: 'in progress',
-  review: 'in review',
-  blocked: 'blocked',
-  done: 'done',
-  failed: 'failed',
 };
 
 // Stage geometry, in SVG units. The viewBox scales to the container.
@@ -101,14 +66,6 @@ interface Placed {
   cy: number;
   hex: string;
   agentPos: Map<string, { x: number; y: number }>;
-}
-
-function glyphFor(agent: FloorAgent): string {
-  if (agent.seat !== 'member') return SEAT_GLYPH[agent.seat];
-  for (const [role, glyph] of Object.entries(ROLE_GLYPH)) {
-    if (agent.id === role || agent.id.endsWith('-' + role)) return glyph;
-  }
-  return SEAT_GLYPH.member;
 }
 
 /** Islands are laid out on a shallow arc, so three read as a floor and not a row. */
@@ -552,20 +509,13 @@ function IntegrationPlate({ integration, unassigned }: { integration: NonNullabl
 }
 
 function Legend({ floor }: { floor: FloorModel }) {
-  const items: [TicketState, string][] = [
-    ['working', 'in progress'],
-    ['review', 'in review'],
-    ['blocked', 'blocked'],
-    ['done', 'done'],
-    ['queued', 'queued'],
-  ];
   return (
     <div className="pointer-events-none absolute bottom-2 left-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-500 dark:text-gray-400">
-      <span className="font-semibold uppercase tracking-wider">{floor.mode === 'teams' ? floor.summary : floor.summary}</span>
-      {items.map(([state, label]) => (
+      <span className="font-semibold uppercase tracking-wider">{floor.summary}</span>
+      {LEGEND_STATES.map((state) => (
         <span key={state} className="inline-flex items-center gap-1">
           <span className="inline-block h-2 w-3 rounded-sm" style={{ background: TICKET_FILL[state] }} />
-          {label}
+          {TICKET_LABEL[state]}
         </span>
       ))}
     </div>

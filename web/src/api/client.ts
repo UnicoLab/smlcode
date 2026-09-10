@@ -293,6 +293,11 @@ export async function patchTask(id: string, patch: Partial<Task>): Promise<Task>
   });
 }
 
+// POST /api/tasks/{id}/retry → the task, back on the board for another attempt
+export async function retryTask(id: string): Promise<Task> {
+  return request<Task>(`/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+}
+
 // DELETE /api/tasks/{id} → {ok: "true"}
 export async function deleteTask(id: string): Promise<{ ok: string }> {
   return request(`/tasks/${encodeURIComponent(id)}`, {

@@ -310,6 +310,12 @@ export interface ConfigureResult {
 
 export interface RunEvent {
   phase: string;
+  /**
+   * The event's kind. Two kinds are BOARD events, folded into the board store
+   * rather than shown in the log: `task_update` (data.task is the task as
+   * GET /api/tasks returns it) and `review_pending` (data.pending is the
+   * review queue's length).
+   */
   kind: string;
   level?: 'info' | 'warning' | 'error' | 'success' | 'problem' | string;
   message: string;
@@ -317,7 +323,7 @@ export interface RunEvent {
   agent?: string;
   scope?: string;
   output?: string;
-  data?: DynamicComposition;
+  data?: DynamicComposition & { task?: Task; pending?: number };
   model?: string;
   tokens?: number;
   cost_usd?: number;
@@ -677,6 +683,15 @@ export interface QuerySession {
   interrupted?: boolean;
   phase?: string;
   resume_from?: string;
+  // ── Per-run totals, when the server has them ──
+  duration_ms?: number;
+  tokens?: number;
+  cost_usd?: number;
+  tasks_total?: number;
+  tasks_done?: number;
+  failed_tasks?: number;
+  /** The teams that staffed the run, by id. */
+  teams?: string[];
 }
 
 export interface QueryView {

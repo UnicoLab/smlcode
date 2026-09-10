@@ -47,6 +47,11 @@ type Directives struct {
 	// The structured path always emits `temperature` for a role that set one.
 	Temperature    float64
 	TemperatureSet bool
+	// LiveElide is the live ReAct compaction policy for this role: old tool
+	// results are elided deterministically on every request once the
+	// transcript passes the threshold. The zero value installs nothing. See
+	// live_elide.go.
+	LiveElide LiveElide
 }
 
 // backendMeta is what the direct structured path needs to talk to a server on
@@ -132,6 +137,9 @@ func BindRole(m *llm.ProviderManager, baseKey string, d Directives) string {
 			client:     &http.Client{},
 		}
 	}
+	// Outermost: the elided transcript must be what BOTH the delegate and the
+	// structured wrapper's direct constrained-decoding call send.
+	p = newLiveElide(p, d.Role, d.LiveElide)
 	if err := m.RegisterProvider(key, p); err != nil {
 		// A concurrent Create won the race — reuse whatever landed.
 		if _, gerr := m.GetProvider(key); gerr == nil {

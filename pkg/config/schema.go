@@ -97,7 +97,7 @@ var schemaFields = map[string]schemaMeta{
 	"max_context_kb":         {"Max context KB", "Legacy prompt budget in KB, used when a model profile declares no real context window", "context", nil, false, false, false, false},
 	"context_compact":        {"CONTEXT compaction", "Summarize CONTEXT.md mid-run when it outgrows the budget", "context", nil, false, false, false, false},
 	"context_compact_engine": {"Compaction engine", "How CONTEXT.md is compacted", "context", []string{"heuristic", "llm", "auto"}, false, false, false, false},
-	"react_compact": {"ReAct compaction", "Compact the agent conversation at checkpoint and resume when it approaches the window. A single long agent call is NOT compacted mid-flight",
+	"react_compact": {"ReAct compaction", "Compact the agent conversation when it approaches the window: old tool results are elided deterministically on live requests, and a checkpoint or resume is elided then digested",
 		"context", nil, false, false, false, false},
 	"react_compact_at_percent": {"ReAct compaction threshold", "Percentage of the context budget at which the conversation is compacted (0 disables)",
 		"context", nil, false, false, false, false},

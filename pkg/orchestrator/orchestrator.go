@@ -377,6 +377,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		}
 	}
 	factory.ModelProfiles = cfg.ModelProfiles
+	if cfg.ReactCompact {
+		// Live ReAct compaction: old tool results are elided deterministically
+		// on every request a tool-using role sends once its transcript passes
+		// the threshold. The window is resolved per role from the model profile.
+		factory.LiveElide = backends.LiveElide{
+			AtPercent: cfg.ReactCompactAtPercent, KeepLast: compact.DefaultElideKeepLast,
+		}
+	}
 	if prof := config.ResolveModelProfile(cfg.ModelProfiles, cfg.Model); prof.MaxTokens > 0 || prof.MaxTurns > 0 || prof.Temperature > 0 {
 		factory.ProfileMaxTokens = prof.MaxTokens
 		factory.ProfileMaxTurns = prof.MaxTurns

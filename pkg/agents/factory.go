@@ -397,6 +397,13 @@ type Factory struct {
 	// ModelProfiles resolves caps against each agent's effective model
 	// (per-agent override ?? global stack/config model).
 	ModelProfiles map[string]config.ModelProfile
+	// LiveElide is the live ReAct compaction policy: on every request a
+	// tool-using role sends, old tool results are elided deterministically
+	// once the transcript passes AtPercent of the model's context window.
+	// WindowTokens is resolved per role from the model profile when left 0.
+	// The zero value installs nothing; the orchestrator sets it from
+	// react_compact / react_compact_at_percent. See loop.LiveReactCompactionWired.
+	LiveElide backends.LiveElide
 	// Optional global fallback caps when ModelProfiles is empty.
 	ProfileMaxTokens int
 	ProfileMaxTurns  int
@@ -764,7 +771,7 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	// response_format, stop, or tool_choice — but it does resolve the provider
 	// by the name set here, which is the one hook the read-only dependency
 	// leaves open. Everything downstream (orchestrator, loop) gets it for free.
-	cfg.Provider = backends.BindRole(f.LLM, cfg.Provider, spec.Directives())
+	cfg.Provider = backends.BindRole(f.LLM, cfg.Provider, f.directivesFor(spec, cfg.Model))
 	cfg.SystemPrompt = spec.SystemPrompt
 	cfg.Tools = spec.Tools
 	cfg.Temperature = spec.Temperature
@@ -811,6 +818,31 @@ func (f *Factory) definition(spec RoleSpec) *agent.BaseAgentDefinition {
 	// and CreateAgent re-checks both for nil before building an agent.
 	_ = def.Initialize(f.LLM, f.Tools)
 	return def
+}
+
+// directivesFor is the role's decoding contract plus, for a tool-using role,
+// the live elision policy sized to the model it will actually run on.
+func (f *Factory) directivesFor(spec RoleSpec, model string) backends.Directives {
+	d := spec.Directives()
+	d.LiveElide = f.liveElideFor(spec, model)
+	return d
+}
+
+// liveElideFor sizes the live elision policy for one role. A tool-less role
+// has no tool results to elide, and a role whose model has no known context
+// window cannot be given a threshold, so both get the zero policy.
+func (f *Factory) liveElideFor(spec RoleSpec, model string) backends.LiveElide {
+	if len(spec.Tools) == 0 || f.LiveElide.AtPercent <= 0 {
+		return backends.LiveElide{}
+	}
+	e := f.LiveElide
+	if e.WindowTokens <= 0 {
+		e.WindowTokens = config.ResolveModelProfile(f.ModelProfiles, model).ContextLimit
+	}
+	if !e.Enabled() {
+		return backends.LiveElide{}
+	}
+	return e
 }
 
 // isCodingRole classifies by BASE role. An escalated worker that stopped

@@ -179,11 +179,27 @@ Anything that stayed a card can be pulled on demand with the `ws_skill` tool.
 
 ## 7. Compaction (`pkg/compact`)
 
-### ReAct compaction (mid-run conversation)
+### ReAct compaction
 
-Triggers at `react_compact_at_percent` (default 80) of the window, with a 5-point hysteresis band
-— a compaction that does not open at least that much headroom pauses auto-compaction rather than
-thrashing.
+Two paths share one threshold: `react_compact_at_percent` (default 80) of the model's context
+window (`context_limit` from the model profile). `loop.LiveReactCompactionWired` is the constant of
+record for whether the live path exists; `react_compact` says whether it is used.
+
+**Live iterations — deterministic elision only.** A ReAct iteration is one provider completion, and
+every role is bound to its own provider registration, so a provider wrapper
+(`pkg/backends.LiveElide`, installed by `BindRole` for tool-using roles) sees each iteration's full
+transcript. Once the estimated transcript passes the threshold, the content of every tool *result*
+but the last 5 is replaced with `[tool result elided]`. Every tool *call*, every `tool_call_id`
+pair, the leading system message and every user/assistant turn stay — a transcript that was legal
+before is legal after. Nothing is summarized on a live request: the head of the transcript is the
+role's tool contract, and dropping it mid-call breaks the agent more reliably than a long context
+does. The rewrite is per request and never touches the agent's own conversation, so it is
+repeatable, and the elided prefix stays byte-identical between iterations until the keep window
+slides — KV-cache reuse survives.
+
+**Checkpoint and resume — elision, then a digest.** A restored or checkpointed transcript is
+compacted by `maybeCompactReact`, with a 5-point hysteresis band — a compaction that does not open
+at least that much headroom pauses auto-compaction rather than thrashing.
 
 Two invariants:
 

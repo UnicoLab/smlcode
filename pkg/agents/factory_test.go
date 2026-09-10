@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/schema"
@@ -62,6 +63,33 @@ func TestStrictReviewerPinsTemperatureZeroDeliberately(t *testing.T) {
 	}
 	if reviewer.TemperatureSet || reviewer.Directives().TemperatureSet {
 		t.Fatal("a role that never pinned its temperature is marked as having set one")
+	}
+}
+
+// TestLiveElideIsSizedPerToolRole: the live elision policy reaches the
+// provider directives of tool-using roles only, sized to the model's context
+// window from the profile; tool-less roles and an unset policy get nothing.
+func TestLiveElideIsSizedPerToolRole(t *testing.T) {
+	f := &Factory{
+		LiveElide:     backends.LiveElide{AtPercent: 80},
+		ModelProfiles: map[string]config.ModelProfile{"default": {ContextLimit: 8192}},
+	}
+	worker := RoleSpec{ID: plan.RoleWorker, Tools: []string{"ws_read", "ws_edit"}}
+	got := f.directivesFor(worker, "some-model").LiveElide
+	if !got.Enabled() || got.WindowTokens != 8192 || got.AtPercent != 80 {
+		t.Fatalf("worker policy = %+v, want enabled at 80%% of 8192", got)
+	}
+	if e := f.directivesFor(RoleSpec{ID: plan.RolePlanner}, "some-model").LiveElide; e.Enabled() {
+		t.Fatalf("a tool-less role was given live elision: %+v", e)
+	}
+	off := &Factory{ModelProfiles: f.ModelProfiles}
+	if e := off.directivesFor(worker, "some-model").LiveElide; e.Enabled() {
+		t.Fatalf("an unset policy was installed: %+v", e)
+	}
+	noWindow := &Factory{LiveElide: backends.LiveElide{AtPercent: 80},
+		ModelProfiles: map[string]config.ModelProfile{"default": {}}}
+	if e := noWindow.directivesFor(worker, "some-model").LiveElide; e.Enabled() {
+		t.Fatalf("a model with no known window was given a threshold: %+v", e)
 	}
 }
 

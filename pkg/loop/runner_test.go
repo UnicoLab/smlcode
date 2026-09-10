@@ -153,6 +153,10 @@ func TestRunBoardTimeoutsDoNotInterruptOrLeaveTasksInProgress(t *testing.T) {
 	r.IdleWait = time.Millisecond
 	r.PostWorkerSmoke = false
 	r.RequireSmoke = false
+	// A timed-out worker is re-queued to resume from its checkpoint while it
+	// is under the attempt ceiling (see TestTimedOutWorkerIsResumedNotParked);
+	// this test pins the park path, so the ceiling is one attempt.
+	r.MaxTaskAttempts = 1
 	r.FailureHandler = NewEnhancedFailureHandler(root)
 
 	var interventions int

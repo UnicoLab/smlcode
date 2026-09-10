@@ -34,7 +34,7 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
 | `composer` | — | pipeline JSON | Assemble a task-specific pipeline (dynamic_pipeline) 🎯 |
-| `reviewer-strict` | — | approve JSON | Second opinion in the speculative review race (`max_parallel >= 3`), temperature 0 🔍🔍 |
+| `reviewer-strict` | — | approve JSON | Sequential second opinion, asked only when `reviewer` returns no readable verdict; temperature 0 🔍🔍 |
 | `describer` | — | prose | Architect half of the describer→editor pair (`architect_editor`) 🗣️ |
 | `editor` | ✅ + `find_models` / `mcp_call` | status | Editor half: applies a described change, minimal reasoning, strict format ✍️ |
 

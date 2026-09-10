@@ -38,7 +38,14 @@ func (f *fakeReviewExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.Su
 	return out, nil
 }
 
-func TestSpeculateReviewCancelsOnAcceptanceWin(t *testing.T) {
+// TestSpeculateLocalWinnerCancelsSlowerSlot exercises the speculate primitive:
+// a required local slot that answers first cancels the slower LLM slot.
+//
+// The review path no longer races a local "acceptance" probe against the
+// reviewer — that probe re-tested a subset of fastPath's conditions with none
+// of its guards, so it could approve a task fastPath had just declined. The
+// primitive itself is unchanged and still has to cancel losers correctly.
+func TestSpeculateLocalWinnerCancelsSlowerSlot(t *testing.T) {
 	fe := &fakeReviewExec{
 		delay: map[string]time.Duration{
 			plan.RoleReviewer: 400 * time.Millisecond,
@@ -54,13 +61,11 @@ func TestSpeculateReviewCancelsOnAcceptanceWin(t *testing.T) {
 		Timeout:     time.Minute,
 		Log:         func(string, ...interface{}) {},
 	}
-	ready := make(chan struct{})
-	close(ready)
 	slots := []SpecSlot{
 		{
-			Role: "acceptance", Required: true,
+			Role: "probe", Required: true,
 			Local: func(ctx context.Context) (string, error) {
-				return `{"approved":true,"score":85,"summary":"auto-approved: acceptance race won"}`, nil
+				return `{"approved":true,"score":85,"summary":"local probe won"}`, nil
 			},
 		},
 		{Role: plan.RoleReviewer, Prompt: "review", Required: false},
@@ -70,17 +75,17 @@ func TestSpeculateReviewCancelsOnAcceptanceWin(t *testing.T) {
 	if time.Since(start) > 350*time.Millisecond {
 		t.Fatalf("expected early cancel; elapsed=%s", time.Since(start))
 	}
-	var acc, rev SpecResult
+	var probe, rev SpecResult
 	for _, sr := range res {
 		switch sr.Role {
-		case "acceptance":
-			acc = sr
+		case "probe":
+			probe = sr
 		case plan.RoleReviewer:
 			rev = sr
 		}
 	}
-	if acc.Err != nil || acc.Output == "" {
-		t.Fatalf("acceptance: %+v", acc)
+	if probe.Err != nil || probe.Output == "" {
+		t.Fatalf("probe: %+v", probe)
 	}
 	if !rev.Skipped && rev.Err == nil && rev.Output != "" {
 		t.Fatalf("expected reviewer canceled/skipped, got %+v", rev)

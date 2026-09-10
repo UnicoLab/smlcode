@@ -206,15 +206,6 @@ func (r *Runner) spend(taskID, what string) bool {
 	return false
 }
 
-// noteExtraRequests records LLM round-trips a task issued beyond the budget
-// units it spent — the extra speculative slots of a review race.
-func (r *Runner) noteExtraRequests(taskID string, n int) {
-	if r == nil {
-		return
-	}
-	r.budget().note(taskID, n)
-}
-
 // budgetExhausted reports whether a task has no calls left.
 func (r *Runner) budgetExhausted(taskID string) bool {
 	return r != nil && taskID != "" && r.budget().remaining(taskID) == 0

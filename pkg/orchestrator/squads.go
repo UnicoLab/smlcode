@@ -287,6 +287,13 @@ func (o *Orchestrator) runSquadIntegration(ctx context.Context, board *plan.Boar
 		return false
 	}
 
+	// The join is a command run on the finish path, and the finish path has a
+	// reserve to keep. Skipping with a reason beats overrunning the report.
+	if !o.gateRoundAffordable(ctx, 2) {
+		o.emitWarn("integrate", "integration skipped — not enough time left to run "+gate.Command+
+			" and still report", "")
+		return false
+	}
 	o.emit("integrate", "every squad is green — joining the halves: "+gate.Command, "")
 	res := o.runSmoke(ctx, gate.Command)
 	if !res.Ran {

@@ -68,6 +68,29 @@ func (g TeamGate) Verified() bool { return g.Ran }
 type teamGates struct {
 	mu sync.RWMutex
 	by map[string]TeamGate
+	// lane records, per team, the fingerprint of the team's own changed files
+	// at the moment its half was last proved. The between-wave gate re-proves
+	// a half only when this differs — see earlyTeamGate.
+	lane map[string]string
+}
+
+// provedOn records the lane fingerprint a team's gate was taken against.
+func (t *teamGates) provedOn(team, fingerprint string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lane == nil {
+		t.lane = map[string]string{}
+	}
+	t.lane[team] = fingerprint
+}
+
+// lastLane returns the lane fingerprint the team was last proved against and
+// whether it was ever proved this run.
+func (t *teamGates) lastLane(team string) (string, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	fp, ok := t.lane[team]
+	return fp, ok
 }
 
 func (t *teamGates) set(g TeamGate) {
@@ -77,6 +100,36 @@ func (t *teamGates) set(g TeamGate) {
 		t.by = map[string]TeamGate{}
 	}
 	t.by[g.Team] = g
+}
+
+// reset forgets every result. Called at the start of a run: a gate is evidence
+// about THIS run's tree, and the orchestrator outlives a run.
+func (t *teamGates) reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.by = nil
+	t.lane = nil
+}
+
+// resetTeamState clears every piece of per-run team state — the squad plan,
+// the single staffing team and the team gates — under the lock.
+//
+// Why all three, and why at the START of both Run and Resume: the squad plan
+// used to be cleared halfway through runSLM and never on Resume, and the
+// gates were never cleared at all. runTeamAcceptance skips teams with no work
+// (Total == 0), so a previous run's green gate for a team that sits idle in
+// this run survived, and allHalvesProved then read two green gates on a run
+// that proved one half — upgrading a failed run's verdict on stale evidence.
+func (o *Orchestrator) resetTeamState() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.squadPlan = nil
+	o.singleTeam = nil
+	o.teamPick = nil
+	o.mu.Unlock()
+	o.teamGates.reset()
 }
 
 func (t *teamGates) snapshot() []TeamGate {
@@ -109,17 +162,18 @@ func (o *Orchestrator) TeamGates() []TeamGate {
 // build` writing dist/ while another's `go test` reads the same tree produces a
 // failure neither team caused.
 func (o *Orchestrator) runTeamAcceptance(ctx context.Context, board *plan.Board) []string {
-	if o == nil || o.squadPlan == nil || board == nil || len(o.squadPlan.Squads) < 2 {
+	p := o.squadPlanNow()
+	if o == nil || p == nil || board == nil || len(p.Squads) < 2 {
 		return nil
 	}
 
 	progress := map[string]squads.Status{}
-	for _, st := range squads.Progress(o.squadPlan, board.Tasks) {
+	for _, st := range squads.Progress(p, board.Tasks) {
 		progress[st.ID] = st
 	}
 
 	var failed []string
-	for _, s := range o.squadPlan.Squads {
+	for _, s := range p.Squads {
 		st := progress[s.ID]
 		// A team with no work did nothing to prove. Running its acceptance
 		// would report on the state of the repository, not on this run.
@@ -129,66 +183,175 @@ func (o *Orchestrator) runTeamAcceptance(ctx context.Context, board *plan.Board)
 		if ctx.Err() != nil {
 			return failed
 		}
-
-		cmd := strings.TrimSpace(s.Acceptance)
-		if cmd == "" {
-			o.teamGates.set(TeamGate{Team: s.ID, Summary: "no acceptance command — this half was never proved"})
-			o.emitWarn("verify", "team "+s.ID+" has no acceptance command — its half is unproved, "+
-				"so a break in it can only surface at integration", "")
+		// Each half is a command run, and the finish path has a reserve to
+		// keep: a run that cannot afford another command run must say so
+		// rather than overrun on the way to its own report.
+		if !o.gateRoundAffordable(ctx, 2) {
+			o.emitWarn("verify", "team "+s.ID+": not enough time left to run its acceptance and still report — "+
+				"its half is UNVERIFIED", "")
+			o.teamGates.set(TeamGate{Team: s.ID, Command: strings.TrimSpace(s.Acceptance),
+				Summary: "not run — out of time"})
 			continue
 		}
-
-		// The team is not wrong about wanting its half to compile, only about
-		// what THIS project calls that. A shipped team declares
-		// `npm --prefix web run build`; a scaffold may name it `compile`, or
-		// have only `typecheck`. Resolving it is the difference between the
-		// half being proved and being permanently grey.
-		root := ""
-		if o.cfg != nil {
-			root = o.cfg.Root
-		}
-		if resolved, note := quality.ResolveScriptCommand(root, cmd); note != "" {
-			o.emit("verify", "team "+s.ID+": "+note, "")
-			cmd = resolved
-		}
-
-		o.emit("verify", "team "+s.ID+": proving its half alone — "+cmd, "")
-		res := o.runSmoke(ctx, cmd)
-		g := TeamGate{Team: s.ID, Command: cmd, Ran: res.Ran, OK: res.OK, Summary: res.Summary}
-		o.teamGates.set(g)
-
-		// A check that never ran is a fact about the MACHINE or the project,
-		// not about the code. `npm run build` with node_modules never
-		// installed, or with no build script in package.json, exits non-zero
-		// and says nothing whatsoever about what the team wrote — scoring that
-		// red sends a corrector to rewrite source that was never at fault,
-		// burns the retry budget, and shows the user a red team for something
-		// no model can fix. Both were measured live; the second is why this
-		// asks CheckDidNotRun rather than ToolingMissing alone.
-		if why := quality.CheckDidNotRun(cmd, res.Output); res.Ran && !res.OK && why != "" {
-			g.Ran = false
-			g.Summary = why + ": " + res.Summary
-			o.teamGates.set(g)
-		}
-
-		switch {
-		case !g.Ran:
-			// A missing runner is a fact about the machine. Failing a team for
-			// it turns a working run red for a reason the model cannot fix.
-			o.emitWarn("verify", "team "+s.ID+": acceptance could not run ("+g.Summary+
-				") — its half is UNVERIFIED, not broken", "")
-		case res.OK:
-			o.emit("verify", "team "+s.ID+" is green: "+cmd, "")
-			o.recordGate("team:"+s.ID, true, "")
-		default:
-			failed = append(failed, s.ID)
-			o.emitWarn("verify", "team "+s.ID+" is RED — its own half does not pass: "+res.Summary, res.Output)
-			o.recordGate("team:"+s.ID, false, res.Summary)
-			o.raiseTeamTicket(board, s, cmd, res.Summary, res.Output)
+		if g, red := o.proveHalf(ctx, board, p, s); red {
+			failed = append(failed, g.Team)
 		}
 	}
 	return failed
 }
+
+// squadPlanNow reads the run's squad plan under the lock.
+func (o *Orchestrator) squadPlanNow() *squads.Plan {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.squadPlan
+}
+
+// proveHalf runs ONE team's acceptance command, records the gate and raises the
+// team's ticket when its half is red. red is true only for a verdict that RAN
+// and failed; an unrunnable check is UNVERIFIED and never red.
+//
+// The command goes through runSmoke, so a half already proved on this exact
+// tree — by the between-wave gate, say — is answered from the run's smoke memo
+// rather than by running the suite again.
+func (o *Orchestrator) proveHalf(ctx context.Context, board *plan.Board, p *squads.Plan, s squads.Squad) (TeamGate, bool) {
+	lane := o.laneFingerprint(p, s.ID)
+	cmd := strings.TrimSpace(s.Acceptance)
+	if cmd == "" {
+		g := TeamGate{Team: s.ID, Summary: "no acceptance command — this half was never proved"}
+		o.teamGates.set(g)
+		o.teamGates.provedOn(s.ID, lane)
+		o.emitWarn("verify", "team "+s.ID+" has no acceptance command — its half is unproved, "+
+			"so a break in it can only surface at integration", "")
+		return g, false
+	}
+
+	// The team is not wrong about wanting its half to compile, only about
+	// what THIS project calls that. A shipped team declares
+	// `npm --prefix web run build`; a scaffold may name it `compile`, or
+	// have only `typecheck`. Resolving it is the difference between the
+	// half being proved and being permanently grey.
+	root := ""
+	if o.cfg != nil {
+		root = o.cfg.Root
+	}
+	if resolved, note := quality.ResolveScriptCommand(root, cmd); note != "" {
+		o.emit("verify", "team "+s.ID+": "+note, "")
+		cmd = resolved
+	}
+
+	o.emit("verify", "team "+s.ID+": proving its half alone — "+cmd, "")
+	res := o.runSmoke(ctx, cmd)
+	g := TeamGate{Team: s.ID, Command: cmd, Ran: res.Ran, OK: res.OK, Summary: res.Summary}
+	o.teamGates.set(g)
+	o.teamGates.provedOn(s.ID, lane)
+
+	// A check that never ran is a fact about the MACHINE or the project,
+	// not about the code. `npm run build` with node_modules never
+	// installed, or with no build script in package.json, exits non-zero
+	// and says nothing whatsoever about what the team wrote — scoring that
+	// red sends a corrector to rewrite source that was never at fault,
+	// burns the retry budget, and shows the user a red team for something
+	// no model can fix. Both were measured live; the second is why this
+	// asks CheckDidNotRun rather than ToolingMissing alone.
+	if why := quality.CheckDidNotRun(cmd, res.Output); res.Ran && !res.OK && why != "" {
+		g.Ran = false
+		g.Summary = why + ": " + res.Summary
+		o.teamGates.set(g)
+	}
+
+	switch {
+	case !g.Ran:
+		// A missing runner is a fact about the machine. Failing a team for
+		// it turns a working run red for a reason the model cannot fix.
+		o.emitWarn("verify", "team "+s.ID+": acceptance could not run ("+g.Summary+
+			") — its half is UNVERIFIED, not broken", "")
+		return g, false
+	case res.OK:
+		o.emit("verify", "team "+s.ID+" is green: "+cmd, "")
+		o.recordGate("team:"+s.ID, true, "")
+		return g, false
+	default:
+		o.emitWarn("verify", "team "+s.ID+" is RED — its own half does not pass: "+res.Summary, res.Output)
+		o.recordGate("team:"+s.ID, false, res.Summary)
+		o.raiseTeamTicket(board, s, cmd, res.Summary, res.Output)
+		return g, true
+	}
+}
+
+// laneFingerprint identifies what this run has written INSIDE one team's
+// territory: the changed files the plan says the team owns, each with its
+// write count so a rewrite of an already-changed file counts. Two equal
+// fingerprints mean the team's half has not moved since — and the OTHER
+// team's writes do not move it, which is what lets a finished lane stay
+// proved while its neighbour keeps working.
+func (o *Orchestrator) laneFingerprint(p *squads.Plan, team string) string {
+	if o == nil || p == nil {
+		return ""
+	}
+	var mine []string
+	for _, fw := range o.changedFileWrites() {
+		if owner, ok := p.Owner(fw.Path); ok && owner == team {
+			mine = append(mine, fmt.Sprintf("%s:%d", fw.Path, fw.Writes))
+		}
+	}
+	return strings.Join(mine, "\n")
+}
+
+// earlyTeamGate proves a half the moment its lane finishes, between waves.
+//
+// The finish path proves every half once the WHOLE board has drained. On a
+// two-team run that is late: the backend can finish in wave 1 with a broken
+// build and sit green-on-the-board for every wave the frontend still needs,
+// its ticket raised only after the last frontend task — at which point the fix
+// is a whole extra wave the run may no longer have time for. Proving a lane
+// when it completes puts the ticket on the board for the NEXT wave.
+//
+// A team is proved here when squads.Progress says it is Complete and its lane
+// has changed since it was last proved (or was never proved this run). A team
+// that never wrote inside its own territory is not proved: its acceptance
+// would report on the repository, not on this run. Commands go through the
+// smoke memo, so the finish-path gate re-runs nothing the tree has not moved
+// under since.
+func (o *Orchestrator) earlyTeamGate(ctx context.Context, board *plan.Board) {
+	p := o.squadPlanNow()
+	if o == nil || p == nil || board == nil || len(p.Squads) < 2 || ctx.Err() != nil {
+		return
+	}
+	for _, st := range squads.Progress(p, board.Tasks) {
+		if !st.Complete {
+			continue
+		}
+		s, ok := p.Squad(st.ID)
+		if !ok {
+			continue
+		}
+		lane := o.laneFingerprint(p, s.ID)
+		if lane == "" {
+			// Nothing written in this team's territory: nothing to prove yet.
+			continue
+		}
+		if last, proved := o.teamGates.lastLane(s.ID); proved && last == lane {
+			continue
+		}
+		if !o.gateRoundAffordable(ctx, 2) {
+			o.emit("verify", "team "+s.ID+" finished its lane, but there is not enough time left to prove "+
+				"it between waves — deferring to the finish path", "")
+			return
+		}
+		o.emit("verify", "team "+s.ID+" finished its lane — proving its half before the next wave", "")
+		if g, red := o.proveHalf(ctx, board, p, s); red {
+			o.emit("verify", "team "+g.Team+"'s correction ticket rides the next wave", "")
+		}
+	}
+}
+
+// maxTeamTicketsPerDefect bounds how many times ONE failing acceptance is
+// ticketed to its team per run: the first ticket and one retry.
+const maxTeamTicketsPerDefect = 2
 
 // raiseTeamTicket turns a red half into a ticket the owning team can work.
 //
@@ -208,7 +371,7 @@ func (o *Orchestrator) raiseTeamTicket(board *plan.Board, s squads.Squad, cmd, s
 	// and half of that can belong to the other side of the seam.
 	var mine []string
 	for _, path := range squads.PathsIn(output) {
-		if owner, ok := o.squadPlan.Owner(path); ok && owner == s.ID {
+		if owner, ok := o.squadPlanNow().Owner(path); ok && owner == s.ID {
 			mine = append(mine, path)
 		}
 	}
@@ -221,15 +384,28 @@ func (o *Orchestrator) raiseTeamTicket(board *plan.Board, s squads.Squad, cmd, s
 		Output:   output,
 		Files:    limitList(mine, 6),
 		Squad:    s.ID,
-		Attempt: board.CorrectionAttempts(plan.CorrectionKey(plan.CorrectionInput{
-			Source: plan.SourceTester, Command: cmd, Squad: s.ID,
-		})),
 	}
 	key := plan.CorrectionKey(in)
+	// Counted under the SAME key the ticket is stamped with. It used to be
+	// looked up under a reduced key (source, command, squad) that no stamped
+	// ticket ever matched, so every ticket announced itself as attempt 1 and
+	// nothing could tell a first ticket from a tenth.
+	in.Attempt = board.CorrectionAttempts(key)
 	// The same red half on a second pass is the SAME defect. A second ticket
 	// would make the board look like it is losing ground while one unresolved
 	// break stacks tickets on every gate run.
 	if board.NoteRepeatedRejection(key) > 0 {
+		return
+	}
+	// And the same defect, ticketed, worked to done, and red AGAIN, is a
+	// defect the team cannot fix on its own. The finish-path gate ran once
+	// and was bounded by that; the between-wave gate is not, and without this
+	// cap a half that stays red would be ticketed on every wave until the run
+	// hit its ceiling — measured at 200 tickets in a test before the cap
+	// existed. Two attempts per defect, then a human.
+	if in.Attempt >= maxTeamTicketsPerDefect {
+		o.emitWarn("verify", fmt.Sprintf("team %s is still RED after %d correction ticket(s) for the same "+
+			"failure — not raising another; this half needs a human", s.ID, in.Attempt), "")
 		return
 	}
 	nt := plan.NewCorrectionTicket(in, hasRole)

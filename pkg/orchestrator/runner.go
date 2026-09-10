@@ -23,7 +23,12 @@ import (
 // (Resume never got OnOverflowCompact's ReactCompact notice, for one). One
 // constructor, two callers, one behavior.
 func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner {
-	runner := loop.NewRunner(o.executor, o.shared)
+	// The GATED executor: every worker, reviewer, corrector, critique, triage
+	// and speculative-review request the loop makes takes a slot of the same
+	// run-wide max_parallel gate the phase roles use (see gate.go). The wave
+	// is still capped at MaxParallel by the loop; the gate is what stops a
+	// wave's review race plus a phase still draining from exceeding it.
+	runner := loop.NewRunner(o.gatedExecutor(), o.shared)
 	runner.Root = o.cfg.Root
 	runner.SlmDir = o.cfg.SlmDir()
 	runner.Feedback = o.LiveFeedback
@@ -40,6 +45,15 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.MaxParallel = o.cfg.MaxParallel
 	runner.ReviewParallel = o.cfg.MaxParallel >= 2
 	runner.Timeout = o.cfg.TaskTimeout
+	// Measured role budgets INSIDE the loop. Timeout above is the ceiling;
+	// each worker/reviewer/corrector request is dispatched on
+	// min(ceiling clamped to runway, p95 × 1.5 floored per role class), and
+	// each one records a sample, so the roles that own most of a run's wall
+	// clock finally feed the latency memory the phase roles have used since
+	// roletimeout.go was written. Before this, `reviewer` had zero samples
+	// after a hundred runs and every reviewer call got the whole task_timeout.
+	runner.RoleTimeout = o.roleTimeoutWithin
+	runner.OnRoleLatency = o.recordRoleLatency
 	runner.ReviewerRole = o.reviewStrictnessRole(o.Pipeline().Execute.Reviewer)
 	runner.CorrectorRole = o.Pipeline().Execute.Corrector
 	runner.DefaultRole = o.Pipeline().Execute.DefaultRole
@@ -123,9 +137,11 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 	runner.OnEscalate = func(ctx context.Context, board *plan.Board, t plan.Task, detail string) {
 		o.runEscalateAsk(ctx, board, t, detail)
 	}
+	// Usage only. The request COUNT is folded in by the gated executor, which
+	// sees the transcript and counts every assistant turn — one result used
+	// to be tallied as one call while its ReAct loop had made eight.
 	runner.OnUsage = func(u llm.Usage, estimated bool, _, _ string) {
 		o.recordUsage(u, estimated)
-		o.bumpLLMCalls(1)
 	}
 	runner.OnOverflowCompact = func(ctx context.Context) error {
 		_, err := o.CompactContextNow()
@@ -152,12 +168,27 @@ func (o *Orchestrator) buildRunner(query, runID, skillPack string) *loop.Runner 
 		runner.Triage = o.triageRejectedDelivery
 	}
 	runner.AfterWave = func(ctx context.Context, board *plan.Board, wave []plan.Task) {
+		// What the wave produced decides what runs after it. A wave whose
+		// tasks all went green with nothing to learn from used to buy a
+		// memory distillation AND a coordinator call — two model round-trips
+		// on a board nothing had happened to. Both now run only on a wave
+		// that failed, escalated or taught something; the reason is said so
+		// the Live view can show why a phase did not run.
+		eventful, why := waveEventful(wave)
 		o.evolveAfterWave(ctx, query, skillPack, board, wave)
 		o.maybeCompactContext(ctx)
-		o.coordinate(ctx, query, board, "after-wave")
+		if eventful {
+			o.coordinate(ctx, query, board, "after-wave")
+		} else {
+			o.emitFull("coord", stream.KindCoord, "coordinator", "",
+				"coordinator @after-wave skipped — "+why, "", "")
+		}
 		// Per-squad progress and cross-team stalls. An aggregate task count
 		// hides one team finishing while the other sits blocked.
-		o.reportSquadProgress(o.squadPlan, board)
+		o.reportSquadProgress(o.squadPlanNow(), board)
+		// A team whose lane just finished is proved NOW, so a red half's
+		// ticket rides the next wave instead of waiting for the finish path.
+		o.earlyTeamGate(ctx, board)
 	}
 	// The objective gate, asked BETWEEN waves rather than only after the board
 	// drains. A board that keeps rejecting one task never drains, so the

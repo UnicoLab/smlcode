@@ -192,6 +192,36 @@ Custom presets can be created as YAML blocks — see [🧱 Blocks](blocks.md).
 
 ---
 
+## What a run skips, and why
+
+A phase that is *enabled* still only runs when it has something to do. Every
+skip is announced as an info event in the phase's own lane, so the Live view
+and the CLI show the reason rather than a phase that silently did not happen.
+
+| Phase | Runs when | Skipped with |
+|-------|-----------|--------------|
+| `split` (the splitter) | the plan has two or more steps, or one step over more than two known files, or no known file at all | `splitter skipped — a 1-step plan over N known file(s) is one task; building the board directly`. The board is built from the plan's one step with the known files as its scope. |
+| per-wave coordinator (`coord @after-wave`) | the wave that just finished failed a task, escalated one, or produced a lesson worth keeping — a failure lesson or an honored human note; the routine "this task passed its acceptance" lessons every green task yields do not count | `coordinator @after-wave skipped — all N task(s) finished green with no failure, escalation or new lesson` |
+| per-wave distillation (`learn`, `think_passes >= 2`) | same rule as the coordinator | `wave distillation skipped — …` |
+| `memory` (end-of-run distillation) | the run left a lesson worth keeping (same notion), changed a file, or failed a task | `memory distillation skipped — nothing to distill: no lessons, no changed files, no failed tasks`. The distiller is a single call now, not a multipass cycle. |
+
+Two more things the pipeline no longer repeats:
+
+- **One concurrency limit for the whole run.** `max_parallel` used to bound only
+  the execute wave; context ran beside explore, architect beside clarify,
+  speculative digs and review races added slots on top. Every model request —
+  phase roles, workers, reviewers, correctors, critique, triage, the planner's
+  multipass cycle — now takes a slot of one run-wide gate sized `max_parallel`,
+  and at `max_parallel: 1` the phase pairs run one after another.
+- **The objective command runs once per tree state.** The deterministic
+  pre-test, each team's acceptance, the integration command and the QA gate's
+  first round all ask the same question of the same tree; a result is
+  remembered per (command, tree fingerprint) and reused until something is
+  written — an agent write, a rewrite of an already-changed file, a formatter
+  pass or a dependency install all count.
+
+---
+
 ## Related
 
 - [Blocks](blocks.md) — building blocks system + marketplace

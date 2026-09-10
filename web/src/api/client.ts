@@ -293,6 +293,11 @@ export async function patchTask(id: string, patch: Partial<Task>): Promise<Task>
   });
 }
 
+// POST /api/tasks/{id}/retry → the task, back on the board for another attempt
+export async function retryTask(id: string): Promise<Task> {
+  return request<Task>(`/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+}
+
 // DELETE /api/tasks/{id} → {ok: "true"}
 export async function deleteTask(id: string): Promise<{ ok: string }> {
   return request(`/tasks/${encodeURIComponent(id)}`, {
@@ -863,11 +868,4 @@ export async function createTeamManager(
     method: 'POST',
     body: JSON.stringify(opts ?? {}),
   });
-}
-
-// ── Task retry ──
-// POST /api/tasks/{id}/retry → the task goes back to the queue with its
-// attempt log intact. 409 when no board is loaded, 404 for an unknown id.
-export async function retryTask(id: string): Promise<Task> {
-  return request<Task>(`/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' });
 }

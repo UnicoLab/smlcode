@@ -3,6 +3,8 @@ import { Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import { getHealth, getConfig, errorText } from './api/client';
 import { useLiveStream } from './hooks/useLiveStream';
+import { BoardStoreProvider, useBoardStoreSource } from './hooks/useBoardStore';
+import type { RunDerived } from './hooks/runDerived';
 import { ToastProvider } from './components/ui/Toast';
 import { ConfirmProvider } from './components/ui/Modal';
 import ErrorBoundary from './components/ui/ErrorBoundary';
@@ -46,6 +48,13 @@ export interface AppContextValue {
   askSignal: number;
   /** Accumulated token deltas for the active agent turn. */
   tokenStream: string;
+  /** What the log adds up to, folded once per event — see hooks/runDerived. */
+  liveDerived: RunDerived;
+  /**
+   * Changes awaiting review: from the stream's health poll and the server's
+   * `review_pending` event. Null until either has answered.
+   */
+  pendingReview: number | null;
 }
 
 export const AppContext = React.createContext<AppContextValue | null>(null);
@@ -133,13 +142,27 @@ function AppInner() {
     }
   }, []);
 
+  // The board store is owned here too, beside the stream that feeds it: the
+  // stream hands it every task_update, and it hands the pages one live board
+  // instead of four pollers. See hooks/useBoardStore.
+  const boardEventRef = useRef<(ev: RunEvent) => void>(() => {});
+  const onBoardEvent = useCallback((ev: RunEvent) => boardEventRef.current(ev), []);
+
   const initialEventsRef = useRef<RunEvent[]>(readStoredEvents());
   const stream = useLiveStream({
     initialEvents: initialEventsRef.current,
     initialRunning: readStoredRunning(),
     onEvents: persistEvents,
     onRunning: persistRunning,
+    onBoardEvent,
   });
+
+  const board = useBoardStoreSource({
+    connection: stream.connection,
+    running: stream.running,
+    lastEvent: stream.derived.last,
+  });
+  boardEventRef.current = board.applyEvent;
 
   useEffect(() => {
     if (stream.latest) setLiveResult(stream.latest);
@@ -204,6 +227,8 @@ function AppInner() {
       clearStreamGap: stream.clearGap,
       askSignal: stream.askSignal,
       tokenStream: stream.tokenStream,
+      liveDerived: stream.derived,
+      pendingReview: stream.pendingReview,
     }),
     [
       health,
@@ -223,11 +248,14 @@ function AppInner() {
       stream.clearGap,
       stream.askSignal,
       stream.tokenStream,
+      stream.derived,
+      stream.pendingReview,
     ],
   );
 
   return (
     <AppContext.Provider value={value}>
+      <BoardStoreProvider value={board.store}>
       <ErrorBoundary label="Studio">
         <Suspense fallback={<PageLoading />}>
           <Routes>
@@ -248,6 +276,7 @@ function AppInner() {
           </Routes>
         </Suspense>
       </ErrorBoundary>
+      </BoardStoreProvider>
     </AppContext.Provider>
   );
 }

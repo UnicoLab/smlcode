@@ -1,11 +1,37 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import type { RunEvent, RunEventSummary } from '@/types';
+import EntityLink from '@/components/shared/EntityLink';
 import clsx from 'clsx';
+
+// ── The log, as rows ─────────────────────────────────────────────────────
+//
+// Two costs used to be paid on every stream flush, for every event in the
+// log: describing it (describeEvent, with its regexes and JSON parsing) and
+// summing it into the insight panel (summarizeEvents). Both are now paid
+// once per event: descriptions are cached by event identity in a WeakMap —
+// an event object never changes once it has arrived — and the summary is an
+// accumulator that folds only the events appended since the last render.
+// Rows are windowed to what is on screen plus a margin, so a two-thousand
+// line log costs the DOM a few dozen rows, while the scroll container's
+// stick-to-bottom keeps working because the spacers keep its height honest.
 
 interface EventLogProps {
   events: RunEvent[];
   summary?: RunEventSummary | null;
+  /**
+   * The scroll container the rows live in, for windowing. Without it every
+   * row renders (tests, a short archived log).
+   */
+  scrollRef?: RefObject<HTMLElement | null>;
 }
+
+/** Below this many rows nothing is windowed; the bookkeeping would cost more than it saves. */
+const WINDOW_FROM = 120;
+/** Rows kept rendered above and below the viewport. */
+const WINDOW_MARGIN = 24;
+/** A first guess at a row's height; measured rows correct it. */
+const ROW_PX_GUESS = 76;
 
 const PHASE_COLORS: Record<string, string> = {
   init: 'text-sky-500',
@@ -89,13 +115,14 @@ type EventView = {
   detail?: string;
   preview?: string;
   raw?: string;
-  chips: { label: string; tone?: 'phase' | 'agent' | 'task' | 'file' | 'kind' }[];
+  chips: { label: string; tone?: 'phase' | 'agent' | 'task' | 'file' | 'kind'; id?: string }[];
 };
 
-function EventLog({ events, summary }: EventLogProps) {
+function EventLog({ events, summary, scrollRef }: EventLogProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const insightSummary = useMemo(() => summary || summarizeEvents(events), [events, summary]);
+  const folded = useIncrementalSummary(events);
+  const insightSummary = summary || folded;
 
   const counts = useMemo(() => {
     const c = { error: 0, problem: 0, warning: 0, success: 0 };
@@ -115,6 +142,8 @@ function EventLog({ events, summary }: EventLogProps) {
   }, [events, filter]);
 
   const displayEvents = useMemo(() => compactAdjacentEvents(visible), [visible]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const win = useRowWindow(scrollRef, listRef, displayEvents.length);
 
   const toggleExpanded = (key: string) => {
     setExpanded((prev) => {
@@ -169,8 +198,10 @@ function EventLog({ events, summary }: EventLogProps) {
         </span>
       </div>
 
-      <div className="space-y-0.5 font-mono text-xs">
-        {displayEvents.map((item, i) => {
+      <div ref={listRef} className="space-y-0.5 font-mono text-xs" data-testid="event-log-rows" data-window={`${win.start}-${win.end}`}>
+        {win.start > 0 && <div style={{ height: win.top }} aria-hidden="true" />}
+        {displayEvents.slice(win.start, win.end).map((item, k) => {
+          const i = win.start + k;
           const event = item.event;
           const view = item.view;
           const rowKey = `${item.signature}-${event.time}-${i}`;
@@ -180,6 +211,7 @@ function EventLog({ events, summary }: EventLogProps) {
           return (
             <div
               key={rowKey}
+              data-row
               className={clsx(
                 'rounded-lg px-3 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50',
                 style.row,
@@ -214,21 +246,31 @@ function EventLog({ events, summary }: EventLogProps) {
                         repeated x{item.count}
                       </span>
                     )}
-                    {view.chips.map((chip, idx) => (
-                      <span
-                        key={`${chip.label}-${idx}`}
-                        className={clsx(
-                          'rounded px-1.5 py-0.5 font-sans text-[9px] font-semibold',
-                          chip.tone === 'agent' && 'bg-brand-50 text-brand-600 dark:bg-brand-950/40 dark:text-brand-300',
-                          chip.tone === 'task' && 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
-                          chip.tone === 'file' && 'bg-violet-50 text-violet-600 dark:bg-violet-950/40 dark:text-violet-300',
-                          chip.tone === 'kind' && 'bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300',
-                          (!chip.tone || chip.tone === 'phase') && 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
-                        )}
-                      >
-                        {chip.label}
-                      </span>
-                    ))}
+                    {view.chips.map((chip, idx) =>
+                      // An agent, a task or a file is a place in the studio;
+                      // the chip goes there. A kind or a phase is just a word.
+                      chip.tone === 'agent' || chip.tone === 'task' || chip.tone === 'file' ? (
+                        <EntityLink
+                          key={`${chip.label}-${idx}`}
+                          kind={chip.tone}
+                          id={chip.id ?? chip.label}
+                          label={chip.label}
+                          className="text-[9px]"
+                          bare
+                        />
+                      ) : (
+                        <span
+                          key={`${chip.label}-${idx}`}
+                          className={clsx(
+                            'rounded px-1.5 py-0.5 font-sans text-[9px] font-semibold',
+                            chip.tone === 'kind' && 'bg-sky-50 text-sky-600 dark:bg-sky-950/40 dark:text-sky-300',
+                            (!chip.tone || chip.tone === 'phase') && 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+                          )}
+                        >
+                          {chip.label}
+                        </span>
+                      ),
+                    )}
                   </div>
 
                   <div className="mt-1 font-sans text-sm font-semibold leading-snug text-gray-800 dark:text-gray-100">
@@ -261,10 +303,114 @@ function EventLog({ events, summary }: EventLogProps) {
             </div>
           );
         })}
+        {win.end < displayEvents.length && <div style={{ height: win.bottom }} aria-hidden="true" />}
       </div>
     </div>
   );
 }
+
+// ── Windowing ────────────────────────────────────────────────────────────
+
+interface RowWindow {
+  start: number;
+  end: number;
+  /** Spacer heights standing in for the rows not rendered, px. */
+  top: number;
+  bottom: number;
+}
+
+/**
+ * useRowWindow picks the slice of rows worth rendering: the ones the scroll
+ * container can show, plus WINDOW_MARGIN either side. Row height starts as a
+ * guess and is corrected from what actually renders. When the container is
+ * at its bottom as rows are appended, the window jumps to the new tail at
+ * once — in a layout effect, before paint — so the stick-to-bottom scroll
+ * that follows lands on real rows rather than on a spacer.
+ */
+function useRowWindow(scrollRef: RefObject<HTMLElement | null> | undefined, listRef: RefObject<HTMLDivElement | null>, count: number): RowWindow {
+  const active = !!scrollRef && count >= WINDOW_FROM;
+  const rowPx = useRef(ROW_PX_GUESS);
+  const atBottom = useRef(true);
+  const [range, setRange] = useState<{ start: number; end: number }>({ start: 0, end: count });
+
+  const measure = (): { start: number; end: number } | null => {
+    const el = scrollRef?.current;
+    const list = listRef.current;
+    if (!el || !list) return null;
+    const listTop = list.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    const px = rowPx.current;
+    const first = Math.floor((el.scrollTop - listTop) / px);
+    const last = Math.ceil((el.scrollTop - listTop + el.clientHeight) / px);
+    return {
+      start: Math.max(0, Math.min(count, first - WINDOW_MARGIN)),
+      end: Math.max(0, Math.min(count, last + WINDOW_MARGIN)),
+    };
+  };
+  const measureRef = useRef(measure);
+  measureRef.current = measure;
+
+  // Correct the row estimate from the rows that did render.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const list = listRef.current;
+    if (!list) return;
+    const rows = list.querySelectorAll<HTMLElement>('[data-row]');
+    if (rows.length < 4) return;
+    let sum = 0;
+    rows.forEach((r) => {
+      sum += r.offsetHeight + 2;
+    });
+    const avg = sum / rows.length;
+    if (avg > 8 && Math.abs(avg - rowPx.current) / rowPx.current > 0.1) rowPx.current = avg;
+  });
+
+  // Scroll and resize move the window; both are cheap since the range only
+  // changes state when its bounds do.
+  useEffect(() => {
+    const el = scrollRef?.current;
+    if (!active || !el) return undefined;
+    const apply = () => {
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 72;
+      const next = measureRef.current();
+      if (!next) return;
+      setRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+    };
+    apply();
+    el.addEventListener('scroll', apply, { passive: true });
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', apply);
+      ro?.disconnect();
+    };
+  }, [active, scrollRef]);
+
+  // New rows: keep the tail in view when the reader is at the bottom.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const el = scrollRef?.current;
+    if (!el) return;
+    if (atBottom.current) {
+      const visibleRows = Math.ceil(el.clientHeight / rowPx.current);
+      const next = { start: Math.max(0, count - visibleRows - WINDOW_MARGIN * 2), end: count };
+      setRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+    } else {
+      const next = measureRef.current();
+      if (next) setRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+    }
+  }, [active, count, scrollRef]);
+
+  if (!active) return { start: 0, end: count, top: 0, bottom: 0 };
+  const start = Math.min(range.start, count);
+  const end = Math.min(Math.max(range.end, start), count);
+  return { start, end, top: start * rowPx.current, bottom: (count - end) * rowPx.current };
+}
+
+// ── Per-event work, done once ────────────────────────────────────────────
+
+const VIEW_CACHE = new WeakMap<RunEvent, EventView>();
+const LEVEL_CACHE = new WeakMap<RunEvent, string>();
+const SIGNATURE_CACHE = new WeakMap<RunEvent, string>();
 
 function compactAdjacentEvents(events: RunEvent[]): DisplayEvent[] {
   const out: DisplayEvent[] = [];
@@ -281,7 +427,16 @@ function compactAdjacentEvents(events: RunEvent[]): DisplayEvent[] {
   return out;
 }
 
-function eventLevel(event: RunEvent) {
+/** The level of an event, computed once per event object. */
+function eventLevel(event: RunEvent): string {
+  const hit = LEVEL_CACHE.get(event);
+  if (hit !== undefined) return hit;
+  const lvl = computeEventLevel(event);
+  LEVEL_CACHE.set(event, lvl);
+  return lvl;
+}
+
+function computeEventLevel(event: RunEvent) {
   const configured = event.level || 'info';
   if (configured !== 'info') return configured;
   const text = `${event.phase || ''} ${event.kind || ''} ${event.message || ''} ${event.output || ''}`.toLowerCase();
@@ -304,7 +459,15 @@ function eventLevel(event: RunEvent) {
   return configured;
 }
 
-function eventSignature(event: RunEvent) {
+function eventSignature(event: RunEvent): string {
+  const hit = SIGNATURE_CACHE.get(event);
+  if (hit !== undefined) return hit;
+  const sig = computeSignature(event);
+  SIGNATURE_CACHE.set(event, sig);
+  return sig;
+}
+
+function computeSignature(event: RunEvent) {
   return [
     event.phase || '',
     event.kind || '',
@@ -317,7 +480,16 @@ function eventSignature(event: RunEvent) {
   ].join('|');
 }
 
+/** The row's description, computed once per event object. */
 function describeEvent(event: RunEvent): EventView {
+  const hit = VIEW_CACHE.get(event);
+  if (hit) return hit;
+  const view = computeView(event);
+  VIEW_CACHE.set(event, view);
+  return view;
+}
+
+function computeView(event: RunEvent): EventView {
   const msg = cleanEventText(event.message || '');
   const output = cleanEventText(event.output || '');
   const lower = `${event.phase || ''} ${event.kind || ''} ${msg} ${output}`.toLowerCase();
@@ -489,9 +661,9 @@ function actorLabel(event: RunEvent) {
 
 function eventChips(event: RunEvent, file?: string) {
   const chips: EventView['chips'] = [];
-  if (event.agent) chips.push({ label: `@${event.agent}`, tone: 'agent' });
-  if (event.task_id) chips.push({ label: `#${event.task_id}`, tone: 'task' });
-  if (file) chips.push({ label: file, tone: 'file' });
+  if (event.agent) chips.push({ label: `@${event.agent}`, tone: 'agent', id: event.agent });
+  if (event.task_id) chips.push({ label: `#${event.task_id}`, tone: 'task', id: event.task_id });
+  if (file) chips.push({ label: file, tone: 'file', id: file });
   if (event.kind && event.kind !== 'phase') chips.push({ label: event.kind, tone: 'kind' });
   return chips.slice(0, 5);
 }
@@ -822,105 +994,172 @@ function TopList({ label, values, empty }: { label: string; values: { name: stri
   );
 }
 
-function summarizeEvents(events: RunEvent[]): RunEventSummary {
-  const phases = new Map<string, number>();
-  const agents = new Map<string, number>();
-  const models = new Map<string, number>();
-  const tasks = new Set<string>();
-  let retries = 0;
-  let replans = 0;
-  let failures = 0;
-  let warnings = 0;
-  let errors = 0;
-  let toolCalls = 0;
-  let shellCalls = 0;
-  let tokens = 0;
-  let costUSD = 0;
-  let first = 0;
-  let last = 0;
-  const insights: RunEventSummary['insights'] = [];
-  const actions: NonNullable<RunEventSummary['actions']> = [];
-  let providerIssue = false;
-  let modelIssue = false;
-  let qaIssue = false;
-  let contextIssue = false;
-  let permissionIssue = false;
+/** The running totals behind the insight panel. Folded per event; finished per render. */
+interface SummaryAcc {
+  count: number;
+  phases: Map<string, number>;
+  agents: Map<string, number>;
+  models: Map<string, number>;
+  tasks: Set<string>;
+  retries: number;
+  replans: number;
+  failures: number;
+  warnings: number;
+  errors: number;
+  toolCalls: number;
+  shellCalls: number;
+  tokens: number;
+  costUSD: number;
+  first: number;
+  last: number;
+  failureInsights: NonNullable<RunEventSummary['insights']>;
+  providerIssue: boolean;
+  modelIssue: boolean;
+  qaIssue: boolean;
+  contextIssue: boolean;
+  permissionIssue: boolean;
+  terminalSuccess: boolean;
+  final: RunEvent | null;
+}
 
-  for (const event of events) {
-    if (event.phase) phases.set(event.phase, (phases.get(event.phase) || 0) + 1);
-    if (event.agent) agents.set(event.agent, (agents.get(event.agent) || 0) + 1);
-    if (event.model) models.set(event.model, (models.get(event.model) || 0) + 1);
-    if (event.task_id) tasks.add(event.task_id);
-    if (typeof event.tokens === 'number' && event.tokens > 0) tokens += event.tokens;
-    if (typeof event.cost_usd === 'number' && event.cost_usd > 0) costUSD += event.cost_usd;
-    const t = Date.parse(event.time || '');
-    if (!Number.isNaN(t)) {
-      if (!first) first = t;
-      last = t;
-    }
-    const text = `${event.phase || ''} ${event.kind || ''} ${event.message || ''} ${event.output || ''}`.toLowerCase();
-    if (text.includes('retry') || text.includes('corrective')) retries += 1;
-    if (text.includes('replan') || text.includes('plan was revised')) replans += 1;
-    if (text.includes('warn') || text.includes('degraded')) warnings += 1;
-    if (text.includes('error') || text.includes('panic') || text.includes('exception')) errors += 1;
-    if ((event.kind || '').includes('tool')) toolCalls += 1;
-    if ((event.kind || '').includes('shell') || text.includes('shell')) shellCalls += 1;
-    providerIssue ||= looksLikeProviderIssue(text);
-    modelIssue ||= looksLikeModelIssue(text);
-    qaIssue ||= looksLikeQAIssue(text);
-    contextIssue ||= looksLikeContextIssue(text);
-    permissionIssue ||= looksLikePermissionIssue(text);
-    if ((event.kind || '').includes('fail') || event.phase === 'error' || text.includes('failed') || text.includes('timeout') || text.includes('blocked')) {
-      failures += 1;
-      if (insights.length < 4) {
-        insights.push({
-          severity: 'error',
-          title: 'Failure event',
-          detail: truncate(event.message || event.output || 'Failure detected in event log.', 220),
-          phase: event.phase,
-          task_id: event.task_id,
-          agent: event.agent,
-          time: event.time,
-        });
-      }
+function newSummaryAcc(): SummaryAcc {
+  return {
+    count: 0,
+    phases: new Map(),
+    agents: new Map(),
+    models: new Map(),
+    tasks: new Set(),
+    retries: 0,
+    replans: 0,
+    failures: 0,
+    warnings: 0,
+    errors: 0,
+    toolCalls: 0,
+    shellCalls: 0,
+    tokens: 0,
+    costUSD: 0,
+    first: 0,
+    last: 0,
+    failureInsights: [],
+    providerIssue: false,
+    modelIssue: false,
+    qaIssue: false,
+    contextIssue: false,
+    permissionIssue: false,
+    terminalSuccess: false,
+    final: null,
+  };
+}
+
+function foldSummary(acc: SummaryAcc, event: RunEvent): void {
+  acc.count += 1;
+  acc.final = event;
+  if (event.phase) acc.phases.set(event.phase, (acc.phases.get(event.phase) || 0) + 1);
+  if (event.agent) acc.agents.set(event.agent, (acc.agents.get(event.agent) || 0) + 1);
+  if (event.model) acc.models.set(event.model, (acc.models.get(event.model) || 0) + 1);
+  if (event.task_id) acc.tasks.add(event.task_id);
+  if (typeof event.tokens === 'number' && event.tokens > 0) acc.tokens += event.tokens;
+  if (typeof event.cost_usd === 'number' && event.cost_usd > 0) acc.costUSD += event.cost_usd;
+  const t = Date.parse(event.time || '');
+  if (!Number.isNaN(t)) {
+    if (!acc.first) acc.first = t;
+    acc.last = t;
+  }
+  const text = `${event.phase || ''} ${event.kind || ''} ${event.message || ''} ${event.output || ''}`.toLowerCase();
+  if (text.includes('retry') || text.includes('corrective')) acc.retries += 1;
+  if (text.includes('replan') || text.includes('plan was revised')) acc.replans += 1;
+  if (text.includes('warn') || text.includes('degraded')) acc.warnings += 1;
+  if (text.includes('error') || text.includes('panic') || text.includes('exception')) acc.errors += 1;
+  if ((event.kind || '').includes('tool')) acc.toolCalls += 1;
+  if ((event.kind || '').includes('shell') || text.includes('shell')) acc.shellCalls += 1;
+  acc.providerIssue ||= looksLikeProviderIssue(text);
+  acc.modelIssue ||= looksLikeModelIssue(text);
+  acc.qaIssue ||= looksLikeQAIssue(text);
+  acc.contextIssue ||= looksLikeContextIssue(text);
+  acc.permissionIssue ||= looksLikePermissionIssue(text);
+  acc.terminalSuccess ||= isTerminalSuccess(event);
+  if ((event.kind || '').includes('fail') || event.phase === 'error' || text.includes('failed') || text.includes('timeout') || text.includes('blocked')) {
+    acc.failures += 1;
+    if (acc.failureInsights.length < 4) {
+      acc.failureInsights.push({
+        severity: 'error',
+        title: 'Failure event',
+        detail: truncate(event.message || event.output || 'Failure detected in event log.', 220),
+        phase: event.phase,
+        task_id: event.task_id,
+        agent: event.agent,
+        time: event.time,
+      });
     }
   }
+}
 
+function finishSummary(acc: SummaryAcc): RunEventSummary {
+  const { retries, replans, count } = acc;
+  const insights: NonNullable<RunEventSummary['insights']> = [...acc.failureInsights];
+  const actions: NonNullable<RunEventSummary['actions']> = [];
   if (replans > 0) insights.push({ severity: 'info', title: 'Plan was revised', detail: `${replans} replan signal${replans === 1 ? '' : 's'} detected.` });
   if (retries >= 3) insights.push({ severity: 'warning', title: 'High retry pressure', detail: `${retries} retry signals detected; consider narrowing scope or using a larger local model.` });
-  if (events.length > 0 && !hasTerminalSuccess(events)) insights.push({ severity: 'warning', title: 'No successful terminal event', detail: 'The visible event window has no clear run_done marker.' });
-  if (providerIssue) actions.push({ title: 'Check the model endpoint', detail: 'The timeline looks like a provider or local runtime connectivity failure.', command: 'slmcode doctor' });
-  if (modelIssue) actions.push({ title: 'Verify the configured model', detail: 'The selected model may not be served by the current endpoint.', command: 'slmcode stack list' });
-  if (contextIssue || retries >= 3) actions.push({ title: 'Shrink the next attempt', detail: 'Use Request Replan or split the request into fewer files/tasks for the local model.' });
-  if (qaIssue) actions.push({ title: 'Run the project QA gate', detail: 'A test/build/lint gate appears to be the blocker.', command: 'slmcode status' });
-  if (permissionIssue) actions.push({ title: 'Review command permissions', detail: 'A shell or filesystem guardrail may have stopped execution.', command: 'slmcode config show' });
-  if (events.length > 0 && !hasTerminalSuccess(events) && actions.length === 0) actions.push({ title: 'Inspect the final phase', detail: 'The run did not record a clean terminal event; open the last error/output row before resuming.' });
+  if (count > 0 && !acc.terminalSuccess) insights.push({ severity: 'warning', title: 'No successful terminal event', detail: 'The visible event window has no clear run_done marker.' });
+  if (acc.providerIssue) actions.push({ title: 'Check the model endpoint', detail: 'The timeline looks like a provider or local runtime connectivity failure.', command: 'slmcode doctor' });
+  if (acc.modelIssue) actions.push({ title: 'Verify the configured model', detail: 'The selected model may not be served by the current endpoint.', command: 'slmcode stack list' });
+  if (acc.contextIssue || retries >= 3) actions.push({ title: 'Shrink the next attempt', detail: 'Use Request Replan or split the request into fewer files/tasks for the local model.' });
+  if (acc.qaIssue) actions.push({ title: 'Run the project QA gate', detail: 'A test/build/lint gate appears to be the blocker.', command: 'slmcode status' });
+  if (acc.permissionIssue) actions.push({ title: 'Review command permissions', detail: 'A shell or filesystem guardrail may have stopped execution.', command: 'slmcode config show' });
+  if (count > 0 && !acc.terminalSuccess && actions.length === 0) actions.push({ title: 'Inspect the final phase', detail: 'The run did not record a clean terminal event; open the last error/output row before resuming.' });
 
-  const final = events[events.length - 1];
+  const final = acc.final;
   return {
-    total_events: events.length,
-    started_at: first ? new Date(first).toISOString() : undefined,
-    last_at: last ? new Date(last).toISOString() : undefined,
-    duration_ms: first && last ? last - first : undefined,
+    total_events: count,
+    started_at: acc.first ? new Date(acc.first).toISOString() : undefined,
+    last_at: acc.last ? new Date(acc.last).toISOString() : undefined,
+    duration_ms: acc.first && acc.last ? acc.last - acc.first : undefined,
     final_phase: final?.phase,
     final_kind: final?.kind,
     last_message: final?.message,
-    phases: rankCounts(phases, 16),
-    agents: rankCounts(agents, 12),
-    models: rankCounts(models, 8),
-    tasks: tasks.size,
+    phases: rankCounts(acc.phases, 16),
+    agents: rankCounts(acc.agents, 12),
+    models: rankCounts(acc.models, 8),
+    tasks: acc.tasks.size,
     retries,
     replans,
-    failures,
-    warnings,
-    errors,
-    tool_calls: toolCalls,
-    shell_calls: shellCalls,
-    tokens,
-    cost_usd: costUSD,
+    failures: acc.failures,
+    warnings: acc.warnings,
+    errors: acc.errors,
+    tool_calls: acc.toolCalls,
+    shell_calls: acc.shellCalls,
+    tokens: acc.tokens,
+    cost_usd: acc.costUSD,
     insights: insights.slice(0, 8),
     actions: actions.slice(0, 5),
   };
+}
+
+/**
+ * The log only ever grows by appending (the stream hook trims the head when
+ * it passes its cap, and clears it on run_start), so the summary can fold
+ * just the tail since last time: same first event and no fewer events means
+ * the prefix is what we already counted. Anything else starts over.
+ */
+function useIncrementalSummary(events: RunEvent[]): RunEventSummary {
+  const memo = useRef<{ events: RunEvent[]; acc: SummaryAcc; out: RunEventSummary } | null>(null);
+  return useMemo(() => {
+    const prev = memo.current;
+    if (prev && prev.events === events) return prev.out;
+    let acc: SummaryAcc;
+    let from = 0;
+    const sameHead = prev && prev.events.length > 0 && events.length >= prev.events.length && events[0] === prev.events[0] && events[prev.events.length - 1] === prev.events[prev.events.length - 1];
+    if (prev && sameHead) {
+      acc = prev.acc;
+      from = prev.events.length;
+    } else {
+      acc = newSummaryAcc();
+    }
+    for (let i = from; i < events.length; i++) foldSummary(acc, events[i]);
+    const out = finishSummary(acc);
+    memo.current = { events, acc, out };
+    return out;
+  }, [events]);
 }
 
 function rankCounts(counts: Map<string, number>, limit: number) {
@@ -930,8 +1169,8 @@ function rankCounts(counts: Map<string, number>, limit: number) {
     .slice(0, limit);
 }
 
-function hasTerminalSuccess(events: RunEvent[]) {
-  return events.some((event) => event.kind === 'run_done' || event.kind === 'run_end' || (event.phase === 'done' && !String(event.message || '').toLowerCase().includes('stop')));
+function isTerminalSuccess(event: RunEvent) {
+  return event.kind === 'run_done' || event.kind === 'run_end' || (event.phase === 'done' && !String(event.message || '').toLowerCase().includes('stop'));
 }
 
 function looksLikeProviderIssue(text: string) {

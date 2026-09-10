@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import Layout, { runEndVerdict } from './Layout';
 import { ToastProvider } from './ui/Toast';
 import { AppContext, type AppContextValue } from '@/App';
+import { EMPTY_DERIVED } from '@/hooks/runDerived';
 import type { RunEvent } from '@/types';
 
 vi.mock('./TopBar', () => ({ default: () => <div data-testid="topbar" /> }));
@@ -40,6 +41,8 @@ function ctx(over: Partial<AppContextValue>): AppContextValue {
     clearStreamGap: () => {},
     askSignal: 0,
     tokenStream: '',
+    liveDerived: EMPTY_DERIVED,
+    pendingReview: null,
     ...over,
   };
 }

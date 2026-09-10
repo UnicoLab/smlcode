@@ -114,7 +114,7 @@ function timeAgo(iso: string): string {
 
 type AttentionFilter = 'blocked' | 'failed' | null;
 
-interface LiveTaskPanelProps {
+export interface LiveTaskPanelProps {
   /**
    * A task to bring into view: the panel expands it, scrolls it into view and
    * flashes it once. The Live view passes the id of a ticket clicked on the

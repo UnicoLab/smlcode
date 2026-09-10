@@ -175,6 +175,57 @@ describe('useLiveStream — event accumulation', () => {
     expect(onEvents.mock.calls[onEvents.mock.calls.length - 1][0]).toHaveLength(60);
   });
 
+  // Board bookkeeping is folded into the board store, never shown as rows:
+  // one task_update per column move would bury the narrative.
+  it('routes task_update to the board store and keeps it out of the log', async () => {
+    const onBoardEvent = vi.fn();
+    const hook = renderHook(() => useLiveStream({ onBoardEvent }));
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    await act(async () => {
+      MockEventSource.last.open();
+    });
+    const task = { id: 'T1', title: 'x', column: 'in_progress', status: 'running' };
+    await act(async () => {
+      MockEventSource.last.emitMessage(ev('a real line'), 1);
+      MockEventSource.last.emitMessage({ ...ev(''), kind: 'task_update', task_id: 'T1', data: { task } }, 2);
+      MockEventSource.last.emitMessage({ ...ev(''), kind: 'task_update', task_id: 'T1', data: { task } }, 2); // replayed
+    });
+    await eventually(() => expect(hook.result.current.events.map((e) => e.message)).toEqual(['a real line']));
+    expect(onBoardEvent).toHaveBeenCalledTimes(1);
+    expect(onBoardEvent.mock.calls[0][0].data.task.id).toBe('T1');
+    // Its seq still advances the resume cursor.
+    await eventually(() => expect(hook.result.current.lastSeq).toBe(2));
+  });
+
+  it('tracks the review queue from the health poll and the review_pending event', async () => {
+    const { result } = await mountStream();
+    await act(async () => {
+      MockEventSource.last.emitMessage({ ...ev(''), kind: 'review_pending', data: { pending: 4 } }, 1);
+    });
+    await eventually(() => expect(result.current.pendingReview).toBe(4));
+    expect(result.current.events).toHaveLength(0);
+  });
+
+  it('exposes the folded derivation, updated per flush and reset per run', async () => {
+    const { result } = await mountStream();
+    await act(async () => {
+      MockEventSource.last.emitMessage(ev('plan', { phase: 'plan', agent: 'planner', tokens: 10 }), 1);
+      MockEventSource.last.emitMessage(ev('go', { phase: 'execute', agent: 'go-worker', task_id: 'T1', tokens: 5 }), 2);
+    });
+    await eventually(() => expect(result.current.derived.count).toBe(2));
+    expect(result.current.derived.phases).toEqual(['plan', 'execute']);
+    expect(result.current.derived.activeAgent).toBe('go-worker');
+    expect([...result.current.derived.taskIds]).toEqual(['T1']);
+    expect(result.current.derived.tokens).toBe(15);
+
+    await act(async () => {
+      MockEventSource.last.emitMessage(ev('run started', { kind: 'run_start', phase: 'init' }), 3);
+    });
+    await eventually(() => expect(result.current.derived.count).toBe(1));
+    expect(result.current.derived.tokens).toBe(0);
+    expect(result.current.derived.phases).toEqual(['init']);
+  });
+
   it('surfaces a gap frame reported by the server', async () => {
     const { result } = await mountStream();
     await act(async () => {

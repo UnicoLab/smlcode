@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { ArrowUpRight, X } from 'lucide-react';
 import clsx from 'clsx';
 import type { RunEvent } from '@/types';
 import { teamColor } from '@/components/Board/teamColor';
+import { isTypingTarget } from '@/hooks/useKeyboard';
 import { agentTrail, type FloorAgent, type FloorModel, type FloorStageSeat, type FloorTeam, type FloorTicket } from './floorModel';
 import { TICKET_HEX, TICKET_LABEL, ago, clock, findAgent, findTicket, glyphFor, seatTitle, type FloorSelection } from './floorShared';
 
@@ -38,23 +39,47 @@ export default function FloorDossier({ floor, events, selection, running, now, o
   const person = findAgent(floor, selection);
   const ticket = findTicket(floor, selection);
   const onStage = !person && selection?.kind === 'agent' ? floor.stage.find((a) => a.id === selection.id) ?? null : null;
+  const open = !!(person || ticket || onStage);
 
-  // Esc closes, like every other overlay in the studio.
+  // Esc closes, like every other overlay in the studio — unless the key was
+  // typed into a field, where Esc means "clear what I typed", not "close".
   useEffect(() => {
     if (!selection) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onSelect(null);
+      if (e.key === 'Escape' && !isTypingTarget(e.target)) onSelect(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [selection, onSelect]);
 
-  if (!person && !ticket && !onStage) return null;
+  // Opening moves focus to the close button so a keyboard user lands inside
+  // the dossier they just opened; closing gives focus back to whatever opened
+  // it (the sr-only button, a feed card, a chip), so they are not dropped at
+  // the top of the document.
+  const asideRef = useRef<HTMLElement>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+  const openKey = open ? `${selection?.kind}:${selection?.id}` : '';
+  useEffect(() => {
+    if (!openKey) return undefined;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !asideRef.current?.contains(active)) returnTo.current = active;
+    const close = asideRef.current?.querySelector<HTMLElement>('[data-dossier-close]');
+    close?.focus({ preventScroll: true });
+    return () => {
+      const back = returnTo.current;
+      if (back && back.isConnected && document.contains(back)) back.focus({ preventScroll: true });
+    };
+    // Re-run per dossier, not per render: `openKey` names the thing open.
+  }, [openKey]);
+
+  if (!open) return null;
 
   return (
     <aside
+      ref={asideRef}
       className="floor-dossier pointer-events-auto absolute left-2 top-2 z-[60] flex max-h-[calc(100%-1rem)] w-[min(20rem,calc(100%-1rem))] flex-col overflow-hidden rounded-lg border border-gray-200/90 bg-white/92 text-xs shadow-xl backdrop-blur-md dark:border-gray-700/80 dark:bg-gray-900/92"
       data-testid="floor-dossier"
+      role="dialog"
       aria-label={person ? `About ${person.agent.id}` : onStage ? `About ${onStage.id}` : `About ${ticket!.ticket.id}`}
     >
       {person ? (
@@ -76,7 +101,7 @@ function Header({ hex, glyph, title, sub, onClose }: { hex: string; glyph: strin
         <div className="truncate font-mono text-[13px] font-bold text-gray-900 dark:text-gray-100">{title}</div>
         <div className="truncate text-[10.5px] font-semibold text-gray-500 dark:text-gray-400">{sub}</div>
       </div>
-      <button type="button" onClick={onClose} aria-label="Close" className="focus-ring -mr-1 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200">
+      <button type="button" onClick={onClose} aria-label="Close" data-dossier-close className="focus-ring -mr-1 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-200">
         <X size={13} aria-hidden="true" />
       </button>
     </header>

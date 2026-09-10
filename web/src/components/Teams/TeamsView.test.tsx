@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TeamsView from './TeamsView';
 import { ApiError } from '@/api/client';
+import BoardStoreRoot from '@/components/shared/BoardStoreRoot';
 import type { SquadsView, TeamActivity, TeamPreselect, TeamSpec, TeamsLibrary } from '@/types';
 
 const getSquads = vi.fn<() => Promise<SquadsView>>();
@@ -40,6 +41,8 @@ vi.mock('@/api/client', async () => {
     getTeamActivity: (...a: unknown[]) => getTeamActivity(...(a as [])),
     createTeamManager: (...a: unknown[]) => createTeamManager(...a),
     getSkills: async () => [],
+    // The org chart rides the board store, which reads the board alongside it.
+    getTasks: async () => ({ plan: null, tasks: [], columns: [], by_column: {} }),
   };
 });
 
@@ -143,9 +146,13 @@ beforeEach(() => {
 });
 
 async function renderPage() {
+  // The page reads the org chart from the shared board store; a test mounts
+  // one of its own the way App does.
   render(
     <MemoryRouter>
-      <TeamsView />
+      <BoardStoreRoot>
+        <TeamsView />
+      </BoardStoreRoot>
     </MemoryRouter>,
   );
   expect(await screen.findByRole('heading', { name: 'Teams' })).toBeInTheDocument();

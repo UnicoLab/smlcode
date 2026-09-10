@@ -1,35 +1,18 @@
 import type { FloorAgent, FloorModel, FloorTeam, FloorTicket, SeatKind, TicketState } from './floorModel';
+import { ROLE_GLYPHS, SEAT_GLYPHS, TICKET_STATE_LABELS } from '@/components/shared/labels';
 
 // ── What both stages and the dossier share ───────────────────────────────
+//
+// The words — seat glyphs, ticket-state labels — come from the studio-wide
+// vocabulary in components/shared/labels, so the floor, the board and the
+// rail say the same thing about the same state.
 
 /** What the user has clicked on the floor: a person or a ticket. */
 export type FloorSelection = { kind: 'agent'; id: string; team: string } | { kind: 'ticket'; id: string; team: string } | null;
 
-export const SEAT_GLYPH: Record<SeatKind, string> = {
-  manager: '👔',
-  worker: '🔧',
-  reviewer: '👁️',
-  tester: '🧪',
-  member: '🤖',
-};
+export const SEAT_GLYPH: Record<SeatKind, string> = SEAT_GLYPHS;
 
-export const ROLE_GLYPH: Record<string, string> = {
-  planner: '📋',
-  splitter: '✂️',
-  explorer: '🔍',
-  architect: '🏗️',
-  coordinator: '🎯',
-  docs: '📖',
-  memory: '💾',
-  context: '📝',
-  composer: '🎼',
-  triage: '👔',
-  corrector: '✏️',
-  deep: '🧠',
-  reviewer: '👁️',
-  tester: '🧪',
-  worker: '🔧',
-};
+export const ROLE_GLYPH: Record<string, string> = ROLE_GLYPHS;
 
 export const TICKET_HEX: Record<TicketState, string> = {
   queued: '#cbd5e1',
@@ -40,14 +23,10 @@ export const TICKET_HEX: Record<TicketState, string> = {
   failed: '#dc2626',
 };
 
-export const TICKET_LABEL: Record<TicketState, string> = {
-  queued: 'queued',
-  working: 'in progress',
-  review: 'in review',
-  blocked: 'blocked',
-  done: 'done',
-  failed: 'failed',
-};
+export const TICKET_LABEL: Record<TicketState, string> = TICKET_STATE_LABELS;
+
+/** The legend both stages draw, in the order a reader scans it. */
+export const LEGEND_STATES: TicketState[] = ['working', 'review', 'blocked', 'done', 'queued'];
 
 export function glyphFor(agent: FloorAgent): string {
   if (agent.seat !== 'member') return SEAT_GLYPH[agent.seat];

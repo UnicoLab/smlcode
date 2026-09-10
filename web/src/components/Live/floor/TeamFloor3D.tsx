@@ -4,8 +4,10 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { ContactShadows, Float, Html, OrbitControls, QuadraticBezierLine, RoundedBox, Sparkles } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { teamColor } from '@/components/Board/teamColor';
-import type { FloorAgent, FloorHandoff, FloorModel, FloorPhase, FloorPulse, FloorStageSeat, FloorTeam, FloorTicket, TicketState } from './floorModel';
-import { TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } from './floorShared';
+import { STAGE_GLYPHS } from '@/components/shared/labels';
+import { PULSE_TTL_MS, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorStageSeat, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
+import { LEGEND_STATES, TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } from './floorShared';
+import { floorStore, rememberCamera, rememberCameraPrefs } from './floorStore';
 
 // ── The team floor, in three dimensions ──────────────────────────────────
 //
@@ -25,7 +27,14 @@ import { TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } fr
 // the wrapper), a table focuses the camera, empty floor clears. The camera is
 // the user's: drag to orbit, wheel to zoom, right-drag to pan, "follow" keeps
 // whoever is working in the middle. Everything animates on the GPU per frame
-// and freezes (frameloop on demand) under prefers-reduced-motion.
+// while there is something to animate — a run, live tickets, fresh pulses,
+// the camera gliding, follow or spin — and the loop drops to on-demand when
+// there is not, and stops when the tab is hidden. Under
+// prefers-reduced-motion nothing moves at all.
+//
+// Per-frame work allocates nothing: the lerps, colours and curve samples go
+// through scratch objects made once, and the wall clock is read once per
+// frame (FrameClock) rather than once per animated thing.
 //
 // All data comes from floorModel; this file only draws it.
 
@@ -38,6 +47,8 @@ export interface TeamFloor3DProps {
   onSelect: (sel: FloorSelection) => void;
   pulses: FloorPulse[];
   onTicket?: (id: string) => void;
+  /** The WebGL context went away; the wrapper falls back to the flat map. */
+  onContextLost?: () => void;
 }
 
 const HEX: Record<string, string> = {
@@ -147,19 +158,93 @@ function layout(teams: FloorTeam[]): Placed[] {
   });
 }
 
-function nowSeconds(): number {
-  return Date.now() / 1000;
+/**
+ * The wall clock, in seconds, read once per frame by FrameClock (which runs
+ * before every other frame callback) and shared by everything that ages a
+ * pulse. Before the first frame it holds the time the module loaded.
+ */
+const frame = { now: Date.now() / 1000 };
+
+function FrameClock() {
+  useFrame(() => {
+    frame.now = Date.now() / 1000;
+  }, -100);
+  return null;
 }
 
-export default function TeamFloor3D({ floor, running, dark, reducedMotion, selection, onSelect, pulses, onTicket }: TeamFloor3DProps) {
+/** Scratch objects for per-frame maths — allocated once, never per frame. */
+const _scale = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _goal = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const WHITE = new THREE.Color('#ffffff');
+
+/** Whether the tab is visible; a hidden tab renders nothing. */
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const onChange = () => setVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
+  return visible;
+}
+
+export default function TeamFloor3D({ floor, running, dark, reducedMotion, selection, onSelect, pulses, onTicket, onContextLost }: TeamFloor3DProps) {
   const placed = useMemo(() => layout(floor.teams), [floor.teams]);
   const byID = useMemo(() => new Map(placed.map((p) => [p.team.id, p])), [placed]);
   const [focus, setFocus] = useState<THREE.Vector3 | null>(null);
   const [focusDistance, setFocusDistance] = useState<number | null>(null);
-  const [autoRotate, setAutoRotate] = useState(false);
-  const [follow, setFollow] = useState(false);
-  const [resetKey, setResetKey] = useState(0);
+  // Follow and spin outlive a visit: they are the user's, kept in the floor
+  // store with the camera.
+  const [autoRotate, setAutoRotateState] = useState(() => floorStore.autoRotate);
+  const [follow, setFollowState] = useState(() => floorStore.follow);
+  const setAutoRotate = useCallback((v: boolean) => {
+    setAutoRotateState(v);
+    rememberCameraPrefs({ autoRotate: v });
+  }, []);
+  const setFollow = useCallback((v: boolean) => {
+    setFollowState(v);
+    rememberCameraPrefs({ follow: v });
+  }, []);
+  // "reset view" asks the controls to restore their saved state (home)
+  // instead of remounting the Canvas, which threw away every GPU resource
+  // and the scene's warm state for a camera move.
+  const [resetSignal, setResetSignal] = useState(0);
   const animate = !reducedMotion;
+  const visible = useDocumentVisible();
+
+  // The render loop: 'always' while something moves, 'demand' when the floor
+  // is still (a click, a camera drag or a glide asks for frames as needed),
+  // 'never' while the tab is hidden.
+  const anyLive = useMemo(
+    () => floor.teams.some((t) => t.tickets.some((k) => k.state === 'working' || k.state === 'review')),
+    [floor.teams],
+  );
+  const freshPulse = pulses.length > 0 && Date.now() - pulses[pulses.length - 1].at < PULSE_TTL_MS;
+  const frameloop: 'always' | 'demand' | 'never' = !visible
+    ? 'never'
+    : reducedMotion
+      ? 'demand'
+      : running || autoRotate || follow || anyLive || freshPulse
+        ? 'always'
+        : 'demand';
+
+  // A lost context (GPU reset, VRAM eviction) is reported up; the wrapper
+  // swaps in the flat map and says so. The listener is removed on unmount.
+  const lostRef = useRef<{ el: HTMLCanvasElement; fn: (e: Event) => void } | null>(null);
+  const onContextLostRef = useRef(onContextLost);
+  onContextLostRef.current = onContextLost;
+  useEffect(
+    () => () => {
+      const l = lostRef.current;
+      if (l) l.el.removeEventListener('webglcontextlost', l.fn);
+      lostRef.current = null;
+      document.body.style.cursor = '';
+    },
+    [],
+  );
 
   const width = Math.max(1, placed.length) * TABLE_GAP;
   const hasStage = floor.mode === 'teams' && (floor.stage.length > 0 || !!floor.phase);
@@ -232,18 +317,48 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
     onSelect(null);
   };
 
+  // What a keyboard or a screen reader can reach: the same people and
+  // tickets the scene draws, as buttons that open the same dossier.
+  const reachable = useMemo(() => {
+    const out: { key: string; label: string; sel: NonNullable<FloorSelection> }[] = [];
+    for (const t of floor.teams) {
+      for (const a of t.agents) out.push({ key: `${t.id}/${a.id}`, label: `${a.id}, ${seatTitle(a, t)} on ${t.name}${a.active ? ', working' : ''}`, sel: { kind: 'agent', id: a.id, team: t.id } });
+      for (const k of t.tickets) out.push({ key: `${t.id}/${k.id}`, label: `Task ${k.id}, ${TICKET_LABEL[k.state]} on ${t.name}${k.agent ? `, held by ${k.agent}` : ''}`, sel: { kind: 'ticket', id: k.id, team: t.id } });
+    }
+    for (const k of floor.unassigned) out.push({ key: `seam/${k.id}`, label: `Task ${k.id}, ${TICKET_LABEL[k.state]}, no team`, sel: { kind: 'ticket', id: k.id, team: '' } });
+    for (const s of floor.stage) out.push({ key: `stage/${s.id}`, label: `${s.id} on the pipeline stage${s.phase ? `, ${s.phase}` : ''}${s.active ? ', speaking' : ''}`, sel: { kind: 'agent', id: s.id, team: '' } });
+    return out;
+  }, [floor.teams, floor.unassigned, floor.stage]);
+
   return (
-    <div className="relative h-full w-full" data-testid="team-floor-3d">
+    <div
+      className="relative h-full w-full"
+      data-testid="team-floor-3d"
+      // The pointer cursor is set on the body by hovers inside the canvas; a
+      // pointer that leaves the canvas mid-hover must not take it along.
+      onPointerLeave={() => {
+        document.body.style.cursor = '';
+      }}
+    >
       <Canvas
-        key={resetKey}
         shadows={{ type: THREE.PCFShadowMap }}
         dpr={[1, 1.75]}
-        frameloop={reducedMotion ? 'demand' : 'always'}
+        frameloop={frameloop}
         camera={{ position: [home.x, camZ * 0.55, camZ + 1], fov: 44, near: 0.1, far: 200 }}
         gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         onPointerMissed={clear}
+        onCreated={({ gl }) => {
+          const el = gl.domElement;
+          const fn = (e: Event) => {
+            e.preventDefault();
+            onContextLostRef.current?.();
+          };
+          el.addEventListener('webglcontextlost', fn);
+          lostRef.current = { el, fn };
+        }}
       >
         <Suspense fallback={null}>
+          <FrameClock />
           <Lights dark={dark} />
           <Ground dark={dark} width={width} animate={animate} />
           {floor.links.map((link) => {
@@ -293,23 +408,36 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             <IntegrationPad integration={floor.integration} unassigned={floor.unassigned.length} />
           )}
           <ContactShadows position={[0, 0.01, 0]} opacity={dark ? 0.55 : 0.35} scale={width + 20} blur={2.6} far={5} color={dark ? '#000' : '#4c1d95'} />
-          <CameraRig focus={focus} distance={focusDistance} home={home} homeCam={homeCam} autoRotate={autoRotate && animate} />
+          <CameraRig focus={focus} distance={focusDistance} home={home} homeCam={homeCam} autoRotate={autoRotate && animate} resetSignal={resetSignal} />
         </Suspense>
       </Canvas>
+
+      {/* The scene for a keyboard: every person and ticket as a button that
+          opens the same dossier a click would. Visually hidden; the dossier
+          it opens is not. */}
+      <ul className="sr-only" aria-label="People and tasks on the floor" data-testid="floor-a11y-list">
+        {reachable.map((r) => (
+          <li key={r.key}>
+            <button type="button" onClick={() => onSelect(r.sel)}>
+              {r.label}
+            </button>
+          </li>
+        ))}
+      </ul>
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap items-end justify-between gap-2 p-2">
         <Legend floor={floor} />
         <div className="pointer-events-auto flex items-center gap-1 rounded-md border border-gray-200/80 bg-white/80 p-1 text-[10px] backdrop-blur dark:border-gray-700/80 dark:bg-gray-900/80">
           <button
             type="button"
-            onClick={() => setFollow((v) => !v)}
+            onClick={() => setFollow(!follow)}
             aria-pressed={follow}
             title="Keep the camera on whoever is working"
             className={follow ? 'focus-ring rounded bg-brand-500 px-1.5 py-0.5 text-white' : 'focus-ring rounded px-1.5 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-800'}
           >
             {follow ? 'following' : 'follow'}
           </button>
-          <button type="button" onClick={() => setAutoRotate((v) => !v)} aria-pressed={autoRotate} className="focus-ring rounded px-1.5 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-800">
+          <button type="button" onClick={() => setAutoRotate(!autoRotate)} aria-pressed={autoRotate} className="focus-ring rounded px-1.5 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-800">
             {autoRotate ? 'stop spin' : 'spin'}
           </button>
           <button
@@ -317,7 +445,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             onClick={() => {
               clear();
               setFollow(false);
-              setResetKey((k) => k + 1);
+              setResetSignal((k) => k + 1);
             }}
             className="focus-ring rounded px-1.5 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-800"
           >
@@ -412,14 +540,20 @@ function Table({
   const managerSeat = team.agents.find((a) => a.seat === 'manager');
   const managerPos = managerSeat ? seats.get(managerSeat.id) : undefined;
 
-  // Pulses on this table, still fresh enough to draw.
-  const mine = pulses.filter((p) => p.team === team.id || (team.crew && !p.team));
-  const latestByTicket = new Map<string, FloorPulse>();
-  for (const p of mine) if (p.ticket) latestByTicket.set(p.ticket, p);
+  // Pulses on this table, still fresh enough to draw — filtered once per
+  // pulse list, not once per render of every table.
+  const mine = useMemo(() => pulses.filter((p) => p.team === team.id || (team.crew && !p.team)), [pulses, team.id, team.crew]);
+  const latestByTicket = useMemo(() => {
+    const m = new Map<string, FloorPulse>();
+    for (const p of mine) if (p.ticket) m.set(p.ticket, p);
+    return m;
+  }, [mine]);
+  const bursting = useMemo(() => mine.filter((p) => frame.now - p.at / 1000 <= BURST_S), [mine]);
 
   // The board stands behind the head seat; the team's sign hangs above it.
-  const boardDir = managerPos ? managerPos.pos.clone().setY(0).normalize() : new THREE.Vector3(0, 0, -1);
-  const signAt = boardDir.clone().multiplyScalar(BOARD_BACK).setY(BOARD_BOTTOM + BOARD_H + 0.75);
+  const boardDir = useMemo(() => (managerPos ? managerPos.pos.clone().setY(0).normalize() : new THREE.Vector3(0, 0, -1)), [managerPos]);
+  const signAt = useMemo(() => boardDir.clone().multiplyScalar(BOARD_BACK).setY(BOARD_BOTTOM + BOARD_H + 0.75), [boardDir]);
+  const tableCentre = useMemo(() => new THREE.Vector3(0, TABLE_Y + 0.3, 0), []);
 
   return (
     <group position={pos}>
@@ -506,13 +640,11 @@ function Table({
           .map((p, i) => <Dispatch key={p.id} from={managerPos.pos} to={seats.get(p.agent!)!.pos} label={p.ticket ? `${p.agent} ← ${p.ticket}` : `${p.agent}`} at={p.at} slot={i} animate={animate} />)}
 
       {/* Bursts: a ticket finishing, failing, appearing; a gate; a team done. */}
-      {mine.map((p) => {
-        const age = nowSeconds() - p.at / 1000;
-        if (age > BURST_S) return null;
+      {bursting.map((p) => {
         const where = p.ticket ? slots.get(p.ticket) : undefined;
         const big = p.kind === 'gate' || p.kind === 'team-complete';
         if (!where && !big) return null;
-        return <Burst key={`burst-${p.id}`} at={p.at} position={where ?? new THREE.Vector3(0, TABLE_Y + 0.3, 0)} color={TONE_HEX[p.tone]} size={big ? 2.2 : 1} animate={animate} />;
+        return <Burst key={`burst-${p.id}`} at={p.at} position={where ?? tableCentre} color={TONE_HEX[p.tone]} size={big ? 2.2 : 1} animate={animate} />;
       })}
     </group>
   );
@@ -585,20 +717,21 @@ function TicketCard({
   const ring = useRef<THREE.Mesh>(null);
   const [hover, setHover] = useState(false);
   const color = TICKET_HEX[ticket.state];
+  const glow = useMemo(() => new THREE.Color(color), [color]);
   const pulseAt = pulse ? pulse.at / 1000 : -Infinity;
   const spawned = pulse?.kind === 'ticket-new';
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
-    const age = nowSeconds() - pulseAt;
+    const age = frame.now - pulseAt;
     if (mat.current) {
       // A fresh pulse flashes the card white-hot, then it settles into its
       // state's glow: breathing when live, steady when selected or hovered.
       if (animate && age < FLASH_S) {
-        mat.current.emissive.set('#ffffff');
+        mat.current.emissive.copy(WHITE);
         mat.current.emissiveIntensity = 1.6 * (1 - age / FLASH_S);
       } else {
-        mat.current.emissive.set(color);
+        mat.current.emissive.copy(glow);
         if (selected || hover) mat.current.emissiveIntensity = 0.7;
         else if (live && animate) mat.current.emissiveIntensity = 0.5 + Math.sin(t * 5) * 0.4;
         else mat.current.emissiveIntensity = live ? 0.6 : 0.08;
@@ -714,13 +847,20 @@ function Person({
   const flashStart = useRef<number>(-1);
   const wasActive = useRef(false);
   const [hover, setHover] = useState(false);
+  const invalidate = useThree((s) => s.invalidate);
 
   // A flash ring when this person starts working: the "message received"
   // cue, once per activation.
   useEffect(() => {
     if (active && !wasActive.current) flashStart.current = performance.now();
     wasActive.current = active;
-  }, [active]);
+    invalidate();
+  }, [active, invalidate]);
+  // Hover and selection ease the scale over several frames; on-demand
+  // rendering has to be asked for each of them.
+  useEffect(() => {
+    invalidate();
+  }, [hover, selected, invalidate]);
 
   // Seat faces the table centre: rotate the whole person so its screen is
   // between them and the table.
@@ -743,12 +883,20 @@ function Person({
         body.current.rotation.x = active ? Math.sin(t * 9) * 0.04 : 0;
       }
       const target = hover || selected ? 1.08 : 1;
-      body.current.scale.lerp(new THREE.Vector3(target, target, target), 0.2);
+      if (Math.abs(body.current.scale.x - target) > 0.002) {
+        body.current.scale.lerp(_scale.setScalar(target), 0.2);
+        invalidate();
+      }
     }
     if (head.current) {
       // Idle people glance at whoever is working; the worker watches the screen.
       const want = active ? 0 : headYaw;
-      head.current.rotation.y = animate ? THREE.MathUtils.lerp(head.current.rotation.y, want, 0.06) : want;
+      if (animate && Math.abs(head.current.rotation.y - want) > 0.002) {
+        head.current.rotation.y = THREE.MathUtils.lerp(head.current.rotation.y, want, 0.06);
+        invalidate();
+      } else if (!animate) {
+        head.current.rotation.y = want;
+      }
     }
     if (flash.current) {
       const age = flashStart.current < 0 ? Infinity : (performance.now() - flashStart.current) / 1000;
@@ -758,6 +906,7 @@ function Person({
         const s = 0.6 + age * 2.2;
         flash.current.scale.set(s, s, s);
         (flash.current.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.8 - age * 0.7);
+        invalidate();
       }
     }
     if (halo.current) {
@@ -1039,8 +1188,12 @@ function StageFigure({ seat, pos, tall, running, animate, selected, onSelect }: 
   const body = useRef<THREE.Group>(null);
   const ring = useRef<THREE.Mesh>(null);
   const [hover, setHover] = useState(false);
+  const invalidate = useThree((s) => s.invalidate);
   const hex = '#8b5cf6';
-  const glyph = ROLE_GLYPH_STAGE[seat.id] ?? ROLE_GLYPH_STAGE[seat.phase ?? ''] ?? '🎓';
+  const glyph = STAGE_GLYPHS[seat.id] ?? STAGE_GLYPHS[seat.phase ?? ''] ?? '🎓';
+  useEffect(() => {
+    invalidate();
+  }, [hover, selected, active, invalidate]);
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     if (body.current) {
@@ -1050,7 +1203,10 @@ function StageFigure({ seat, pos, tall, running, animate, selected, onSelect }: 
         body.current.rotation.z = active ? Math.sin(t * 2.5) * 0.05 : 0;
       }
       const target = hover || selected ? 1.08 : 1;
-      body.current.scale.lerp(new THREE.Vector3(target, target, target), 0.2);
+      if (Math.abs(body.current.scale.x - target) > 0.002) {
+        body.current.scale.lerp(_scale.setScalar(target), 0.2);
+        invalidate();
+      }
     }
     if (ring.current) {
       ring.current.visible = active || selected;
@@ -1123,28 +1279,6 @@ function StageFigure({ seat, pos, tall, running, animate, selected, onSelect }: 
     </group>
   );
 }
-
-const ROLE_GLYPH_STAGE: Record<string, string> = {
-  planner: '📋',
-  plan: '📋',
-  splitter: '✂️',
-  split: '✂️',
-  explorer: '🔍',
-  explore: '🔍',
-  architect: '🏗️',
-  coordinator: '🎯',
-  coord: '🎯',
-  docs: '📖',
-  memory: '💾',
-  context: '📝',
-  composer: '🎼',
-  clarify: '💬',
-  skills: '🧰',
-  learn: '🎓',
-  polish: '✨',
-  qa: '🧪',
-  test: '🧪',
-};
 
 /** The team's board on the wall behind the manager: a column per state, a tile per ticket. */
 function WallBoard({ team, hex, dark, dir, running }: { team: FloorTeam; hex: string; dark: boolean; dir: THREE.Vector3; running: boolean }) {
@@ -1243,7 +1377,7 @@ function Thread({ from, to, color, live, animate }: { from: THREE.Vector3; to: T
     beads.current.forEach((m, i) => {
       if (!m) return;
       const u = ((t * 0.5 + i / 2) % 1 + 1) % 1;
-      m.position.copy(curve.getPoint(u));
+      curve.getPoint(u, m.position);
     });
   });
   return (
@@ -1271,7 +1405,7 @@ function Dispatch({ from, to, label, at, slot, animate }: { from: THREE.Vector3;
   const grp = useRef<THREE.Group>(null);
   const [alive, setAlive] = useState(true);
   useFrame(() => {
-    const age = nowSeconds() - at / 1000;
+    const age = frame.now - at / 1000;
     if (age > DISPATCH_S) {
       if (alive) setAlive(false);
       return;
@@ -1279,7 +1413,7 @@ function Dispatch({ from, to, label, at, slot, animate }: { from: THREE.Vector3;
     if (dot.current) {
       // The message flies for 1.2s, lands, and dissolves — nothing lingers on the person.
       const flight = animate ? Math.min(1, age / 1.2) : 1;
-      dot.current.position.copy(curve.getPoint(flight));
+      curve.getPoint(flight, dot.current.position);
       const fade = age < 1.2 ? 1 : Math.max(0, 1 - (age - 1.2) / 0.6);
       dot.current.scale.setScalar(fade);
       dot.current.visible = fade > 0;
@@ -1315,7 +1449,7 @@ function Burst({ at, position, color, size, animate }: { at: number; position: T
     [],
   );
   useFrame(() => {
-    const age = nowSeconds() - at / 1000;
+    const age = frame.now - at / 1000;
     if (age > BURST_S || !animate) {
       if (alive) setAlive(false);
       return;
@@ -1365,7 +1499,7 @@ function Conduit({ from, to, label, stalled, running, animate }: { from: Placed;
     packets.current.forEach((m, i) => {
       if (!m) return;
       const u = ((t * speed + i / N) % 1 + 1) % 1;
-      m.position.copy(curve.getPoint(u));
+      curve.getPoint(u, m.position);
       const s = stalled ? 0.9 + Math.sin(t * 8) * 0.3 : 1;
       m.scale.setScalar(s);
     });
@@ -1420,7 +1554,7 @@ function Spark({ handoff, placed, animate }: { handoff: FloorHandoff; placed: Ma
   useFrame(({ clock }) => {
     if (!curve || !dot.current) return;
     const u = animate ? (clock.getElapsedTime() * 0.6) % 1 : 1;
-    dot.current.position.copy(curve.getPoint(u));
+    curve.getPoint(u, dot.current.position);
   });
   if (!curve) return null;
   const mid = curve.getPoint(0.5);
@@ -1469,24 +1603,32 @@ function IntegrationPad({ integration, unassigned }: { integration: NonNullable<
  * beside the dossier, not under it. The glide stops the moment the user takes
  * the camera back (any drag or wheel).
  */
-function CameraRig({ focus, distance, home, homeCam, autoRotate }: { focus: THREE.Vector3 | null; distance: number | null; home: THREE.Vector3; homeCam: THREE.Vector3; autoRotate: boolean }) {
+function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: { focus: THREE.Vector3 | null; distance: number | null; home: THREE.Vector3; homeCam: THREE.Vector3; autoRotate: boolean; resetSignal: number }) {
   const controls = useRef<OrbitControlsImpl>(null);
   const target = useRef(home.clone());
   const want = useRef<number | null>(null);
   const glide = useRef<THREE.Vector3 | null>(null);
   const { invalidate, camera } = useThree();
+  // A camera the user left on a previous visit: restored on mount, and the
+  // first "re-frame home" below is skipped so it is not undone a frame later.
+  const restoredRef = useRef(false);
+  const skipHomeRef = useRef(floorStore.camera !== null);
   // The floor grew or shrank (a stage appeared, a team joined): re-frame it,
   // unless the user is looking at something in particular.
   useEffect(() => {
     if (focus) return;
+    if (skipHomeRef.current) {
+      skipHomeRef.current = false;
+      return;
+    }
     glide.current = homeCam.clone();
     invalidate();
   }, [homeCam, focus, invalidate]);
   useEffect(() => {
     const t = focus ? focus.clone() : home.clone();
     if (focus && distance !== null && distance < 10) {
-      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
-      t.sub(right.multiplyScalar(distance * 0.28));
+      _right.setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
+      t.sub(_right.multiplyScalar(distance * 0.28));
     }
     target.current.copy(t);
     want.current = focus ? distance : null;
@@ -1495,13 +1637,54 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate }: { focus: THRE
   useEffect(() => {
     const c = controls.current;
     if (!c) return undefined;
+    // Home is what "reset view" returns to.
+    c.saveState();
+    if (!restoredRef.current) {
+      restoredRef.current = true;
+      const saved = floorStore.camera;
+      if (saved) {
+        camera.position.set(saved.position[0], saved.position[1], saved.position[2]);
+        c.target.set(saved.target[0], saved.target[1], saved.target[2]);
+        target.current.copy(c.target);
+        c.update();
+        invalidate();
+      }
+    }
     const release = () => {
       want.current = null;
       glide.current = null;
     };
+    const remember = () => {
+      rememberCamera({
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [c.target.x, c.target.y, c.target.z],
+      });
+    };
     c.addEventListener('start', release);
-    return () => c.removeEventListener('start', release);
-  }, []);
+    c.addEventListener('end', remember);
+    return () => {
+      c.removeEventListener('start', release);
+      c.removeEventListener('end', remember);
+      // Leaving the page keeps the view for the return, glide or not.
+      remember();
+    };
+  }, [camera, invalidate]);
+  // reset view: back to the saved home, forgetting the remembered camera.
+  const firstReset = useRef(true);
+  useEffect(() => {
+    if (firstReset.current) {
+      firstReset.current = false;
+      return;
+    }
+    const c = controls.current;
+    if (!c) return;
+    want.current = null;
+    glide.current = null;
+    c.reset();
+    target.current.copy(c.target);
+    rememberCamera(null);
+    invalidate();
+  }, [resetSignal, invalidate]);
   useFrame(() => {
     const c = controls.current;
     if (!c) return;
@@ -1520,36 +1703,33 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate }: { focus: THRE
     }
     if (want.current !== null) {
       glide.current = null;
-      const dir = camera.position.clone().sub(c.target);
-      const have = dir.length();
+      _dir.copy(camera.position).sub(c.target);
+      const have = _dir.length();
       if (Math.abs(have - want.current) > 0.05) {
-        const goal = c.target.clone().add(dir.normalize().multiplyScalar(want.current));
-        camera.position.lerp(goal, 0.08);
+        _goal.copy(c.target).add(_dir.normalize().multiplyScalar(want.current));
+        camera.position.lerp(_goal, 0.08);
         moved = true;
       } else {
         want.current = null;
       }
     }
-    if (moved) c.update();
+    if (moved) {
+      c.update();
+      // On-demand rendering: a glide asks for the next frame itself.
+      invalidate();
+    }
   });
   return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} minDistance={4} maxDistance={70} maxPolarAngle={Math.PI / 2.05} autoRotate={autoRotate} autoRotateSpeed={0.6} target={[home.x, home.y, home.z]} />;
 }
 
 function Legend({ floor }: { floor: FloorModel }) {
-  const items: [TicketState, string][] = [
-    ['working', 'in progress'],
-    ['review', 'in review'],
-    ['blocked', 'blocked'],
-    ['done', 'done'],
-    ['queued', 'queued'],
-  ];
   return (
     <div className="pointer-events-none flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-white/70 px-2 py-1 text-[10px] text-gray-600 backdrop-blur dark:bg-gray-900/70 dark:text-gray-300">
       <span className="font-semibold uppercase tracking-wider">{floor.summary}</span>
-      {items.map(([state, label]) => (
+      {LEGEND_STATES.map((state) => (
         <span key={state} className="inline-flex items-center gap-1">
           <span className="inline-block h-2 w-3 rounded-sm" style={{ background: TICKET_HEX[state] }} />
-          {label}
+          {TICKET_LABEL[state]}
         </span>
       ))}
     </div>

@@ -66,6 +66,30 @@ explore ─▶ charter ─▶ plan ─▶ split ─▶ execute (both squads in p
 
 ### 1. The teams are chosen 🎯
 
+**Dynamic or strict.** The run bar's team switch has two modes, both always on
+screen:
+
+- **Dynamic** (the default): the *dispatcher* picks the teams from the request
+  and the workspace, decides whether they build in parallel or one staffs the
+  run, and names who manages each. Saved pins are ignored for that run.
+- **Strict**: exactly the teams you picked (or, with none picked, the ones the
+  saved config pins). Nothing is added on evidence — "send this to the Python
+  team" gets the Python team and nobody else.
+
+Picking a team switches to Strict; the ✕ on the button, or *Dynamic* in its
+menu, goes back. The choice governs one run: the server restores the saved pins
+when it ends. The dispatcher says what it decided on the run log, and sits at
+the harness table on the floor:
+
+```text
+compose  dispatcher  dynamic — picked from the request and the workspace: 2 teams build in parallel …
+compose  dispatcher  team backend-python (workspace has "pyproject.toml") — managed by triage (run default)
+```
+
+The dispatcher is not a model call. Picking teams is the part of org-chart
+assembly a 7–32B model was worst at, so it stays deterministic; the model is
+asked only for the contract between the teams it picked.
+
 Two entrances, in this order:
 
 **The library, deterministically.** Every team in the library carries the
@@ -687,8 +711,29 @@ pkg/blocks/bundled/teams/    shipped with SLMCode
 .slmcode/blocks/teams/       this project — wins on an id clash
 ```
 
-Six ship by default: `backend-go`, `backend-python`, `backend-node`,
-`frontend-react`, `docs` and `infra`. Editing a builtin writes a **project
+Eight ship by default: `backend-go`, `backend-python`, `backend-node`,
+`frontend-react`, `docs`, `infra`, and two that are not language halves:
+
+- **`repo-insight` — Insight · What's going on.** A deep dive on the repository
+  as it stands: `architect-worker` maps the structure, entry points and docs
+  and writes `ARCHITECTURE.md` (current state) and `MAINTENANCE.md` (risks,
+  ranked recommendations, routine maintenance); `docs-audit-worker` checks the
+  docs against the code; `challenger-reviewer` rejects any claim the evidence
+  does not show; `insight-tester` verifies every cited path exists. It edits
+  no source. Selected by words like *deep dive*, *current state*, *audit*,
+  *refactor*, *legacy*, *existing* — and only in a workspace of at least 12
+  files (`match.min_files`), since an empty directory has nothing to dive into.
+- **`openshift` — Platform · OpenShift.** Deployment specs for people who are
+  not DevOps: a kustomize base under `openshift/` (Deployments, Services,
+  Routes, ConfigMaps, Secret *templates* with placeholder values, PVCs, HPAs)
+  plus per-environment overlays, every workload with limits, probes and a
+  non-root security context, and a README explaining how to apply it. Proven
+  offline by `oc kustomize openshift/base`. Selected by *openshift*, *pods*,
+  *configmap*, *helm*, *kustomize*, *workload* and friends — deliberately not by
+  bare *route* or *secret*, which are everyday API words.
+
+Keywords match their plural (`pod` matches "three pods"), except keywords under
+three letters, so `go` never fires on "goes". Editing a builtin writes a **project
 override** that shadows it; deleting the override reveals the builtin again.
 There is nothing to delete until you have edited one.
 

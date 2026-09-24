@@ -143,10 +143,13 @@ Whoever is working is unmistakable: their monitor lights up, lines of code
 rise off the screen, a pool of light and a breathing ring mark the seat, and
 the pop-out over their head says which ticket and what they just said. Several
 people can be at it at once — one per ticket in flight — and idle people glance
-at whoever is. The pipeline's own people — the planner, splitter, architect,
-explorer and the rest, who sit at no table — stand on a **stage** at the left
-under a screen naming the phase the run is in and what is being said; the one
-speaking is lit, the rest wait in the wings until their phase.
+at whoever is. The harness's own people — the dispatcher that picked the teams, the planner,
+splitter, architect, explorer and the rest — sit at a **separate harness
+table**, never at a team's: a lone Python team's table seats the Python team,
+its manager and anyone who actually worked its tickets, and nobody else. In 3D
+the harness is a platform under a screen naming the phase the run is in; on the
+flat map it is a dashed island. The one speaking is lit, the rest wait until
+their phase.
 
 The floor moves when the run does. A manager sending someone onto a ticket is
 an arc from the head seat with the ticket's name; a ticket moving from one

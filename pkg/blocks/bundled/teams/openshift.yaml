@@ -1,0 +1,72 @@
+api_version: blocks/v1
+kind: team
+id: openshift
+name: Platform · OpenShift
+description: >-
+  OpenShift deployment specs for people who are not DevOps: Deployments,
+  Services, Routes, ConfigMaps, Secret templates, storage, probes, limits and
+  autoscaling, laid out as a kustomize base with per-environment overlays and
+  explained in plain words.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [openshift, kubernetes, deploy, platform, team]
+icon: "🎩"
+shareable: true
+spec:
+  id: openshift
+  name: Platform · OpenShift
+  charter: >-
+    Own the OpenShift deployment under openshift/: a kustomize base
+    (Deployments, Services, Routes, ConfigMaps, Secret TEMPLATES with
+    placeholder values only, PVCs, HPAs) plus one overlay per environment.
+    Every workload gets requests/limits, liveness and readiness probes and a
+    non-root security context. Explain each choice in a README beside the
+    manifests for a developer who is not DevOps. Never edit application
+    source to make a manifest fit, and never write a real credential.
+  # openshift/ is the canonical home; the others are the layouts a repository
+  # already using plain Kubernetes or Helm tends to have. deploy/** and
+  # infra/** stay with the Infra team so both can be on one run.
+  owns:
+    - openshift/**
+    - k8s/**
+    - manifests/**
+    - kustomize/**
+    - charts/**
+    - helm/**
+  # Renders the base offline. Missing `oc` leaves this half unverified rather
+  # than red — a fact about the machine, not about the manifests.
+  acceptance: oc kustomize openshift/base
+  worker: openshift-worker
+  reviewer: openshift-reviewer
+  tester: openshift-tester
+  skills: [openshift-manifests]
+  match:
+    # Deliberately no bare "route", "secret" or "manifest": each is an
+    # everyday word in an API or a web app ("add a route", "the JWT secret",
+    # manifest.json), and a platform team joining those runs is noise.
+    keywords:
+      - openshift
+      - ocp
+      - pod
+      - configmap
+      - kubernetes
+      - k8s
+      - kustomize
+      - helm
+      - imagestream
+      - buildconfig
+      - hpa
+      - pvc
+      - persistent volume
+      - service account
+      - workload
+      - openshift route
+      - deployment spec
+      - deployment manifest
+      - k8s manifest
+      - kubernetes manifest
+      - resource limits
+      - liveness probe
+      - readiness probe
+    files: [openshift, k8s, manifests, kustomization.yaml, Chart.yaml]

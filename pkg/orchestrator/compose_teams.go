@@ -9,6 +9,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/squads"
+	"github.com/UnicoLab/slmcode/pkg/stream"
 	"github.com/UnicoLab/slmcode/pkg/teams"
 )
 
@@ -49,6 +50,9 @@ type teamDecision struct {
 	Choices []composer.TeamChoice
 	Mode    string
 	Note    string
+	// Selection is who chose: composer.TeamSelectionDynamic (the dispatcher,
+	// from evidence) or composer.TeamSelectionStrict (the user's pins).
+	Selection string
 }
 
 // decideTeams computes the library teams for this request as the composition
@@ -59,6 +63,17 @@ type teamDecision struct {
 // preview of "this request, sent to these teams" sees exactly what that run
 // would; nil reads the configured pins.
 func (o *Orchestrator) decideTeams(query string, inventory []string, pins []string) teamDecision {
+	td := o.decideTeamsFromLibrary(query, inventory, pins)
+	if o != nil && o.cfg != nil && o.cfg.TeamLibrary {
+		td.Selection = composer.TeamSelectionDynamic
+		if len(o.pinnedTeamsWith(pins)) > 0 {
+			td.Selection = composer.TeamSelectionStrict
+		}
+	}
+	return td
+}
+
+func (o *Orchestrator) decideTeamsFromLibrary(query string, inventory []string, pins []string) teamDecision {
 	if o == nil || o.cfg == nil {
 		return teamDecision{}
 	}
@@ -119,6 +134,39 @@ func (o *Orchestrator) decideTeams(query string, inventory []string, pins []stri
 	}
 }
 
+// announceDispatch says the team decision on the run log, in the dispatcher's
+// voice, once per run: which way the teams were chosen, what was chosen, and
+// who manages each. On the floor this is the dispatcher at the harness table
+// explaining why the other tables exist — the decision used to be visible only
+// in the setup panel, which is closed while a run is being watched.
+func (o *Orchestrator) announceDispatch(td teamDecision) {
+	if o == nil || (len(td.Choices) == 0 && td.Note == "") {
+		return
+	}
+	how := "dynamic — picked from the request and the workspace"
+	if td.Selection == composer.TeamSelectionStrict {
+		how = "strict — the teams this run was sent to"
+	}
+	msg := how
+	if td.Note != "" {
+		msg += ": " + td.Note
+	}
+	o.emitFull("compose", stream.KindCoord, composer.DispatcherID, "", msg, "", "")
+	for _, c := range td.Choices {
+		line := "team " + c.ID
+		if c.Reason != "" {
+			line += " (" + c.Reason + ")"
+		}
+		if c.Manager != "" {
+			line += " — managed by " + c.Manager
+			if c.ManagerDefault {
+				line += " (run default)"
+			}
+		}
+		o.emitFull("compose", stream.KindCoord, composer.DispatcherID, "", line, "", "")
+	}
+}
+
 // teamPick is one run's library team selection, computed once.
 //
 // decideTeams (the composer) and teamsFromLibrary (the charter phase) both
@@ -155,8 +203,12 @@ func (o *Orchestrator) preselectTeamsWith(query string, inventory []string, pins
 	if len(files) == 0 {
 		files = inventory
 	}
+	// Pinned teams are strict: the run gets exactly those. Evidence only
+	// decides when nothing was pinned — the dynamic default.
+	pinned := o.pinnedTeamsWith(pins)
 	sel := teams.Select(roster, teams.Signals{Query: query, Files: files}, teams.Options{
-		Pinned: o.pinnedTeamsWith(pins),
+		Pinned: pinned,
+		Only:   len(pinned) > 0,
 	})
 	if pins == nil {
 		o.mu.Lock()
@@ -176,6 +228,11 @@ func (o *Orchestrator) pinnedTeamsWith(pins []string) []string {
 	}
 	if pins == nil {
 		return o.pinnedTeams()
+	}
+	// An explicit empty list is the Dynamic switch: no pins at all, not even
+	// the pipeline's — the dispatcher decides from evidence alone.
+	if len(pins) == 0 {
+		return nil
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -270,7 +327,7 @@ func composeTeams(comp *composer.Composition, td teamDecision) {
 	if comp == nil {
 		return
 	}
-	comp.Teams, comp.TeamMode, comp.TeamNote = td.Choices, td.Mode, td.Note
+	comp.Teams, comp.TeamMode, comp.TeamNote, comp.TeamSelection = td.Choices, td.Mode, td.Note, td.Selection
 	if td.Mode == composer.TeamModeSingle && len(td.Choices) > 0 {
 		adoptTeamStaffing(comp, td.Choices[0])
 	}

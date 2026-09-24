@@ -57,7 +57,7 @@ func (o *Orchestrator) teamRoster() []teams.Team {
 // and the run-level flag says what THIS request needs. Both are explicit
 // choices, so neither is scored — they are simply selected.
 func (o *Orchestrator) pinnedTeams() []string {
-	if o == nil || o.cfg == nil {
+	if o == nil || o.cfg == nil || o.cfg.TeamsDynamic {
 		return nil
 	}
 	var out []string

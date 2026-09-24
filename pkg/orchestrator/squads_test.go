@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/loop"
@@ -1331,5 +1332,60 @@ func TestTheSplitterIsToldWhereTheTeamBoundariesAre(t *testing.T) {
 	o.squadPlan = &squads.Plan{Squads: []squads.Squad{{ID: "solo", Owns: []string{"**"}}}}
 	if o.splitGuidance() != "" {
 		t.Error("one team is the single-stream pipeline wearing a hat — no boundary to state")
+	}
+}
+
+// The approval card offers the whole library on every run, so adding a team to
+// a single-team run is an ordinary edit: the run becomes a parallel one. It
+// used to be refused with "no squad plan to edit" after the user made it.
+func TestPlanEditsCanAddATeamToASingleTeamRun(t *testing.T) {
+	o, rec := routingOrchestrator(t, nil)
+	o.singleTeam = &composer.TeamChoice{ID: "backend", Owns: []string{"cmd/**"}, Worker: "go-worker", Acceptance: "go test ./..."}
+	if v := o.squadsAskView(nil); v == nil || len(v.Squads) != 1 || v.Squads[0].ID != "backend" {
+		t.Fatalf("the single team must be editable on the card: %+v", v)
+	}
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Role: "go-worker", Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+		{ID: "T2", Role: "worker", Column: plan.ColReadyToDev, Files: []string{"web/App.tsx"}},
+	}}
+	worker := "react-worker"
+	o.applyPlanEdits(board, &plan.PlanEdits{Squads: []plan.SquadEdit{
+		{ID: "frontend", New: true, Worker: &worker, Owns: []string{"web/**"}, OwnsSet: true},
+	}})
+	if o.squadPlan == nil || len(o.squadPlan.Squads) != 2 {
+		t.Fatalf("expected two parallel teams, got %+v\n%s", o.squadPlan, rec.text())
+	}
+	if o.singleTeam != nil {
+		t.Fatal("a parallel run has no single team")
+	}
+	if board.Tasks[1].Squad != "frontend" {
+		t.Fatalf("the web task must land in the new team's lane: %+v", board.Tasks[1])
+	}
+}
+
+// Dropping the second team leaves one team staffing the run, not a refusal.
+func TestPlanEditsCanTakeARunDownToOneTeam(t *testing.T) {
+	o, rec := editableOrchestrator(t)
+	board := &plan.Board{Tasks: []plan.Task{
+		{ID: "T1", Squad: "backend", Role: "worker", Column: plan.ColReadyToDev, Files: []string{"cmd/main.go"}},
+	}}
+	worker := "go-worker"
+	o.applyPlanEdits(board, &plan.PlanEdits{
+		RemoveSquads: []string{"frontend"},
+		Squads:       []plan.SquadEdit{{ID: "backend", Worker: &worker}},
+	})
+	if strings.Contains(rec.text(), "REFUSED") {
+		t.Fatalf("refused:\n%s", rec.text())
+	}
+	if o.squadPlan != nil || o.singleTeam == nil || o.singleTeam.ID != "backend" {
+		t.Fatalf("want backend staffing a single stream: plan=%+v single=%+v", o.squadPlan, o.singleTeam)
+	}
+	if board.Tasks[0].Squad != "" || board.Tasks[0].Role != "go-worker" {
+		t.Fatalf("the ticket must leave the lane and go to the team's worker: %+v", board.Tasks[0])
+	}
+
+	o.applyPlanEdits(board, &plan.PlanEdits{RemoveSquads: []string{"backend"}})
+	if o.squadPlan != nil || o.singleTeam != nil {
+		t.Fatalf("removing the last team leaves none: plan=%+v single=%+v", o.squadPlan, o.singleTeam)
 	}
 }

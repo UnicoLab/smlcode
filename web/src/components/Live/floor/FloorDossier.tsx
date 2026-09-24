@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import type { RunEvent } from '@/types';
 import { teamColor } from '@/components/Board/teamColor';
 import { isTypingTarget } from '@/hooks/useKeyboard';
-import { agentTrail, type FloorAgent, type FloorModel, type FloorStageSeat, type FloorTeam, type FloorTicket } from './floorModel';
+import { agentTrail, workTables, DISPATCHER_ID, type FloorAgent, type FloorModel, type FloorStageSeat, type FloorTeam, type FloorTicket } from './floorModel';
 import { TICKET_HEX, TICKET_LABEL, ago, clock, findAgent, findTicket, glyphFor, seatTitle, type FloorSelection } from './floorShared';
 
 // ── The dossier: who is this, what are they doing ────────────────────────
@@ -36,9 +36,12 @@ const TONE: Record<string, string> = {
 };
 
 export default function FloorDossier({ floor, events, selection, running, now, onSelect, onTicket }: FloorDossierProps) {
-  const person = findAgent(floor, selection);
+  const found = findAgent(floor, selection);
   const ticket = findTicket(floor, selection);
-  const onStage = !person && selection?.kind === 'agent' ? floor.stage.find((a) => a.id === selection.id) ?? null : null;
+  // Someone at the harness table gets the pipeline dossier (their phase, what
+  // they said), not a team member's (manager, tickets) — they have neither.
+  const onStage = selection?.kind === 'agent' && (!found || found.team.internal) ? floor.stage.find((a) => a.id === selection.id) ?? null : null;
+  const person = onStage ? null : found;
   const open = !!(person || ticket || onStage);
 
   // Esc closes, like every other overlay in the studio — unless the key was
@@ -256,7 +259,7 @@ function AgentDossier({
         </section>
       </div>
       <footer className="flex items-center justify-between gap-2 border-t border-gray-200/80 px-3 py-1.5 text-[10px] text-gray-500 dark:border-gray-800 dark:text-gray-400">
-        <span>{floor.teams.length > 1 ? `${floor.teams.length} teams on the floor` : team.crew ? 'the pipeline crew' : `team ${team.id}`}</span>
+        <span>{workTables(floor).length > 1 ? `${workTables(floor).length} teams on the floor` : team.crew ? 'the pipeline crew' : `team ${team.id}`}</span>
         {onTicket && (held || holding[0]) && (
           <button type="button" onClick={() => onTicket((held ?? holding[0]).id)} className="focus-ring inline-flex items-center gap-0.5 rounded px-1 py-0.5 font-semibold text-brand-700 hover:bg-brand-50 dark:text-brand-300 dark:hover:bg-brand-950/40">
             open {(held ?? holding[0]).id} in Tasks <ArrowUpRight size={11} aria-hidden="true" />
@@ -350,7 +353,7 @@ function StageDossier({ seat, floor, events, running, now, onSelect }: { seat: F
   const others = floor.stage.filter((a) => a.id !== seat.id);
   return (
     <>
-      <Header hex="#8b5cf6" glyph="🎓" title={seat.id} sub={`pipeline${seat.phase ? ` · ${seat.phase} phase` : ''}`} onClose={() => onSelect(null)} />
+      <Header hex="#8b5cf6" glyph="🎓" title={seat.id} sub={`harness · internal${seat.phase ? ` · ${seat.phase} phase` : ''}`} onClose={() => onSelect(null)} />
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5">
         <section data-testid="dossier-status">
           <div className={clsx('flex items-center gap-1.5 font-semibold', active ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-600 dark:text-gray-300')}>
@@ -370,11 +373,13 @@ function StageDossier({ seat, floor, events, running, now, onSelect }: { seat: F
           )}
         </section>
         <section className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600 dark:bg-gray-800/60 dark:text-gray-300" data-testid="dossier-management">
-          One of the pipeline's own: not on a team, but the run's thinking between the tables' work
+          {seat.id === DISPATCHER_ID
+            ? 'The dispatcher: picks the teams for this run from the request and the workspace (or takes the ones you chose), decides whether they build in parallel or one staffs the run, and names who manages each'
+            : "One of the harness's own: not on a team, but the run's thinking between the tables' work"}
           {seat.phase ? <> — the <b>{seat.phase}</b> phase is theirs</> : null}.
           {others.length > 0 && (
             <div className="mt-1 flex flex-wrap items-center gap-1">
-              also on the stage:
+              also at the harness table:
               {others.map((a) => (
                 <button key={a.id} type="button" onClick={() => onSelect({ kind: 'agent', id: a.id, team: '' })} className={clsx('focus-ring inline-flex items-center gap-1 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold', a.active && running ? 'border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300' : 'border-gray-200 text-gray-700 dark:border-gray-700 dark:text-gray-200')}>
                   {a.id}

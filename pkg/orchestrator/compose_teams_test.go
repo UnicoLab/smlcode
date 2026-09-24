@@ -454,3 +454,26 @@ func TestATeamWithoutATesterBorrowsThePipelines(t *testing.T) {
 		t.Fatalf("charter gaps=%v", gaps)
 	}
 }
+
+// Dynamic is the default and strict is a pin: the composition says which, and
+// a strict run gets exactly the teams it was sent to even when the workspace
+// holds evidence for another.
+func TestCompositionSaysWhoChoseTheTeams(t *testing.T) {
+	cfg := config.Default(fullstackRoot(t))
+	o, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "add a Go API endpoint and the React page that calls it"
+	dyn := o.PreviewCompositionWithTeams(query, nil)
+	if dyn.TeamSelection != composer.TeamSelectionDynamic || dyn.TeamMode != composer.TeamModeParallel {
+		t.Fatalf("dynamic: selection=%q mode=%q", dyn.TeamSelection, dyn.TeamMode)
+	}
+	strict := o.PreviewCompositionWithTeams(query, []string{"frontend-react"})
+	if strict.TeamSelection != composer.TeamSelectionStrict {
+		t.Fatalf("strict: selection=%q", strict.TeamSelection)
+	}
+	if got := strict.TeamIDs(); len(got) != 1 || got[0] != "frontend-react" || strict.TeamMode != composer.TeamModeSingle {
+		t.Fatalf("strict run gained teams nobody picked: %v mode=%q", got, strict.TeamMode)
+	}
+}

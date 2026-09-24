@@ -299,6 +299,95 @@ func TestComposedPlanDropsStaffingTheHarnessCannotDispatch(t *testing.T) {
 	}
 }
 
+// pythonServiceRepo writes an established Python service: enough files that a
+// deep dive has something to read.
+func pythonServiceRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		"pyproject.toml":  "[project]\nname = \"svc\"\n",
+		"README.md":       "# svc\n",
+		"docs/usage.md":   "run it\n",
+		"tests/test_a.py": "def test_a():\n    assert True\n",
+	}
+	for i := 0; i < 12; i++ {
+		files[filepath.Join("app", "mod"+string(rune('a'+i))+".py")] = "x = 1\n"
+	}
+	for rel, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// "What's going on in this repo" is a team of its own out of the box: the
+// deep dive joins the language team that owns the code, and the two compose
+// into a plan that validates — the report files are nobody else's territory.
+func TestBuiltinInsightTeamJoinsAnEstablishedRepo(t *testing.T) {
+	root := pythonServiceRepo(t)
+	reg, err := blocks.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := teams.Select(reg.TeamRoster(), teams.Signals{
+		Query: "deep dive on the current state of this service and recommend maintenance",
+		Files: workspaceFiles(t, root),
+	}, teams.Options{})
+	ids := sel.IDs()
+	if !hasTeam(ids, "repo-insight") || !hasTeam(ids, "backend-python") {
+		t.Fatalf("selected = %v, want the deep dive beside the Python team", ids)
+	}
+	p := teams.Compose(sel, "deep dive")
+	for _, pr := range p.Validate() {
+		if pr.Severity == squads.SeverityError {
+			t.Fatalf("composed plan does not validate: %s", pr)
+		}
+	}
+	if owner, ok := p.Owner("ARCHITECTURE.md"); !ok || owner != "repo-insight" {
+		t.Errorf("ARCHITECTURE.md → %q,%v", owner, ok)
+	}
+
+	// The same words in an empty directory staff no deep dive.
+	empty := t.TempDir()
+	sel = teams.Select(reg.TeamRoster(), teams.Signals{
+		Query: "deep dive on the current state of this service",
+		Files: plan.ListWorkspaceFiles(empty, 2000),
+	}, teams.Options{})
+	if hasTeam(sel.IDs(), "repo-insight") {
+		t.Fatalf("a deep dive of nothing was staffed: %v", sel.IDs())
+	}
+}
+
+// A non-DevOps request for OpenShift specs reaches the OpenShift team from the
+// words alone, plural and all, and a plain API request does not.
+func TestBuiltinOpenShiftTeamAnswersDeploymentRequests(t *testing.T) {
+	root := pythonServiceRepo(t)
+	reg, err := blocks.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := teams.Select(reg.TeamRoster(), teams.Signals{
+		Query: "set up OpenShift for this: two pods, their configmaps and a persistent volume",
+		Files: workspaceFiles(t, root),
+	}, teams.Options{})
+	if !hasTeam(sel.IDs(), "openshift") {
+		t.Fatalf("selected = %v, want the OpenShift team", sel.IDs())
+	}
+
+	sel = teams.Select(reg.TeamRoster(), teams.Signals{
+		Query: "add a route that returns the JWT secret expiry",
+		Files: workspaceFiles(t, root),
+	}, teams.Options{})
+	if hasTeam(sel.IDs(), "openshift") {
+		t.Fatalf("an API request staffed the platform team: %v", sel.IDs())
+	}
+}
+
 func hasTeam(list []string, want string) bool {
 	for _, v := range list {
 		if v == want {

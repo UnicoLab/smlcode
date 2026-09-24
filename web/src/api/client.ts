@@ -458,10 +458,13 @@ export async function getComposition(): Promise<CompositionGetResponse> {
  * with `teams` pinned when the run being set up pins them, so the preview shows
  * the staffing the run will actually use.
  */
-export async function previewComposition(query: string, teams?: string[]): Promise<CompositionPreviewResponse> {
+export async function previewComposition(query: string, teams?: string[], selection?: 'dynamic' | 'strict'): Promise<CompositionPreviewResponse> {
+  const body: { query: string; teams?: string[]; team_selection?: 'dynamic' | 'strict' } = { query };
+  if (teams && teams.length > 0) body.teams = teams;
+  if (selection) body.team_selection = selection;
   return request<CompositionPreviewResponse>('/composition/preview', {
     method: 'POST',
-    body: JSON.stringify(teams && teams.length > 0 ? { query, teams } : { query }),
+    body: JSON.stringify(body),
   });
 }
 

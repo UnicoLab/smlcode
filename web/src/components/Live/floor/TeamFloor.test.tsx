@@ -177,7 +177,7 @@ describe('TeamFloor', () => {
     expect(within(crew).getByTestId('agent-reviewer')).toBeInTheDocument();
   });
 
-  it('shows the pipeline’s own people beside the tables, and their dossier', () => {
+  it('seats the pipeline’s own people at a harness table of their own, with their dossier', () => {
     const log: RunEvent[] = [
       { phase: 'plan', kind: 'agent_start', agent: 'planner', message: 'reading the request', time: at(1) },
       { phase: 'plan', kind: 'output', agent: 'planner', message: 'three tickets, two teams', time: at(2) },
@@ -192,9 +192,14 @@ describe('TeamFloor', () => {
     });
     render(<TeamFloor floor={floor} running events={log} now={T0 + 3000} />);
     expect(screen.getByTestId('pipeline-phase')).toHaveTextContent('plan');
-    expect(screen.getByTestId('stage-planner')).toHaveAttribute('data-active', 'true');
-    expect(screen.getByTestId('stage-splitter')).not.toHaveAttribute('data-active');
-    fireEvent.click(screen.getByTestId('stage-planner'));
+    const harness = screen.getByTestId('island-harness');
+    expect(harness).toHaveAttribute('data-internal', 'true');
+    expect(within(harness).getByTestId('harness-phase')).toHaveTextContent('phase · plan');
+    expect(within(harness).getByTestId('agent-planner')).toHaveAttribute('data-active', 'true');
+    expect(within(harness).getByTestId('agent-splitter')).not.toHaveAttribute('data-active');
+    // Nobody from the harness is seated at a team's table.
+    expect(within(screen.getByTestId('island-backend-go')).queryByTestId('agent-planner')).toBeNull();
+    fireEvent.click(within(harness).getByTestId('agent-planner'));
     const dossier = screen.getByTestId('floor-dossier');
     expect(dossier).toHaveAttribute('aria-label', 'About planner');
     expect(within(dossier).getByTestId('dossier-status')).toHaveTextContent('speaking');

@@ -137,6 +137,23 @@ const (
 	TeamModeSingle = "single"
 )
 
+// Team selection modes — who chose the teams on this run.
+const (
+	// TeamSelectionDynamic is the default: the dispatcher picks the teams from
+	// the request and the workspace, decides whether they build in parallel or
+	// one staffs the run, and names who manages each.
+	TeamSelectionDynamic = "dynamic"
+	// TeamSelectionStrict is a run the user sent to teams by hand (a run-level
+	// pin, or a pipeline that attaches teams): exactly those teams, no others.
+	TeamSelectionStrict = "strict"
+)
+
+// DispatcherID is the voice the team decision speaks in on the run log. It is
+// the harness's own seat, not a registered agent: the decision is made from
+// evidence (teams.Select), never by a model call, because picking teams is the
+// part of org-chart assembly a 7–32B model was worst at.
+const DispatcherID = "dispatcher"
+
 // Composition is the composer's structured output: a full dynamic pipeline plan.
 type Composition struct {
 	// Summary is a one-line description of the assembled plan.
@@ -168,6 +185,10 @@ type Composition struct {
 	// TeamNote is the one-line human explanation of the team decision — why
 	// these teams, or why none — in the words the run setup panel shows.
 	TeamNote string `json:"team_note,omitempty"`
+	// TeamSelection says who chose the teams: TeamSelectionDynamic (the
+	// dispatcher) or TeamSelectionStrict (the user). Empty when the team
+	// library is not in play.
+	TeamSelection string `json:"team_selection,omitempty"`
 }
 
 // Normalize lowercases and trims identifiers, drops empty entries, and applies
@@ -257,6 +278,10 @@ func (c *Composition) Normalize() {
 		c.TeamMode = ""
 	}
 	c.TeamNote = strings.TrimSpace(c.TeamNote)
+	c.TeamSelection = strings.ToLower(strings.TrimSpace(c.TeamSelection))
+	if c.TeamSelection != TeamSelectionDynamic && c.TeamSelection != TeamSelectionStrict {
+		c.TeamSelection = ""
+	}
 }
 
 // TeamIDs lists the teams on the run, in rank order.

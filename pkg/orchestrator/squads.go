@@ -7,11 +7,13 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/composer"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/schema"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
+	"github.com/UnicoLab/slmcode/pkg/teams"
 )
 
 // ── Virtual dev teams ────────────────────────────────────────────────────
@@ -471,22 +473,28 @@ func (o *Orchestrator) squadSeatLookup(seat func(squads.Squad) string) func(stri
 
 // squadsAskView renders the org chart for the approval card.
 func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
-	if o == nil || o.squadPlan == nil || len(o.squadPlan.Squads) == 0 {
+	// The single team staffing a one-stream run is shown too: its seats are
+	// as editable as any team's, and a second team can be added beside it.
+	sp := o.staffingPlan()
+	if o == nil || sp == nil || len(sp.Squads) == 0 {
 		return nil
 	}
 	counts := map[string]int{}
 	if board != nil {
 		for _, t := range board.Tasks {
-			if t.Squad != "" {
+			switch {
+			case t.Squad != "":
 				counts[t.Squad]++
+			case len(sp.Squads) == 1:
+				counts[sp.Squads[0].ID]++
 			}
 		}
 	}
 	view := &plan.PlanSquads{
-		Summary:     o.squadPlan.Summary,
-		Integration: o.squadPlan.Integration.Acceptance,
+		Summary:     sp.Summary,
+		Integration: sp.Integration.Acceptance,
 	}
-	for _, s := range o.squadPlan.Squads {
+	for _, s := range sp.Squads {
 		view.Squads = append(view.Squads, plan.PlanSquad{
 			ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: s.Owns,
 			Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer,
@@ -494,7 +502,7 @@ func (o *Orchestrator) squadsAskView(board *plan.Board) *plan.PlanSquads {
 			TaskCount: counts[s.ID],
 		})
 	}
-	for _, in := range o.squadPlan.Contract.Interfaces {
+	for _, in := range sp.Contract.Interfaces {
 		view.Interfaces = append(view.Interfaces, plan.PlanInterface{
 			ID: in.ID, Provider: in.Provider, Consumers: in.Consumers, Spec: in.Spec,
 		})
@@ -562,27 +570,166 @@ func (o *Orchestrator) applyPlanEdits(board *plan.Board, edits *plan.PlanEdits) 
 	}
 
 	if edits.TouchesSquads() {
-		if probs := squads.ApplyPlanEdits(o.squadPlan, *edits); probs.Errors() {
-			// Refused whole. Say so loudly: the user believes they fixed the
-			// org chart, and running the model's version without telling them
-			// is the worst of the three options.
-			for _, p := range probs {
-				o.emitWarn("plan", "squad edit REFUSED: "+p.Message, "")
-			}
-		} else {
-			if err := squads.Save(o.cfg.SlmDir(), *o.squadPlan); err != nil {
-				o.emitWarn("plan", "could not save the edited squad plan: "+err.Error(), "")
-			}
-			o.emit("plan", "squad plan edited: "+o.squadPlan.Summarize(), "")
-			// Ownership moved, so who owns which task may have moved with it.
-			o.routeBoardToSquads(o.squadPlan, board)
-		}
+		o.applyTeamEdits(board, edits)
 	}
 
 	// Roles may have changed by hand; re-route only what the user did not pin.
 	o.routeBoardToSpecialists(board)
 	o.persistBoard(board)
 	o.emit("plan", fmt.Sprintf("applied plan edits — %d task(s) on the board", len(board.Tasks)), "")
+}
+
+// applyTeamEdits applies the team half of a human's approval-time edits to
+// whatever the run has: a parallel team plan, one team staffing the run, or no
+// team at all. The approval card offers the whole library on every run, so
+// "add the OpenShift team to this single-stream run" and "drop the second
+// team" are both ordinary edits — they used to be refused with "no squad plan
+// to edit" and "needs at least 2 squads", after the user had made them.
+//
+// The result decides the run's shape: two or more teams build in parallel
+// (the plan is saved and the board re-routed to its owners), one team staffs
+// a single stream, none leaves the pipeline's own staffing.
+func (o *Orchestrator) applyTeamEdits(board *plan.Board, edits *plan.PlanEdits) {
+	base := o.staffingPlan()
+	if base == nil {
+		base = &squads.Plan{Summary: "teams added at plan approval"}
+	}
+	next := *base
+	next.Squads = append([]squads.Squad(nil), base.Squads...)
+	if probs := squads.ApplyPlanEditsAllowingFewer(&next, *edits); probs.Errors() {
+		// Refused whole. Say so loudly: the user believes they fixed the
+		// org chart, and running the model's version without telling them
+		// is the worst of the three options.
+		for _, p := range probs {
+			o.emitWarn("plan", "squad edit REFUSED: "+p.Message, "")
+		}
+		return
+	}
+	for _, note := range teams.StaffCheck(&next, o.hasRole) {
+		o.emitWarn("plan", note, "")
+	}
+
+	edited := map[string]bool{}
+	for _, te := range edits.Tasks {
+		if te.Role != nil {
+			edited[te.ID] = true
+		}
+	}
+	oldWorker := ""
+	if st := o.singleTeamPlan(); st != nil && len(st.Squads) == 1 {
+		oldWorker = st.Squads[0].Worker
+	}
+
+	switch len(next.Squads) {
+	case 0:
+		o.mu.Lock()
+		o.squadPlan, o.singleTeam = nil, nil
+		o.mu.Unlock()
+		squads.Clear(o.cfg.SlmDir())
+		o.clearTaskSquads(board)
+		o.restampTeams(nil, "", "teams removed at plan approval — the pipeline's own staffing runs this as one stream")
+		o.emit("plan", "teams removed at plan approval — the pipeline's own staffing runs this as one stream", "")
+	case 1:
+		s := next.Squads[0]
+		manager, isDefault := o.effectiveManager(s.Manager)
+		one := composer.TeamChoice{
+			ID: s.ID, Name: s.Name, Charter: s.Charter, Owns: append([]string(nil), s.Owns...),
+			Acceptance: s.Acceptance, Worker: s.Worker, Reviewer: s.Reviewer, Tester: s.Tester,
+			Manager: manager, ManagerDefault: isDefault,
+			Agents: append([]string(nil), s.Agents...), Skills: append([]string(nil), s.Skills...),
+			Pinned: true, Reason: "chosen at plan approval",
+		}
+		o.mu.Lock()
+		o.squadPlan, o.singleTeam = nil, &one
+		o.mu.Unlock()
+		squads.Clear(o.cfg.SlmDir())
+		o.clearTaskSquads(board)
+		// The team's worker takes the tickets its previous worker held —
+		// except the ones whose agent the user set by hand in this same pass.
+		if s.Worker != "" && board != nil {
+			for i := range board.Tasks {
+				t := &board.Tasks[i]
+				if edited[t.ID] || t.Role == s.Worker {
+					continue
+				}
+				if (oldWorker != "" && t.Role == oldWorker) || genericAgent(t.Role) {
+					t.Role = s.Worker
+				}
+			}
+		}
+		note := fmt.Sprintf("team %s staffs this run as one stream (edited at plan approval) — manager %s", s.ID, manager)
+		o.restampTeams([]composer.TeamChoice{one}, composer.TeamModeSingle, note)
+		o.emit("plan", note, "")
+	default:
+		p := next
+		o.mu.Lock()
+		o.squadPlan, o.singleTeam = &p, nil
+		o.mu.Unlock()
+		if err := squads.Save(o.cfg.SlmDir(), p); err != nil {
+			o.emitWarn("plan", "could not save the edited squad plan: "+err.Error(), "")
+		}
+		o.emit("plan", "squad plan edited: "+p.Summarize(), "")
+		choices := make([]composer.TeamChoice, 0, len(p.Squads))
+		for _, sq := range p.Squads {
+			manager, isDefault := o.effectiveManager(sq.Manager)
+			choices = append(choices, composer.TeamChoice{
+				ID: sq.ID, Name: sq.Name, Charter: sq.Charter, Owns: append([]string(nil), sq.Owns...),
+				Acceptance: sq.Acceptance, Worker: sq.Worker, Reviewer: sq.Reviewer, Tester: sq.Tester,
+				Manager: manager, ManagerDefault: isDefault,
+				Agents: append([]string(nil), sq.Agents...), Skills: append([]string(nil), sq.Skills...),
+				Pinned: true, Reason: "chosen at plan approval",
+			})
+		}
+		o.restampTeams(choices, composer.TeamModeParallel, fmt.Sprintf("%d teams build in parallel (edited at plan approval): %s",
+			len(choices), strings.Join(idsOf(choices), ", ")))
+		// Ownership moved, so who owns which task may have moved with it.
+		o.routeBoardToSquads(&p, board)
+	}
+}
+
+// restampTeams records an approval-time team change on the run's
+// composition, so the setup panel and the floor describe the teams that will
+// actually work rather than the ones the dispatcher first chose. The change is
+// the user's, so the selection becomes strict.
+func (o *Orchestrator) restampTeams(choices []composer.TeamChoice, mode, note string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.dynamicComposition == nil {
+		o.mu.Unlock()
+		return
+	}
+	comp := *o.dynamicComposition
+	comp.Teams, comp.TeamMode, comp.TeamNote = choices, mode, note
+	comp.TeamSelection = composer.TeamSelectionStrict
+	fillTeamSeats(&comp)
+	o.dynamicComposition = &comp
+	o.mu.Unlock()
+	if o.cfg != nil {
+		_ = composer.SaveDynamic(o.cfg.SlmDir(), &comp)
+	}
+	o.emitFullDataL("plan", stream.KindComposition, composer.RoleID, "", comp.Summary, "composition", compositionMarkdown(comp), stream.LevelSuccess, comp)
+}
+
+// clearTaskSquads takes every ticket off a team lane: with one team or none
+// there are no lanes, only the single stream.
+func (o *Orchestrator) clearTaskSquads(board *plan.Board) {
+	if board == nil {
+		return
+	}
+	for i := range board.Tasks {
+		board.Tasks[i].Squad = ""
+	}
+}
+
+// hasRole reports whether the harness can dispatch an agent; with no factory
+// (a config-only orchestrator) every id is taken at its word.
+func (o *Orchestrator) hasRole(id string) bool {
+	if o == nil || o.factory == nil {
+		return true
+	}
+	return o.factory.HasRole(id)
 }
 
 // triageRejectedDelivery asks the project manager who should take a rejected

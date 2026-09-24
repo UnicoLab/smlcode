@@ -29,7 +29,7 @@ import type {
   InterruptedRun,
   TeamSpec,
 } from '@/types';
-import TeamPicker from './TeamPicker';
+import TeamPicker, { type TeamSelectionMode } from './TeamPicker';
 import NowBar from './NowBar';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
@@ -193,6 +193,13 @@ export default function LiveView() {
   const [teamLibrary, setTeamLibrary] = useState<TeamSpec[]>([]);
   const [configPinnedTeams, setConfigPinnedTeams] = useState<string[]>([]);
   const [runTeams, setRunTeams] = useState<string[]>([]);
+  // Who chooses the teams. Unset means the default: Strict when the saved
+  // config pins teams (that pin is the user's standing choice), else Dynamic.
+  const [teamModeChoice, setTeamModeChoice] = useState<TeamSelectionMode | null>(null);
+  const teamMode: TeamSelectionMode = teamModeChoice ?? (configPinnedTeams.length > 0 || runTeams.length > 0 ? 'strict' : 'dynamic');
+  // Strict with nothing picked and nothing saved has no teams to be strict
+  // about; the server is told Dynamic so the run is not silently team-less.
+  const effectiveTeamMode: TeamSelectionMode = teamMode === 'strict' && runTeams.length === 0 && configPinnedTeams.length === 0 ? 'dynamic' : teamMode;
   const [pipelineView, setPipelineView] = useState<PipelineView | null>(null);
   const [persistedComposition, setPersistedComposition] = useState<DynamicComposition | null>(null);
   const [persistedCompositionError, setPersistedCompositionError] = useState('');
@@ -271,7 +278,7 @@ export default function LiveView() {
     let cancelled = false;
     setPreviewLoading(true);
     const timer = window.setTimeout(() => {
-      previewComposition(q, runTeams)
+      previewComposition(q, effectiveTeamMode === 'strict' ? runTeams : [], effectiveTeamMode)
         .then((r) => {
           if (!cancelled) {
             setCompositionPreview(r.composition || null);
@@ -292,7 +299,7 @@ export default function LiveView() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query, running, specialist, runTeams, ctx?.config?.dynamic_pipeline]);
+  }, [query, running, specialist, runTeams, effectiveTeamMode, ctx?.config?.dynamic_pipeline]);
 
   const clearRunPanels = () => {
     setResult(null);
@@ -314,7 +321,8 @@ export default function LiveView() {
         mode: specialist ? 'specialist' : undefined,
         specialist: specialist || undefined,
         skills: ctx?.config?.pinned_skills,
-        teams: runTeams.length > 0 ? runTeams : undefined,
+        teams: effectiveTeamMode === 'strict' && runTeams.length > 0 ? runTeams : undefined,
+        team_selection: effectiveTeamMode,
       });
     } catch (e) {
       toast.reportError(e, 'Could not start the run');
@@ -488,8 +496,12 @@ export default function LiveView() {
               teams={teamLibrary}
               configPinned={configPinnedTeams}
               value={runTeams}
+              mode={teamMode}
+              dispatcherPick={effectiveTeamMode === 'dynamic' ? (compositionPreview?.teams ?? []).map((t) => t.id) : []}
+              dispatcherNote={effectiveTeamMode === 'dynamic' ? compositionPreview?.team_note : undefined}
               disabled={running || !!specialist}
               onChange={setRunTeams}
+              onModeChange={setTeamModeChoice}
             />
             {agents.length > 0 && (
               <select

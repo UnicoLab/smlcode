@@ -283,3 +283,76 @@ func TestSelectScoresEachTeamOnce(t *testing.T) {
 		}
 	}
 }
+
+// Authors write the singular, users type the plural — and a two-letter keyword
+// must never pluralize into an everyday word.
+func TestKeywordsMatchTheirPlural(t *testing.T) {
+	cases := []struct {
+		haystack, needle string
+		want             bool
+	}{
+		{"three pods and their secrets", "pod", true},
+		{"three pods and their secrets", "secret", true},
+		{"split the two classes", "class", true},
+		{"a table of tables", "table", true},
+		{"it goes to the backend", "go", false},
+		{"apish naming", "api", false},
+		{"the api", "api", true},
+		{"persistent volumes for the db", "persistent volume", false},
+	}
+	for _, c := range cases {
+		if got := containsWord(c.haystack, c.needle); got != c.want {
+			t.Errorf("containsWord(%q, %q) = %v, want %v", c.haystack, c.needle, got, c.want)
+		}
+	}
+}
+
+// A team that reads what already exists is never auto-selected for a workspace
+// too small to read — and says so, so the miss is explainable.
+func TestMinFilesKeepsADeepDiveOutOfAnEmptyRepo(t *testing.T) {
+	insight := Team{
+		ID: "repo-insight", Owns: []string{"ARCHITECTURE.md"},
+		Match: Match{Keywords: []string{"current state", "audit"}, MinFiles: 5},
+	}
+	list := append(roster(), insight)
+
+	small := Select(list, Signals{Query: "audit the current state", Files: []string{"go.mod", "main.go"}}, Options{})
+	if got := ids(small); len(got) != 1 || got[0] != "backend-go" {
+		t.Fatalf("a 2-file workspace has nothing to dive into, got %v", got)
+	}
+	ev, ok := evidenceFor(small, "repo-insight")
+	if !ok || ev.Selected || !strings.Contains(strings.Join(ev.Reasons, " "), "at least 5 files") {
+		t.Fatalf("the skipped team must say why: %+v", ev)
+	}
+
+	files := []string{"go.mod", "main.go", "a.go", "b.go", "README.md", "docs/x.md"}
+	big := Select(list, Signals{Query: "audit the current state", Files: files}, Options{})
+	if got := ids(big); len(got) != 2 || !strings.Contains(strings.Join(got, ","), "repo-insight") {
+		t.Fatalf("with a real workspace the deep dive joins: %v", got)
+	}
+
+	pinned := Select(list, Signals{Files: []string{"go.mod"}}, Options{Pinned: []string{"repo-insight"}})
+	if got := ids(pinned); len(got) == 0 || got[0] != "repo-insight" {
+		t.Fatalf("pinning ignores the floor: %v", got)
+	}
+}
+
+// Strict mode: pins are the whole answer. Without pins, Only changes nothing.
+func TestOnlyMakesPinsTheWholeSelection(t *testing.T) {
+	sig := Signals{
+		Query: "a Go API and a React frontend",
+		Files: []string{"go.mod", "cmd/server/main.go", "web/package.json", "web/src/App.tsx"},
+	}
+	strict := Select(roster(), sig, Options{Pinned: []string{"frontend-react"}, Only: true})
+	if got := ids(strict); !reflect.DeepEqual(got, []string{"frontend-react"}) {
+		t.Fatalf("strict selection added teams nobody picked: %v", got)
+	}
+	additive := Select(roster(), sig, Options{Pinned: []string{"frontend-react"}})
+	if got := ids(additive); !reflect.DeepEqual(got, []string{"frontend-react", "backend-go"}) {
+		t.Fatalf("without Only, evidence still fills in: %v", got)
+	}
+	dynamic := Select(roster(), sig, Options{Only: true})
+	if got := ids(dynamic); !reflect.DeepEqual(got, []string{"backend-go", "frontend-react"}) {
+		t.Fatalf("Only with no pins must still select dynamically: %v", got)
+	}
+}

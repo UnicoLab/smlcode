@@ -74,6 +74,21 @@ export interface FloorTeam {
   waitingOn: string[];
   /** True for the crew of a run with no org chart. */
   crew?: boolean;
+  /**
+   * True for the harness's own table: the phase agents, the dispatcher and
+   * anyone else the run heard from who works no team's tickets. It has no
+   * manager, no tickets and no gate — it is where the run's thinking sits,
+   * kept apart so a Python team's table seats the Python team and nobody else.
+   */
+  internal?: boolean;
+}
+
+/** The id of the harness's own table. */
+export const HARNESS_ID = 'harness';
+
+/** The tables that do the work — every table but the harness's own. */
+export function workTables(floor: Pick<FloorModel, 'teams'>): FloorTeam[] {
+  return floor.teams.filter((t) => !t.internal);
 }
 
 export interface FloorLink {
@@ -209,6 +224,32 @@ export interface FloorTrailLine {
 
 const CREW_ID = 'crew';
 
+/** The voice the team decision speaks in (composer.DispatcherID). */
+export const DISPATCHER_ID = 'dispatcher';
+
+const WORKING_ROLES = ['worker', 'reviewer', 'tester', 'corrector', 'deep', 'editor'];
+
+/** isWorkingRole: an agent whose job is a ticket (go-worker, reviewer-strict), not a phase. */
+export function isWorkingRole(id: string | undefined): boolean {
+  const v = (id ?? '').trim().toLowerCase().replace(/-(strict|l\d+)$/, '');
+  return WORKING_ROLES.some((r) => v === r || v.endsWith('-' + r));
+}
+
+/** Agents the log has seen touch any of these tickets, in first-seen order. */
+function ticketWorkers(activity: Activity, ticketIDs: Iterable<string>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ticketIDs) {
+    for (const a of activity.touchedBy.get(id) ?? []) {
+      if (!seen.has(a)) {
+        seen.add(a);
+        out.push(a);
+      }
+    }
+  }
+  return out;
+}
+
 const reReassigned = /^(\S+) reassigned from (\S+) to (\S+)(?: — (.*))?/;
 const reProposes = /^(\S+) proposes (\S+)(?: — (.*))?/;
 
@@ -246,10 +287,51 @@ export function buildFloor(inputs: FloorInputs): FloorModel {
       : floorFromCrew(tasks, activity, handoffs, composition, running, events, nowMs);
   if (floor.mode === 'idle') return floor;
   floor.phase = activity.phase;
-  // The crew table already seats the pipeline's roles; only tables from an
-  // org chart leave the phase agents with nowhere to stand.
-  floor.stage = floor.mode === 'teams' ? stageSeats(floor.teams, composition, activity) : [];
+  // Everyone who works no table's tickets — the planner, the splitter, the
+  // composer, the dispatcher — sits at the harness's own table, never at a
+  // team's. A lone Python team's table seats the Python team.
+  floor.stage = stageSeats(floor.teams, composition, activity);
+  if (floor.stage.length > 0) {
+    floor.teams = [harnessTable(floor.stage, activity), ...floor.teams];
+    // The ticker names the table the speaker actually sits at.
+    if (floor.now && floor.stage.some((a) => a.id === floor.now!.agent)) floor.now = { ...floor.now, team: HARNESS_ID };
+  }
   return floor;
+}
+
+/** harnessTable seats the pipeline's own people at a table of their own. */
+function harnessTable(stage: FloorStageSeat[], activity: Activity): FloorTeam {
+  const agents: FloorAgent[] = stage.map((s) => {
+    const w = activity.working.get(s.id);
+    return {
+      id: s.id,
+      seat: 'member',
+      active: s.active,
+      task: s.active && w?.task ? w.task : undefined,
+      touched: 0,
+      tickets: [],
+      lastMessage: s.lastMessage,
+      lastAt: s.lastAt,
+      lastTask: activity.lastBy.get(s.id)?.task,
+    };
+  });
+  return {
+    id: HARNESS_ID,
+    name: 'Harness · internal',
+    charter: 'The run\'s own machinery: the dispatcher that picks the teams, and the agents that explore, plan, split and compose between the teams\' work.',
+    manager: '',
+    managerDefault: false,
+    agents,
+    tickets: [],
+    total: 0,
+    done: 0,
+    blocked: 0,
+    inFlight: 0,
+    complete: false,
+    gate: '',
+    waitingOn: [],
+    internal: true,
+  };
 }
 
 /**
@@ -270,6 +352,9 @@ function stageSeats(teams: FloorTeam[], composition: DynamicComposition | null |
     const last = activity.lastBy.get(id);
     out.push({ id, phase, active: !!w || activity.lastAgent === id, spoke: !!last, lastMessage: last?.message, lastAt: last?.at });
   };
+  // The dispatcher is seated whenever the library decided the teams, so the
+  // one who explains why the other tables exist is there to be asked.
+  if (composition?.team_selection) add(DISPATCHER_ID, 'compose');
   for (const p of composition?.phases ?? []) {
     if (p.enabled && p.when !== 'never') add(p.agent, p.id);
   }
@@ -317,9 +402,28 @@ function floorFromChart(
     ticketsByTeam.set(team, list);
   }
 
+  // Everyone on some team's roster, so a visitor is seated once, at most.
+  const rostered = new Set<string>();
+  for (const s of chart) {
+    const comp = compTeams.get(s.id);
+    for (const id of [comp?.manager || s.manager || 'triage', s.worker, s.reviewer, s.tester, ...(s.agents ?? []), ...(comp?.seats ?? []).map((f) => f.agent)]) {
+      if (id) rostered.add(id.trim().toLowerCase());
+    }
+  }
+  const visiting = new Set<string>();
+
   const teams: FloorTeam[] = chart.map((s) => {
     const tickets = ticketsByTeam.get(s.id) ?? [];
     const comp = compTeams.get(s.id);
+    // Someone off every roster who worked THIS team's tickets — a corrector,
+    // an escalated worker — sits at this table for the run, drawn as lent by
+    // the pipeline; the harness table is for those who worked none.
+    const visitors = ticketWorkers(activity, tickets.map((t) => t.id))
+      .filter((id) => !rostered.has(id) && !visiting.has(id))
+      .map((id) => {
+        visiting.add(id);
+        return { role: 'member', agent: id, source: 'pipeline' };
+      });
     // The manager the run resolves: the composition knows (it applied the
     // triage-capability rule); the chart's own field is the author's wish.
     const manager = comp?.manager || s.manager || 'triage';
@@ -344,7 +448,7 @@ function floorFromChart(
           activity,
           s.id,
         ),
-        comp?.seats,
+        [...(comp?.seats ?? []), ...visitors],
         tickets,
         activity,
         s.id,
@@ -420,6 +524,10 @@ function floorFromCrew(
     touchedBy: [...(activity.touchedBy.get(t.id) ?? [])],
   }));
 
+  // The table seats the people who do the tickets: the team's own seats when
+  // one team staffs the run, else the execute loop's worker, reviewer,
+  // corrector and the test phase's tester. The planner, the composer and the
+  // rest of the pipeline sit at the harness table instead (buildFloor).
   const seatList: [SeatKind, string | undefined][] = [];
   if (single) {
     seatList.push(['manager', single.manager || 'triage']);
@@ -427,17 +535,20 @@ function floorFromCrew(
     for (const a of single.agents ?? []) seatList.push(['member', a]);
   } else {
     const exec = composition?.execute;
-    seatList.push(['worker', exec?.default_role], ['reviewer', exec?.reviewer], ['member', exec?.corrector]);
-    for (const m of composition?.team ?? []) seatList.push(['member', m.role]);
-    for (const p of composition?.phases ?? []) {
-      if (p.enabled && p.when !== 'never' && p.agent) seatList.push(['member', p.agent]);
+    const phase = (id: string) => (composition?.phases ?? []).find((p) => p.id === id && p.enabled && p.when !== 'never')?.agent;
+    seatList.push(['worker', exec?.default_role || phase('execute')], ['reviewer', exec?.reviewer], ['member', exec?.corrector], ['tester', phase('test')]);
+    // The composer's roster names the working specialists too (go-tester,
+    // ts-reviewer); those do tickets and sit here, the rest are the harness's.
+    for (const m of composition?.team ?? []) {
+      if (isWorkingRole(m.role)) seatList.push(['member', m.role]);
     }
   }
-  // Whoever the log has heard from is on the crew too, whatever the plan said.
-  for (const id of activity.speakers) seatList.push(['member', id]);
+  // Whoever the log saw work a ticket is on the crew too, whatever the plan said.
+  // With one island every ticket the log names is this table's, board or not.
+  for (const id of ticketWorkers(activity, activity.touchedBy.keys())) seatList.push(['member', id]);
 
   const agents = withBorrowed(seats(seatList, tickets, activity, CREW_ID), single?.seats, tickets, activity, CREW_ID);
-  const hasAnything = agents.length > 0 || tickets.length > 0 || events.length > 0;
+  const hasAnything = agents.length > 0 || tickets.length > 0 || events.length > 0 || !!composition;
   if (!hasAnything && !running) {
     return {
       mode: 'idle',
@@ -813,26 +924,22 @@ export function diffFloors(prev: FloorModel | null, next: FloorModel, now: numbe
 
   const wasActive = new Map<string, boolean>();
   for (const t of prev.teams) for (const a of t.agents) wasActive.set(`${t.id}/${a.id}`, a.active);
+  const phaseOf = new Map(next.stage.map((a) => [a.id, a.phase]));
   for (const t of next.teams) {
     for (const a of t.agents) {
       if (a.active && !wasActive.get(`${t.id}/${a.id}`)) {
+        const phase = phaseOf.get(a.id);
         push({
           kind: 'agent-start',
           tone: 'info',
-          team: t.id,
+          // The harness table's pulses are the run's, not a team's.
+          team: t.internal ? '' : t.id,
           agent: a.id,
           ticket: a.task,
-          text: `${a.id} started${a.task ? ` on ${a.task}` : ''}`,
+          text: t.internal ? `${a.id} is on${phase ? ` · ${phase}` : ''}` : `${a.id} started${a.task ? ` on ${a.task}` : ''}`,
           detail: a.lastMessage,
         });
       }
-    }
-  }
-
-  const stageWas = new Map(prev.stage.map((a) => [a.id, a.active]));
-  for (const a of next.stage) {
-    if (a.active && !stageWas.get(a.id)) {
-      push({ kind: 'agent-start', tone: 'info', team: '', agent: a.id, text: `${a.id} is on${a.phase ? ` · ${a.phase}` : ''}`, detail: a.lastMessage });
     }
   }
   if (next.phase && next.phase.id !== prev.phase?.id) {

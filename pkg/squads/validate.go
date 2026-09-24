@@ -63,6 +63,10 @@ func (ps Problems) Strings() []string {
 // is simply gone. So overlap is an error, and the check is deliberately
 // conservative: it would rather demand a more specific glob than let a pair
 // through it cannot prove disjoint.
+// minSquadsMessage opens the two-squad-minimum problem; ApplyPlanEditsAllowingFewer
+// recognizes it by this prefix.
+const minSquadsMessage = "a squad plan needs at least 2 squads"
+
 func (p *Plan) Validate() Problems {
 	var out Problems
 	if p == nil {
@@ -72,7 +76,7 @@ func (p *Plan) Validate() Problems {
 	if len(p.Squads) < 2 {
 		out = append(out, Problem{
 			Severity: SeverityError,
-			Message: fmt.Sprintf("a squad plan needs at least 2 squads to be worth its overhead, got %d — "+
+			Message: fmt.Sprintf(minSquadsMessage+" to be worth its overhead, got %d — "+
 				"run the normal single-stream pipeline instead", len(p.Squads)),
 		})
 	}

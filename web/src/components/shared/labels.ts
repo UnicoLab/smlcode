@@ -73,6 +73,7 @@ export const ROLE_GLYPHS: Record<string, string> = {
   memory: '💾',
   context: '📝',
   composer: '🎼',
+  dispatcher: '🧭',
   triage: '👔',
   corrector: '✏️',
   deep: '🧠',

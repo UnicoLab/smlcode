@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
+  so: the dispatcher picks the teams, how they work and who manages them, and
+  names its pick for the request being typed. Picking teams switches to Strict —
+  exactly those teams, nothing added on evidence — and one click goes back.
+  Dynamic also overrides a saved pin for the run (`team_selection: "dynamic"`).
+- **A separate harness table on the floor.** The dispatcher and the phase agents
+  sit at their own table; a team's table seats only the team, its manager and
+  whoever worked its tickets.
+- **Two new teams.** `repo-insight` (a challenged deep dive on the current state
+  of an existing repository, with recommendations and maintenance) and
+  `openshift` (OpenShift deployment specs for non-DevOps developers), with seven
+  new agents and the `repo-deep-dive` and `openshift-manifests` skills.
+- **Teams are editable at plan approval on every run.** A single-team run shows
+  its team for editing, a team can be added to it from the library, and a
+  two-team run can be taken down to one — all previously refused.
+
+### Changed
+
+- **A team pin is strict.** Pinning teams (the run bar, `--team`, `teams:` in
+  config) used to ADD the pinned teams to whatever the evidence selected; now the
+  run gets exactly the pinned teams. Leave the pins empty (Dynamic) to let the
+  dispatcher choose.
+
 ## v0.25.0 — 2026-09-10
 
 - Land the version bump before the build, not after it
@@ -12,7 +39,7 @@
 - Teams you send work to, with managers, on the composition (#36)
 - Sync Homebrew formula + prebuilt binaries for v0.24.0 [skip ci]
 
-## Unreleased
+## Shipped in v0.25.0 — details
 
 Teams are a thing you build and send work to, not a panel that fills in when a
 run happens to assemble some — and the Live view shows them working.

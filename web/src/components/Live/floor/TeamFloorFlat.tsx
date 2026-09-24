@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
-import type { FloorAgent, FloorHandoff, FloorModel, FloorPhase, FloorPulse, FloorStageSeat, FloorTeam, FloorTicket, TicketState } from './floorModel';
+import { workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_LABEL, ago, glyphFor, type FloorSelection } from './floorShared';
 
 // ── The team floor ───────────────────────────────────────────────────────
@@ -42,6 +42,7 @@ const HEX: Record<string, string> = {
   lime: '#84cc16',
   purple: '#a855f7',
   gray: '#9ca3af',
+  slate: '#64748b',
 };
 
 const TICKET_FILL: Record<TicketState, string> = {
@@ -76,7 +77,7 @@ function layout(teams: FloorTeam[]): Placed[] {
     const cx = n === 1 ? W / 2 : 190 + t * (W - 380);
     // Alternate rows so conduits have room to curve.
     const cy = n <= 2 ? H / 2 + 10 : 200 + (i % 2) * 190;
-    const hex = HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
+    const hex = team.internal ? HEX.slate : HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
     const agentPos = new Map<string, { x: number; y: number }>();
     // Manager at the head; everyone else spaced along the front edge of the
     // island, where the tickets are within reach.
@@ -94,6 +95,7 @@ function layout(teams: FloorTeam[]): Placed[] {
 
 export default function TeamFloorFlat({ floor, running, now, onTicket, selection = null, onSelect, pulses }: TeamFloorFlatProps) {
   const placed = useMemo(() => layout(floor.teams), [floor.teams]);
+  const working = workTables(floor).length;
   const byID = useMemo(() => new Map(placed.map((p) => [p.team.id, p])), [placed]);
 
   // A clock, for the "on this for 2m14s" bubble and for expiring handoffs.
@@ -118,16 +120,14 @@ export default function TeamFloorFlat({ floor, running, now, onTicket, selection
   return (
     <div className="floor-stage relative h-full w-full overflow-hidden" data-testid="team-floor">
       <div className="floor-ground absolute inset-0" aria-hidden="true" />
-      {floor.mode === 'teams' && (floor.stage.length > 0 || floor.phase) && (
-        <PipelineStrip stage={floor.stage} phase={floor.phase} running={running} selection={selection} onSelect={onSelect} />
-      )}
+      {floor.phase && <PipelineStrip phase={floor.phase} running={running} />}
       <div className="floor-tilt absolute inset-0">
         <svg
           viewBox={`0 0 ${W} ${H}`}
           preserveAspectRatio="xMidYMid meet"
           className="h-full w-full"
           role="img"
-          aria-label={floor.mode === 'teams' ? `${floor.teams.length} teams on the floor` : 'the pipeline crew'}
+          aria-label={floor.mode === 'teams' ? `${working} teams on the floor` : 'the pipeline crew'}
         >
           <defs>
             <filter id="floor-glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -158,14 +158,14 @@ export default function TeamFloorFlat({ floor, running, now, onTicket, selection
           })}
 
           {placed.map((p) => (
-            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} />
+            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} phase={floor.phase} />
           ))}
 
           {floor.handoffs.map((h) => (
             <Handoff key={`${h.task}-${h.from}-${h.to}-${h.at}`} handoff={h} placed={byID} tick={tick} />
           ))}
 
-          {floor.mode === 'teams' && placed.length > 1 && floor.integration && (
+          {floor.mode === 'teams' && working > 1 && floor.integration && (
             <IntegrationPlate integration={floor.integration} unassigned={floor.unassigned.length} />
           )}
         </svg>
@@ -186,6 +186,7 @@ function Island({
   selection,
   onSelect,
   flashing,
+  phase,
 }: {
   placed: Placed;
   running: boolean;
@@ -194,8 +195,10 @@ function Island({
   selection: FloorSelection;
   onSelect?: (sel: FloorSelection) => void;
   flashing: Set<string>;
+  phase: FloorPhase | null;
 }) {
   const { team, cx, cy, hex, agentPos } = placed;
+  if (team.internal) return <HarnessIsland placed={placed} running={running} tick={tick} selection={selection} onSelect={onSelect} phase={phase} />;
   const pct = team.total > 0 ? Math.round((team.done / team.total) * 100) : 0;
   const rim =
     team.gate === 'green' ? '#10b981' : team.gate === 'red' ? '#ef4444' : team.waitingOn.length > 0 ? '#f59e0b' : hex;
@@ -237,6 +240,37 @@ function Island({
           waiting on {team.waitingOn.join(', ')}
         </text>
       )}
+    </g>
+  );
+}
+
+/**
+ * The harness's own table: drawn quieter than a team's — dashed rim, no desk
+ * of tickets, no progress — with the phase the run is in where a team shows
+ * its progress, so it reads as the machinery beside the work, not a team.
+ */
+function HarnessIsland({ placed, running, tick, selection, onSelect, phase }: { placed: Placed; running: boolean; tick: number; selection: FloorSelection; onSelect?: (sel: FloorSelection) => void; phase: FloorPhase | null }) {
+  const { team, cx, cy, hex, agentPos } = placed;
+  const active = team.agents.some((a) => a.active);
+  return (
+    <g data-testid={`island-${team.id}`} data-internal="true" className={clsx('floor-island', active && running && 'floor-island-active')}>
+      <title>{team.charter}</title>
+      <ellipse cx={cx} cy={cy + ISLAND_DEPTH} rx={ISLAND_RX} ry={ISLAND_RY} fill={hex} opacity="0.12" filter="url(#floor-shadow)" />
+      <ellipse cx={cx} cy={cy} rx={ISLAND_RX} ry={ISLAND_RY} fill={`url(#island-${cssID(team.id)})`} stroke={hex} strokeWidth="2" strokeDasharray="7 6" className="floor-face" />
+      <text x={cx} y={cy - 22} textAnchor="middle" className="floor-title" fill="currentColor">
+        {team.name}
+      </text>
+      <text x={cx} y={cy - 6} textAnchor="middle" className="floor-sub" fill="currentColor" data-testid="harness-phase">
+        {phase ? `phase · ${phase.id}` : running ? 'starting' : 'standing by'}
+      </text>
+      <text x={cx} y={cy + 12} textAnchor="middle" className="floor-note" fill="currentColor" opacity="0.6">
+        not a team · no tickets
+      </text>
+      {team.agents.map((a) => {
+        const pos = agentPos.get(a.id);
+        if (!pos) return null;
+        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} selected={selection?.kind === 'agent' && selection.id === a.id} onSelect={onSelect} />;
+      })}
     </g>
   );
 }
@@ -383,7 +417,7 @@ function Avatar({
       onClick={pick}
       role={pick ? 'button' : undefined}
       tabIndex={pick ? 0 : undefined}
-      aria-label={pick ? `${agent.id}, ${agent.seat} on ${team.name}` : undefined}
+      aria-label={pick ? `${agent.id}, ${team.internal ? 'internal agent' : agent.seat} on ${team.name}` : undefined}
       onKeyDown={
         pick
           ? (e) => {
@@ -394,7 +428,7 @@ function Avatar({
     >
       {selected && <circle r={r + 13} fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeDasharray="4 4" className="floor-selected-ring" />}
       <title>
-        {`${agent.id} · ${isManager ? (team.managerDefault ? 'project manager (run default)' : 'project manager') : agent.seat}` +
+        {`${agent.id} · ${isManager ? (team.managerDefault ? 'project manager (run default)' : 'project manager') : team.internal ? 'harness · internal' : agent.seat}` +
           (agent.borrowed ? ` (the team names none — lent by the ${agent.borrowed})` : '') +
           (agent.touched ? ` · ${agent.touched} ticket${agent.touched === 1 ? '' : 's'} touched` : '')}
       </title>
@@ -522,43 +556,16 @@ function Legend({ floor }: { floor: FloorModel }) {
   );
 }
 
-/** The pipeline's own people, off to the side: the phase the run is in and who is speaking. */
-function PipelineStrip({ stage, phase, running, selection, onSelect }: { stage: FloorStageSeat[]; phase: FloorPhase | null; running: boolean; selection: FloorSelection; onSelect?: (sel: FloorSelection) => void }) {
+/** The phase the run is in, and who is speaking it. */
+function PipelineStrip({ phase, running }: { phase: FloorPhase; running: boolean }) {
   return (
     <div className="pointer-events-none absolute bottom-10 left-2 z-[60] max-w-[16rem] rounded-lg border border-brand-200/70 bg-white/80 px-2.5 py-2 text-[10px] backdrop-blur dark:border-brand-900/60 dark:bg-gray-900/80" data-testid="pipeline-strip">
       <div className="flex items-baseline gap-2">
-        <span className="font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">pipeline</span>
-        <span className="font-mono text-[12px] font-extrabold uppercase text-brand-700 dark:text-brand-300" data-testid="pipeline-phase">{phase ? phase.id : running ? 'starting' : 'idle'}</span>
-        {phase?.agent && <span className="font-mono text-gray-500 dark:text-gray-400">{phase.agent}</span>}
+        <span className="font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">phase</span>
+        <span className="font-mono text-[12px] font-extrabold uppercase text-brand-700 dark:text-brand-300" data-testid="pipeline-phase">{phase.id || (running ? 'starting' : 'idle')}</span>
+        {phase.agent && <span className="font-mono text-gray-500 dark:text-gray-400">{phase.agent}</span>}
       </div>
-      {phase?.message && <div className="mt-0.5 line-clamp-2 text-gray-600 dark:text-gray-300">{phase.message}</div>}
-      {stage.length > 0 && (
-        <ul className="mt-1.5 flex flex-wrap gap-1">
-          {stage.map((a) => {
-            const live = a.active && running;
-            const selected = selection?.kind === 'agent' && selection.id === a.id;
-            return (
-              <li key={a.id}>
-                <button
-                  type="button"
-                  onClick={onSelect ? () => onSelect(selected ? null : { kind: 'agent', id: a.id, team: '' }) : undefined}
-                  data-testid={`stage-${a.id}`}
-                  data-active={live ? 'true' : undefined}
-                  className={clsx(
-                    'pointer-events-auto focus-ring inline-flex items-center gap-1 rounded-full border px-1.5 py-px font-mono font-semibold',
-                    live ? 'floor-stage-live border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-200' : a.spoke ? 'border-gray-200 text-gray-700 dark:border-gray-700 dark:text-gray-200' : 'border-dashed border-gray-300 text-gray-400 dark:border-gray-700',
-                    selected && 'ring-2 ring-brand-500',
-                  )}
-                  title={`${a.id}${a.phase ? ` · ${a.phase}` : ''} · ${live ? 'speaking' : a.spoke ? 'has spoken' : 'waiting'}`}
-                >
-                  {a.id}
-                  {a.phase && <span className="font-normal opacity-60">{a.phase}</span>}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      {phase.message && <div className="mt-0.5 line-clamp-2 text-gray-600 dark:text-gray-300">{phase.message}</div>}
     </div>
   );
 }

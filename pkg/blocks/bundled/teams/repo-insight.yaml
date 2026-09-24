@@ -1,0 +1,67 @@
+api_version: blocks/v1
+kind: team
+id: repo-insight
+name: Insight · What's going on
+description: >-
+  A deep dive on the repository as it stands: code, structure and docs read
+  side by side, an architect's account of the current state that a skeptic
+  and a fact-checker both have to sign off, and a short list of
+  recommendations and maintenance work.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [insight, architecture, audit, maintenance, team]
+icon: "🔎"
+shareable: true
+spec:
+  id: repo-insight
+  name: Insight · What's going on
+  charter: >-
+    Describe the repository as it IS, not as its docs say it is: map the
+    structure, read the entry points, compare the docs against the code, and
+    write the current state, the risks and the recommended maintenance into
+    ARCHITECTURE.md and MAINTENANCE.md. Every claim cites a file. Never edit
+    source code — the build teams own it.
+  # Reports only. Owning prose outside docs/ keeps this team clear of the Docs
+  # team's territory, so the two can be on one run.
+  owns:
+    - ARCHITECTURE.md
+    - MAINTENANCE.md
+    - reports/insight/**
+  # There is no build that proves an account of a codebase. The fact-checker
+  # (tester) verifies every cited path exists; the challenger (reviewer)
+  # rejects claims the evidence does not show.
+  acceptance: ""
+  worker: architect-worker
+  reviewer: challenger-reviewer
+  tester: insight-tester
+  agents: [docs-audit-worker]
+  skills: [repo-deep-dive]
+  match:
+    keywords:
+      - analyze
+      - analyse
+      - analysis
+      - audit
+      - deep dive
+      - current state
+      - state of the repo
+      - what's going on
+      - overview
+      - onboarding
+      - architecture
+      - tech debt
+      - technical debt
+      - maintenance
+      - recommendation
+      - legacy
+      - existing
+      - refactor
+      - modernize
+      - understand
+      - assess
+      - assessment
+      - health check
+    # A deep dive needs something to dive into: never auto-selected for an
+    # empty or near-empty directory, however the request is worded.
+    min_files: 12

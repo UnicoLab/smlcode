@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 	"github.com/UnicoLab/slmcode/pkg/teams"
@@ -330,15 +331,19 @@ func TestPreselectReportsModeAndStaffing(t *testing.T) {
 		t.Fatalf("a fully staffed builtin has no gaps: %v", gaps)
 	}
 
-	// A pin is additive: the workspace's own markers still put the other half
-	// on the run, and the pinned team leads.
+	if body["selection"] != "dynamic" {
+		t.Fatalf("nothing pinned is the dispatcher's call: selection=%v", body["selection"])
+	}
+
+	// A pin is strict: the run gets exactly the teams it was sent to, even
+	// though the workspace's own markers would have added the other half.
 	rec = do(t, s, http.MethodPost, "/api/teams/preselect", map[string]interface{}{
 		"query": "tidy the module manifest", "pinned": []string{"frontend-react"},
 	})
 	body = decode(t, rec)
 	selected, _ := body["selected"].([]interface{})
-	if body["mode"] != "parallel" || len(selected) == 0 || selected[0] != "frontend-react" {
-		t.Fatalf("pinned first: mode=%v selected=%v", body["mode"], body["selected"])
+	if body["mode"] != "single" || len(selected) != 1 || selected[0] != "frontend-react" || body["selection"] != "strict" {
+		t.Fatalf("strict pin: mode=%v selected=%v selection=%v", body["mode"], body["selected"], body["selection"])
 	}
 }
 
@@ -393,5 +398,34 @@ func TestActivityIgnoresAPlanTheRunDidNotUse(t *testing.T) {
 	}
 	if teams, _ := body["teams"].([]interface{}); len(teams) != 0 {
 		t.Fatalf("teams=%v", body["teams"])
+	}
+}
+
+// The Dynamic switch undoes a saved pin for one run: the preview shows the
+// dispatcher's own choice, the run clears the pins, and the saved config is
+// back as it was when the run ends.
+func TestDynamicSwitchOverridesASavedPinForOneRun(t *testing.T) {
+	s, _ := teamServer(t)
+	s.withConfigWrite(func(c *config.Config) { c.Teams = []string{"frontend-react"} })
+	query := "add a Go API endpoint and the React page that calls it"
+
+	rec := do(t, s, http.MethodPost, "/api/composition/preview", map[string]interface{}{"query": query})
+	comp, _ := decode(t, rec)["composition"].(map[string]interface{})
+	if comp["team_selection"] != "strict" {
+		t.Fatalf("a saved pin is strict: %v", comp["team_selection"])
+	}
+	rec = do(t, s, http.MethodPost, "/api/composition/preview", map[string]interface{}{"query": query, "team_selection": "dynamic"})
+	comp, _ = decode(t, rec)["composition"].(map[string]interface{})
+	if comp["team_selection"] != "dynamic" || comp["team_mode"] != "parallel" {
+		t.Fatalf("dynamic preview: selection=%v mode=%v", comp["team_selection"], comp["team_mode"])
+	}
+
+	_, saved := s.applyRunOptions(runOptions{TeamsDynamic: true}, query)
+	if c := s.cfg(); len(c.Teams) != 0 || !c.TeamsDynamic {
+		t.Fatalf("dynamic run kept pins: teams=%v dynamic=%v", c.Teams, c.TeamsDynamic)
+	}
+	s.restoreRunOptions(saved)
+	if c := s.cfg(); len(c.Teams) != 1 || c.TeamsDynamic {
+		t.Fatalf("the saved pin did not come back: teams=%v dynamic=%v", c.Teams, c.TeamsDynamic)
 	}
 }

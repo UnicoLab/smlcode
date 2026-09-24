@@ -39,6 +39,7 @@ export function glyphFor(agent: FloorAgent): string {
 /** What a seat is called when a person is described. */
 export function seatTitle(agent: FloorAgent, team: FloorTeam): string {
   if (agent.seat === 'manager') return team.managerDefault ? 'manager · run default' : 'manager';
+  if (team.internal) return 'harness · internal';
   if (agent.borrowed) return `${agent.seat} · lent by the ${agent.borrowed}`;
   return agent.seat;
 }

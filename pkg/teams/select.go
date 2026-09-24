@@ -108,6 +108,11 @@ type Options struct {
 	Max int
 	// Min is the qualifying score (0 → defaultMinScore).
 	Min int
+	// Only makes the pins the whole answer: strict mode. With it set and at
+	// least one pin, no team is added on evidence — "send this to the Python
+	// team" must not come back as the Python team plus two the scorer liked.
+	// Without pins it has no effect, so dynamic selection still happens.
+	Only bool
 }
 
 // Select preselects the teams a request involves.
@@ -183,8 +188,16 @@ func Select(roster []Team, sig Signals, opts Options) Selection {
 		out.Evidence = append(out.Evidence, ev)
 	}
 
+	if opts.Only && len(pinned) > 0 {
+		out.Teams = accepted
+		return out
+	}
+
 	scored := make([]Evidence, 0, len(byID))
 	seen := make(map[string]bool, len(byID))
+	// below marks teams that scored but sit under their MinFiles floor: they
+	// are listed as evidence and never accepted.
+	below := map[string]bool{}
 	for _, t := range roster {
 		t.Normalize()
 		// A roster with two entries under one id would otherwise score the same
@@ -198,6 +211,17 @@ func Select(roster []Team, sig Signals, opts Options) Selection {
 		// leaving it pinnable — the escape hatch for a team whose applicability
 		// only its author can judge.
 		if t.Match.Priority < 0 || t.Match.Empty() {
+			continue
+		}
+		// A team that reads what exists needs something to exist. Reported,
+		// not silently skipped, when the query asked for it: "why did the
+		// deep dive not run" is answered by "the workspace has 3 files".
+		if t.Match.MinFiles > 0 && len(inv.paths) < t.Match.MinFiles {
+			if s, reasons := score(t, lowerQuery, inv); s >= minScore {
+				scored = append(scored, Evidence{TeamID: t.ID, Score: s + t.Match.Priority, Reasons: append(reasons,
+					fmt.Sprintf("not selected: needs a workspace of at least %d files (this one has %d)", t.Match.MinFiles, len(inv.paths)))})
+				below[t.ID] = true
+			}
 			continue
 		}
 		score, reasons := score(t, lowerQuery, inv)
@@ -214,7 +238,9 @@ func Select(roster []Team, sig Signals, opts Options) Selection {
 	})
 
 	for i := range scored {
-		accept(byID[scored[i].TeamID], &scored[i])
+		if !below[scored[i].TeamID] {
+			accept(byID[scored[i].TeamID], &scored[i])
+		}
 		out.Evidence = append(out.Evidence, scored[i])
 	}
 	out.Teams = accepted
@@ -417,7 +443,7 @@ func containsWord(haystack, needle string) bool {
 			return false
 		}
 		i += from
-		if boundary(haystack, i-1) && boundary(haystack, i+len(needle)) {
+		if boundary(haystack, i-1) && pluralEnd(haystack, needle, i+len(needle)) {
 			return true
 		}
 		from = i + 1
@@ -425,6 +451,28 @@ func containsWord(haystack, needle string) bool {
 			return false
 		}
 	}
+}
+
+// pluralEnd accepts a keyword that ends at a word boundary, or one followed by
+// its plural and then a boundary. Authors write the singular ("pod", "secret",
+// "table") and users type the plural ("three pods and their secrets"); a team
+// that misses its own subject because of an "s" is the cheapest selection miss
+// there is to fix. Keywords under three letters never pluralize — "go" must not
+// fire on "goes" — and "es" is only taken after the endings English spells it
+// with ("class" → "classes"), so "api" still does not fire on "apies".
+func pluralEnd(s, needle string, i int) bool {
+	if boundary(s, i) {
+		return true
+	}
+	if len(needle) < 3 || strings.Contains(needle, " ") {
+		return false
+	}
+	if i < len(s) && s[i] == 's' && boundary(s, i+1) {
+		return true
+	}
+	sibilant := strings.HasSuffix(needle, "s") || strings.HasSuffix(needle, "x") || strings.HasSuffix(needle, "z") ||
+		strings.HasSuffix(needle, "ch") || strings.HasSuffix(needle, "sh")
+	return sibilant && i+1 < len(s) && s[i] == 'e' && s[i+1] == 's' && boundary(s, i+2)
 }
 
 func boundary(s string, i int) bool {

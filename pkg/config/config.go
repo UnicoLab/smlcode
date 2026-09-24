@@ -368,6 +368,11 @@ type Config struct {
 	// is what "run this with the backend and frontend teams" sets; the Studio
 	// run setup and `--team` write it.
 	Teams []string `yaml:"teams,omitempty" json:"teams,omitempty"`
+	// TeamsDynamic is a run-scoped override, never persisted: "let the
+	// dispatcher choose" for this run, ignoring the saved pins and the
+	// pipeline's attached teams. It is how the Studio's Dynamic switch undoes
+	// a pin the user saved earlier without editing the saved config.
+	TeamsDynamic bool `yaml:"-" json:"-"`
 	// PinnedSkills are always loaded (in addition to @skill: refs / matching).
 	PinnedSkills []string `yaml:"pinned_skills" json:"pinned_skills"`
 

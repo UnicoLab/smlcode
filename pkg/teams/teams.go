@@ -118,6 +118,12 @@ type Match struct {
 	// negative — opts a team out of automatic selection entirely while leaving
 	// it selectable by hand.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// MinFiles is the smallest workspace (in files) this team is ever
+	// auto-selected for. A team whose job is to read what already exists —
+	// a repository deep dive, a maintenance review — has nothing to do in an
+	// empty directory, and a keyword like "current state" in the query is not
+	// a reason to staff one there. Zero means no floor. Pinning ignores it.
+	MinFiles int `yaml:"min_files,omitempty" json:"min_files,omitempty"`
 }
 
 // Empty reports whether this team can never be auto-selected.
@@ -166,6 +172,9 @@ func (t *Team) Normalize() {
 		exts = append(exts, e)
 	}
 	t.Match.Extensions = dedupeFold(exts)
+	if t.Match.MinFiles < 0 {
+		t.Match.MinFiles = 0
+	}
 }
 
 // Validate reports why this team could not be run.

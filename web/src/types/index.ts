@@ -516,6 +516,8 @@ export interface DynamicComposition {
   team_mode?: TeamMode;
   /** The one-line explanation of the team decision. */
   team_note?: string;
+  /** Who chose the teams: the dispatcher (dynamic, the default) or the user (strict). */
+  team_selection?: 'dynamic' | 'strict' | '';
 }
 
 export interface CompositionPreviewResponse {
@@ -579,6 +581,11 @@ export interface RunRequest {
    * a hypothesis to be scored; restored when the run ends.
    */
   teams?: string[];
+  /**
+   * 'dynamic' lets the dispatcher choose for this run, ignoring saved and
+   * pipeline pins; 'strict' (or absent) keeps them.
+   */
+  team_selection?: 'dynamic' | 'strict';
 }
 
 // ── Pipeline ──
@@ -1541,6 +1548,8 @@ export interface TeamPreselect {
   mode?: TeamMode;
   /** The one-line explanation the page leads with. */
   note?: string;
+  /** Who chose: the dispatcher (dynamic) or the pins (strict). */
+  selection?: 'dynamic' | 'strict';
   /** Who staffs each selected team, managers resolved. */
   teams?: TeamStaffing[];
 }

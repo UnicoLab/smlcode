@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentTrail, buildFloor, diffFloors, freshPulses, ticketState, HANDOFF_TTL_MS, PULSE_TTL_MS } from './floorModel';
+import { agentTrail, buildFloor, diffFloors, freshPulses, isWorkingRole, ticketState, workTables, HANDOFF_TTL_MS, PULSE_TTL_MS } from './floorModel';
 import type { DynamicComposition, RunEvent, SquadsView, Task } from '@/types';
 
 const T0 = Date.parse('2026-09-10T10:00:00Z');
@@ -185,11 +185,14 @@ describe('buildFloor without an org chart', () => {
     };
     const f = buildFloor({ squads: { ok: false }, tasks: tasks.slice(0, 2), events, composition, running: true, now: T0 });
     expect(f.mode).toBe('crew');
-    expect(f.teams).toHaveLength(1);
-    const crew = f.teams[0];
+    // Two tables: the harness's own, and the crew that does the tickets.
+    expect(f.teams.map((t) => t.id)).toEqual(['harness', 'crew']);
+    const crew = f.teams[1];
     expect(crew.name).toBe('Pipeline crew');
     expect(crew.crew).toBe(true);
-    expect(crew.agents.map((a) => a.id)).toEqual(['go-worker', 'reviewer', 'corrector', 'go-tester', 'planner']);
+    expect(crew.agents.map((a) => a.id)).toEqual(['go-worker', 'reviewer', 'corrector', 'go-tester']);
+    expect(f.teams[0]).toMatchObject({ internal: true, tickets: [] });
+    expect(f.teams[0].agents.map((a) => a.id)).toContain('planner');
     expect(crew.agents.find((a) => a.id === 'go-worker')).toMatchObject({ seat: 'worker', active: true, task: 'T2' });
     expect(crew.tickets).toHaveLength(2);
     expect(crew.done).toBe(1);
@@ -355,11 +358,12 @@ describe('several people at once, and the stage', () => {
 
   it('lights every agent inside a start/end pair, each on its own table', () => {
     const f = buildFloor({ squads: chart, tasks, events: log, composition, running: true, now: T0 + 8000 });
-    const go = f.teams[0].agents.find((a) => a.id === 'go-worker')!;
-    const react = f.teams[1].agents.find((a) => a.id === 'react-worker')!;
+    const work = workTables(f);
+    const go = work[0].agents.find((a) => a.id === 'go-worker')!;
+    const react = work[1].agents.find((a) => a.id === 'react-worker')!;
     expect(go).toMatchObject({ active: true, task: 'T2' });
     expect(react).toMatchObject({ active: true, task: 'T3' });
-    expect(f.teams[0].agents.filter((a) => a.active)).toHaveLength(1);
+    expect(work[0].agents.filter((a) => a.active)).toHaveLength(1);
   });
 
   it('puts the phase agents on the stage, in phase order, and knows the phase', () => {
@@ -375,11 +379,13 @@ describe('several people at once, and the stage', () => {
     expect(f.phase?.id).toBe('plan');
   });
 
-  it('has no stage at the crew table — the crew already seats those roles', () => {
+  it('seats the phase agents at the harness table, never at the crew table', () => {
     const f = buildFloor({ squads: null, tasks: [], events: log, composition, running: true, now: T0 + 8000 });
     expect(f.mode).toBe('crew');
-    expect(f.stage).toEqual([]);
-    expect(f.teams[0].agents.map((a) => a.id)).toEqual(expect.arrayContaining(['planner', 'splitter', 'go-worker', 'react-worker']));
+    const [harness, crew] = f.teams;
+    expect(harness).toMatchObject({ id: 'harness', internal: true });
+    expect(harness.agents.map((a) => a.id)).toEqual(['planner', 'splitter']);
+    expect(crew.agents.map((a) => a.id)).toEqual(['go-worker', 'react-worker']);
   });
 
   it('pulses a phase change and a stage agent starting', () => {
@@ -388,5 +394,58 @@ describe('several people at once, and the stage', () => {
     const pulses = diffFloors(before, after, T0 + 4000);
     expect(pulses.find((p) => p.kind === 'phase')).toMatchObject({ text: 'phase: split', detail: 'splitting' });
     expect(pulses.find((p) => p.kind === 'agent-start')).toMatchObject({ agent: 'splitter', text: 'splitter is on · split' });
+  });
+});
+
+describe('the harness table', () => {
+  const log: RunEvent[] = [
+    { phase: 'compose', kind: 'coord', agent: 'dispatcher', message: 'dynamic — picked from the request and the workspace', time: at(1) },
+    { phase: 'plan', kind: 'agent_start', agent: 'planner', message: 'reading the request', time: at(2) },
+    { phase: 'plan', kind: 'agent_end', agent: 'planner', message: 'planned', time: at(3) },
+    { phase: 'execute', kind: 'agent_start', agent: 'python-worker', task_id: 'T1', message: 'implementing T1', time: at(4) },
+  ];
+  const composition: DynamicComposition = {
+    summary: 'x',
+    team_mode: 'single',
+    team_selection: 'dynamic',
+    teams: [{ id: 'backend-python', name: 'Backend · Python', worker: 'python-worker', reviewer: 'python-reviewer', tester: 'python-tester', manager: 'triage', manager_default: true }],
+    phases: [{ id: 'plan', agent: 'planner', enabled: true }],
+  };
+
+  it('keeps a lone team\'s table to its own people and seats the internals apart', () => {
+    const f = buildFloor({ squads: null, tasks: [], events: log, composition, running: true, now: T0 + 5000 });
+    const team = workTables(f);
+    expect(team).toHaveLength(1);
+    expect(team[0].id).toBe('backend-python');
+    expect(team[0].agents.map((a) => a.id)).toEqual(['triage', 'python-worker', 'python-reviewer', 'python-tester']);
+    const harness = f.teams.find((t) => t.internal)!;
+    expect(harness.agents.map((a) => a.id)).toEqual(['dispatcher', 'planner']);
+    expect(harness.manager).toBe('');
+  });
+
+  it('seats the dispatcher before it has spoken, when the library decided', () => {
+    const f = buildFloor({ squads: null, tasks: [], events: [], composition, running: true, now: T0 });
+    expect(f.teams.find((t) => t.internal)?.agents.map((a) => a.id)).toContain('dispatcher');
+  });
+
+  it('seats someone off every roster at the team whose tickets they worked', () => {
+    const chartLog: RunEvent[] = [
+      { phase: 'execute', kind: 'agent_start', agent: 'corrector', task_id: 'T2', message: 'fixing T2', time: at(1) },
+      { phase: 'plan', kind: 'agent_start', agent: 'planner', message: 'planning', time: at(2) },
+    ];
+    const f = buildFloor({ squads: chart, tasks, events: chartLog, composition: null, running: true, now: T0 + 3000 });
+    const owner = workTables(f).find((t) => t.tickets.some((k) => k.id === 'T2'))!;
+    expect(owner.agents.find((a) => a.id === 'corrector')).toMatchObject({ borrowed: 'pipeline' });
+    expect(f.teams.find((t) => t.internal)?.agents.map((a) => a.id)).toEqual(['planner']);
+  });
+
+  it('names the harness in the ticker when an internal agent is speaking', () => {
+    const f = buildFloor({ squads: null, tasks: [], events: log.slice(0, 2), composition, running: true, now: T0 + 3000 });
+    expect(f.now).toMatchObject({ agent: 'planner', team: 'harness' });
+  });
+
+  it('knows a working role from a phase agent', () => {
+    for (const id of ['worker', 'go-worker', 'reviewer-strict', 'ts-tester', 'corrector']) expect(isWorkingRole(id)).toBe(true);
+    for (const id of ['planner', 'splitter', 'dispatcher', 'composer', 'architect']) expect(isWorkingRole(id)).toBe(false);
   });
 });

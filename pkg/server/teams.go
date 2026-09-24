@@ -290,7 +290,11 @@ func (s *Server) preselectView(reg *blocks.Registry, query string, pinned []stri
 	}
 	sel := teams.Select(reg.TeamRoster(),
 		teams.Signals{Query: query, Files: plan.ListWorkspaceFiles(cfg.Root, 2000)},
-		teams.Options{Pinned: pinned})
+		teams.Options{Pinned: pinned, Only: len(pinned) > 0})
+	selection := composer.TeamSelectionDynamic
+	if len(pinned) > 0 {
+		selection = composer.TeamSelectionStrict
+	}
 
 	p := teams.Compose(sel, "")
 	notes := teams.StaffCheck(&p, s.agentRegistered())
@@ -342,6 +346,9 @@ func (s *Server) preselectView(reg *blocks.Registry, query string, pinned []stri
 		"problems": problems,
 		"staffing": notes,
 		"pinned":   pinned,
+		// selection says who chose: the dispatcher (dynamic, the default) or
+		// the user (strict) — the switch the run bar offers.
+		"selection": selection,
 	}
 }
 
@@ -396,6 +403,7 @@ func (s *Server) handleActivateTeams(w http.ResponseWriter, r *http.Request) {
 	sel := teams.Select(reg.TeamRoster(), teams.Signals{}, teams.Options{
 		Pinned: body.Teams,
 		Max:    len(body.Teams),
+		Only:   true,
 	})
 	if len(sel.Teams) < 2 {
 		writeProblems(w, problemsFromEvidence(sel, body.Teams))

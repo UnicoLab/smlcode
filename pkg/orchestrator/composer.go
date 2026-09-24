@@ -57,6 +57,7 @@ func (o *Orchestrator) composeDynamicPipeline(ctx context.Context, query string,
 	// The team decision, made ONCE for the run: the composer prompt, the
 	// composition and the charter phase all read this same answer.
 	td := o.decideTeams(query, inventory, nil)
+	o.announceDispatch(td)
 
 	if cls := composer.Classify(query); cls.Confident &&
 		(cls.Complexity == composer.ComplexityTrivial || cls.Kind == composer.KindInquiry) {

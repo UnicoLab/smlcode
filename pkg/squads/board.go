@@ -402,6 +402,20 @@ func ApplyEdits(p *Plan, edits []plan.SquadEdit, removes []string) Problems {
 // a rejection in between — the intermediate state is invalid, the final state is
 // fine, and only an atomic apply can tell the difference.
 func ApplyPlanEdits(p *Plan, edits plan.PlanEdits) Problems {
+	return applyPlanEdits(p, edits, false)
+}
+
+// ApplyPlanEditsAllowingFewer is ApplyPlanEdits for the approval card, where a
+// human may legitimately take a run DOWN to one team or none — remove the
+// second team, or add one to a run that had a single team. Every other rule
+// (ownership overlap, routability, the contract naming real teams) still
+// holds; only the two-squad minimum is waived, because the caller turns a
+// one-team result into a single-stream run instead of a parallel one.
+func ApplyPlanEditsAllowingFewer(p *Plan, edits plan.PlanEdits) Problems {
+	return applyPlanEdits(p, edits, true)
+}
+
+func applyPlanEdits(p *Plan, edits plan.PlanEdits, allowFewer bool) Problems {
 	if p == nil {
 		return Problems{{Severity: SeverityError, Message: "no squad plan to edit"}}
 	}
@@ -501,11 +515,27 @@ func ApplyPlanEdits(p *Plan, edits plan.PlanEdits) Problems {
 	}
 
 	next.Normalize()
-	if problems := next.Validate(); problems.Errors() {
+	problems := next.Validate()
+	if allowFewer && len(next.Squads) < 2 {
+		problems = problems.withoutCount()
+	}
+	if problems.Errors() {
 		return problems
 	}
 	*p = next
 	return nil
+}
+
+// withoutCount drops the two-squad minimum from a validation result.
+func (ps Problems) withoutCount() Problems {
+	out := make(Problems, 0, len(ps))
+	for _, pr := range ps {
+		if pr.Squad == "" && strings.HasPrefix(pr.Message, minSquadsMessage) {
+			continue
+		}
+		out = append(out, pr)
+	}
+	return out
 }
 
 // clone deep-copies a plan so a rejected edit set cannot leave the live one

@@ -5,7 +5,7 @@ import { ContactShadows, Float, Html, OrbitControls, QuadraticBezierLine, Rounde
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { teamColor } from '@/components/Board/teamColor';
 import { STAGE_GLYPHS } from '@/components/shared/labels';
-import { PULSE_TTL_MS, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorStageSeat, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
+import { HARNESS_ID, PULSE_TTL_MS, workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorStageSeat, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } from './floorShared';
 import { floorStore, rememberCamera, rememberCameraPrefs } from './floorStore';
 
@@ -83,7 +83,6 @@ const BOARD_BOTTOM = 1.9;
 /** The pipeline's stage: a platform at the back of the hall, behind the boards. */
 const STAGE_R = 2.7;
 const STAGE_H = 0.22;
-const STAGE_Z = -(BOARD_BACK + 4.6);
 const BURST_S = 1.7;
 const DISPATCH_S = 5;
 const FLASH_S = 0.9;
@@ -135,8 +134,15 @@ function layout(teams: FloorTeam[]): Placed[] {
     const x = (i - (n - 1) / 2) * TABLE_GAP;
     const z = n <= 1 ? 0 : -Math.abs(i - (n - 1) / 2) * 1.2 + 0.6;
     const pos = new THREE.Vector3(x, 0, z);
-    const hex = HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
+    const hex = team.internal ? '#8b5cf6' : HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
     const seats = new Map<string, Seat>();
+    if (team.internal) {
+      // The harness stands on its platform (Stage), at lecterns in an arc.
+      for (const [id, p] of stageLayout(team.agents, new THREE.Vector3())) {
+        seats.set(id, { pos: p, angle: Math.PI / 2, screen: p.clone().setY(1.0) });
+      }
+      return { team, pos, hex, seats, slots: new Map() };
+    }
     const manager = team.agents.find((a) => a.seat === 'manager');
     const others = team.agents.filter((a) => a.seat !== 'manager');
     const seatAt = (angle: number): Seat => {
@@ -247,29 +253,20 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
   );
 
   const width = Math.max(1, placed.length) * TABLE_GAP;
-  const hasStage = floor.mode === 'teams' && (floor.stage.length > 0 || !!floor.phase);
-  // Frame the tables with their rugs; the stage sits behind them, between the
-  // boards (or beside the one board), and comes along for free.
+  // Frame the tables with their rugs.
   const edge = (width - TABLE_GAP) / 2 + SEAT_R + 1.2;
   const span = edge * 2;
-  const home = useMemo(() => new THREE.Vector3(0, 1.6, hasStage ? -1.5 : 0), [hasStage]);
+  const home = useMemo(() => new THREE.Vector3(0, 1.6, 0), []);
   const camZ = 5 + span * 0.92;
   const homeCam = useMemo(() => new THREE.Vector3(home.x, camZ * 0.55, camZ + 1), [home, camZ]);
 
-  // Two or more tables leave a gap between their boards: the stage shows
-  // through it. One table's board is in the middle, so the stage steps aside.
-  const stageAt = useMemo(() => new THREE.Vector3(placed.length >= 2 ? 0 : -(BOARD_W / 2 + STAGE_R + 1.2), 0, STAGE_Z), [placed.length]);
-  const stageSeats = useMemo(() => stageLayout(floor.stage, stageAt), [floor.stage, stageAt]);
+  const working = workTables(floor).length;
 
   // World position of a person or a ticket, for focusing.
   const worldOf = useCallback(
     (sel: FloorSelection): THREE.Vector3 | null => {
       if (!sel) return null;
-      if (sel.kind === 'agent') {
-        const onStage = stageSeats.get(sel.id);
-        if (onStage && !sel.team) return onStage.clone().setY(1.2);
-      }
-      const home = byID.get(sel.team);
+      const home = byID.get(sel.team) ?? (sel.kind === 'agent' && !sel.team ? byID.get(HARNESS_ID) : undefined);
       const tables = home ? [home, ...placed.filter((p) => p !== home)] : placed;
       for (const p of tables) {
         if (sel.kind === 'agent') {
@@ -280,13 +277,9 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
           if (s) return s.clone().add(p.pos);
         }
       }
-      if (sel.kind === 'agent') {
-        const onStage = stageSeats.get(sel.id);
-        if (onStage) return onStage.clone().setY(1.2);
-      }
       return null;
     },
-    [byID, placed, stageSeats],
+    [byID, placed],
   );
 
   // Selecting something brings the camera to it.
@@ -326,9 +319,8 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
       for (const k of t.tickets) out.push({ key: `${t.id}/${k.id}`, label: `Task ${k.id}, ${TICKET_LABEL[k.state]} on ${t.name}${k.agent ? `, held by ${k.agent}` : ''}`, sel: { kind: 'ticket', id: k.id, team: t.id } });
     }
     for (const k of floor.unassigned) out.push({ key: `seam/${k.id}`, label: `Task ${k.id}, ${TICKET_LABEL[k.state]}, no team`, sel: { kind: 'ticket', id: k.id, team: '' } });
-    for (const s of floor.stage) out.push({ key: `stage/${s.id}`, label: `${s.id} on the pipeline stage${s.phase ? `, ${s.phase}` : ''}${s.active ? ', speaking' : ''}`, sel: { kind: 'agent', id: s.id, team: '' } });
     return out;
-  }, [floor.teams, floor.unassigned, floor.stage]);
+  }, [floor.teams, floor.unassigned]);
 
   return (
     <div
@@ -367,7 +359,25 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             if (!a || !b) return null;
             return <Conduit key={link.id} from={a} to={b} label={link.interface} stalled={link.stalled} running={running} animate={animate} />;
           })}
-          {placed.map((p) => (
+          {placed.map((p) =>
+            p.team.internal ? (
+              <Stage
+                key={p.team.id}
+                seats={floor.stage}
+                phase={floor.phase}
+                at={p.pos}
+                positions={p.seats}
+                running={running}
+                animate={animate}
+                dark={dark}
+                selection={selection}
+                onSelect={onSelect}
+                onFocus={() => {
+                  setFocus(p.pos.clone().setY(1));
+                  setFocusDistance(11);
+                }}
+              />
+            ) : (
             <Table
               key={p.team.id}
               placed={p}
@@ -383,28 +393,12 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
                 setFocusDistance(13);
               }}
             />
-          ))}
+            ),
+          )}
           {floor.handoffs.map((h) => (
             <Spark key={`${h.task}-${h.from}-${h.to}-${h.at}`} handoff={h} placed={byID} animate={animate} />
           ))}
-          {floor.mode === 'teams' && (floor.stage.length > 0 || floor.phase) && (
-            <Stage
-              seats={floor.stage}
-              phase={floor.phase}
-              at={stageAt}
-              positions={stageSeats}
-              running={running}
-              animate={animate}
-              dark={dark}
-              selection={selection}
-              onSelect={onSelect}
-              onFocus={() => {
-                setFocus(stageAt.clone().setY(1));
-                setFocusDistance(11);
-              }}
-            />
-          )}
-          {floor.mode === 'teams' && placed.length > 1 && floor.integration && (
+          {floor.mode === 'teams' && working > 1 && floor.integration && (
             <IntegrationPad integration={floor.integration} unassigned={floor.unassigned.length} />
           )}
           <ContactShadows position={[0, 0.01, 0]} opacity={dark ? 0.55 : 0.35} scale={width + 20} blur={2.6} far={5} color={dark ? '#000' : '#4c1d95'} />
@@ -1066,7 +1060,7 @@ function Person({
 }
 
 /** Standing places on the stage: an arc facing the camera, the newest speaker in the middle. */
-function stageLayout(seats: FloorStageSeat[], at: THREE.Vector3): Map<string, THREE.Vector3> {
+function stageLayout(seats: { id: string }[], at: THREE.Vector3): Map<string, THREE.Vector3> {
   const out = new Map<string, THREE.Vector3>();
   const n = seats.length;
   if (n === 0) return out;
@@ -1100,7 +1094,8 @@ function Stage({
   seats: FloorStageSeat[];
   phase: FloorPhase | null;
   at: THREE.Vector3;
-  positions: Map<string, THREE.Vector3>;
+  /** Each figure's place, relative to the platform (the harness table's seats). */
+  positions: Map<string, Seat>;
   running: boolean;
   animate: boolean;
   dark: boolean;
@@ -1147,7 +1142,7 @@ function Stage({
         </mesh>
         <Html position={[0, 0, 0.06]} center distanceFactor={12} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
           <div className="floor3d-screen">
-            <span className="floor3d-screen-kicker">pipeline</span>
+            <span className="floor3d-screen-kicker">phase</span>
             <span className="floor3d-screen-phase">{phase ? phase.id : running ? 'starting' : 'idle'}</span>
             {phase?.agent && <span className="floor3d-screen-who">{phase.agent}</span>}
             {message && <span className="floor3d-screen-say">{message}</span>}
@@ -1155,9 +1150,9 @@ function Stage({
         </Html>
       </group>
       <Html position={[0, 3.35, -STAGE_R + 0.2]} center distanceFactor={16} zIndexRange={[20, 0]}>
-        <button type="button" onClick={onFocus} className="floor3d-label focus-ring" style={{ borderColor: '#8b5cf6' }} title="The pipeline's own people: the phases between the tables' work">
+        <button type="button" onClick={onFocus} className="floor3d-label focus-ring" style={{ borderColor: '#8b5cf6' }} title="The harness's own table: the dispatcher and the phase agents — not a team, no tickets">
           <span className="floor3d-dot" style={{ background: '#8b5cf6' }} />
-          <span className="floor3d-label-name">Pipeline</span>
+          <span className="floor3d-label-name">Harness · internal</span>
           <span className="floor3d-label-sub">{seats.length === 0 ? 'no phase agents this run' : `${seats.filter((x) => x.spoke).length}/${seats.length} have spoken`}</span>
         </button>
       </Html>
@@ -1169,12 +1164,12 @@ function Stage({
           <StageFigure
             key={seat.id}
             seat={seat}
-            pos={p.clone().sub(at)}
+            pos={p.pos}
             tall={i % 2 === 1}
             running={running}
             animate={animate}
             selected={selected}
-            onSelect={() => onSelect(selected ? null : { kind: 'agent', id: seat.id, team: '' })}
+            onSelect={() => onSelect(selected ? null : { kind: 'agent', id: seat.id, team: HARNESS_ID })}
           />
         );
       })}

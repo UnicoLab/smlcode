@@ -133,6 +133,14 @@ export default function RunSetup({
             title={composition?.team_note}
           >
             <Users size={11} className="text-brand-500" aria-hidden="true" />
+            {composition?.team_selection && (
+              <span
+                className={composition.team_selection === 'strict' ? 'text-amber-600 dark:text-amber-400' : 'text-brand-600 dark:text-brand-400'}
+                title={composition.team_selection === 'strict' ? 'Strict: the teams you chose' : 'Dynamic: the dispatcher chose these teams'}
+              >
+                {composition.team_selection}:
+              </span>
+            )}
             {composition!.teams!.map((t) => t.id).join(' + ')}
           </span>
         )}

@@ -1051,6 +1051,9 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		// a run-scoped choice that leaked into the saved config would quietly
 		// govern every later run.
 		Teams []string `json:"teams"`
+		// TeamSelection "dynamic" lets the dispatcher choose for this run,
+		// ignoring saved and pipeline pins; "strict" (or empty) keeps pins.
+		TeamSelection string `json:"team_selection"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Query) == "" {
 		http.Error(w, "query required", 400)
@@ -1070,7 +1073,8 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	// (see runOptions / "wiring required"), but until orchestrator.Run accepts
 	// them they are applied to the shared config under the write lock and
 	// restored the same way, so /api/config readers never observe a torn state.
-	opts := runOptions{Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills, Teams: req.Teams}
+	opts := runOptions{Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills, Teams: req.Teams,
+		TeamsDynamic: strings.EqualFold(strings.TrimSpace(req.TeamSelection), "dynamic") && len(req.Teams) == 0}
 	query, saved := s.applyRunOptions(opts, req.Query)
 
 	// Ensure SSE stays wired for this run (config rebuilds call wireOrchestratorEvents too).
@@ -1182,6 +1186,8 @@ type runOptions struct {
 	// Teams pins virtual teams for this run, bypassing preselection for them.
 	// An explicit choice is an instruction, not a hypothesis to be scored.
 	Teams []string
+	// TeamsDynamic clears every pin for this run: the dispatcher decides.
+	TeamsDynamic bool
 }
 
 // savedRunOptions is the config state to restore once the run ends.
@@ -1190,6 +1196,7 @@ type savedRunOptions struct {
 	Specialist string
 	Skills     []string
 	Teams      []string
+	Dynamic    bool
 	applied    bool
 }
 
@@ -1204,6 +1211,7 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 		saved.Mode, saved.Specialist = c.Mode, c.Specialist
 		saved.Skills = append([]string{}, c.PinnedSkills...)
 		saved.Teams = append([]string{}, c.Teams...)
+		saved.Dynamic = c.TeamsDynamic
 
 		if opts.Mode != "" {
 			c.Mode = opts.Mode
@@ -1229,6 +1237,10 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 		if len(opts.Teams) > 0 {
 			c.Teams = append([]string{}, opts.Teams...)
 		}
+		if opts.TeamsDynamic {
+			c.Teams = nil
+			c.TeamsDynamic = true
+		}
 	})
 	return query, saved
 }
@@ -1245,6 +1257,7 @@ func (s *Server) restoreRunOptions(saved savedRunOptions) {
 		c.Specialist = saved.Specialist
 		c.PinnedSkills = saved.Skills
 		c.Teams = saved.Teams
+		c.TeamsDynamic = saved.Dynamic
 	})
 }
 
@@ -2268,6 +2281,9 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 		// same pins the run will, or the panel shows one staffing and the run
 		// uses another.
 		Teams []string `json:"teams"`
+		// TeamSelection "dynamic" previews the dispatcher's own choice,
+		// ignoring saved and pipeline pins — what a Dynamic run will do.
+		TeamSelection string `json:"team_selection"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -2276,6 +2292,11 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 	if strings.TrimSpace(req.Query) == "" {
 		http.Error(w, "query required", 400)
 		return
+	}
+	dynamic := strings.EqualFold(strings.TrimSpace(req.TeamSelection), "dynamic") && len(req.Teams) == 0
+	if dynamic {
+		// A non-nil empty pin list is "no pins at all" to the orchestrator.
+		req.Teams = []string{}
 	}
 	var comp composer.Composition
 	switch {
@@ -2289,6 +2310,10 @@ func (s *Server) handlePreviewComposition(w http.ResponseWriter, r *http.Request
 		// never the shared config itself.
 		c := *s.cfg()
 		c.Teams = append([]string{}, req.Teams...)
+		comp = orchestrator.PreviewCompositionForConfig(&c, req.Query)
+	case dynamic:
+		c := *s.cfg()
+		c.Teams, c.TeamsDynamic = nil, true
 		comp = orchestrator.PreviewCompositionForConfig(&c, req.Query)
 	default:
 		comp = orchestrator.PreviewCompositionForConfig(s.cfg(), req.Query)

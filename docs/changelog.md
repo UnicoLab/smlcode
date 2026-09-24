@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.26.0 — 2026-09-24
+
+- Dynamic/strict team selection, a harness table on the floor, insight and OpenShift teams
+- Sync Homebrew formula + prebuilt binaries for v0.25.0 [skip ci]
+
 ## Unreleased
 
 ### Added

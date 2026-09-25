@@ -517,3 +517,41 @@
 .floor3d-screen-say { font-size: 9.5px; line-height: 1.3; opacity: 0.8; max-height: 3.9em; overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .floor3d-screen-phase { text-shadow: none; } }
 .floor-stage-live { animation: floorSelected 1.4s ease-in-out infinite; }
+
+/* ── Life on the floor: moods, naps, the command center's crew ── */
+.floor3d-mood { display: inline-block; margin-right: 3px; animation: floorMoodBob 2.4s ease-in-out infinite; }
+@keyframes floorMoodBob { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-2px) rotate(-8deg); } }
+.floor3d-name-quiet { font-size: 9.5px; font-weight: 500; padding: 1px 6px; opacity: 0.82; }
+.floor3d-chip {
+  display: inline-flex;
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 10px;
+  box-shadow: 0 2px 6px rgba(17, 24, 39, 0.12);
+  backdrop-filter: blur(3px);
+}
+.dark .floor3d-chip { background: rgba(17, 24, 39, 0.78); }
+.floor3d-zzz { display: inline-flex; gap: 1px; align-self: flex-end; margin-right: -14px; color: #6366f1; font-weight: 800; font-style: italic; pointer-events: none; }
+.dark .floor3d-zzz { color: #a5b4fc; }
+.floor3d-zzz i { font-style: italic; opacity: 0; animation: floorZzz 2.7s ease-out infinite; }
+.floor3d-zzz i:nth-child(1) { font-size: 9px; }
+.floor3d-zzz i:nth-child(2) { font-size: 11px; animation-delay: 0.9s; }
+.floor3d-zzz i:nth-child(3) { font-size: 14px; animation-delay: 1.8s; }
+@keyframes floorZzz { 0% { opacity: 0; transform: translate(0, 4px); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(8px, -14px); } }
+
+/* The flat map's moods: badges over the avatars, a doze, a party bounce. */
+.floor-mood { animation: floorMoodBob 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.floor-avatar-nap .floor-avatar-inner { opacity: 0.75; animation: floorDoze 4s ease-in-out infinite; transform-box: fill-box; transform-origin: bottom center; }
+@keyframes floorDoze { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-9deg) translateY(1px); } }
+.floor-avatar-party .floor-avatar-inner { animation: floorParty 0.7s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: bottom center; }
+@keyframes floorParty { from { transform: translateY(0) rotate(-4deg); } to { transform: translateY(-5px) rotate(4deg); } }
+.floor-avatar-stroll .floor-avatar-inner { animation: floorStroll 6s ease-in-out infinite; }
+@keyframes floorStroll { 0%, 100% { transform: translateX(0); } 30% { transform: translateX(10px); } 70% { transform: translateX(-10px); } }
+.floor-hq-door { transition: transform 0.4s ease; transform-box: fill-box; }
+.floor-party-badge { animation: floorMoodBob 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+  .floor3d-mood, .floor3d-zzz i, .floor-mood, .floor-avatar-nap .floor-avatar-inner, .floor-avatar-party .floor-avatar-inner, .floor-avatar-stroll .floor-avatar-inner, .floor-party-badge { animation: none !important; }
+  .floor3d-zzz i { opacity: 1; }
+}

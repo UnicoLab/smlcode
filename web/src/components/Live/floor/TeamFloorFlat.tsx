@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
 import { workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_LABEL, ago, glyphFor, type FloorSelection } from './floorShared';
+import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isParty, moodFor, moodShows, seedOf, tableParties, type Mood } from './floorLife';
 
 // ── The team floor ───────────────────────────────────────────────────────
 //
@@ -19,6 +20,11 @@ import { LEGEND_STATES, TICKET_LABEL, ago, glyphFor, type FloorSelection } from 
 // minutes at a time, and a thing that breathes reads as alive where a table
 // reads as stuck. Every motion is CSS, so `prefers-reduced-motion` (honored
 // globally) freezes it to a still picture with nothing lost.
+//
+// The people have moods (floorLife) here too — a badge and a little motion:
+// a doze, a stroll, a party bounce at a table that is done — and the harness
+// is a command center: the crew waits inside as small chips, and whoever is
+// on steps out through the door onto the pad with their name and bubble.
 
 export interface TeamFloorFlatProps {
   floor: FloorModel;
@@ -69,8 +75,14 @@ interface Placed {
   agentPos: Map<string, { x: number; y: number }>;
 }
 
+/** The command center's box, centred on its island. */
+const HQ_W = 300;
+const HQ_H = 112;
+const HQ_DOOR = 36;
+const HQ_COLS = 6;
+
 /** Islands are laid out on a shallow arc, so three read as a floor and not a row. */
-function layout(teams: FloorTeam[]): Placed[] {
+function layout(teams: FloorTeam[], running: boolean): Placed[] {
   const n = teams.length;
   return teams.map((team, i) => {
     const t = n === 1 ? 0.5 : i / (n - 1);
@@ -79,6 +91,20 @@ function layout(teams: FloorTeam[]): Placed[] {
     const cy = n <= 2 ? H / 2 + 10 : 200 + (i % 2) * 190;
     const hex = team.internal ? HEX.slate : HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
     const agentPos = new Map<string, { x: number; y: number }>();
+    if (team.internal) {
+      // The crew in rows inside the room; whoever is on, out on the pad.
+      const on = running ? team.agents.filter((a) => a.active) : [];
+      const inside = team.agents.filter((a) => !on.includes(a));
+      const rows = Math.max(1, Math.ceil(inside.length / HQ_COLS));
+      inside.forEach((a, i) => {
+        const row = Math.floor(i / HQ_COLS);
+        const inRow = Math.min(HQ_COLS, inside.length - row * HQ_COLS);
+        const col = i % HQ_COLS;
+        agentPos.set(a.id, { x: cx - ((inRow - 1) * 40) / 2 + col * 40, y: cy + 12 + (row - (rows - 1) / 2) * 28 });
+      });
+      on.forEach((a, k) => agentPos.set(a.id, { x: cx + (k - (on.length - 1) / 2) * 70, y: cy + HQ_H / 2 + 26 }));
+      return { team, cx, cy, hex, agentPos };
+    }
     // Manager at the head; everyone else spaced along the front edge of the
     // island, where the tickets are within reach.
     const others = team.agents.filter((a) => a.seat !== 'manager');
@@ -94,7 +120,9 @@ function layout(teams: FloorTeam[]): Placed[] {
 }
 
 export default function TeamFloorFlat({ floor, running, now, onTicket, selection = null, onSelect, pulses }: TeamFloorFlatProps) {
-  const placed = useMemo(() => layout(floor.teams), [floor.teams]);
+  const placed = useMemo(() => layout(floor.teams, running), [floor.teams, running]);
+  const shipped = floorShipped(floor, running);
+  const anyParty = shipped || floor.teams.some((t) => tableParties(t, false));
   const working = workTables(floor).length;
   const byID = useMemo(() => new Map(placed.map((p) => [p.team.id, p])), [placed]);
 
@@ -105,10 +133,11 @@ export default function TeamFloorFlat({ floor, running, now, onTicket, selection
       setTick(now);
       return undefined;
     }
-    if (!running) return undefined;
+    // The party keeps its clock after the run: the rounds change, people dance.
+    if (!running && !anyParty) return undefined;
     const id = window.setInterval(() => setTick(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [running, now]);
+  }, [running, now, anyParty]);
 
   // Tickets with a pulse still on them flash, whichever kind it was.
   const flashing = useMemo(() => new Set((pulses ?? []).filter((p) => p.ticket && tick - p.at < 4000).map((p) => p.ticket!)), [pulses, tick]);
@@ -158,7 +187,7 @@ export default function TeamFloorFlat({ floor, running, now, onTicket, selection
           })}
 
           {placed.map((p) => (
-            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} phase={floor.phase} />
+            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} phase={floor.phase} partying={tableParties(p.team, shipped)} />
           ))}
 
           {floor.handoffs.map((h) => (
@@ -187,6 +216,7 @@ function Island({
   onSelect,
   flashing,
   phase,
+  partying,
 }: {
   placed: Placed;
   running: boolean;
@@ -196,9 +226,10 @@ function Island({
   onSelect?: (sel: FloorSelection) => void;
   flashing: Set<string>;
   phase: FloorPhase | null;
+  partying: boolean;
 }) {
   const { team, cx, cy, hex, agentPos } = placed;
-  if (team.internal) return <HarnessIsland placed={placed} running={running} tick={tick} selection={selection} onSelect={onSelect} phase={phase} />;
+  if (team.internal) return <HarnessIsland placed={placed} running={running} tick={tick} selection={selection} onSelect={onSelect} phase={phase} partying={partying} />;
   const pct = team.total > 0 ? Math.round((team.done / team.total) * 100) : 0;
   const rim =
     team.gate === 'green' ? '#10b981' : team.gate === 'red' ? '#ef4444' : team.waitingOn.length > 0 ? '#f59e0b' : hex;
@@ -218,7 +249,14 @@ function Island({
       <text x={cx} y={cy - 34} textAnchor="middle" className="floor-title" fill="currentColor">
         {team.name}
       </text>
+      {partying && (
+        <text x={cx + ISLAND_RX - 30} y={cy - ISLAND_RY + 18} textAnchor="middle" className="floor-party-badge" fontSize="20" data-testid={`party-${team.id}`}>
+          <title>Every ticket here is done — the table is celebrating</title>
+          🎉
+        </text>
+      )}
       <text x={cx} y={cy - 18} textAnchor="middle" className="floor-sub" fill="currentColor">
+        {partying ? '🍻 ' : ''}
         {team.total > 0 ? `${team.done}/${team.total} done` : running ? 'no tickets yet' : 'idle'}
         {team.blocked > 0 ? ` · ${team.blocked} blocked` : ''}
         {team.gate === 'green' ? ' · proved' : team.gate === 'red' ? ' · RED' : team.gate === 'unverified' ? ' · unverified' : ''}
@@ -232,7 +270,7 @@ function Island({
       {team.agents.map((a) => {
         const pos = agentPos.get(a.id);
         if (!pos) return null;
-        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} selected={selection?.kind === 'agent' && selection.id === a.id && selection.team === team.id} onSelect={onSelect} />;
+        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} selected={selection?.kind === 'agent' && selection.id === a.id && selection.team === team.id} onSelect={onSelect} />;
       })}
 
       {team.waitingOn.length > 0 && (
@@ -245,31 +283,46 @@ function Island({
 }
 
 /**
- * The harness's own table: drawn quieter than a team's — dashed rim, no desk
- * of tickets, no progress — with the phase the run is in where a team shows
- * its progress, so it reads as the machinery beside the work, not a team.
+ * The harness's command center: a room, not a team's island — no tickets, no
+ * progress. The crew waits inside as small chips; whoever is on steps out
+ * through the door onto the pad below with their name and bubble; the phase
+ * the run is in is written on the wall where a team shows its progress.
  */
-function HarnessIsland({ placed, running, tick, selection, onSelect, phase }: { placed: Placed; running: boolean; tick: number; selection: FloorSelection; onSelect?: (sel: FloorSelection) => void; phase: FloorPhase | null }) {
+function HarnessIsland({ placed, running, tick, selection, onSelect, phase, partying }: { placed: Placed; running: boolean; tick: number; selection: FloorSelection; onSelect?: (sel: FloorSelection) => void; phase: FloorPhase | null; partying: boolean }) {
   const { team, cx, cy, hex, agentPos } = placed;
-  const active = team.agents.some((a) => a.active);
+  const out = running ? team.agents.filter((a) => a.active) : [];
+  const busy = out.length > 0;
+  const left = cx - HQ_W / 2;
+  const top = cy - HQ_H / 2;
+  const bottom = cy + HQ_H / 2;
+  // The outline, open at the door.
+  const walls = `M ${cx - HQ_DOOR / 2} ${bottom} H ${left + 14} Q ${left} ${bottom} ${left} ${bottom - 14} V ${top + 14} Q ${left} ${top} ${left + 14} ${top} H ${left + HQ_W - 14} Q ${left + HQ_W} ${top} ${left + HQ_W} ${top + 14} V ${bottom - 14} Q ${left + HQ_W} ${bottom} ${left + HQ_W - 14} ${bottom} H ${cx + HQ_DOOR / 2}`;
   return (
-    <g data-testid={`island-${team.id}`} data-internal="true" className={clsx('floor-island', active && running && 'floor-island-active')}>
+    <g data-testid={`island-${team.id}`} data-internal="true" className={clsx('floor-island', busy && 'floor-island-active')}>
       <title>{team.charter}</title>
-      <ellipse cx={cx} cy={cy + ISLAND_DEPTH} rx={ISLAND_RX} ry={ISLAND_RY} fill={hex} opacity="0.12" filter="url(#floor-shadow)" />
-      <ellipse cx={cx} cy={cy} rx={ISLAND_RX} ry={ISLAND_RY} fill={`url(#island-${cssID(team.id)})`} stroke={hex} strokeWidth="2" strokeDasharray="7 6" className="floor-face" />
-      <text x={cx} y={cy - 22} textAnchor="middle" className="floor-title" fill="currentColor">
-        {team.name}
+      <rect x={left} y={top + ISLAND_DEPTH} width={HQ_W} height={HQ_H} rx="14" fill={hex} opacity="0.12" filter="url(#floor-shadow)" />
+      <rect x={left} y={top} width={HQ_W} height={HQ_H} rx="14" fill={`url(#island-${cssID(team.id)})`} className="floor-face" />
+      <path d={walls} fill="none" stroke={hex} strokeWidth="2.5" strokeLinecap="round" />
+      {/* The sliding door: open while someone is out on the pad. */}
+      <rect x={cx - HQ_DOOR / 2} y={bottom - 2} width={HQ_DOOR / 2} height="4" rx="1" fill={hex} opacity="0.7" className="floor-hq-door" transform={busy ? `translate(${-HQ_DOOR / 2 + 2} 0)` : undefined} />
+      <rect x={cx} y={bottom - 2} width={HQ_DOOR / 2} height="4" rx="1" fill={hex} opacity="0.7" className="floor-hq-door" transform={busy ? `translate(${HQ_DOOR / 2 - 2} 0)` : undefined} />
+      <circle cx={cx} cy={bottom - 9} r="3" fill={busy ? '#ef4444' : '#7f1d1d'} opacity={busy ? 1 : 0.5}>
+        <title>{busy ? 'on air: someone is out on the pad' : 'nobody on air'}</title>
+      </circle>
+      {/* The pad and the path to it. */}
+      <line x1={cx} y1={bottom + 2} x2={cx} y2={bottom + 18} stroke={hex} strokeWidth="6" strokeOpacity="0.18" strokeLinecap="round" />
+      <ellipse cx={cx} cy={bottom + 28} rx={Math.max(40, out.length * 38)} ry="12" fill={hex} opacity={busy ? 0.3 : 0.1} stroke={hex} strokeOpacity={busy ? 0.9 : 0.3} strokeWidth="1.5" className={busy ? 'floor-halo-ring' : undefined} />
+      <text x={cx} y={top + 18} textAnchor="middle" className="floor-title" fill="currentColor">
+        {partying ? '🎉 ' : ''}Command center
       </text>
-      <text x={cx} y={cy - 6} textAnchor="middle" className="floor-sub" fill="currentColor" data-testid="harness-phase">
-        {phase ? `phase · ${phase.id}` : running ? 'starting' : 'standing by'}
-      </text>
-      <text x={cx} y={cy + 12} textAnchor="middle" className="floor-note" fill="currentColor" opacity="0.6">
-        not a team · no tickets
+      <text x={cx} y={top + 32} textAnchor="middle" className="floor-sub" fill="currentColor" data-testid="harness-phase">
+        {phase ? `phase · ${phase.id}` : partying ? 'shipped' : running ? 'starting' : 'standing by'}
       </text>
       {team.agents.map((a) => {
         const pos = agentPos.get(a.id);
         if (!pos) return null;
-        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} selected={selection?.kind === 'agent' && selection.id === a.id} onSelect={onSelect} />;
+        const onPad = out.includes(a);
+        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} compact={!onPad} selected={selection?.kind === 'agent' && selection.id === a.id} onSelect={onSelect} />;
       })}
     </g>
   );
@@ -391,6 +444,8 @@ function Avatar({
   team,
   selected,
   onSelect,
+  partying = false,
+  compact = false,
 }: {
   agent: FloorAgent;
   x: number;
@@ -401,15 +456,28 @@ function Avatar({
   team: FloorTeam;
   selected: boolean;
   onSelect?: (sel: FloorSelection) => void;
+  /** The table is done: the party is on. */
+  partying?: boolean;
+  /** A chip, not a name tag: the command center's crew waiting inside. */
+  compact?: boolean;
 }) {
-  const r = agent.seat === 'manager' ? 17 : 15;
+  const r = compact ? 10 : agent.seat === 'manager' ? 17 : 15;
   const pick = onSelect ? () => onSelect({ kind: 'agent', id: agent.id, team: team.id }) : undefined;
   const label = agent.id.length > 16 ? agent.id.slice(0, 15) + '…' : agent.id;
   const isManager = agent.seat === 'manager';
   const glowing = agent.active && running;
+  const mood: Mood = moodFor({ active: glowing, running, partying, since: agent.lastAt ?? tick, now: tick, seed: seedOf(agent.id) });
   return (
     <g
-      className={clsx('floor-avatar', glowing && 'floor-avatar-active', pick && 'cursor-pointer')}
+      className={clsx(
+        'floor-avatar',
+        glowing && 'floor-avatar-active',
+        pick && 'cursor-pointer',
+        mood === 'nap' && 'floor-avatar-nap',
+        isParty(mood) && 'floor-avatar-party',
+        mood === 'stroll' && 'floor-avatar-stroll',
+      )}
+      data-mood={mood}
       data-testid={`agent-${agent.id}`}
       data-active={glowing ? 'true' : undefined}
       data-selected={selected ? 'true' : undefined}
@@ -430,17 +498,27 @@ function Avatar({
       <title>
         {`${agent.id} · ${isManager ? (team.managerDefault ? 'project manager (run default)' : 'project manager') : team.internal ? 'harness · internal' : agent.seat}` +
           (agent.borrowed ? ` (the team names none — lent by the ${agent.borrowed})` : '') +
-          (agent.touched ? ` · ${agent.touched} ticket${agent.touched === 1 ? '' : 's'} touched` : '')}
+          (agent.touched ? ` · ${agent.touched} ticket${agent.touched === 1 ? '' : 's'} touched` : '') +
+          ` · ${MOOD_LABEL[mood]}`}
       </title>
-      {glowing && <circle r={r + 9} fill={hex} opacity="0.25" className="floor-halo" />}
-      {glowing && <circle r={r + 4} fill="none" stroke={hex} strokeWidth="2" className="floor-halo-ring" />}
-      <circle r={r} fill={isManager ? hex : '#ffffff'} stroke={hex} strokeWidth={isManager ? 0 : 2} strokeDasharray={agent.borrowed ? '3 3' : undefined} opacity={agent.borrowed ? 0.85 : 1} className="floor-avatar-body" />
-      <text y="5" textAnchor="middle" className="floor-glyph">
-        {glyphFor(agent)}
-      </text>
-      <text y={r + 13} textAnchor="middle" className={clsx('floor-name', isManager && 'floor-name-manager')} fill="currentColor">
-        {label}
-      </text>
+      <g className="floor-avatar-inner">
+        {glowing && <circle r={r + 9} fill={hex} opacity="0.25" className="floor-halo" />}
+        {glowing && <circle r={r + 4} fill="none" stroke={hex} strokeWidth="2" className="floor-halo-ring" />}
+        <circle r={r} fill={isManager ? hex : '#ffffff'} stroke={hex} strokeWidth={isManager ? 0 : 2} strokeDasharray={agent.borrowed ? '3 3' : undefined} opacity={agent.borrowed ? 0.85 : 1} className="floor-avatar-body" />
+        <text y={compact ? 4 : 5} textAnchor="middle" className="floor-glyph" fontSize={compact ? 11 : undefined}>
+          {glyphFor(agent)}
+        </text>
+        {moodShows(mood) && (
+          <text x={r - 1} y={-r + 3} textAnchor="middle" fontSize={compact ? 10 : 13} className="floor-mood" data-testid={`mood-${agent.id}`}>
+            {MOOD_GLYPH[mood]}
+          </text>
+        )}
+      </g>
+      {!compact && (
+        <text y={r + 13} textAnchor="middle" className={clsx('floor-name', isManager && 'floor-name-manager')} fill="currentColor">
+          {label}
+        </text>
+      )}
       {isManager && (
         <text y={r + 24} textAnchor="middle" className="floor-note" fill="currentColor" opacity="0.7">
           {team.managerDefault ? 'manager · run default' : 'manager'}

@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import { teamColor } from '@/components/Board/teamColor';
 import { workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_LABEL, ago, glyphFor, type FloorSelection } from './floorShared';
-import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isParty, moodFor, moodShows, seedOf, tableParties, type Mood } from './floorLife';
+import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isParty, moodFor, moodShows, seedOf, tableParties, tableSignals, type Mood, type TableSignals } from './floorLife';
 
 // ── The team floor ───────────────────────────────────────────────────────
 //
@@ -80,6 +80,8 @@ const HQ_W = 300;
 const HQ_H = 112;
 const HQ_DOOR = 36;
 const HQ_COLS = 6;
+const HQ_LIFE: TableSignals = { table: seedOf('harness') };
+const NO_PULSES: FloorPulse[] = [];
 
 /** Islands are laid out on a shallow arc, so three read as a floor and not a row. */
 function layout(teams: FloorTeam[], running: boolean): Placed[] {
@@ -187,7 +189,7 @@ export default function TeamFloorFlat({ floor, running, now, onTicket, selection
           })}
 
           {placed.map((p) => (
-            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} phase={floor.phase} partying={tableParties(p.team, shipped)} />
+            <Island key={p.team.id} placed={p} running={running} tick={tick} onTicket={onTicket} selection={selection} onSelect={onSelect} flashing={flashing} phase={floor.phase} partying={tableParties(p.team, shipped)} life={tableSignals(p.team.id, pulses ?? NO_PULSES, p.team.crew)} />
           ))}
 
           {floor.handoffs.map((h) => (
@@ -217,6 +219,7 @@ function Island({
   flashing,
   phase,
   partying,
+  life,
 }: {
   placed: Placed;
   running: boolean;
@@ -227,6 +230,7 @@ function Island({
   flashing: Set<string>;
   phase: FloorPhase | null;
   partying: boolean;
+  life: TableSignals;
 }) {
   const { team, cx, cy, hex, agentPos } = placed;
   if (team.internal) return <HarnessIsland placed={placed} running={running} tick={tick} selection={selection} onSelect={onSelect} phase={phase} partying={partying} />;
@@ -270,7 +274,7 @@ function Island({
       {team.agents.map((a) => {
         const pos = agentPos.get(a.id);
         if (!pos) return null;
-        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} selected={selection?.kind === 'agent' && selection.id === a.id && selection.team === team.id} onSelect={onSelect} />;
+        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} life={life} selected={selection?.kind === 'agent' && selection.id === a.id && selection.team === team.id} onSelect={onSelect} />;
       })}
 
       {team.waitingOn.length > 0 && (
@@ -322,7 +326,7 @@ function HarnessIsland({ placed, running, tick, selection, onSelect, phase, part
         const pos = agentPos.get(a.id);
         if (!pos) return null;
         const onPad = out.includes(a);
-        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} compact={!onPad} selected={selection?.kind === 'agent' && selection.id === a.id} onSelect={onSelect} />;
+        return <Avatar key={a.id} agent={a} x={pos.x} y={pos.y} hex={hex} running={running} tick={tick} team={team} partying={partying} life={HQ_LIFE} compact={!onPad} selected={selection?.kind === 'agent' && selection.id === a.id} onSelect={onSelect} />;
       })}
     </g>
   );
@@ -445,6 +449,7 @@ function Avatar({
   selected,
   onSelect,
   partying = false,
+  life,
   compact = false,
 }: {
   agent: FloorAgent;
@@ -458,6 +463,8 @@ function Avatar({
   onSelect?: (sel: FloorSelection) => void;
   /** The table is done: the party is on. */
   partying?: boolean;
+  /** The table's seed and what just happened at it. */
+  life?: TableSignals;
   /** A chip, not a name tag: the command center's crew waiting inside. */
   compact?: boolean;
 }) {
@@ -466,7 +473,23 @@ function Avatar({
   const label = agent.id.length > 16 ? agent.id.slice(0, 15) + '…' : agent.id;
   const isManager = agent.seat === 'manager';
   const glowing = agent.active && running;
-  const mood: Mood = moodFor({ active: glowing, running, partying, since: agent.lastAt ?? tick, now: tick, seed: seedOf(agent.id) });
+  const raw: Mood = moodFor({
+    active: glowing,
+    running,
+    partying,
+    since: agent.lastAt ?? tick,
+    now: tick,
+    seed: seedOf(agent.id),
+    table: life?.table,
+    manager: isManager,
+    poked: selected,
+    away: !!agent.away,
+    cheerAt: life?.cheerAt,
+    groanAt: life?.groanAt,
+    buzzAt: life?.buzzAt,
+  });
+  // The command center has no pitch and no board.
+  const mood: Mood = team.internal && raw === 'football' ? 'dance' : team.internal && raw === 'present' ? 'think' : raw;
   return (
     <g
       className={clsx(
@@ -474,6 +497,7 @@ function Avatar({
         glowing && 'floor-avatar-active',
         pick && 'cursor-pointer',
         mood === 'nap' && 'floor-avatar-nap',
+        mood === 'away' && 'floor-avatar-away',
         isParty(mood) && 'floor-avatar-party',
         mood === 'stroll' && 'floor-avatar-stroll',
       )}
@@ -527,6 +551,11 @@ function Avatar({
       {agent.borrowed && (
         <text y={r + 24} textAnchor="middle" className="floor-note" fill="#d97706" data-testid={`borrowed-${agent.id}`}>
           {agent.seat} · from the {agent.borrowed}
+        </text>
+      )}
+      {mood === 'away' && !agent.borrowed && (
+        <text y={r + (isManager ? 35 : 24)} textAnchor="middle" className="floor-note" fill="#d97706" data-testid={`away-${agent.id}`}>
+          📤 at {agent.away}
         </text>
       )}
       {glowing && (

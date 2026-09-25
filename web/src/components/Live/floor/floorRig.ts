@@ -25,6 +25,7 @@ export interface Rig {
   legR: RefObject<THREE.Group | null>;
   beer: RefObject<THREE.Group | null>;
   cup: RefObject<THREE.Mesh | null>;
+  phone: RefObject<THREE.Mesh | null>;
 }
 
 export function useRig(): Rig {
@@ -38,6 +39,7 @@ export function useRig(): Rig {
     legR: useRef<THREE.Group>(null),
     beer: useRef<THREE.Group>(null),
     cup: useRef<THREE.Mesh>(null),
+    phone: useRef<THREE.Mesh>(null),
   };
 }
 
@@ -104,6 +106,7 @@ export function poseRig(rig: Rig, p: PoseInputs): void {
   let kick = 0;
   let beer = false;
   let cup = false;
+  let phone = false;
 
   switch (mood) {
     case 'work': {
@@ -160,6 +163,100 @@ export function poseRig(rig: Rig, p: PoseInputs): void {
       armL = 0.1;
       armR = 0.1;
       headY = walking ? 0 : Math.sin(t * 0.8 + phase) * 0.6;
+      break;
+    }
+    case 'chat': {
+      // Turned to a neighbour, one hand making the point, a laugh now and then.
+      const side = phase > 3.14 ? 1 : -1;
+      headY = side * 0.85 + Math.sin(t * 0.7 + phase) * 0.15;
+      armR = 1.0 + Math.sin(t * 3.1 + phase) * 0.45;
+      armRz = 0.35;
+      armL = sit > 0.5 ? 0.9 : 0.25;
+      bodyY = side * 0.18;
+      const laugh = Math.max(0, Math.sin(t * 0.9 + phase)) ** 12;
+      headX = laugh * 0.35;
+      bob = laugh * 0.03 + Math.sin(t * 1.2 + phase) * 0.008;
+      break;
+    }
+    case 'phone': {
+      // Head down over the phone, a thumb scrolling.
+      phone = true;
+      armR = 1.35 + Math.sin(t * 7 + phase) * 0.04;
+      armRz = -0.35;
+      armL = 1.3;
+      armLz = 0.35;
+      headX = -0.45;
+      headY = Math.sin(t * 0.4 + phase) * 0.1;
+      bob = Math.sin(t * 1.2 + phase) * 0.006;
+      break;
+    }
+    case 'think': {
+      // Chin on a fist, eyes up, a slow sway.
+      armR = 2.35;
+      armRz = -0.55;
+      armL = sit > 0.5 ? 1.1 : 0.4;
+      armLz = 0.3;
+      headX = 0.3;
+      headY = Math.sin(t * 0.5 + phase) * 0.25;
+      bodyZ = Math.sin(t * 0.5 + phase) * 0.05;
+      break;
+    }
+    case 'present': {
+      // At the board: pointing at it, turning back to the table to explain.
+      const k = (since % 5) / 5;
+      const pointing = k < 0.6;
+      armR = pointing ? 2.5 + Math.sin(t * 2) * 0.15 : 1.1 + Math.sin(t * 3) * 0.3;
+      armRz = pointing ? 0.25 : 0.4;
+      armL = pointing ? 0.3 : 0.9 + Math.sin(t * 2.6) * 0.3;
+      armLz = pointing ? 0 : -0.35;
+      headY = pointing ? 0 : Math.PI * 0.55;
+      headX = pointing ? 0.25 : 0;
+      bodyY = pointing ? 0 : 0.35;
+      bob = Math.abs(Math.sin(t * 2)) * 0.01;
+      break;
+    }
+    case 'cheer': {
+      // Applause, hands up.
+      const clap = Math.sin(t * 16);
+      armL = Math.PI * 0.62;
+      armR = Math.PI * 0.62;
+      armLz = -0.15 - clap * 0.18;
+      armRz = 0.15 + clap * 0.18;
+      headX = 0.2;
+      bob = Math.abs(Math.sin(t * 8)) * 0.04;
+      break;
+    }
+    case 'facepalm': {
+      armR = 2.65;
+      armRz = -0.6;
+      armL = sit > 0.5 ? 0.9 : 0.3;
+      headX = -0.35;
+      headY = Math.sin(t * 5) * 0.12;
+      bodyX = -0.1;
+      break;
+    }
+    case 'wave': {
+      // Waving back at whoever clicked.
+      armR = Math.PI - 0.25;
+      armRz = 0.25 + Math.sin(t * 9) * 0.45;
+      armL = sit > 0.5 ? 0.9 : 0.2;
+      headX = 0.15;
+      bob = Math.abs(Math.sin(t * 4.5)) * 0.03;
+      break;
+    }
+    case 'game': {
+      // At the foosball rods: hands low on the handles, wrists snapping.
+      armL = 1.05 + Math.sin(t * 7 + phase) * 0.12;
+      armR = 1.05 + Math.sin(t * 7 + phase + 2) * 0.12;
+      armLz = Math.sin(t * 11 + phase) * 0.25;
+      armRz = -Math.sin(t * 9 + phase) * 0.25;
+      bodyX = -0.15;
+      bodyY = Math.sin(t * 3 + phase) * 0.2;
+      headX = -0.25;
+      bob = Math.abs(Math.sin(t * 5 + phase)) * 0.03;
+      break;
+    }
+    case 'away': {
       break;
     }
     case 'nap': {
@@ -244,6 +341,7 @@ export function poseRig(rig: Rig, p: PoseInputs): void {
   }
   if (rig.beer.current) rig.beer.current.visible = beer;
   if (rig.cup.current) rig.cup.current.visible = cup && !walking;
+  if (rig.phone.current) rig.phone.current.visible = phone && !walking;
 }
 
 /**

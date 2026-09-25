@@ -174,7 +174,7 @@ function AgentDossier({
             </blockquote>
           )}
           {held && held.title && <div className="mt-1 truncate text-[10.5px] text-gray-500 dark:text-gray-400" title={held.title}>{held.title}</div>}
-          {!active && <MoodLine id={agent.id} since={agent.lastAt} running={running} partying={tableParties(team, floorShipped(floor, running))} now={now} />}
+          {!active && <MoodLine id={agent.id} since={agent.lastAt} running={running} partying={tableParties(team, floorShipped(floor, running))} now={now} table={team.id} manager={isManager} away={agent.away} />}
         </section>
 
         {/* Management */}
@@ -350,8 +350,17 @@ function TicketDossier({
 
 /** A phase agent on the pipeline's stage: what phase, whether speaking, what was said. */
 /** What someone idle is up to meanwhile — the same mood the stage draws. */
-function MoodLine({ id, since, running, partying, now }: { id: string; since?: number; running: boolean; partying: boolean; now: number }) {
-  const mood = moodFor({ active: false, running, partying, since: since ?? now, now, seed: seedOf(id) });
+function MoodLine({ id, since, running, partying, now, table, manager, away }: { id: string; since?: number; running: boolean; partying: boolean; now: number; table: string; manager?: boolean; away?: string }) {
+  const raw = moodFor({ active: false, running, partying, since: since ?? now, now, seed: seedOf(id), table: seedOf(table), manager, away: !!away });
+  // The dossier is open because they were clicked: say what they were up to, not that they are waving.
+  const mood = table === 'harness' && raw === 'football' ? 'dance' : table === 'harness' && raw === 'present' ? 'think' : raw;
+  if (mood === 'away') {
+    return (
+      <div className="mt-1 text-[10.5px] text-amber-700 dark:text-amber-300" data-testid="dossier-mood">
+        meanwhile: <span aria-hidden="true">📤</span> away, working at {away}
+      </div>
+    );
+  }
   return (
     <div className="mt-1 text-[10.5px] text-gray-500 dark:text-gray-400" data-testid="dossier-mood">
       meanwhile: <span aria-hidden="true">{MOOD_GLYPH[mood]}</span> {MOOD_LABEL[mood]}
@@ -383,7 +392,7 @@ function StageDossier({ seat, floor, events, running, now, onSelect }: { seat: F
           {seat.lastMessage && (
             <blockquote className="mt-1 line-clamp-3 rounded border-l-2 border-brand-400 pl-2 text-[11px] italic text-gray-600 dark:text-gray-300">{seat.lastMessage}</blockquote>
           )}
-          {!active && <MoodLine id={seat.id} since={seat.lastAt} running={running} partying={floorShipped(floor, running)} now={now} />}
+          {!active && <MoodLine id={seat.id} since={seat.lastAt} running={running} partying={floorShipped(floor, running)} now={now} table="harness" />}
         </section>
         <section className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600 dark:bg-gray-800/60 dark:text-gray-300" data-testid="dossier-management">
           {seat.id === DISPATCHER_ID

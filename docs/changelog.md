@@ -12,8 +12,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The Live floor's team tables light up again.** A specialist working a
+  ticket of a team that did not name one (the pipeline's go-worker doing the
+  docs team's ticket) was lit at no table at all; it now works at that table,
+  drawn as lent, and its chair at home says where it went. The execute loop's
+  generic `worker`/`tester` lines count as the specialist's, not a phantom
+  at the command center; a start with no end (the split phase's "assigned
+  go-worker", the test phase's "verification pass") is dropped when the run
+  moves on instead of lighting that agent for the rest of the run; debug and
+  latency lines no longer make anyone "speak". Verified against a captured
+  two-team Studio run.
+
 ### Added
 
+- **A floor with more life, and no two tables alike.** Idle agents chat with
+  a neighbour, scroll a phone, think, stroll a path of their own, and walk to
+  a shared break room behind the tables — a coffee bar and a foosball table —
+  where people from every table and the command center's crew meet. Managers
+  walk their table through the board. Tables applaud a ticket landing, wince
+  at one failing and turn to a teammate starting; a clicked agent waves back.
+  Every table has its own habits and its own party programme, every agent a
+  favourite pastime, and a long wait in a live run no longer puts a whole
+  table to sleep.
 - **A command center and a floor that lives.** On the Live floor the harness's
   agents wait inside a glass command center instead of crowding a table; whoever
   is on walks out through its sliding door onto a pad, speaks, and walks back.

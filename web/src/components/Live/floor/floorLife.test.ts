@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MOOD_SLOT_MS, PARTY_SLOT_MS, SLEEPY_MS, WATCH_MS, floorShipped, isFootballRound, isParty, moodFor, moodShows, seedOf, tableParties, type LifeInputs, type Mood } from './floorLife';
-import type { FloorTeam } from './floorModel';
+import { MOOD_SLOT_MS, PARTY_SLOT_MS, REACT_MS, SLEEPY_MS, WATCH_MS, floorShipped, isBreak, isFootballRound, isParty, moodFor, moodShows, partyActivity, seedOf, tableParties, tableSignals, type LifeInputs, type Mood } from './floorLife';
+import type { FloorPulse, FloorTeam } from './floorModel';
 
 const T0 = Date.parse('2026-09-10T10:00:00Z');
 
@@ -40,11 +40,11 @@ describe('moodFor', () => {
     expect(moods.size).toBeGreaterThan(1);
   });
 
-  it('dozes off after a long wait, and sleeps after a very long one', () => {
+  it('dozes off now and then after a long wait, but a live run never puts a table to sleep for good', () => {
     let naps = 0;
-    for (let k = 0; k < 40; k++) if (moodFor(life({ now: T0 + SLEEPY_MS + 1 + k * MOOD_SLOT_MS })) === 'nap') naps++;
+    for (let k = 0; k < 100; k++) if (moodFor(life({ now: T0 + SLEEPY_MS + 1 + k * MOOD_SLOT_MS })) === 'nap') naps++;
     expect(naps).toBeGreaterThan(10);
-    expect(moodFor(life({ now: T0 + SLEEPY_MS * 2 + 1 }))).toBe('nap');
+    expect(naps).toBeLessThan(60);
   });
 
   it('naps at the desk once the run has stopped', () => {
@@ -82,5 +82,54 @@ describe('parties', () => {
     expect(floorShipped({ teams: [harness, team()] }, true)).toBe(false);
     expect(floorShipped({ teams: [harness, team(), team({ id: 'web', complete: false, done: 0 })] }, false)).toBe(false);
     expect(floorShipped({ teams: [harness] }, false)).toBe(false);
+  });
+});
+
+describe('variety', () => {
+  const tables = ['backend-go', 'frontend-react', 'docs', 'infra', 'backend-python'].map(seedOf);
+
+  it('gives every table its own party programme and clock', () => {
+    // Not every table doing the same thing at the same time.
+    const sameMoment = tables.map((t) => partyActivity(T0, t));
+    expect(new Set(sameMoment).size).toBeGreaterThan(1);
+  });
+
+  it('gives tables different habits: the same person idles differently at two tables', () => {
+    const tally = (table: number) => {
+      const m = new Map<string, number>();
+      for (let k = 0; k < 200; k++) {
+        const now = T0 + WATCH_MS + k * MOOD_SLOT_MS;
+        const mood = moodFor(life({ table, now, since: now - 30_000, seed: seedOf(`p${k % 7}`) }));
+        m.set(mood, (m.get(mood) ?? 0) + 1);
+      }
+      return m;
+    };
+    const a = tally(tables[0]);
+    const b = tally(tables[1]);
+    const differs = [...new Set([...a.keys(), ...b.keys()])].some((k) => Math.abs((a.get(k) ?? 0) - (b.get(k) ?? 0)) > 10);
+    expect(differs).toBe(true);
+  });
+
+  it('reacts to what just happened at the table, waves when clicked, and is away when working elsewhere', () => {
+    const now = T0 + 60_000;
+    expect(moodFor(life({ now, cheerAt: now - 1000 }))).toBe('cheer');
+    expect(moodFor(life({ now, groanAt: now - 1000 }))).toBe('facepalm');
+    expect(moodFor(life({ now, cheerAt: now - REACT_MS - 1 }))).not.toBe('cheer');
+    expect(moodFor(life({ now, poked: true }))).toBe('wave');
+    expect(moodFor(life({ now, away: true }))).toBe('away');
+    expect(moodFor(life({ now, active: true, poked: true }))).toBe('work');
+  });
+
+  it('sends people to the break room and the manager to the board', () => {
+    const seen = new Set<Mood>();
+    for (let k = 0; k < 120; k++) seen.add(moodFor(life({ manager: true, now: T0 + WATCH_MS + k * MOOD_SLOT_MS })));
+    expect(seen.has('present')).toBe(true);
+    expect([...seen].some(isBreak)).toBe(true);
+  });
+
+  it('reads a table’s pulses into its reactions', () => {
+    const pulse = (kind: FloorPulse['kind'], at: number, team = 'docs', tone: FloorPulse['tone'] = 'info'): FloorPulse => ({ id: `${kind}${at}`, kind, tone, at, team, text: '' });
+    const s = tableSignals('docs', [pulse('ticket-done', 10), pulse('ticket-failed', 20), pulse('agent-start', 30), pulse('ticket-done', 99, 'other')]);
+    expect(s).toMatchObject({ table: seedOf('docs'), cheerAt: 10, groanAt: 20, buzzAt: 30 });
   });
 });

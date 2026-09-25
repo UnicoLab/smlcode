@@ -449,3 +449,63 @@ describe('the harness table', () => {
     for (const id of ['planner', 'splitter', 'dispatcher', 'composer', 'architect']) expect(isWorkingRole(id)).toBe(false);
   });
 });
+
+// ── What a real two-team run sends ───────────────────────────────────────
+//
+// Taken from a captured Studio run (backend-go + docs, where docs names no
+// worker and the pipeline's go-worker does its ticket). Before these fixes
+// the one agent working was lit at NO table, a phantom "worker" sat at the
+// harness table, and go-tester stayed "working" for the rest of the run.
+describe('buildFloor on a real two-team log', () => {
+  const twoTeams: SquadsView = {
+    ok: true,
+    summary: '2 squads',
+    squads: [
+      { id: 'backend-go', name: 'Backend · Go', owns: ['cmd/**'], acceptance: 'go test ./...', worker: 'go-worker', reviewer: 'go-reviewer', tester: 'go-tester', total: 0, done: 0, blocked: 0, in_flight: 0, complete: false, stuck: false },
+      { id: 'docs', name: 'Docs', owns: ['README.md'], acceptance: '', total: 1, done: 0, blocked: 0, in_flight: 1, complete: false, stuck: false },
+    ],
+    task_teams: { T1: 'docs' },
+  };
+  const board = [task('T1', { squad: 'docs', role: 'go-worker', status: 'running', column: 'in_progress' })];
+  const log: RunEvent[] = [
+    { phase: 'split', kind: 'agent_start', agent: 'go-worker', task_id: 'T1', message: 'assigned go-worker — files are go', time: at(1) },
+    { phase: 'execute', kind: 'phase', message: '1 tasks · parallel=1', time: at(2) },
+    { phase: 'execute', kind: 'agent_start', agent: 'go-worker', task_id: 'T1', message: 'Add a Divide function', time: at(3) },
+    { phase: 'execute', kind: 'file_change', agent: 'worker', message: 'write calc.go', time: at(4) },
+  ];
+  const floorAt = (events: RunEvent[]) => buildFloor({ squads: twoTeams, tasks: board, events, composition: null, running: true, now: T0 + 5000 });
+  const seat = (f: ReturnType<typeof floorAt>, team: string, id: string) => f.teams.find((t) => t.id === team)?.agents.find((a) => a.id === id);
+
+  it('lights the lent worker at the table whose ticket it works, and marks its home chair away', () => {
+    const f = floorAt(log);
+    expect(seat(f, 'docs', 'go-worker')).toMatchObject({ active: true, task: 'T1', seat: 'worker', borrowed: 'Backend · Go' });
+    expect(seat(f, 'backend-go', 'go-worker')).toMatchObject({ active: false, away: 'Docs' });
+  });
+
+  it('reads a generic "worker" line inside go-worker’s turn as go-worker’s, not a new person', () => {
+    const f = floorAt(log);
+    expect(f.stage.map((s) => s.id)).not.toContain('worker');
+    expect(f.now?.agent).toBe('go-worker');
+  });
+
+  it('forgets a start that never ended once the run moves to another phase', () => {
+    const leaky: RunEvent[] = [
+      { phase: 'test', kind: 'agent_start', agent: 'go-tester', message: 'verification pass', time: at(1) },
+      { phase: 'tester', kind: 'agent_end', agent: 'tester', message: 'finished', time: at(2) },
+      { phase: 'memory', kind: 'phase', message: 'distilling', time: at(3) },
+      { phase: 'memory', kind: 'agent_start', agent: 'memory', message: 'distilling', time: at(4) },
+    ];
+    const f = floorAt(leaky);
+    expect(seat(f, 'backend-go', 'go-tester')?.active).toBe(false);
+  });
+
+  it('does not let debug and latency bookkeeping make anyone speak', () => {
+    const noisy: RunEvent[] = [
+      { phase: 'init', kind: 'debug', agent: 'evolve', message: 'bandit pull', time: at(1) },
+      { phase: 'execute', kind: 'latency', agent: 'worker', message: 'execute 130ms', time: at(2) },
+    ];
+    const f = floorAt(noisy);
+    expect(f.stage.map((s) => s.id)).not.toContain('evolve');
+    expect(f.stage.map((s) => s.id)).not.toContain('worker');
+  });
+});

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.27.1 — 2026-09-25
+
+- Light the tables that work, and a floor with no two tables alike (#41)
+- Sync Homebrew formula + prebuilt binaries for v0.27.0 [skip ci]
+
 ## v0.27.0 — 2026-09-25
 
 - A command center and a floor that lives (#40)

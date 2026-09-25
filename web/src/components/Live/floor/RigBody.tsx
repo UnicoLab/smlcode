@@ -58,6 +58,10 @@ export default function RigBody({ rig, look, pick, children }: { rig: Rig; look:
                     <meshStandardMaterial color="#fffbeb" roughness={0.9} />
                   </mesh>
                 </group>
+                <mesh ref={rig.phone} position={[0, -0.41, -0.03]} rotation={[0.3, 0, 0]} visible={false}>
+                  <boxGeometry args={[0.1, 0.02, 0.17]} />
+                  <meshStandardMaterial color="#111827" emissive="#38bdf8" emissiveIntensity={0.5} roughness={0.3} />
+                </mesh>
                 <mesh ref={rig.cup} position={[0, -0.42, -0.02]} visible={false}>
                   <cylinderGeometry args={[0.05, 0.042, 0.1, 12]} />
                   <meshStandardMaterial color="#f9a8d4" roughness={0.6} />

@@ -8,7 +8,7 @@ import { STAGE_GLYPHS } from '@/components/shared/labels';
 import { HARNESS_ID, PULSE_TTL_MS, workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorStageSeat, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } from './floorShared';
 import { floorStore, rememberCamera, rememberCameraPrefs } from './floorStore';
-import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isFootballRound, isParty, moodFor, moodShows, seedOf, tableParties, type LifeInputs, type Mood } from './floorLife';
+import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isFootballRound, isBreak, isParty, isStanding, moodFor, moodShows, seedOf, tableParties, tableSignals, type LifeInputs, type Mood, type TableSignals } from './floorLife';
 import { lookOf, makeWalk, poseRig, stillPose, turnToward, useRig, walkAt, type Walk } from './floorRig';
 import RigBody from './RigBody';
 
@@ -34,10 +34,15 @@ import RigBody from './RigBody';
 // room, not a crowd of name tags.
 //
 // Nobody is a statue. Everyone who is not working has a mood (floorLife):
-// they watch the worker, sip a coffee, stretch, take a walk round the table,
-// and doze off at the desk when nothing comes their way. A table whose every
-// ticket is done stands up for a beer, a kick-about and a dance; when the
-// whole run ships, the whole floor — command center included — joins in.
+// they watch the worker, chat, scroll a phone, think, stretch, stroll, walk
+// the table through its board, and walk round the room to the shared break
+// room behind the tables — a coffee bar and a foosball table — where people
+// from every table, and the command center's crew, meet. They applaud a
+// ticket landing, wince at one failing, wave when clicked, and doze now and
+// then. Each table has its own habits and its own party programme; a done
+// table stands up for beers, a kick-about and a dance, and when the whole run
+// ships the whole floor joins in. Someone working another table's ticket
+// works it at THAT table; their chair at home says where they went.
 //
 // Everything is clickable: a person or a ticket opens its dossier (owned by
 // the wrapper), a table focuses the camera, empty floor clears. The camera is
@@ -128,7 +133,6 @@ interface Placed {
   /** The command center's floor plan, for the harness. */
   hq?: HQ;
 }
-
 /** The command center's floor plan, in its own space (the room's centre at the origin). */
 interface HQ {
   w: number;
@@ -277,13 +281,13 @@ function AmbientPump({ on, resetKey }: { on: boolean; resetKey: unknown }) {
  */
 function useMood(inputs: Omit<LifeInputs, 'now'>): Mood {
   const [mood, setMood] = useState<Mood>(() => moodFor({ ...inputs, now: Date.now() }));
-  const { active, running, partying, since, seed } = inputs;
-  // Inputs changed (the log moved): re-read at once, even with no frame coming.
+  const { active, running, partying, since, seed, table, manager, poked, away, cheerAt, groanAt, buzzAt } = inputs;
+  // Inputs changed (the log moved, a click): re-read at once, even with no frame coming.
   useEffect(() => {
-    setMood(moodFor({ active, running, partying, since, seed, now: Date.now() }));
-  }, [active, running, partying, since, seed]);
+    setMood(moodFor({ active, running, partying, since, seed, table, manager, poked, away, cheerAt, groanAt, buzzAt, now: Date.now() }));
+  }, [active, running, partying, since, seed, table, manager, poked, away, cheerAt, groanAt, buzzAt]);
   useFrame(() => {
-    const next = moodFor({ active, running, partying, since, seed, now: frame.now * 1000 });
+    const next = moodFor({ active, running, partying, since, seed, table, manager, poked, away, cheerAt, groanAt, buzzAt, now: frame.now * 1000 });
     if (next !== mood) setMood(next);
   });
   return mood;
@@ -346,6 +350,8 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
   // frame rate, for a while after it last changed.
   const ambient = visible && !reducedMotion && !lively;
   const shipped = useMemo(() => floorShipped(floor, running), [floor, running]);
+  // The break room sits behind the back row, in the middle of the floor.
+  const lounge = useMemo(() => new THREE.Vector3(0, 0, Math.min(0, ...placed.map((p) => p.pos.z)) - LOUNGE_BACK), [placed]);
 
   // A lost context (GPU reset, VRAM eviction) is reported up; the wrapper
   // swaps in the flat map and says so. The listener is removed on unmount.
@@ -483,6 +489,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
                 animate={animate}
                 dark={dark}
                 partying={shipped}
+                lounge={lounge}
                 selection={selection}
                 onSelect={onSelect}
                 onFocus={() => {
@@ -502,6 +509,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
               pulses={pulses}
               onTicket={onTicket}
               partying={tableParties(p.team, shipped)}
+              lounge={lounge}
               onFocus={() => {
                 setFocus(p.pos.clone().setY(0.8));
                 setFocusDistance(13);
@@ -509,6 +517,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             />
             ),
           )}
+          <BreakRoom at={lounge} dark={dark} animate={animate} />
           {floor.handoffs.map((h) => (
             <Spark key={`${h.task}-${h.from}-${h.to}-${h.at}`} handoff={h} placed={byID} animate={animate} />
           ))}
@@ -619,6 +628,7 @@ function Table({
   pulses,
   onTicket,
   partying,
+  lounge,
   onFocus,
 }: {
   placed: Placed;
@@ -631,6 +641,8 @@ function Table({
   onTicket?: (id: string) => void;
   /** Every ticket here is done: beers, a kick-about, a dance. */
   partying: boolean;
+  /** The shared break room, in floor space. */
+  lounge: THREE.Vector3;
   onFocus: () => void;
 }) {
   const { team, pos, hex, seats, slots } = placed;
@@ -660,6 +672,10 @@ function Table({
     return m;
   }, [mine]);
   const bursting = useMemo(() => mine.filter((p) => frame.now - p.at / 1000 <= BURST_S), [mine]);
+  // What just happened at this table, for its people to react to — and the
+  // table's own seed, so its habits and its party are its own.
+  const life = useMemo(() => tableSignals(team.id, mine, team.crew), [mine, team.id, team.crew]);
+  const loungeHere = useMemo(() => lounge.clone().sub(pos), [lounge, pos]);
 
   // The board stands behind the head seat; the team's sign hangs above it.
   const boardDir = useMemo(() => (managerPos ? managerPos.pos.clone().setY(0).normalize() : new THREE.Vector3(0, 0, -1)), [managerPos]);
@@ -687,7 +703,7 @@ function Table({
           <Sparkles count={24} scale={[TABLE_R * 3, 2.6, TABLE_R * 3]} position={[0, TABLE_Y + 1.8, 0]} size={4} speed={0.7} opacity={0.8} color="#f472b6" />
         </>
       )}
-      {partying && pitch.length >= 2 && <Football spots={pitch} animate={animate} />}
+      {partying && pitch.length >= 2 && <Football spots={pitch} animate={animate} table={life.table} />}
       {/* Pedestal + top. */}
       <mesh position={[0, TABLE_Y / 2, 0]} castShadow receiveShadow>
         <cylinderGeometry args={[0.45, 0.7, TABLE_Y, 24]} />
@@ -759,6 +775,8 @@ function Table({
             tall={a.seat !== 'manager' && i % 2 === 1}
             lookAt={a.active ? undefined : lookAt}
             partying={partying}
+            life={life}
+            lounge={loungeHere}
             onSelect={() => onSelect(selected ? null : { kind: 'agent', id: a.id, team: team.id })}
           />
         );
@@ -944,9 +962,45 @@ const _walkPos = new THREE.Vector3();
 const SEATED_AT = new THREE.Vector3(0, 0, 0.1);
 /** Where it stands when it gets up: behind the chair, facing the table. */
 const STANDING_AT = new THREE.Vector3(0, 0, 0.85);
+/** Where the manager stands to walk the table through the board behind them. */
+const PRESENT_AT = new THREE.Vector3(0, 0, 1.55);
+/**
+ * The shared break room, behind the back row of tables: everyone's coffee
+ * breaks and foosball rounds happen here, so people from different tables
+ * (and the command center's crew) meet. Offsets are from its centre.
+ */
+const LOUNGE_BACK = SEAT_R + 7;
+const BAR_AT = new THREE.Vector3(-1.5, 0, 0);
+const FOOS_AT = new THREE.Vector3(1.7, 0, 0.1);
+const BAR_R = 1.05;
 
-/** The stroll: up, round behind the chairs, and back to sit down. */
-const STROLL = [STANDING_AT, new THREE.Vector3(0.85, 0, 1.25), new THREE.Vector3(-0.85, 0, 1.25), STANDING_AT, SEATED_AT];
+/**
+ * Where someone stands in the break room, and what they face: at the coffee
+ * bar on the side they came from (spread by who they are), or at one of the
+ * foosball table's four handles.
+ */
+function breakSpot(lounge: THREE.Vector3, from: THREE.Vector3, seed: number, kind: 'coffee' | 'game'): { at: THREE.Vector3; face: THREE.Vector3 } {
+  if (kind === 'game') {
+    const f = lounge.clone().add(FOOS_AT);
+    const k = seed % 4;
+    return { at: f.clone().add(new THREE.Vector3(k % 2 ? 0.32 : -0.32, 0, k < 2 ? -0.62 : 0.62)), face: f };
+  }
+  const bar = lounge.clone().add(BAR_AT);
+  const side = Math.atan2(from.z - bar.z, from.x - bar.x);
+  const a = side + (((seed % 1000) / 1000) * 2 - 1) * 1.1;
+  const r = BAR_R + ((seed >>> 10) % 3) * 0.3;
+  return { at: new THREE.Vector3(bar.x + Math.cos(a) * r, 0, bar.z + Math.sin(a) * r), face: bar };
+}
+
+/** A stroll: up, a wander behind the chairs of this person's own shape, and back to sit down. */
+function strollFor(seed: number): THREE.Vector3[] {
+  const side = seed % 2 ? 1 : -1;
+  const reach = 0.6 + ((seed >>> 3) % 5) * 0.12;
+  const depth = 1.1 + ((seed >>> 6) % 4) * 0.15;
+  const pts = [STANDING_AT, new THREE.Vector3(side * reach, 0, depth), new THREE.Vector3(-side * reach, 0, depth + 0.2)];
+  if ((seed >>> 9) % 2) pts.push(new THREE.Vector3(side * reach * 0.5, 0, depth + 0.45));
+  return [...pts, STANDING_AT, SEATED_AT];
+}
 
 function hoverPick(onSelect: () => void, setHover: (v: boolean) => void) {
   return {
@@ -989,6 +1043,8 @@ function Person({
   tall,
   lookAt,
   partying,
+  life,
+  lounge,
   onSelect,
 }: {
   agent: FloorAgent;
@@ -1005,6 +1061,9 @@ function Person({
   lookAt?: THREE.Vector3;
   /** The table is done: this person is at the party. */
   partying: boolean;
+  life: TableSignals;
+  /** The shared coffee lounge, in table space. */
+  lounge: THREE.Vector3;
   onSelect: () => void;
 }) {
   const isManager = agent.seat === 'manager';
@@ -1024,13 +1083,30 @@ function Person({
   const seed = useMemo(() => seedOf(agent.id), [agent.id]);
   const look = useMemo(() => lookOf(seed), [seed]);
   const phase = (seed % 628) / 100;
-  const mood = useMood({ active, running, partying, since: agent.lastAt ?? FLOOR_BORN, seed });
-  const standing = isParty(mood);
+  const mood = useMood({
+    active,
+    running,
+    partying,
+    since: agent.lastAt ?? FLOOR_BORN,
+    seed,
+    table: life.table,
+    manager: isManager,
+    poked: selected,
+    away: !!agent.away,
+    cheerAt: life.cheerAt,
+    groanAt: life.groanAt,
+    buzzAt: life.buzzAt,
+  });
+  const standing = isStanding(mood);
+  const home = mood === 'present' ? PRESENT_AT : standing ? STANDING_AT : SEATED_AT;
+  const facingHome = mood === 'present' ? Math.PI : 0;
   // The motion a mood carries: when it began, the stroll's path, how seated.
   const moodStart = useRef<{ mood: Mood; at: number }>({ mood, at: -1 });
   const walk = useRef<Walk | null>(null);
   const sit = useRef(standing ? 0 : 1);
-  const prev = useRef(new THREE.Vector3().copy(standing ? STANDING_AT : SEATED_AT));
+  const prev = useRef(new THREE.Vector3().copy(home));
+  /** A coffee run: out to the table's coffee corner, a sip there, back to the desk. */
+  const trip = useRef<{ stage: 'out' | 'at' | 'back'; until: number; facing: number; pts: THREE.Vector3[] } | null>(null);
 
   // A flash ring when this person starts working: the "message received"
   // cue, once per activation.
@@ -1054,6 +1130,31 @@ function Person({
     return THREE.MathUtils.clamp(Math.atan2(-local.x, -local.z), -1.1, 1.1);
   }, [lookAt, pos, yaw]);
   const glance = mood === 'watch' || mood === 'coffee' ? headYaw : 0;
+  // The way to the break room, in this seat's space: up behind the chair,
+  // round the outside of the chairs to the side facing the break room, then
+  // across to a place at the coffee bar or the foosball table.
+  const breakRoutes = useMemo(() => {
+    const toLocal = (v: THREE.Vector3) => v.clone().sub(pos).applyAxisAngle(UP, -yaw);
+    const exit = Math.atan2(lounge.z, lounge.x);
+    let d = exit - angle;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const ring = SEAT_R + 0.85;
+    const base = [STANDING_AT.clone()];
+    const steps = Math.max(1, Math.ceil(Math.abs(d) / 0.45));
+    for (let k = 1; k <= steps; k++) {
+      const a = angle + (d * k) / steps;
+      base.push(toLocal(new THREE.Vector3(Math.cos(a) * ring, 0, Math.sin(a) * ring)));
+    }
+    const from = new THREE.Vector3(Math.cos(exit) * ring, 0, Math.sin(exit) * ring);
+    const route = (kind: 'coffee' | 'game') => {
+      const spot = breakSpot(lounge, from, seed, kind);
+      const at = toLocal(spot.at);
+      const face = toLocal(spot.face);
+      return { pts: [...base, at], facing: Math.atan2(-(face.x - at.x), -(face.z - at.z)) };
+    };
+    return { coffee: route('coffee'), game: route('game') };
+  }, [pos, yaw, angle, lounge, seed]);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
@@ -1063,12 +1164,41 @@ function Person({
     const root = rig.root.current;
     if (root) {
       if (moodStart.current.mood !== mood || moodStart.current.at < 0) {
+        const first = moodStart.current.at < 0;
         moodStart.current = { mood, at: t };
-        walk.current = mood === 'stroll' && animate ? makeWalk([root.position.clone(), ...STROLL], t, 0.85) : null;
+        const away = root.position.distanceTo(STANDING_AT) > 1.2;
+        if (!animate) {
+          walk.current = null;
+          trip.current = null;
+        } else if (isBreak(mood) && !first) {
+          const r = mood === 'game' ? breakRoutes.game : breakRoutes.coffee;
+          walk.current = makeWalk([root.position.clone(), ...r.pts], t, 2.2);
+          trip.current = { stage: 'out', until: 0, facing: r.facing, pts: r.pts };
+        } else if (trip.current && away) {
+          // Called back mid-break: the long way round, not through the table.
+          walk.current = makeWalk([root.position.clone(), ...[...trip.current.pts].reverse(), SEATED_AT], t, 2.4);
+          trip.current = { stage: 'back', until: 0, facing: 0, pts: trip.current.pts };
+        } else {
+          trip.current = null;
+          walk.current = mood === 'stroll' ? makeWalk([root.position.clone(), ...strollFor(seed)], t, 0.7 + (seed % 5) * 0.08) : null;
+        }
       }
+      if (animate && trip.current && !walk.current) {
+        const tr = trip.current;
+        if (tr.stage === 'out') {
+          tr.stage = 'at';
+          tr.until = t + (mood === 'game' ? 7 : 3.5) + (seed % 20) / 10;
+        } else if (tr.stage === 'at' && t > tr.until) {
+          walk.current = makeWalk([root.position.clone(), ...[...tr.pts].reverse(), SEATED_AT], t, 2.2);
+          tr.stage = 'back';
+        } else if (tr.stage === 'back') {
+          trip.current = null;
+        }
+      }
+      root.visible = mood !== 'away';
       if (!animate) {
-        root.position.copy(standing ? STANDING_AT : SEATED_AT);
-        root.rotation.y = 0;
+        root.position.copy(home);
+        root.rotation.y = facingHome;
         sit.current = standing ? 0 : 1;
         stillPose(rig, mood, sit.current, glance);
       } else {
@@ -1078,12 +1208,13 @@ function Person({
           if (dir === null) walk.current = null;
           else facing = dir;
           root.position.copy(_walkPos);
-        } else {
-          root.position.lerp(standing ? STANDING_AT : SEATED_AT, 0.07);
+        } else if (trip.current?.stage !== 'at') {
+          root.position.lerp(home, 0.07);
         }
         const speed = delta > 0 ? root.position.distanceTo(prev.current) / delta : 0;
         prev.current.copy(root.position);
-        root.rotation.y = turnToward(root.rotation.y, walk.current && speed > 0.05 ? facing : 0, 0.15);
+        const atMachine = trip.current?.stage === 'at';
+        root.rotation.y = turnToward(root.rotation.y, walk.current && speed > 0.05 ? facing : atMachine ? trip.current!.facing : facingHome, 0.15);
         // Seated only once back at the chair.
         const atChair = root.position.distanceToSquared(SEATED_AT) < 0.02;
         sit.current = THREE.MathUtils.lerp(sit.current, !standing && atChair && !walk.current ? 1 : 0, 0.14);
@@ -1191,6 +1322,7 @@ function Person({
                   </div>
                 )}
                 {mood === 'nap' && <Zzz />}
+                {mood === 'away' && <span className="floor3d-away">📤 at {agent.away}</span>}
                 <span
                   className={['floor3d-name', isManager && 'floor3d-name-manager', quiet && 'floor3d-name-quiet'].filter(Boolean).join(' ')}
                   title={`${agent.id} · ${seatTitle(agent, team)} · ${MOOD_LABEL[mood]}${agent.touched ? ` · ${agent.touched} tickets touched` : ''} · click for the dossier`}
@@ -1233,18 +1365,162 @@ function Person({
 }
 
 /**
+ * The shared break room: a coffee bar (an espresso machine with a curl of
+ * steam, a water cooler, cups), a foosball table whose rods spin while
+ * someone plays, a sofa and plants, on a warm rug. Everyone's breaks happen
+ * here, so people from different tables meet.
+ */
+function BreakRoom({ at, dark, animate }: { at: THREE.Vector3; dark: boolean; animate: boolean }) {
+  const steam = useRef<THREE.Mesh[]>([]);
+  const rods = useRef<THREE.Group[]>([]);
+  const ball = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!animate) return;
+    const t = clock.getElapsedTime();
+    steam.current.forEach((m, i) => {
+      if (!m) return;
+      const k = (t * 0.45 + i / 3) % 1;
+      m.position.set(Math.sin(t * 2 + i) * 0.04, 0.42 + k * 0.55, -0.02);
+      m.scale.setScalar(0.6 + k);
+      (m.material as THREE.MeshBasicMaterial).opacity = 0.35 * (1 - k);
+    });
+    rods.current.forEach((g, i) => {
+      if (g) g.rotation.x = Math.sin(t * 6 + i * 1.7) * 0.9;
+    });
+    if (ball.current) {
+      ball.current.position.x = Math.sin(t * 1.9) * 0.55;
+      ball.current.position.z = Math.sin(t * 3.1) * 0.22;
+    }
+  });
+  const wood = dark ? '#6b4f3a' : '#a16207';
+  return (
+    <group position={at}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]} receiveShadow>
+        <circleGeometry args={[3.5, 56]} />
+        <meshStandardMaterial color={dark ? '#3b2f2a' : '#fde7c7'} transparent opacity={dark ? 0.55 : 0.75} roughness={1} />
+      </mesh>
+      {/* The coffee bar. */}
+      <group position={BAR_AT}>
+        <mesh position={[0, 0.5, 0]} castShadow>
+          <cylinderGeometry args={[0.08, 0.2, 1.0, 12]} />
+          <meshStandardMaterial color="#374151" metalness={0.5} roughness={0.4} />
+        </mesh>
+        <mesh position={[0, 1.02, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[0.62, 0.62, 0.06, 32]} />
+          <meshStandardMaterial color={wood} roughness={0.5} />
+        </mesh>
+        <group position={[0, 1.05, -0.22]}>
+          <mesh position={[0, 0.18, 0]} castShadow>
+            <boxGeometry args={[0.34, 0.36, 0.26]} />
+            <meshStandardMaterial color="#9ca3af" metalness={0.75} roughness={0.25} />
+          </mesh>
+          <mesh position={[0, 0.27, 0.132]}>
+            <planeGeometry args={[0.2, 0.07]} />
+            <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={1} toneMapped={false} />
+          </mesh>
+          {animate &&
+            [0, 1, 2].map((i) => (
+              <mesh key={i} ref={(el) => { if (el) steam.current[i] = el; }}>
+                <sphereGeometry args={[0.035, 8, 8]} />
+                <meshBasicMaterial color="#ffffff" transparent opacity={0.3} depthWrite={false} />
+              </mesh>
+            ))}
+        </group>
+        <group position={[0.34, 1.05, 0.15]}>
+          <mesh position={[0, 0.16, 0]}>
+            <cylinderGeometry args={[0.12, 0.12, 0.32, 16]} />
+            <meshStandardMaterial color="#e5e7eb" roughness={0.5} />
+          </mesh>
+          <mesh position={[0, 0.46, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.3, 16]} />
+            <meshStandardMaterial color="#60a5fa" transparent opacity={0.6} roughness={0.1} />
+          </mesh>
+        </group>
+        {[[-0.3, 0.2, '#f9a8d4'], [-0.12, 0.34, '#a5f3fc'], [0.1, 0.4, '#fde68a']].map(([x, z, c]) => (
+          <mesh key={String(c)} position={[x as number, 1.09, z as number]}>
+            <cylinderGeometry args={[0.045, 0.038, 0.08, 12]} />
+            <meshStandardMaterial color={c as string} roughness={0.6} />
+          </mesh>
+        ))}
+      </group>
+      {/* The foosball table. */}
+      <group position={FOOS_AT}>
+        {[[-0.5, -0.25], [0.5, -0.25], [-0.5, 0.25], [0.5, 0.25]].map(([x, z]) => (
+          <mesh key={`${x}${z}`} position={[x, 0.35, z]}>
+            <boxGeometry args={[0.06, 0.7, 0.06]} />
+            <meshStandardMaterial color="#1f2937" />
+          </mesh>
+        ))}
+        <mesh position={[0, 0.78, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1.25, 0.18, 0.72]} />
+          <meshStandardMaterial color={wood} roughness={0.5} />
+        </mesh>
+        <mesh position={[0, 0.875, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[1.15, 0.62]} />
+          <meshStandardMaterial color="#16a34a" roughness={0.8} />
+        </mesh>
+        <mesh ref={ball} position={[0, 0.9, 0]}>
+          <sphereGeometry args={[0.03, 10, 10]} />
+          <meshStandardMaterial color="#ffffff" />
+        </mesh>
+        {[-0.42, -0.14, 0.14, 0.42].map((x, i) => (
+          <group key={x} ref={(el) => { if (el) rods.current[i] = el; }} position={[x, 0.95, 0]}>
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.012, 0.012, 1.0, 6]} />
+              <meshStandardMaterial color="#d1d5db" metalness={0.8} roughness={0.2} />
+            </mesh>
+            {[-0.18, 0, 0.18].map((z) => (
+              <mesh key={z} position={[0, -0.05, z]}>
+                <boxGeometry args={[0.035, 0.1, 0.035]} />
+                <meshStandardMaterial color={i % 2 ? '#ef4444' : '#3b82f6'} />
+              </mesh>
+            ))}
+          </group>
+        ))}
+      </group>
+      {/* A sofa to meet on, and plants. */}
+      <group position={[0, 0, -2.2]}>
+        <mesh position={[0, 0.25, 0]} castShadow>
+          <boxGeometry args={[2.0, 0.3, 0.7]} />
+          <meshStandardMaterial color={dark ? '#7c3aed' : '#a78bfa'} roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 0.55, -0.3]} castShadow>
+          <boxGeometry args={[2.0, 0.5, 0.18]} />
+          <meshStandardMaterial color={dark ? '#6d28d9' : '#8b5cf6'} roughness={0.9} />
+        </mesh>
+      </group>
+      {[[-3.0, -1.6], [3.0, -1.6]].map(([x, z]) => (
+        <group key={x} position={[x, 0, z]}>
+          <mesh position={[0, 0.18, 0]} castShadow>
+            <cylinderGeometry args={[0.16, 0.12, 0.36, 12]} />
+            <meshStandardMaterial color="#b45309" roughness={0.8} />
+          </mesh>
+          <mesh position={[0, 0.62, 0]} castShadow>
+            <icosahedronGeometry args={[0.32, 0]} />
+            <meshStandardMaterial color="#16a34a" roughness={0.8} flatShading />
+          </mesh>
+        </group>
+      ))}
+      <Html position={[0, 1.15, -2.2]} center distanceFactor={14} zIndexRange={[4, 0]} style={{ pointerEvents: 'none' }}>
+        <span className="floor3d-breakroom">☕ break room · 🕹️ foosball</span>
+      </Html>
+    </group>
+  );
+}
+
+/**
  * The kick-about at a done table: a ball passed round the players behind
  * their chairs and back again, lobbed over the table when it has to be.
  * Only on the party's football rounds; between them it rests out of sight.
  */
-function Football({ spots, animate }: { spots: THREE.Vector3[]; animate: boolean }) {
+function Football({ spots, animate, table }: { spots: THREE.Vector3[]; animate: boolean; table: number }) {
   const ball = useRef<THREE.Group>(null);
   const shadow = useRef<THREE.Mesh>(null);
   const PASS_S = 1.3;
   useFrame(() => {
     const m = ball.current;
     if (!m) return;
-    const on = isFootballRound(frame.now * 1000);
+    const on = isFootballRound(frame.now * 1000, table);
     m.visible = on;
     if (shadow.current) shadow.current.visible = on;
     if (!on) return;
@@ -1307,6 +1583,7 @@ function CommandCenter({
   animate,
   dark,
   partying,
+  lounge,
   selection,
   onSelect,
   onFocus,
@@ -1321,11 +1598,14 @@ function CommandCenter({
   dark: boolean;
   /** The run shipped: the crew parties too. */
   partying: boolean;
+  /** The shared break room, in floor space. */
+  lounge: THREE.Vector3;
   selection: FloorSelection;
   onSelect: (sel: FloorSelection) => void;
   onFocus: () => void;
 }) {
   const { w, d } = hq;
+  const loungeHere = useMemo(() => lounge.clone().sub(at), [lounge, at]);
   const out = seats.filter((s) => s.active && running && hq.pads.has(s.id));
   const live = running && !!phase;
   const padGlow = useRef<THREE.MeshStandardMaterial>(null);
@@ -1456,7 +1736,7 @@ function CommandCenter({
           <meshStandardMaterial color="#a78bfa" transparent opacity={0.4} roughness={0.1} metalness={0.3} depthWrite={false} />
         </mesh>
       ))}
-      {/* A plant, and the coffee machine the coffee breaks come from. */}
+      {/* A plant, and an arcade cabinet. */}
       <group position={[-w / 2 + 0.35, 0.08, d / 2 - 0.35]}>
         <mesh position={[0, 0.16, 0]} castShadow>
           <cylinderGeometry args={[0.14, 0.11, 0.32, 12]} />
@@ -1467,14 +1747,19 @@ function CommandCenter({
           <meshStandardMaterial color="#16a34a" roughness={0.8} flatShading />
         </mesh>
       </group>
-      <group position={[w / 2 - 0.35, 0.08, d / 2 - 0.35]}>
-        <mesh position={[0, 0.45, 0]} castShadow>
-          <boxGeometry args={[0.34, 0.9, 0.3]} />
-          <meshStandardMaterial color="#374151" roughness={0.5} metalness={0.4} />
+      <group position={[w / 2 - 0.35, 0.08, d / 2 - 0.4]} rotation={[0, -Math.PI / 5, 0]}>
+        {/* An arcade cabinet — coffee is in the break room, with everyone else. */}
+        <mesh position={[0, 0.55, 0]} castShadow>
+          <boxGeometry args={[0.38, 1.1, 0.34]} />
+          <meshStandardMaterial color="#312e81" roughness={0.5} />
         </mesh>
-        <mesh position={[0, 0.72, 0.16]}>
-          <planeGeometry args={[0.16, 0.08]} />
-          <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={0.9} toneMapped={false} />
+        <mesh position={[0, 0.82, 0.172]}>
+          <planeGeometry args={[0.28, 0.22]} />
+          <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={live ? 1 : 0.4} toneMapped={false} />
+        </mesh>
+        <mesh position={[0, 0.58, 0.2]} rotation={[-0.6, 0, 0]}>
+          <boxGeometry args={[0.34, 0.03, 0.14]} />
+          <meshStandardMaterial color="#111827" />
         </mesh>
       </group>
       {/* Stools. */}
@@ -1534,6 +1819,7 @@ function CommandCenter({
             partying={partying}
             selected={selected}
             door={door}
+            lounge={loungeHere}
             onSelect={() => onSelect(selected ? null : { kind: 'agent', id: seat.id, team: HARNESS_ID })}
           />
         );
@@ -1541,6 +1827,8 @@ function CommandCenter({
     </group>
   );
 }
+
+const CREW_TABLE = seedOf('harness');
 
 /** One of the crew: on a stool inside, or out on the pad when it is their turn. */
 function CrewFigure({
@@ -1553,12 +1841,15 @@ function CrewFigure({
   partying,
   selected,
   door,
+  lounge,
   onSelect,
 }: {
   seat: FloorStageSeat;
   spot: THREE.Vector3;
   pad?: THREE.Vector3;
   hq: HQ;
+  /** The shared break room, in the command center's space. */
+  lounge: THREE.Vector3;
   running: boolean;
   animate: boolean;
   partying: boolean;
@@ -1575,9 +1866,9 @@ function CrewFigure({
   const seed = useMemo(() => seedOf(seat.id), [seat.id]);
   const look = useMemo(() => lookOf(seed), [seed]);
   const phase = (seed % 628) / 100;
-  const raw = useMood({ active, running, partying, since: seat.lastAt ?? FLOOR_BORN, seed });
-  // No pitch in here: the crew dances instead.
-  const mood: Mood = raw === 'football' ? 'dance' : raw;
+  const raw = useMood({ active, running, partying, since: seat.lastAt ?? FLOOR_BORN, seed, table: CREW_TABLE, poked: selected });
+  // No pitch and no board in here: the crew dances and thinks instead.
+  const mood: Mood = raw === 'football' ? 'dance' : raw === 'present' ? 'think' : raw;
   const dest = active ? pad! : spot;
   const destKey = `${dest.x.toFixed(2)},${dest.z.toFixed(2)}`;
   const pos = useRef(dest.clone());
@@ -1586,6 +1877,8 @@ function CrewFigure({
   const planned = useRef(destKey);
   const moodStart = useRef<{ mood: Mood; at: number }>({ mood, at: -1 });
   const sit = useRef(active || isParty(mood) ? 0 : 1);
+  /** A break: out through the door to the break room, a while there, back to the stool. */
+  const trip = useRef<{ stage: 'out' | 'at' | 'back'; until: number; facing: number } | null>(null);
 
   // A new place to be: walk there — through the door when it is on the other side of it.
   useEffect(() => {
@@ -1598,6 +1891,7 @@ function CrewFigure({
     else if (!inside(from) && inside(dest)) pts.push(hq.doorOut, hq.doorIn);
     pts.push(dest.clone());
     walk.current = animate ? makeWalk(pts, clock.getElapsedTime(), 1.7) : null;
+    trip.current = null;
     if (!animate) pos.current.copy(dest);
     invalidate();
   }, [destKey, dest, hq, animate, clock, invalidate]);
@@ -1611,12 +1905,33 @@ function CrewFigure({
     const t = c.getElapsedTime();
     const inside = pos.current.z < hq.d / 2 - 0.1;
     if (moodStart.current.mood !== mood || moodStart.current.at < 0) {
+      const first = moodStart.current.at < 0;
       moodStart.current = { mood, at: t };
-      if (mood === 'stroll' && animate && inside && !walk.current) {
+      if (animate && !first && !active && isBreak(mood) && inside && !walk.current) {
+        const spotThere = breakSpot(lounge, hq.doorOut, seed, mood === 'game' ? 'game' : 'coffee');
+        walk.current = makeWalk([pos.current.clone(), hq.doorIn, hq.doorOut, spotThere.at], t, 2.2);
+        trip.current = { stage: 'out', until: 0, facing: Math.atan2(-(spotThere.face.x - spotThere.at.x), -(spotThere.face.z - spotThere.at.z)) };
+      } else if (animate && trip.current && !active) {
+        // Called back mid-break.
+        walk.current = makeWalk([pos.current.clone(), hq.doorOut, hq.doorIn, spot.clone()], t, 2.4);
+        trip.current = { stage: 'back', until: 0, facing: Math.PI };
+      } else if (mood === 'stroll' && animate && inside && !walk.current) {
         walk.current = makeWalk([pos.current.clone(), spot.clone().add(new THREE.Vector3(0.38, 0, 0.42)), spot.clone().add(new THREE.Vector3(-0.38, 0, 0.42)), spot.clone()], t, 0.6);
       }
     }
-    let facing = Math.PI;
+    if (animate && trip.current && !walk.current) {
+      const tr = trip.current;
+      if (tr.stage === 'out') {
+        tr.stage = 'at';
+        tr.until = t + (mood === 'game' ? 7 : 3.5) + (seed % 20) / 10;
+      } else if (tr.stage === 'at' && t > tr.until) {
+        walk.current = makeWalk([pos.current.clone(), hq.doorOut, hq.doorIn, spot.clone()], t, 2.2);
+        tr.stage = 'back';
+      } else if (tr.stage === 'back') {
+        trip.current = null;
+      }
+    }
+    let facing = trip.current?.stage === 'at' ? trip.current.facing : Math.PI;
     let walking = false;
     if (walk.current && animate) {
       const dir = walkAt(walk.current, t, pos.current);
@@ -1627,7 +1942,7 @@ function CrewFigure({
         if (pos.current.distanceTo(hq.doorIn) < 1.1 || pos.current.distanceTo(hq.doorOut) < 1.1) door.current.until = t + 0.4;
         invalidate();
       }
-    } else {
+    } else if (!(animate && trip.current)) {
       walk.current = null;
       pos.current.copy(dest);
     }

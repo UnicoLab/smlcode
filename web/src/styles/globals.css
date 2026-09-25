@@ -555,3 +555,7 @@
   .floor3d-mood, .floor3d-zzz i, .floor-mood, .floor-avatar-nap .floor-avatar-inner, .floor-avatar-party .floor-avatar-inner, .floor-avatar-stroll .floor-avatar-inner, .floor-party-badge { animation: none !important; }
   .floor3d-zzz i { opacity: 1; }
 }
+.floor3d-away { padding: 1px 7px; border-radius: 9999px; background: rgba(251, 191, 36, 0.9); color: #451a03; font-size: 9.5px; font-weight: 700; }
+.floor-avatar-away .floor-avatar-inner { opacity: 0.35; }
+.floor3d-breakroom { display: inline-block; padding: 3px 10px; border-radius: 9999px; background: rgba(254, 243, 199, 0.92); color: #78350f; font-size: 10.5px; font-weight: 700; white-space: nowrap; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+.dark .floor3d-breakroom { background: rgba(69, 26, 3, 0.85); color: #fde68a; }

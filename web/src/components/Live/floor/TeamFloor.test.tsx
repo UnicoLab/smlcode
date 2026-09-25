@@ -206,6 +206,48 @@ describe('TeamFloor', () => {
     expect(within(dossier).getByTestId('dossier-trail')).toHaveTextContent('three tickets, two teams');
   });
 
+  it('keeps the command center’s crew inside as chips, and sends whoever is on out to the pad', () => {
+    const log: RunEvent[] = [{ phase: 'plan', kind: 'agent_start', agent: 'planner', message: 'reading the request', time: at(1) }];
+    const floor = buildFloor({
+      squads: chart,
+      tasks,
+      events: log,
+      composition: { summary: 'x', phases: [{ id: 'plan', agent: 'planner', enabled: true, when: 'auto' }, { id: 'split', agent: 'splitter', enabled: true, when: 'auto' }] },
+      running: true,
+      now: T0 + 2000,
+    });
+    render(<TeamFloor floor={floor} running events={log} now={T0 + 2000} />);
+    const harness = screen.getByTestId('island-harness');
+    expect(within(harness).getByText(/Command center/)).toBeInTheDocument();
+    // Out on the pad: named, with a bubble. Inside: a chip, no name tag.
+    expect(within(within(harness).getByTestId('agent-planner')).getByText('planner')).toBeInTheDocument();
+    expect(within(within(harness).getByTestId('agent-splitter')).queryByText('splitter')).toBeNull();
+  });
+
+  it('throws a party at a table whose every ticket is done', () => {
+    const done: SquadsView = {
+      ...chart,
+      squads: [{ ...chart.squads![0], done: 2, in_flight: 0, complete: true }, chart.squads![1]],
+    };
+    const doneTasks = [task('T1', { status: 'done', column: 'done' }), task('T2', { status: 'done', column: 'done' }), tasks[2]];
+    const floor = buildFloor({ squads: done, tasks: doneTasks, events: [], composition: null, running: true, now: T0 });
+    render(<TeamFloor floor={floor} running now={T0} />);
+    expect(screen.getByTestId('party-backend-go')).toBeInTheDocument();
+    expect(screen.queryByTestId('party-frontend-react')).toBeNull();
+    const mood = within(screen.getByTestId('island-backend-go')).getByTestId('agent-go-worker').getAttribute('data-mood');
+    expect(['cheers', 'football', 'dance']).toContain(mood);
+  });
+
+  it('lets people nap once the run has stopped, and says so in the dossier', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: false, now: T0 + 5000 });
+    render(<TeamFloor floor={floor} running={false} events={events} now={T0 + 120_000} />);
+    const worker = within(screen.getByTestId('island-backend-go')).getByTestId('agent-go-worker');
+    expect(worker).toHaveAttribute('data-mood', 'nap');
+    expect(within(worker).getByTestId('mood-go-worker')).toHaveTextContent('💤');
+    fireEvent.click(worker);
+    expect(within(screen.getByTestId('floor-dossier')).getByTestId('dossier-mood')).toHaveTextContent('having a nap');
+  });
+
   it('explains an empty floor', () => {
     const floor = buildFloor({ squads: null, tasks: [], events: [], composition: null, running: false, now: T0 });
     render(<TeamFloor floor={floor} running={false} />);

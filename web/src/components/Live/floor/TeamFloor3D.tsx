@@ -8,6 +8,9 @@ import { STAGE_GLYPHS } from '@/components/shared/labels';
 import { HARNESS_ID, PULSE_TTL_MS, workTables, type FloorAgent, type FloorHandoff, type FloorModel, type FloorPhase, type FloorPulse, type FloorStageSeat, type FloorTeam, type FloorTicket, type TicketState } from './floorModel';
 import { LEGEND_STATES, TICKET_HEX, TICKET_LABEL, glyphFor, seatTitle, type FloorSelection } from './floorShared';
 import { floorStore, rememberCamera, rememberCameraPrefs } from './floorStore';
+import { MOOD_GLYPH, MOOD_LABEL, floorShipped, isFootballRound, isParty, moodFor, moodShows, seedOf, tableParties, type LifeInputs, type Mood } from './floorLife';
+import { lookOf, makeWalk, poseRig, stillPose, turnToward, useRig, walkAt, type Walk } from './floorRig';
+import RigBody from './RigBody';
 
 // ── The team floor, in three dimensions ──────────────────────────────────
 //
@@ -23,14 +26,28 @@ import { floorStore, rememberCamera, rememberCameraPrefs } from './floorStore';
 // seat; a reassignment is a spark across the table; a ticket finishing or
 // failing bursts. Gates paint the table's rim green or red.
 //
+// The harness — the dispatcher and the phase agents who plan, split and
+// compose between the tables' typing — lives in the command center: a glass
+// room with a mission screen on its back wall. The crew waits inside; whoever
+// the run hands the microphone to walks out through the door onto the pad in
+// front, says their piece, and walks back in. A room of ten figures stays a
+// room, not a crowd of name tags.
+//
+// Nobody is a statue. Everyone who is not working has a mood (floorLife):
+// they watch the worker, sip a coffee, stretch, take a walk round the table,
+// and doze off at the desk when nothing comes their way. A table whose every
+// ticket is done stands up for a beer, a kick-about and a dance; when the
+// whole run ships, the whole floor — command center included — joins in.
+//
 // Everything is clickable: a person or a ticket opens its dossier (owned by
 // the wrapper), a table focuses the camera, empty floor clears. The camera is
 // the user's: drag to orbit, wheel to zoom, right-drag to pan, "follow" keeps
 // whoever is working in the middle. Everything animates on the GPU per frame
 // while there is something to animate — a run, live tickets, fresh pulses,
-// the camera gliding, follow or spin — and the loop drops to on-demand when
-// there is not, and stops when the tab is hidden. Under
-// prefers-reduced-motion nothing moves at all.
+// the camera gliding, follow or spin. After a run the floor keeps its life at
+// an ambient 30 fps for a few minutes (the party, the naps) and then settles
+// to on-demand; a hidden tab renders nothing. Under prefers-reduced-motion
+// nothing moves: everyone holds a still pose of their mood.
 //
 // Per-frame work allocates nothing: the lerps, colours and curve samples go
 // through scratch objects made once, and the wall clock is read once per
@@ -80,9 +97,16 @@ const BOARD_W = 3.4;
 const BOARD_H = 1.9;
 const BOARD_BACK = SEAT_R + 2.4;
 const BOARD_BOTTOM = 1.9;
-/** The pipeline's stage: a platform at the back of the hall, behind the boards. */
-const STAGE_R = 2.7;
-const STAGE_H = 0.22;
+/** The command center: the harness's glass room. */
+const HQ_HEX = '#8b5cf6';
+const HQ_WALL_H = 2.7;
+const HQ_GLASS_H = 1.05;
+const HQ_DOOR_W = 0.95;
+const HQ_DOOR_H = 2.05;
+/** How long the floor keeps living (ambient frames) after it last changed. */
+const AMBIENT_MS = 4 * 60_000;
+/** When this page first saw the floor: the idle clock for anyone the log has not heard from. */
+const FLOOR_BORN = Date.now();
 const BURST_S = 1.7;
 const DISPATCH_S = 5;
 const FLASH_S = 0.9;
@@ -101,6 +125,50 @@ interface Placed {
   seats: Map<string, Seat>;
   /** Ticket card centres in table space, for threads and bursts. */
   slots: Map<string, THREE.Vector3>;
+  /** The command center's floor plan, for the harness. */
+  hq?: HQ;
+}
+
+/** The command center's floor plan, in its own space (the room's centre at the origin). */
+interface HQ {
+  w: number;
+  d: number;
+  /** Where each of the crew waits inside, on a stool. */
+  spots: Map<string, THREE.Vector3>;
+  /** Where whoever is on stands, on the pad outside the door. */
+  pads: Map<string, THREE.Vector3>;
+  doorIn: THREE.Vector3;
+  doorOut: THREE.Vector3;
+  padAt: THREE.Vector3;
+}
+
+/**
+ * commandLayout plans the room: stools in rows facing the front glass, the
+ * console along the back wall, the door in the middle of the front, and the
+ * pad outside it — one place on the pad per agent who is on right now.
+ */
+function commandLayout(agents: FloorAgent[], running: boolean): HQ {
+  const n = Math.max(agents.length, 1);
+  const cols = Math.max(3, Math.min(5, Math.ceil(Math.sqrt(n * 2))));
+  const rows = Math.ceil(n / cols);
+  const cellW = 0.95;
+  const cellD = 1.0;
+  const w = Math.max(4.8, cols * cellW + 1.5);
+  const d = Math.max(3.2, rows * cellD + 2.0);
+  const spots = new Map<string, THREE.Vector3>();
+  agents.forEach((a, i) => {
+    const row = Math.floor(i / cols);
+    const inRow = Math.min(cols, agents.length - row * cols);
+    const col = i % cols;
+    // Stagger alternate rows, so the back row is seen between the heads of the front.
+    const x = -((inRow - 1) * cellW) / 2 + col * cellW + (row % 2 ? cellW * 0.25 : 0);
+    spots.set(a.id, new THREE.Vector3(x, 0, -d / 2 + 1.45 + row * cellD));
+  });
+  const on = running ? agents.filter((a) => a.active) : [];
+  const padAt = new THREE.Vector3(0, 0, d / 2 + 1.75);
+  const pads = new Map<string, THREE.Vector3>();
+  on.forEach((a, k) => pads.set(a.id, padAt.clone().setX((k - (on.length - 1) / 2) * 1.1)));
+  return { w, d, spots, pads, doorIn: new THREE.Vector3(0, 0, d / 2 - 0.5), doorOut: new THREE.Vector3(0, 0, d / 2 + 0.55), padAt };
 }
 
 const ORDER: TicketState[] = ['working', 'review', 'blocked', 'failed', 'queued', 'done'];
@@ -128,7 +196,7 @@ function ticketSlots(team: FloorTeam): { shown: FloorTicket[]; more: number; slo
 }
 
 /** Tables on a shallow arc facing the camera; seats around each table. */
-function layout(teams: FloorTeam[]): Placed[] {
+function layout(teams: FloorTeam[], running: boolean): Placed[] {
   const n = teams.length;
   return teams.map((team, i) => {
     const x = (i - (n - 1) / 2) * TABLE_GAP;
@@ -137,11 +205,13 @@ function layout(teams: FloorTeam[]): Placed[] {
     const hex = team.internal ? '#8b5cf6' : HEX[teamColor(team.crew ? '' : team.id).name] ?? HEX.gray;
     const seats = new Map<string, Seat>();
     if (team.internal) {
-      // The harness stands on its platform (Stage), at lecterns in an arc.
-      for (const [id, p] of stageLayout(team.agents, new THREE.Vector3())) {
-        seats.set(id, { pos: p, angle: Math.PI / 2, screen: p.clone().setY(1.0) });
+      // The harness waits in the command center; whoever is on is out on the pad.
+      const hq = commandLayout(team.agents, running);
+      for (const a of team.agents) {
+        const p = hq.pads.get(a.id) ?? hq.spots.get(a.id)!;
+        seats.set(a.id, { pos: p, angle: Math.PI / 2, screen: p.clone().setY(1.0) });
       }
-      return { team, pos, hex, seats, slots: new Map() };
+      return { team, pos, hex, seats, slots: new Map(), hq };
     }
     const manager = team.agents.find((a) => a.seat === 'manager');
     const others = team.agents.filter((a) => a.seat !== 'manager');
@@ -178,6 +248,47 @@ function FrameClock() {
   return null;
 }
 
+/**
+ * Asks for ~30 frames a second while `on`, for AMBIENT_MS after `resetKey`
+ * last changed — so a finished floor keeps partying (or napping) for a while
+ * without holding the GPU at full rate forever in a forgotten tab.
+ */
+function AmbientPump({ on, resetKey }: { on: boolean; resetKey: unknown }) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    if (!on) return undefined;
+    const until = Date.now() + AMBIENT_MS;
+    const id = window.setInterval(() => {
+      if (Date.now() > until) {
+        window.clearInterval(id);
+        return;
+      }
+      invalidate();
+    }, 33);
+    return () => window.clearInterval(id);
+  }, [on, resetKey, invalidate]);
+  return null;
+}
+
+/**
+ * useMood is what a person is doing, re-read every frame and set as state
+ * only when it changes (a few times a minute), so the labels follow without
+ * the scene re-rendering per frame.
+ */
+function useMood(inputs: Omit<LifeInputs, 'now'>): Mood {
+  const [mood, setMood] = useState<Mood>(() => moodFor({ ...inputs, now: Date.now() }));
+  const { active, running, partying, since, seed } = inputs;
+  // Inputs changed (the log moved): re-read at once, even with no frame coming.
+  useEffect(() => {
+    setMood(moodFor({ active, running, partying, since, seed, now: Date.now() }));
+  }, [active, running, partying, since, seed]);
+  useFrame(() => {
+    const next = moodFor({ active, running, partying, since, seed, now: frame.now * 1000 });
+    if (next !== mood) setMood(next);
+  });
+  return mood;
+}
+
 /** Scratch objects for per-frame maths — allocated once, never per frame. */
 const _scale = new THREE.Vector3();
 const _dir = new THREE.Vector3();
@@ -198,7 +309,7 @@ function useDocumentVisible(): boolean {
 }
 
 export default function TeamFloor3D({ floor, running, dark, reducedMotion, selection, onSelect, pulses, onTicket, onContextLost }: TeamFloor3DProps) {
-  const placed = useMemo(() => layout(floor.teams), [floor.teams]);
+  const placed = useMemo(() => layout(floor.teams, running), [floor.teams, running]);
   const byID = useMemo(() => new Map(placed.map((p) => [p.team.id, p])), [placed]);
   const [focus, setFocus] = useState<THREE.Vector3 | null>(null);
   const [focusDistance, setFocusDistance] = useState<number | null>(null);
@@ -229,13 +340,12 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
     [floor.teams],
   );
   const freshPulse = pulses.length > 0 && Date.now() - pulses[pulses.length - 1].at < PULSE_TTL_MS;
-  const frameloop: 'always' | 'demand' | 'never' = !visible
-    ? 'never'
-    : reducedMotion
-      ? 'demand'
-      : running || autoRotate || follow || anyLive || freshPulse
-        ? 'always'
-        : 'demand';
+  const lively = running || autoRotate || follow || anyLive || freshPulse;
+  const frameloop: 'always' | 'demand' | 'never' = !visible ? 'never' : reducedMotion ? 'demand' : lively ? 'always' : 'demand';
+  // Between runs the floor still lives — naps, the party — at an ambient
+  // frame rate, for a while after it last changed.
+  const ambient = visible && !reducedMotion && !lively;
+  const shipped = useMemo(() => floorShipped(floor, running), [floor, running]);
 
   // A lost context (GPU reset, VRAM eviction) is reported up; the wrapper
   // swaps in the flat map and says so. The listener is removed on unmount.
@@ -351,6 +461,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
       >
         <Suspense fallback={null}>
           <FrameClock />
+          <AmbientPump on={ambient} resetKey={floor} />
           <Lights dark={dark} />
           <Ground dark={dark} width={width} animate={animate} />
           {floor.links.map((link) => {
@@ -360,16 +471,18 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             return <Conduit key={link.id} from={a} to={b} label={link.interface} stalled={link.stalled} running={running} animate={animate} />;
           })}
           {placed.map((p) =>
-            p.team.internal ? (
-              <Stage
+            p.team.internal && p.hq ? (
+              <CommandCenter
                 key={p.team.id}
+                team={p.team}
                 seats={floor.stage}
                 phase={floor.phase}
                 at={p.pos}
-                positions={p.seats}
+                hq={p.hq}
                 running={running}
                 animate={animate}
                 dark={dark}
+                partying={shipped}
                 selection={selection}
                 onSelect={onSelect}
                 onFocus={() => {
@@ -388,6 +501,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
               onSelect={onSelect}
               pulses={pulses}
               onTicket={onTicket}
+              partying={tableParties(p.team, shipped)}
               onFocus={() => {
                 setFocus(p.pos.clone().setY(0.8));
                 setFocusDistance(13);
@@ -504,6 +618,7 @@ function Table({
   onSelect,
   pulses,
   onTicket,
+  partying,
   onFocus,
 }: {
   placed: Placed;
@@ -514,6 +629,8 @@ function Table({
   onSelect: (sel: FloorSelection) => void;
   pulses: FloorPulse[];
   onTicket?: (id: string) => void;
+  /** Every ticket here is done: beers, a kick-about, a dance. */
+  partying: boolean;
   onFocus: () => void;
 }) {
   const { team, pos, hex, seats, slots } = placed;
@@ -548,11 +665,29 @@ function Table({
   const boardDir = useMemo(() => (managerPos ? managerPos.pos.clone().setY(0).normalize() : new THREE.Vector3(0, 0, -1)), [managerPos]);
   const signAt = useMemo(() => boardDir.clone().multiplyScalar(BOARD_BACK).setY(BOARD_BOTTOM + BOARD_H + 0.75), [boardDir]);
   const tableCentre = useMemo(() => new THREE.Vector3(0, TABLE_Y + 0.3, 0), []);
+  // Where the players stand for the kick-about: behind their chairs, in seat order round the table.
+  const pitch = useMemo(
+    () =>
+      team.agents
+        .filter((a) => !(a.active && running))
+        .map((a) => seats.get(a.id))
+        .filter((x): x is Seat => !!x)
+        .sort((a, b) => a.angle - b.angle)
+        .map((x) => x.pos.clone().setY(0).multiplyScalar((SEAT_R + 0.8) / SEAT_R)),
+    [team.agents, seats, running],
+  );
 
   return (
     <group position={pos}>
       <Rug hex={hex} dark={dark} />
       {activeAgent && animate && <Sparkles count={24} scale={[TABLE_R * 2.4, 1.6, TABLE_R * 2.4]} position={[0, TABLE_Y + 1.1, 0]} size={3} speed={0.6} opacity={0.7} color={hex} />}
+      {partying && animate && (
+        <>
+          <Sparkles count={36} scale={[TABLE_R * 3, 2.6, TABLE_R * 3]} position={[0, TABLE_Y + 1.8, 0]} size={5} speed={0.9} opacity={0.9} color="#fbbf24" />
+          <Sparkles count={24} scale={[TABLE_R * 3, 2.6, TABLE_R * 3]} position={[0, TABLE_Y + 1.8, 0]} size={4} speed={0.7} opacity={0.8} color="#f472b6" />
+        </>
+      )}
+      {partying && pitch.length >= 2 && <Football spots={pitch} animate={animate} />}
       {/* Pedestal + top. */}
       <mesh position={[0, TABLE_Y / 2, 0]} castShadow receiveShadow>
         <cylinderGeometry args={[0.45, 0.7, TABLE_Y, 24]} />
@@ -582,6 +717,7 @@ function Table({
           <span className="floor3d-dot" style={{ background: hex }} />
           <span className="floor3d-label-name">{team.name}</span>
           <span className="floor3d-label-sub">
+            {partying ? '🎉 all done · ' : ''}
             {team.total > 0 ? `${team.done}/${team.total} · ${pct}%` : running ? 'no tickets yet' : 'idle'}
             {team.blocked > 0 ? ` · ${team.blocked} blocked` : ''}
             {team.gate === 'green' ? ' · proved' : team.gate === 'red' ? ' · RED' : team.gate === 'unverified' ? ' · unverified' : ''}
@@ -622,6 +758,7 @@ function Table({
             selected={selected}
             tall={a.seat !== 'manager' && i % 2 === 1}
             lookAt={a.active ? undefined : lookAt}
+            partying={partying}
             onSelect={() => onSelect(selected ? null : { kind: 'agent', id: a.id, team: team.id })}
           />
         );
@@ -801,6 +938,44 @@ function TicketCard({
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
+const _walkPos = new THREE.Vector3();
+
+/** Where a seated figure is, in its seat's space: on the chair. */
+const SEATED_AT = new THREE.Vector3(0, 0, 0.1);
+/** Where it stands when it gets up: behind the chair, facing the table. */
+const STANDING_AT = new THREE.Vector3(0, 0, 0.85);
+
+/** The stroll: up, round behind the chairs, and back to sit down. */
+const STROLL = [STANDING_AT, new THREE.Vector3(0.85, 0, 1.25), new THREE.Vector3(-0.85, 0, 1.25), STANDING_AT, SEATED_AT];
+
+function hoverPick(onSelect: () => void, setHover: (v: boolean) => void) {
+  return {
+    onClick: (e: ThreeEvent<MouseEvent>) => {
+      e.stopPropagation();
+      onSelect();
+    },
+    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
+      e.stopPropagation();
+      setHover(true);
+      document.body.style.cursor = 'pointer';
+    },
+    onPointerOut: () => {
+      setHover(false);
+      document.body.style.cursor = '';
+    },
+  };
+}
+
+/** Floating z's over a sleeper. */
+function Zzz() {
+  return (
+    <span className="floor3d-zzz" aria-hidden="true">
+      <i>z</i>
+      <i>z</i>
+      <i>Z</i>
+    </span>
+  );
+}
 
 function Person({
   agent,
@@ -813,6 +988,7 @@ function Person({
   selected,
   tall,
   lookAt,
+  partying,
   onSelect,
 }: {
   agent: FloorAgent;
@@ -827,21 +1003,34 @@ function Person({
   tall?: boolean;
   /** Table-space point this person glances at when idle (the one working). */
   lookAt?: THREE.Vector3;
+  /** The table is done: this person is at the party. */
+  partying: boolean;
   onSelect: () => void;
 }) {
   const isManager = agent.seat === 'manager';
   const active = agent.active && running;
   const screen = useRef<THREE.MeshStandardMaterial>(null);
-  const body = useRef<THREE.Group>(null);
-  const head = useRef<THREE.Group>(null);
   const flash = useRef<THREE.Mesh>(null);
   const halo = useRef<THREE.Mesh>(null);
   const pulse = useRef<THREE.Mesh>(null);
   const code = useRef<THREE.Mesh[]>([]);
+  const mug = useRef<THREE.Mesh>(null);
+  const lift = useRef<THREE.Group>(null);
   const flashStart = useRef<number>(-1);
   const wasActive = useRef(false);
   const [hover, setHover] = useState(false);
   const invalidate = useThree((s) => s.invalidate);
+  const rig = useRig();
+  const seed = useMemo(() => seedOf(agent.id), [agent.id]);
+  const look = useMemo(() => lookOf(seed), [seed]);
+  const phase = (seed % 628) / 100;
+  const mood = useMood({ active, running, partying, since: agent.lastAt ?? FLOOR_BORN, seed });
+  const standing = isParty(mood);
+  // The motion a mood carries: when it began, the stroll's path, how seated.
+  const moodStart = useRef<{ mood: Mood; at: number }>({ mood, at: -1 });
+  const walk = useRef<Walk | null>(null);
+  const sit = useRef(standing ? 0 : 1);
+  const prev = useRef(new THREE.Vector3().copy(standing ? STANDING_AT : SEATED_AT));
 
   // A flash ring when this person starts working: the "message received"
   // cue, once per activation.
@@ -850,11 +1039,11 @@ function Person({
     wasActive.current = active;
     invalidate();
   }, [active, invalidate]);
-  // Hover and selection ease the scale over several frames; on-demand
+  // Hover, selection and a new mood ease over several frames; on-demand
   // rendering has to be asked for each of them.
   useEffect(() => {
     invalidate();
-  }, [hover, selected, invalidate]);
+  }, [hover, selected, mood, invalidate]);
 
   // Seat faces the table centre: rotate the whole person so its screen is
   // between them and the table.
@@ -864,34 +1053,50 @@ function Person({
     const local = lookAt.clone().sub(pos).applyAxisAngle(UP, -yaw);
     return THREE.MathUtils.clamp(Math.atan2(-local.x, -local.z), -1.1, 1.1);
   }, [lookAt, pos, yaw]);
+  const glance = mood === 'watch' || mood === 'coffee' ? headYaw : 0;
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     if (screen.current) {
-      screen.current.emissiveIntensity = active ? (animate ? 1.2 + Math.sin(t * 6) * 0.5 : 1.4) : 0.12;
+      screen.current.emissiveIntensity = active ? (animate ? 1.2 + Math.sin(t * 6) * 0.5 : 1.4) : mood === 'nap' ? 0.04 : 0.12;
     }
-    if (body.current) {
-      if (animate) {
-        // Typing: a small nod while active; a slow breath otherwise.
-        body.current.position.y = active ? Math.abs(Math.sin(t * 9)) * 0.03 : Math.sin(t * 1.2 + angle) * 0.01;
-        body.current.rotation.x = active ? Math.sin(t * 9) * 0.04 : 0;
+    const root = rig.root.current;
+    if (root) {
+      if (moodStart.current.mood !== mood || moodStart.current.at < 0) {
+        moodStart.current = { mood, at: t };
+        walk.current = mood === 'stroll' && animate ? makeWalk([root.position.clone(), ...STROLL], t, 0.85) : null;
+      }
+      if (!animate) {
+        root.position.copy(standing ? STANDING_AT : SEATED_AT);
+        root.rotation.y = 0;
+        sit.current = standing ? 0 : 1;
+        stillPose(rig, mood, sit.current, glance);
+      } else {
+        let facing = 0;
+        if (walk.current) {
+          const dir = walkAt(walk.current, t, _walkPos);
+          if (dir === null) walk.current = null;
+          else facing = dir;
+          root.position.copy(_walkPos);
+        } else {
+          root.position.lerp(standing ? STANDING_AT : SEATED_AT, 0.07);
+        }
+        const speed = delta > 0 ? root.position.distanceTo(prev.current) / delta : 0;
+        prev.current.copy(root.position);
+        root.rotation.y = turnToward(root.rotation.y, walk.current && speed > 0.05 ? facing : 0, 0.15);
+        // Seated only once back at the chair.
+        const atChair = root.position.distanceToSquared(SEATED_AT) < 0.02;
+        sit.current = THREE.MathUtils.lerp(sit.current, !standing && atChair && !walk.current ? 1 : 0, 0.14);
+        poseRig(rig, { mood, t, since: t - moodStart.current.at, phase, sit: sit.current, speed, glance });
       }
       const target = hover || selected ? 1.08 : 1;
-      if (Math.abs(body.current.scale.x - target) > 0.002) {
-        body.current.scale.lerp(_scale.setScalar(target), 0.2);
+      if (Math.abs(root.scale.x - target) > 0.002) {
+        root.scale.lerp(_scale.setScalar(target), 0.2);
         invalidate();
       }
+      if (lift.current) lift.current.position.y = (1 - sit.current) * 0.28;
     }
-    if (head.current) {
-      // Idle people glance at whoever is working; the worker watches the screen.
-      const want = active ? 0 : headYaw;
-      if (animate && Math.abs(head.current.rotation.y - want) > 0.002) {
-        head.current.rotation.y = THREE.MathUtils.lerp(head.current.rotation.y, want, 0.06);
-        invalidate();
-      } else if (!animate) {
-        head.current.rotation.y = want;
-      }
-    }
+    if (mug.current) mug.current.visible = !active && mood !== 'coffee';
     if (flash.current) {
       const age = flashStart.current < 0 ? Infinity : (performance.now() - flashStart.current) / 1000;
       const visible = age < 1.2 && animate;
@@ -935,22 +1140,8 @@ function Person({
 
   const label = agent.id.length > 18 ? agent.id.slice(0, 17) + '…' : agent.id;
   const saying = agent.lastMessage && agent.lastMessage.length > 54 ? agent.lastMessage.slice(0, 53) + '…' : agent.lastMessage;
-  const skin = isManager ? hex : '#e5e7eb';
-  const pick = {
-    onClick: (e: ThreeEvent<MouseEvent>) => {
-      e.stopPropagation();
-      onSelect();
-    },
-    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
-      e.stopPropagation();
-      setHover(true);
-      document.body.style.cursor = 'pointer';
-    },
-    onPointerOut: () => {
-      setHover(false);
-      document.body.style.cursor = '';
-    },
-  };
+  const pick = hoverPick(onSelect, setHover);
+  const quiet = !active && !selected && !hover && !isManager;
 
   return (
     <group position={pos} rotation={[0, yaw, 0]}>
@@ -981,33 +1172,38 @@ function Person({
         <boxGeometry args={[0.55, 0.55, 0.06]} />
         <meshStandardMaterial color="#374151" roughness={0.7} />
       </mesh>
-      {/* Person */}
-      <group ref={body}>
-        <mesh position={[0, 0.62, 0.1]} castShadow {...pick}>
-          <capsuleGeometry args={[0.2, 0.42, 6, 14]} />
-          <meshStandardMaterial color={isManager ? hex : agent.borrowed ? '#e5e7eb' : '#c7d2fe'} roughness={0.55} transparent={!!agent.borrowed} opacity={agent.borrowed ? 0.75 : 1} />
-        </mesh>
-        <group ref={head} position={[0, 1.13, 0.1]}>
-          <mesh castShadow {...pick}>
-            <sphereGeometry args={[0.19, 20, 20]} />
-            <meshStandardMaterial color={skin} roughness={0.5} />
-          </mesh>
-          {/* Eyes, so a turned head reads as a glance. */}
-          <mesh position={[-0.06, 0.03, -0.165]}>
-            <sphereGeometry args={[0.025, 8, 8]} />
-            <meshBasicMaterial color="#111827" />
-          </mesh>
-          <mesh position={[0.06, 0.03, -0.165]}>
-            <sphereGeometry args={[0.025, 8, 8]} />
-            <meshBasicMaterial color="#111827" />
-          </mesh>
-          {isManager && (
-            <mesh position={[0, 0.29, 0]} rotation={[Math.PI / 2, 0, 0]}>
-              <torusGeometry args={[0.13, 0.03, 10, 24]} />
-              <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={0.6} metalness={0.6} roughness={0.3} />
-            </mesh>
-          )}
-        </group>
+      {/* The person: gets up, walks about, sits back down. */}
+      <group position={[0, 0, 0]}>
+        <RigBody rig={rig} look={{ shirt: isManager ? hex : agent.borrowed ? '#e5e7eb' : look.shirt, skin: look.skin, hair: look.hair, ghost: !!agent.borrowed, crown: isManager }} pick={pick}>
+          <group ref={lift}>
+            {/* Name + the pop-out when working, riding with the person. */}
+            <Html position={[0, tall ? 2.05 : 1.55, 0]} distanceFactor={12} zIndexRange={[30, 0]} style={{ pointerEvents: 'none' }}>
+              <div className={['floor3d-person', selected && 'floor3d-person-selected', hover && 'floor3d-person-hover'].filter(Boolean).join(' ')}>
+                {active && (
+                  <div className="floor3d-bubble" style={{ borderColor: hex }}>
+                    <span className="floor3d-bubble-head" style={{ color: hex }}>
+                      {agent.task ? `on ${agent.task}` : 'working'}
+                    </span>
+                    <span className="floor3d-bubble-dots" aria-hidden="true">
+                      <i /><i /><i />
+                    </span>
+                    {saying && <span className="floor3d-bubble-say">{saying}</span>}
+                  </div>
+                )}
+                {mood === 'nap' && <Zzz />}
+                <span
+                  className={['floor3d-name', isManager && 'floor3d-name-manager', quiet && 'floor3d-name-quiet'].filter(Boolean).join(' ')}
+                  title={`${agent.id} · ${seatTitle(agent, team)} · ${MOOD_LABEL[mood]}${agent.touched ? ` · ${agent.touched} tickets touched` : ''} · click for the dossier`}
+                >
+                  {moodShows(mood) && <span className="floor3d-mood" aria-hidden="true">{MOOD_GLYPH[mood]}</span>}
+                  <span aria-hidden="true">{glyphFor(agent)}</span> {label}
+                  {isManager && <em>{team.managerDefault ? ' · manager (default)' : ' · manager'}</em>}
+                  {agent.borrowed && <em>{` · ${agent.seat} from the ${agent.borrowed}`}</em>}
+                </span>
+              </div>
+            </Html>
+          </group>
+        </RigBody>
       </group>
       {/* Desk + monitor, toward the table (−z after the yaw). */}
       <mesh position={[0, 0.72, -0.45]} castShadow {...pick}>
@@ -1022,153 +1218,322 @@ function Person({
         <planeGeometry args={[0.52, 0.32]} />
         <meshStandardMaterial ref={screen} color={active ? hex : '#1e293b'} emissive={active ? hex : '#334155'} emissiveIntensity={0.12} toneMapped={false} />
       </mesh>
-      {/* A mug on the idle desk; it goes when the typing starts. */}
-      {!active && (
-        <mesh position={[0.26, 0.78, -0.4]} castShadow>
-          <cylinderGeometry args={[0.04, 0.035, 0.07, 10]} />
-          <meshStandardMaterial color={isManager ? '#fbbf24' : '#f9a8d4'} roughness={0.6} />
-        </mesh>
-      )}
+      {/* The mug waits on the desk — in the hand on a coffee break, gone while typing. */}
+      <mesh ref={mug} position={[0.26, 0.78, -0.4]} castShadow>
+        <cylinderGeometry args={[0.04, 0.035, 0.07, 10]} />
+        <meshStandardMaterial color={isManager ? '#fbbf24' : '#f9a8d4'} roughness={0.6} />
+      </mesh>
       {/* Activation flash. */}
       <mesh ref={flash} position={[0, 1.1, 0.1]} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
         <ringGeometry args={[0.35, 0.42, 32]} />
         <meshBasicMaterial color={hex} transparent opacity={0.8} side={THREE.DoubleSide} />
       </mesh>
-      {/* Name + the pop-out when working. */}
-      <Html position={[0, tall ? 2.0 : 1.4, 0.1]} distanceFactor={12} zIndexRange={[30, 0]} style={{ pointerEvents: 'none' }}>
-        <div className={['floor3d-person', selected && 'floor3d-person-selected', hover && 'floor3d-person-hover'].filter(Boolean).join(' ')}>
-          {active && (
-            <div className="floor3d-bubble" style={{ borderColor: hex }}>
-              <span className="floor3d-bubble-head" style={{ color: hex }}>
-                {agent.task ? `on ${agent.task}` : 'working'}
-              </span>
-              <span className="floor3d-bubble-dots" aria-hidden="true">
-                <i /><i /><i />
-              </span>
-              {saying && <span className="floor3d-bubble-say">{saying}</span>}
-            </div>
-          )}
-          <span className={isManager ? 'floor3d-name floor3d-name-manager' : 'floor3d-name'} title={`${agent.id} · ${seatTitle(agent, team)}${agent.touched ? ` · ${agent.touched} tickets touched` : ''} · click for the dossier`}>
-            <span aria-hidden="true">{glyphFor(agent)}</span> {label}
-            {isManager && <em>{team.managerDefault ? ' · manager (default)' : ' · manager'}</em>}
-            {agent.borrowed && <em>{` · ${agent.seat} from the ${agent.borrowed}`}</em>}
-          </span>
-        </div>
-      </Html>
     </group>
   );
 }
 
-/** Standing places on the stage: an arc facing the camera, the newest speaker in the middle. */
-function stageLayout(seats: { id: string }[], at: THREE.Vector3): Map<string, THREE.Vector3> {
-  const out = new Map<string, THREE.Vector3>();
-  const n = seats.length;
-  if (n === 0) return out;
-  const span = Math.min(Math.PI * 0.95, 0.9 * Math.max(n - 1, 0) + 0.001);
-  seats.forEach((s, k) => {
-    const f = n === 1 ? 0.5 : k / (n - 1);
-    const angle = Math.PI / 2 - span / 2 + f * span;
-    out.set(s.id, new THREE.Vector3(at.x + Math.cos(angle) * (STAGE_R - 0.5), STAGE_H, at.z + Math.sin(angle) * (STAGE_R - 0.5) * 0.55 - 0.5));
+/**
+ * The kick-about at a done table: a ball passed round the players behind
+ * their chairs and back again, lobbed over the table when it has to be.
+ * Only on the party's football rounds; between them it rests out of sight.
+ */
+function Football({ spots, animate }: { spots: THREE.Vector3[]; animate: boolean }) {
+  const ball = useRef<THREE.Group>(null);
+  const shadow = useRef<THREE.Mesh>(null);
+  const PASS_S = 1.3;
+  useFrame(() => {
+    const m = ball.current;
+    if (!m) return;
+    const on = isFootballRound(frame.now * 1000);
+    m.visible = on;
+    if (shadow.current) shadow.current.visible = on;
+    if (!on) return;
+    const n = spots.length;
+    const legs = 2 * (n - 1);
+    const k = animate ? frame.now / PASS_S : 0.5;
+    const leg = Math.floor(k) % legs;
+    const u = k - Math.floor(k);
+    const from = leg < n - 1 ? leg : legs - leg;
+    const to = leg < n - 1 ? leg + 1 : legs - leg - 1;
+    const a = spots[from];
+    const b = spots[to];
+    const h = Math.sin(u * Math.PI) * (0.3 + a.distanceTo(b) * 0.32);
+    m.position.lerpVectors(a, b, u);
+    m.position.y = 0.13 + h;
+    if (animate) {
+      m.rotation.x += 0.18;
+      m.rotation.z += 0.07;
+    }
+    if (shadow.current) {
+      shadow.current.position.set(m.position.x, 0.012, m.position.z);
+      const s = 1 / (1 + h * 0.8);
+      shadow.current.scale.set(s, s, s);
+    }
   });
-  return out;
+  return (
+    <group>
+      <group ref={ball} visible={false}>
+        <mesh castShadow>
+          <icosahedronGeometry args={[0.13, 1]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.45} flatShading />
+        </mesh>
+        <mesh scale={1.01}>
+          <icosahedronGeometry args={[0.13, 0]} />
+          <meshBasicMaterial color="#111827" wireframe />
+        </mesh>
+      </group>
+      <mesh ref={shadow} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+        <circleGeometry args={[0.13, 20]} />
+        <meshBasicMaterial color="#000" transparent opacity={0.25} depthWrite={false} />
+      </mesh>
+    </group>
+  );
 }
 
 /**
- * The pipeline's stage: where the run's thinking happens between the tables'
- * typing. A platform with a screen naming the phase the run is in and what is
- * being said, and the phase agents — planner, splitter, architect… — standing
- * at lecterns; whoever is speaking is lit, the rest wait in the wings.
+ * The command center: the harness's glass room. A mission screen on the back
+ * wall names the phase; the crew — dispatcher, planner, splitter, composer… —
+ * wait inside on stools; whoever the run hands the microphone to walks out
+ * through the sliding door onto the pad in front, says their piece and walks
+ * back in. The room's name and phase hang above it.
  */
-function Stage({
+function CommandCenter({
+  team,
   seats,
   phase,
   at,
-  positions,
+  hq,
   running,
   animate,
   dark,
+  partying,
   selection,
   onSelect,
   onFocus,
 }: {
+  team: FloorTeam;
   seats: FloorStageSeat[];
   phase: FloorPhase | null;
   at: THREE.Vector3;
-  /** Each figure's place, relative to the platform (the harness table's seats). */
-  positions: Map<string, Seat>;
+  hq: HQ;
   running: boolean;
   animate: boolean;
   dark: boolean;
+  /** The run shipped: the crew parties too. */
+  partying: boolean;
   selection: FloorSelection;
   onSelect: (sel: FloorSelection) => void;
   onFocus: () => void;
 }) {
+  const { w, d } = hq;
+  const out = seats.filter((s) => s.active && running && hq.pads.has(s.id));
   const live = running && !!phase;
-  const glow = useRef<THREE.MeshStandardMaterial>(null);
+  const padGlow = useRef<THREE.MeshStandardMaterial>(null);
+  const screenGlow = useRef<THREE.MeshStandardMaterial>(null);
+  const lamp = useRef<THREE.MeshStandardMaterial>(null);
+  const doorL = useRef<THREE.Mesh>(null);
+  const doorR = useRef<THREE.Mesh>(null);
+  /** Scene seconds until which the door stays open: walkers keep pushing it. */
+  const door = useRef({ until: 0 });
+  const invalidate = useThree((s) => s.invalidate);
+  const busy = out.length > 0;
   useFrame(({ clock }) => {
-    if (!glow.current) return;
     const t = clock.getElapsedTime();
-    glow.current.emissiveIntensity = live ? (animate ? 0.55 + Math.sin(t * 2.2) * 0.3 : 0.7) : 0.12;
+    if (padGlow.current) padGlow.current.emissiveIntensity = busy ? (animate ? 0.8 + Math.sin(t * 3) * 0.35 : 1) : 0.15;
+    if (screenGlow.current) screenGlow.current.emissiveIntensity = live ? (animate ? 0.7 + Math.sin(t * 1.7) * 0.15 : 0.8) : 0.2;
+    if (lamp.current) lamp.current.emissiveIntensity = busy ? (animate ? 1.2 + Math.sin(t * 8) * 0.8 : 1.5) : 0.2;
+    // The door slides open for anyone passing, and shuts behind them.
+    const open = t < door.current.until;
+    const goal = open ? HQ_DOOR_W * 0.75 : HQ_DOOR_W / 4;
+    for (const [ref, side] of [[doorL, -1], [doorR, 1]] as const) {
+      const m = ref.current;
+      if (!m) continue;
+      const want = side * goal;
+      if (!animate) m.position.x = want;
+      else if (Math.abs(m.position.x - want) > 0.002) {
+        m.position.x = THREE.MathUtils.lerp(m.position.x, want, 0.14);
+        invalidate();
+      }
+    }
   });
+
+  const glass = <meshStandardMaterial color="#c4b5fd" transparent opacity={dark ? 0.16 : 0.22} roughness={0.1} metalness={0.2} depthWrite={false} side={THREE.DoubleSide} />;
+  const frameMat = <meshStandardMaterial color={dark ? '#4c4f6b' : '#6b7280'} roughness={0.5} metalness={0.5} />;
   const message = phase?.message && phase.message.length > 90 ? phase.message.slice(0, 89) + '…' : phase?.message;
+  const sideW = (w - HQ_DOOR_W) / 2;
+  const inside = seats.length - out.length;
+  const pathLen = hq.padAt.z - hq.doorOut.z;
   return (
     <group position={at}>
-      {/* Platform */}
-      <mesh position={[0, STAGE_H / 2, 0]} castShadow receiveShadow onClick={(e) => { e.stopPropagation(); onFocus(); }}>
-        <cylinderGeometry args={[STAGE_R, STAGE_R + 0.25, STAGE_H, 48]} />
-        <meshStandardMaterial color={dark ? '#1f2340' : '#e9e5f7'} roughness={0.7} />
+      {/* The room's floor: click it to go in. */}
+      <mesh
+        position={[0, 0.04, 0]}
+        receiveShadow
+        onClick={(e) => {
+          e.stopPropagation();
+          onFocus();
+        }}
+      >
+        <boxGeometry args={[w, 0.08, d]} />
+        <meshStandardMaterial color={dark ? '#1b1f36' : '#ede9fe'} roughness={0.8} />
       </mesh>
-      <mesh position={[0, STAGE_H + 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[STAGE_R - 0.1, STAGE_R, 64]} />
-        <meshStandardMaterial ref={glow} color="#8b5cf6" emissive="#8b5cf6" emissiveIntensity={0.3} side={THREE.DoubleSide} />
+      {/* Back wall, its console and the mission screen. */}
+      <mesh position={[0, HQ_WALL_H / 2, -d / 2]} castShadow receiveShadow>
+        <boxGeometry args={[w, HQ_WALL_H, 0.12]} />
+        <meshStandardMaterial color={dark ? '#161a2e' : '#f5f3ff'} roughness={0.8} />
       </mesh>
-      {/* The screen at the back of the stage. */}
-      <group position={[0, 2.1, -STAGE_R + 0.2]}>
-        <mesh position={[-1.3, -1.0, 0]}>
-          <boxGeometry args={[0.06, 1.9, 0.06]} />
-          <meshStandardMaterial color="#374151" />
+      <mesh position={[0, HQ_WALL_H - 0.05, -d / 2 + 0.07]}>
+        <boxGeometry args={[w, 0.06, 0.02]} />
+        <meshStandardMaterial color={HQ_HEX} emissive={HQ_HEX} emissiveIntensity={0.8} toneMapped={false} />
+      </mesh>
+      <group position={[0, 1.75, -d / 2 + 0.08]}>
+        <mesh>
+          <boxGeometry args={[3.1, 1.35, 0.05]} />
+          <meshStandardMaterial color="#0b0f19" roughness={0.4} metalness={0.4} />
         </mesh>
-        <mesh position={[1.3, -1.0, 0]}>
-          <boxGeometry args={[0.06, 1.9, 0.06]} />
-          <meshStandardMaterial color="#374151" />
+        <mesh position={[0, 0, 0.03]}>
+          <planeGeometry args={[2.95, 1.2]} />
+          <meshStandardMaterial ref={screenGlow} color={live ? '#312e81' : '#1e293b'} emissive={live ? '#4c1d95' : '#0f172a'} emissiveIntensity={0.2} toneMapped={false} />
         </mesh>
-        <mesh castShadow>
-          <boxGeometry args={[3.2, 1.5, 0.08]} />
-          <meshStandardMaterial color={dark ? '#0b0f19' : '#111827'} roughness={0.4} metalness={0.4} />
-        </mesh>
-        <mesh position={[0, 0, 0.045]}>
-          <planeGeometry args={[3.0, 1.3]} />
-          <meshStandardMaterial color={live ? '#312e81' : '#1e293b'} emissive={live ? '#4c1d95' : '#0f172a'} emissiveIntensity={live ? 0.8 : 0.2} toneMapped={false} />
-        </mesh>
-        <Html position={[0, 0, 0.06]} center distanceFactor={12} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+        <Html position={[0, 0, 0.05]} center distanceFactor={12} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
           <div className="floor3d-screen">
-            <span className="floor3d-screen-kicker">phase</span>
-            <span className="floor3d-screen-phase">{phase ? phase.id : running ? 'starting' : 'idle'}</span>
+            <span className="floor3d-screen-kicker">mission · phase</span>
+            <span className="floor3d-screen-phase">{phase ? phase.id : partying ? 'shipped 🎉' : running ? 'starting' : 'standing by'}</span>
             {phase?.agent && <span className="floor3d-screen-who">{phase.agent}</span>}
             {message && <span className="floor3d-screen-say">{message}</span>}
           </div>
         </Html>
       </group>
-      <Html position={[0, 3.35, -STAGE_R + 0.2]} center distanceFactor={16} zIndexRange={[20, 0]}>
-        <button type="button" onClick={onFocus} className="floor3d-label focus-ring" style={{ borderColor: '#8b5cf6' }} title="The harness's own table: the dispatcher and the phase agents — not a team, no tickets">
-          <span className="floor3d-dot" style={{ background: '#8b5cf6' }} />
-          <span className="floor3d-label-name">Harness · internal</span>
-          <span className="floor3d-label-sub">{seats.length === 0 ? 'no phase agents this run' : `${seats.filter((x) => x.spoke).length}/${seats.length} have spoken`}</span>
+      <mesh position={[0, 0.4, -d / 2 + 0.36]} castShadow>
+        <boxGeometry args={[w - 0.7, 0.8, 0.42]} />
+        <meshStandardMaterial color="#1f2937" roughness={0.6} metalness={0.3} />
+      </mesh>
+      {Array.from({ length: Math.max(2, Math.floor((w - 1) / 0.9)) }).map((_, i, all) => (
+        <mesh key={i} position={[-(w - 1.4) / 2 + (i * (w - 1.4)) / Math.max(1, all.length - 1), 0.83, -d / 2 + 0.3]} rotation={[-0.5, 0, 0]}>
+          <planeGeometry args={[0.5, 0.18]} />
+          <meshStandardMaterial color={i % 2 ? '#22d3ee' : HQ_HEX} emissive={i % 2 ? '#22d3ee' : HQ_HEX} emissiveIntensity={live ? 0.9 : 0.25} toneMapped={false} />
+        </mesh>
+      ))}
+      {/* Glass: the sides, and the front either side of the door. */}
+      {([-1, 1] as const).map((side) => (
+        <group key={side}>
+          <mesh position={[side * (w / 2), HQ_GLASS_H / 2 + 0.08, 0]}>
+            <boxGeometry args={[0.05, HQ_GLASS_H, d]} />
+            {glass}
+          </mesh>
+          <mesh position={[side * (w / 2 - sideW / 2), HQ_GLASS_H / 2 + 0.08, d / 2]}>
+            <boxGeometry args={[sideW, HQ_GLASS_H, 0.05]} />
+            {glass}
+          </mesh>
+          <mesh position={[side * (w / 2), (HQ_GLASS_H + 0.1) / 2, d / 2]} castShadow>
+            <boxGeometry args={[0.1, HQ_GLASS_H + 0.1, 0.1]} />
+            {frameMat}
+          </mesh>
+          <mesh position={[side * (w / 2), HQ_WALL_H / 2, -d / 2 + 0.02]}>
+            <boxGeometry args={[0.1, HQ_WALL_H, 0.1]} />
+            {frameMat}
+          </mesh>
+          {/* The door frame. */}
+          <mesh position={[side * (HQ_DOOR_W / 2 + 0.05), HQ_DOOR_H / 2 + 0.08, d / 2]} castShadow>
+            <boxGeometry args={[0.1, HQ_DOOR_H, 0.12]} />
+            {frameMat}
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, HQ_DOOR_H + 0.12, d / 2]} castShadow>
+        <boxGeometry args={[HQ_DOOR_W + 0.2, 0.1, 0.12]} />
+        {frameMat}
+      </mesh>
+      {/* The on-air lamp over the door: lit while someone is out on the pad. */}
+      <mesh position={[0, HQ_DOOR_H + 0.24, d / 2 + 0.02]}>
+        <boxGeometry args={[0.36, 0.12, 0.06]} />
+        <meshStandardMaterial ref={lamp} color={busy ? '#ef4444' : '#7f1d1d'} emissive="#ef4444" emissiveIntensity={0.2} toneMapped={false} />
+      </mesh>
+      {/* The sliding door. */}
+      {([-1, 1] as const).map((side) => (
+        <mesh key={side} ref={side < 0 ? doorL : doorR} position={[(side * HQ_DOOR_W) / 4, HQ_DOOR_H / 2 + 0.08, d / 2 + 0.07]}>
+          <boxGeometry args={[HQ_DOOR_W / 2, HQ_DOOR_H - 0.06, 0.04]} />
+          <meshStandardMaterial color="#a78bfa" transparent opacity={0.4} roughness={0.1} metalness={0.3} depthWrite={false} />
+        </mesh>
+      ))}
+      {/* A plant, and the coffee machine the coffee breaks come from. */}
+      <group position={[-w / 2 + 0.35, 0.08, d / 2 - 0.35]}>
+        <mesh position={[0, 0.16, 0]} castShadow>
+          <cylinderGeometry args={[0.14, 0.11, 0.32, 12]} />
+          <meshStandardMaterial color="#b45309" roughness={0.8} />
+        </mesh>
+        <mesh position={[0, 0.52, 0]} castShadow>
+          <icosahedronGeometry args={[0.26, 0]} />
+          <meshStandardMaterial color="#16a34a" roughness={0.8} flatShading />
+        </mesh>
+      </group>
+      <group position={[w / 2 - 0.35, 0.08, d / 2 - 0.35]}>
+        <mesh position={[0, 0.45, 0]} castShadow>
+          <boxGeometry args={[0.34, 0.9, 0.3]} />
+          <meshStandardMaterial color="#374151" roughness={0.5} metalness={0.4} />
+        </mesh>
+        <mesh position={[0, 0.72, 0.16]}>
+          <planeGeometry args={[0.16, 0.08]} />
+          <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={0.9} toneMapped={false} />
+        </mesh>
+      </group>
+      {/* Stools. */}
+      {team.agents.map((a) => {
+        const s = hq.spots.get(a.id);
+        if (!s) return null;
+        return (
+          <mesh key={a.id} position={[s.x, 0.2, s.z + 0.05]} castShadow>
+            <cylinderGeometry args={[0.19, 0.15, 0.24, 14]} />
+            <meshStandardMaterial color={dark ? '#312e81' : '#c4b5fd'} roughness={0.6} />
+          </mesh>
+        );
+      })}
+      {/* The walkway and the pad. */}
+      <mesh position={[0, 0.012, hq.doorOut.z + pathLen / 2 - 0.3]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[0.7, pathLen]} />
+        <meshStandardMaterial color={HQ_HEX} transparent opacity={0.22} emissive={HQ_HEX} emissiveIntensity={0.3} depthWrite={false} />
+      </mesh>
+      <group position={hq.padAt}>
+        <mesh position={[0, 0.04, 0]} receiveShadow>
+          <cylinderGeometry args={[Math.max(0.95, out.length * 0.6), Math.max(1.05, out.length * 0.6 + 0.1), 0.08, 40]} />
+          <meshStandardMaterial color={dark ? '#1f2340' : '#ede9fe'} roughness={0.6} />
+        </mesh>
+        <mesh position={[0, 0.085, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[Math.max(0.85, out.length * 0.6 - 0.1), Math.max(0.95, out.length * 0.6), 48]} />
+          <meshStandardMaterial ref={padGlow} color={HQ_HEX} emissive={HQ_HEX} emissiveIntensity={0.2} side={THREE.DoubleSide} toneMapped={false} />
+        </mesh>
+        {busy && <pointLight position={[0, 3.2, 0]} intensity={animate ? 7 : 5} distance={6} decay={2} color={HQ_HEX} />}
+      </group>
+      {partying && animate && <Sparkles count={40} scale={[w + 1, 2.6, d + 1]} position={[0, 2.2, 0]} size={5} speed={0.9} opacity={0.9} color="#fbbf24" />}
+      <Html position={[0, HQ_WALL_H + 0.75, -d / 2]} center distanceFactor={16} zIndexRange={[20, 0]}>
+        <button type="button" onClick={onFocus} className="floor3d-label focus-ring" style={{ borderColor: HQ_HEX }} title="The harness's own room: the dispatcher and the phase agents — not a team, no tickets. Whoever is on walks out to the pad.">
+          <span className="floor3d-dot" style={{ background: HQ_HEX }} />
+          <span className="floor3d-label-name">Command center</span>
+          <span className="floor3d-label-sub">
+            {seats.length === 0
+              ? 'harness · no crew this run'
+              : out.length > 0
+                ? `${out.map((s) => s.id).join(', ')} on the pad · ${inside} inside`
+                : `harness · ${seats.length} crew · ${seats.filter((x) => x.spoke).length} have spoken`}
+          </span>
         </button>
       </Html>
-      {seats.map((seat, i) => {
-        const p = positions.get(seat.id);
-        if (!p) return null;
+      {seats.map((seat) => {
+        const spot = hq.spots.get(seat.id);
+        if (!spot) return null;
         const selected = selection?.kind === 'agent' && selection.id === seat.id;
         return (
-          <StageFigure
+          <CrewFigure
             key={seat.id}
             seat={seat}
-            pos={p.pos}
-            tall={i % 2 === 1}
+            spot={spot}
+            pad={hq.pads.get(seat.id)}
+            hq={hq}
             running={running}
             animate={animate}
+            partying={partying}
             selected={selected}
+            door={door}
             onSelect={() => onSelect(selected ? null : { kind: 'agent', id: seat.id, team: HARNESS_ID })}
           />
         );
@@ -1177,100 +1542,152 @@ function Stage({
   );
 }
 
-/** One person standing at a lectern on the stage. */
-function StageFigure({ seat, pos, tall, running, animate, selected, onSelect }: { seat: FloorStageSeat; pos: THREE.Vector3; tall: boolean; running: boolean; animate: boolean; selected: boolean; onSelect: () => void }) {
-  const active = seat.active && running;
-  const body = useRef<THREE.Group>(null);
-  const ring = useRef<THREE.Mesh>(null);
+/** One of the crew: on a stool inside, or out on the pad when it is their turn. */
+function CrewFigure({
+  seat,
+  spot,
+  pad,
+  hq,
+  running,
+  animate,
+  partying,
+  selected,
+  door,
+  onSelect,
+}: {
+  seat: FloorStageSeat;
+  spot: THREE.Vector3;
+  pad?: THREE.Vector3;
+  hq: HQ;
+  running: boolean;
+  animate: boolean;
+  partying: boolean;
+  selected: boolean;
+  door: { current: { until: number } };
+  onSelect: () => void;
+}) {
+  const active = seat.active && running && !!pad;
+  const rig = useRig();
+  const lift = useRef<THREE.Group>(null);
   const [hover, setHover] = useState(false);
   const invalidate = useThree((s) => s.invalidate);
-  const hex = '#8b5cf6';
-  const glyph = STAGE_GLYPHS[seat.id] ?? STAGE_GLYPHS[seat.phase ?? ''] ?? '🎓';
+  const clock = useThree((s) => s.clock);
+  const seed = useMemo(() => seedOf(seat.id), [seat.id]);
+  const look = useMemo(() => lookOf(seed), [seed]);
+  const phase = (seed % 628) / 100;
+  const raw = useMood({ active, running, partying, since: seat.lastAt ?? FLOOR_BORN, seed });
+  // No pitch in here: the crew dances instead.
+  const mood: Mood = raw === 'football' ? 'dance' : raw;
+  const dest = active ? pad! : spot;
+  const destKey = `${dest.x.toFixed(2)},${dest.z.toFixed(2)}`;
+  const pos = useRef(dest.clone());
+  const prev = useRef(dest.clone());
+  const walk = useRef<Walk | null>(null);
+  const planned = useRef(destKey);
+  const moodStart = useRef<{ mood: Mood; at: number }>({ mood, at: -1 });
+  const sit = useRef(active || isParty(mood) ? 0 : 1);
+
+  // A new place to be: walk there — through the door when it is on the other side of it.
+  useEffect(() => {
+    if (planned.current === destKey) return;
+    planned.current = destKey;
+    const inside = (v: THREE.Vector3) => v.z < hq.d / 2 - 0.1;
+    const from = pos.current.clone();
+    const pts = [from];
+    if (inside(from) && !inside(dest)) pts.push(hq.doorIn, hq.doorOut);
+    else if (!inside(from) && inside(dest)) pts.push(hq.doorOut, hq.doorIn);
+    pts.push(dest.clone());
+    walk.current = animate ? makeWalk(pts, clock.getElapsedTime(), 1.7) : null;
+    if (!animate) pos.current.copy(dest);
+    invalidate();
+  }, [destKey, dest, hq, animate, clock, invalidate]);
   useEffect(() => {
     invalidate();
-  }, [hover, selected, active, invalidate]);
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime();
-    if (body.current) {
-      if (animate) {
-        // Speaking: a lively sway; waiting: a slow breath; dim before they have spoken.
-        body.current.position.y = active ? Math.abs(Math.sin(t * 5)) * 0.04 : Math.sin(t * 1.1 + pos.x) * 0.01;
-        body.current.rotation.z = active ? Math.sin(t * 2.5) * 0.05 : 0;
+  }, [hover, selected, mood, invalidate]);
+
+  useFrame(({ clock: c }, delta) => {
+    const root = rig.root.current;
+    if (!root) return;
+    const t = c.getElapsedTime();
+    const inside = pos.current.z < hq.d / 2 - 0.1;
+    if (moodStart.current.mood !== mood || moodStart.current.at < 0) {
+      moodStart.current = { mood, at: t };
+      if (mood === 'stroll' && animate && inside && !walk.current) {
+        walk.current = makeWalk([pos.current.clone(), spot.clone().add(new THREE.Vector3(0.38, 0, 0.42)), spot.clone().add(new THREE.Vector3(-0.38, 0, 0.42)), spot.clone()], t, 0.6);
       }
-      const target = hover || selected ? 1.08 : 1;
-      if (Math.abs(body.current.scale.x - target) > 0.002) {
-        body.current.scale.lerp(_scale.setScalar(target), 0.2);
+    }
+    let facing = Math.PI;
+    let walking = false;
+    if (walk.current && animate) {
+      const dir = walkAt(walk.current, t, pos.current);
+      if (dir === null) walk.current = null;
+      else {
+        facing = dir;
+        walking = true;
+        if (pos.current.distanceTo(hq.doorIn) < 1.1 || pos.current.distanceTo(hq.doorOut) < 1.1) door.current.until = t + 0.4;
         invalidate();
       }
+    } else {
+      walk.current = null;
+      pos.current.copy(dest);
     }
-    if (ring.current) {
-      ring.current.visible = active || selected;
-      if (animate) {
-        const k = (t * 0.9) % 1;
-        const s = active ? 0.8 + k * 0.9 : 1;
-        ring.current.scale.set(s, s, s);
-        (ring.current.material as THREE.MeshBasicMaterial).opacity = active ? 0.55 * (1 - k) : 0.9;
-      }
+    root.position.copy(pos.current);
+    const standing = active || isParty(mood) || walking || !inside;
+    if (!animate) {
+      root.rotation.y = Math.PI;
+      sit.current = standing ? 0 : 1;
+      stillPose(rig, mood, sit.current, 0, active);
+    } else {
+      const speed = delta > 0 ? pos.current.distanceTo(prev.current) / delta : 0;
+      root.rotation.y = turnToward(root.rotation.y, facing, 0.15);
+      sit.current = THREE.MathUtils.lerp(sit.current, standing ? 0 : 1, 0.14);
+      poseRig(rig, { mood, t, since: t - moodStart.current.at, phase, sit: sit.current, speed: walking ? speed : 0, glance: 0, talk: active });
     }
+    prev.current.copy(pos.current);
+    const target = hover || selected ? 1.1 : 1;
+    if (Math.abs(root.scale.x - target) > 0.002) {
+      root.scale.lerp(_scale.setScalar(target), 0.2);
+      invalidate();
+    }
+    if (lift.current) lift.current.position.y = (1 - sit.current) * 0.28;
   });
-  const pick = {
-    onClick: (e: ThreeEvent<MouseEvent>) => {
-      e.stopPropagation();
-      onSelect();
-    },
-    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
-      e.stopPropagation();
-      setHover(true);
-      document.body.style.cursor = 'pointer';
-    },
-    onPointerOut: () => {
-      setHover(false);
-      document.body.style.cursor = '';
-    },
-  };
+
+  const pick = hoverPick(onSelect, setHover);
+  const glyph = STAGE_GLYPHS[seat.id] ?? STAGE_GLYPHS[seat.phase ?? ''] ?? '🎓';
   const saying = seat.lastMessage && seat.lastMessage.length > 54 ? seat.lastMessage.slice(0, 53) + '…' : seat.lastMessage;
-  const tint = seat.spoke ? '#ddd6fe' : '#e5e7eb';
+  const named = active || hover || selected;
+  const title = `${seat.id}${seat.phase ? ` · ${seat.phase}` : ''} · ${active ? 'on the pad' : MOOD_LABEL[mood]} · ${seat.spoke ? 'has spoken' : 'has not spoken yet'} · click for the dossier`;
   return (
-    <group position={pos}>
-      <mesh ref={ring} position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
-        <ringGeometry args={[0.55, 0.64, 48]} />
-        <meshBasicMaterial color={selected && !active ? SELECT : hex} transparent opacity={0.6} side={THREE.DoubleSide} toneMapped={false} />
-      </mesh>
-      {active && <pointLight position={[0, 3.2, 0]} intensity={animate ? 6 : 4} distance={5.5} decay={2} color={hex} />}
-      {/* Lectern */}
-      <mesh position={[0, 0.55, 0.45]} castShadow {...pick}>
-        <boxGeometry args={[0.5, 1.1, 0.3]} />
-        <meshStandardMaterial color="#1f2937" roughness={0.6} metalness={0.3} />
-      </mesh>
-      <mesh position={[0, 1.12, 0.42]} rotation={[-0.5, 0, 0]} {...pick}>
-        <boxGeometry args={[0.56, 0.05, 0.36]} />
-        <meshStandardMaterial color={active ? hex : '#374151'} emissive={active ? hex : '#000'} emissiveIntensity={active ? 0.7 : 0} />
-      </mesh>
-      <group ref={body}>
-        <mesh position={[0, 0.8, 0]} castShadow {...pick}>
-          <capsuleGeometry args={[0.2, 0.7, 6, 14]} />
-          <meshStandardMaterial color={tint} roughness={0.55} transparent={!seat.spoke} opacity={seat.spoke ? 1 : 0.7} />
-        </mesh>
-        <mesh position={[0, 1.45, 0]} castShadow {...pick}>
-          <sphereGeometry args={[0.19, 20, 20]} />
-          <meshStandardMaterial color={seat.spoke ? '#f5f3ff' : '#e5e7eb'} roughness={0.5} transparent={!seat.spoke} opacity={seat.spoke ? 1 : 0.7} />
-        </mesh>
-      </group>
-      <Html position={[0, tall ? 2.35 : 1.75, 0]} distanceFactor={12} zIndexRange={[30, 0]} style={{ pointerEvents: 'none' }}>
-        <div className={['floor3d-person', selected && 'floor3d-person-selected', hover && 'floor3d-person-hover'].filter(Boolean).join(' ')}>
-          {active && (
-            <div className="floor3d-bubble" style={{ borderColor: hex }}>
-              <span className="floor3d-bubble-head" style={{ color: hex }}>{seat.phase ? `${seat.phase} · speaking` : 'speaking'}</span>
-              <span className="floor3d-bubble-dots" aria-hidden="true"><i /><i /><i /></span>
-              {saying && <span className="floor3d-bubble-say">{saying}</span>}
+    <group>
+      <RigBody rig={rig} look={{ shirt: seat.spoke ? '#c4b5fd' : '#e5e7eb', skin: look.skin, hair: look.hair, ghost: !seat.spoke }} pick={pick}>
+        <group ref={lift}>
+          <Html position={[0, 1.55, 0]} distanceFactor={12} zIndexRange={[30, 0]} style={{ pointerEvents: 'none' }}>
+            <div className={['floor3d-person', selected && 'floor3d-person-selected', hover && 'floor3d-person-hover'].filter(Boolean).join(' ')}>
+              {active && (
+                <div className="floor3d-bubble" style={{ borderColor: HQ_HEX }}>
+                  <span className="floor3d-bubble-head" style={{ color: HQ_HEX }}>{seat.phase ? `${seat.phase} · on air` : 'on air'}</span>
+                  <span className="floor3d-bubble-dots" aria-hidden="true"><i /><i /><i /></span>
+                  {saying && <span className="floor3d-bubble-say">{saying}</span>}
+                </div>
+              )}
+              {mood === 'nap' && !active && <Zzz />}
+              {named ? (
+                <span className={seat.spoke ? 'floor3d-name' : 'floor3d-name floor3d-name-waiting'} title={title}>
+                  {moodShows(mood) && !active && <span className="floor3d-mood" aria-hidden="true">{MOOD_GLYPH[mood]}</span>}
+                  <span aria-hidden="true">{glyph}</span> {seat.id}
+                  {seat.phase && <em>{` · ${seat.phase}`}</em>}
+                </span>
+              ) : (
+                // Inside, a chip, not a name tag: the room stays a room.
+                <span className={seat.spoke ? 'floor3d-chip' : 'floor3d-chip floor3d-name-waiting'} title={title}>
+                  <span aria-hidden="true">{glyph}</span>
+                  {moodShows(mood) && <span aria-hidden="true">{MOOD_GLYPH[mood]}</span>}
+                </span>
+              )}
             </div>
-          )}
-          <span className={seat.spoke ? 'floor3d-name' : 'floor3d-name floor3d-name-waiting'} title={`${seat.id}${seat.phase ? ` · ${seat.phase}` : ''} · ${seat.spoke ? 'has spoken' : 'has not spoken yet'} · click for the dossier`}>
-            <span aria-hidden="true">{glyph}</span> {seat.id}
-            {seat.phase && <em>{` · ${seat.phase}`}</em>}
-          </span>
-        </div>
-      </Html>
+          </Html>
+        </group>
+      </RigBody>
     </group>
   );
 }

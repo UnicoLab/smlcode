@@ -65,7 +65,7 @@ the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
 
 | Route | Page | What it does |
 |---|---|---|
-| `/` | **Live** | The run as a place: the **team floor** (each team at its table with its manager, members, monitors and tickets; contract conduits between tables; a spark when a manager moves a ticket), the **phase journey** above it, a ticker of what is happening right now, and one **activity** column beside it — the log by default, with tasks, fixes, files and the result as filters |
+| `/` | **Live** | The run as a place: the **team floor** (each team at its table with its manager, members, monitors and tickets; contract conduits between tables; a spark when a manager moves a ticket; the harness in a **command center** whose crew walks out onto a pad when it is their turn; idle people who watch, take coffee breaks, stroll and nap, and a done table that celebrates with beers, football and a dance), the **phase journey** above it, a ticker of what is happening right now, and one **activity** column beside it — the log by default, with tasks, fixes, files and the result as filters |
 | `/board` | **Board** | Kanban — add, edit, delete, move, delegate, drag mid-run |
 | `/review` | **Review** | Pending changes from `permission: review`, as diffs, with per-file apply/reject |
 | `/runs` | **Runs** | Run history, and a per-run **trace** with per-phase wall time and token/cost attribution |

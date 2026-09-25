@@ -78,8 +78,9 @@ screen:
 
 Picking a team switches to Strict; the ✕ on the button, or *Dynamic* in its
 menu, goes back. The choice governs one run: the server restores the saved pins
-when it ends. The dispatcher says what it decided on the run log, and sits at
-the harness table on the floor:
+when it ends. The dispatcher says what it decided on the run log, and waits in
+the floor's command center (the harness's own room) with the phase agents —
+stepping out onto its pad while it speaks:
 
 ```text
 compose  dispatcher  dynamic — picked from the request and the workspace: 2 teams build in parallel …

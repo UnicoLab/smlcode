@@ -9,6 +9,15 @@
 
 ### Added
 
+- **A command center and a floor that lives.** On the Live floor the harness's
+  agents wait inside a glass command center instead of crowding a table; whoever
+  is on walks out through its sliding door onto a pad, speaks, and walks back.
+  Everyone else has a mood — watching the worker, a coffee break, a stretch, a
+  walk round the table, a nap after a long wait — shown as a pose, a badge and a
+  line in their dossier. A table whose tickets are all done celebrates (beers, a
+  kick-about, a dance), and the whole floor joins in when the run ships. The
+  flat map shows the same moods; after a run the 3D floor keeps living at an
+  ambient 30 fps for a few minutes, then settles.
 - **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
   so: the dispatcher picks the teams, how they work and who manages them, and
   names its pick for the request being typed. Picking teams switches to Strict —

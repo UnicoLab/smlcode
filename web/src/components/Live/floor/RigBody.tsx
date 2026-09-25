@@ -98,4 +98,3 @@ export default function RigBody({ rig, look, pick, children }: { rig: Rig; look:
     </group>
   );
 }
-

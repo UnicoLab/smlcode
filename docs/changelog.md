@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.27.0 — 2026-09-25
+
+- A command center and a floor that lives (#40)
+- Sync Homebrew formula + prebuilt binaries for v0.26.0 [skip ci]
+
 ## v0.26.0 — 2026-09-24
 
 - Dynamic/strict team selection, a harness table on the floor, insight and OpenShift teams

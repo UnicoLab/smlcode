@@ -211,10 +211,10 @@ served "Studio not built" to every user without failing.
 Published artifacts:
 
 ```
-slmcode_0.27.1_darwin_arm64      slmcode_0.27.1_windows_amd64.exe
-slmcode_0.27.1_darwin_amd64      slmcode_0.27.1_windows_arm64.exe
-slmcode_0.27.1_linux_arm64       install.sh  install.ps1  install.cmd
-slmcode_0.27.1_linux_amd64       SHA256SUMS
+slmcode_0.28.0_darwin_arm64      slmcode_0.28.0_windows_amd64.exe
+slmcode_0.28.0_darwin_amd64      slmcode_0.28.0_windows_arm64.exe
+slmcode_0.28.0_linux_arm64       install.sh  install.ps1  install.cmd
+slmcode_0.28.0_linux_amd64       SHA256SUMS
 ```
 
 ---
@@ -227,11 +227,11 @@ CI verifies the bytes. These are the things only a human on a real machine can c
 
 ```bash
 cd "$(mktemp -d)"
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.27.1/SHA256SUMS
-curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.27.1/slmcode_0.27.1_darwin_arm64
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.28.0/SHA256SUMS
+curl -fsSLO https://github.com/UnicoLab/smlcode/releases/download/v0.28.0/slmcode_0.28.0_darwin_arm64
 shasum -a 256 -c SHA256SUMS --ignore-missing        # must say OK
-chmod +x slmcode_0.27.1_darwin_arm64
-./slmcode_0.27.1_darwin_arm64 version --json        # version 0.20.0, real commit, real built
+chmod +x slmcode_0.28.0_darwin_arm64
+./slmcode_0.28.0_darwin_arm64 version --json        # version 0.20.0, real commit, real built
 ```
 
 **The install one-liner, on a machine that has never had slmcode:**

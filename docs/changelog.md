@@ -1,11 +1,34 @@
 # Changelog
 
+## v0.27.1 — 2026-09-25
+
+- Light the tables that work, and a floor with no two tables alike (#41)
+- Sync Homebrew formula + prebuilt binaries for v0.27.0 [skip ci]
+
+## v0.27.0 — 2026-09-25
+
+- A command center and a floor that lives (#40)
+- Sync Homebrew formula + prebuilt binaries for v0.26.0 [skip ci]
+
 ## v0.26.0 — 2026-09-24
 
 - Dynamic/strict team selection, a harness table on the floor, insight and OpenShift teams
 - Sync Homebrew formula + prebuilt binaries for v0.25.0 [skip ci]
 
 ## Unreleased
+
+### Fixed
+
+- **The Live floor's team tables light up again.** A specialist working a
+  ticket of a team that did not name one (the pipeline's go-worker doing the
+  docs team's ticket) was lit at no table at all; it now works at that table,
+  drawn as lent, and its chair at home says where it went. The execute loop's
+  generic `worker`/`tester` lines count as the specialist's, not a phantom
+  at the command center; a start with no end (the split phase's "assigned
+  go-worker", the test phase's "verification pass") is dropped when the run
+  moves on instead of lighting that agent for the rest of the run; debug and
+  latency lines no longer make anyone "speak". Verified against a captured
+  two-team Studio run.
 
 ### Added
 
@@ -24,6 +47,24 @@
   Hosting, model weights and training remain external; no Python model tools
   are bundled.
 
+- **A floor with more life, and no two tables alike.** Idle agents chat with
+  a neighbour, scroll a phone, think, stroll a path of their own, and walk to
+  a shared break room behind the tables — a coffee bar and a foosball table —
+  where people from every table and the command center's crew meet. Managers
+  walk their table through the board. Tables applaud a ticket landing, wince
+  at one failing and turn to a teammate starting; a clicked agent waves back.
+  Every table has its own habits and its own party programme, every agent a
+  favourite pastime, and a long wait in a live run no longer puts a whole
+  table to sleep.
+- **A command center and a floor that lives.** On the Live floor the harness's
+  agents wait inside a glass command center instead of crowding a table; whoever
+  is on walks out through its sliding door onto a pad, speaks, and walks back.
+  Everyone else has a mood — watching the worker, a coffee break, a stretch, a
+  walk round the table, a nap after a long wait — shown as a pose, a badge and a
+  line in their dossier. A table whose tickets are all done celebrates (beers, a
+  kick-about, a dance), and the whole floor joins in when the run ships. The
+  flat map shows the same moods; after a run the 3D floor keeps living at an
+  ambient 30 fps for a few minutes, then settles.
 - **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
   so: the dispatcher picks the teams, how they work and who manages them, and
   names its pick for the request being typed. Picking teams switches to Strict —

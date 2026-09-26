@@ -48,9 +48,16 @@ export interface FloorAgent {
   lastTask?: string;
   /**
    * Set when the team left this seat empty and the pipeline lent the agent:
-   * 'pipeline' or 'default'. A borrowed seat is drawn as such.
+   * 'pipeline' or 'default' — or the name of the team they belong to, when
+   * they came over from another table to work one of this table's tickets.
+   * A borrowed seat is drawn as such.
    */
   borrowed?: string;
+  /**
+   * Set at a person's home table while they are working another table's
+   * ticket: the name of that table. Their chair here is empty meanwhile.
+   */
+  away?: string;
 }
 
 export type GateState = 'green' | 'red' | 'unverified' | '';
@@ -402,15 +409,24 @@ function floorFromChart(
     ticketsByTeam.set(team, list);
   }
 
-  // Everyone on some team's roster, so a visitor is seated once, at most.
-  const rostered = new Set<string>();
+  // Each team's own roster, and which team everyone belongs to. Someone who
+  // works a ticket of a table they are not on the roster of — a lent
+  // specialist, a corrector — sits at THAT table while they do, whatever
+  // other table they call home: a team with no worker of its own still shows
+  // who is doing its work.
+  const rosterOf = new Map<string, Set<string>>();
+  const homeOf = new Map<string, string>();
   for (const s of chart) {
     const comp = compTeams.get(s.id);
+    const own = new Set<string>();
     for (const id of [comp?.manager || s.manager || 'triage', s.worker, s.reviewer, s.tester, ...(s.agents ?? []), ...(comp?.seats ?? []).map((f) => f.agent)]) {
-      if (id) rostered.add(id.trim().toLowerCase());
+      const v = (id ?? '').trim().toLowerCase();
+      if (!v) continue;
+      own.add(v);
+      if (!homeOf.has(v)) homeOf.set(v, s.name || s.id);
     }
+    rosterOf.set(s.id, own);
   }
-  const visiting = new Set<string>();
 
   const teams: FloorTeam[] = chart.map((s) => {
     const tickets = ticketsByTeam.get(s.id) ?? [];
@@ -418,12 +434,10 @@ function floorFromChart(
     // Someone off every roster who worked THIS team's tickets — a corrector,
     // an escalated worker — sits at this table for the run, drawn as lent by
     // the pipeline; the harness table is for those who worked none.
+    const own = rosterOf.get(s.id) ?? new Set<string>();
     const visitors = ticketWorkers(activity, tickets.map((t) => t.id))
-      .filter((id) => !rostered.has(id) && !visiting.has(id))
-      .map((id) => {
-        visiting.add(id);
-        return { role: 'member', agent: id, source: 'pipeline' };
-      });
+      .filter((id) => !own.has(id))
+      .map((id) => ({ role: roleOf(id), agent: id, source: homeOf.get(id) ?? 'pipeline', visitor: true }));
     // The manager the run resolves: the composition knows (it applied the
     // triage-capability rule); the chart's own field is the author's wish.
     const manager = comp?.manager || s.manager || 'triage';
@@ -464,6 +478,8 @@ function floorFromChart(
       waitingOn: stalls.filter((st) => st.squad === s.id).map((st) => st.interface),
     };
   });
+
+  markAway(teams);
 
   const stalledKeys = new Set(stalls.map((st) => `${st.provider}→${st.squad}:${st.interface}`));
   const links: FloorLink[] = [];
@@ -636,6 +652,28 @@ function seats(
   return out;
 }
 
+/** The seat a visitor takes, from their id: go-tester tests, ts-reviewer reviews. */
+function roleOf(id: string): string {
+  const v = id.replace(/-(strict|l\d+)$/, '');
+  for (const r of ['worker', 'reviewer', 'tester'] as const) if (v === r || v.endsWith('-' + r)) return r;
+  return 'member';
+}
+
+/**
+ * markAway: someone lit at one table (working its ticket) is, at every other
+ * table they sit at, away — their chair there is empty, not idle.
+ */
+function markAway(teams: FloorTeam[]): void {
+  const litAt = new Map<string, string>();
+  for (const t of teams) for (const a of t.agents) if (a.active && a.task) litAt.set(a.id, t.name);
+  for (const t of teams) {
+    for (const a of t.agents) {
+      const there = litAt.get(a.id);
+      if (!a.active && there && there !== t.name) a.away = there;
+    }
+  }
+}
+
 /**
  * withBorrowed adds the seats the pipeline lends a team (composer.FillSeats):
  * a tester the team never named still sits at its table for this run, drawn
@@ -643,7 +681,7 @@ function seats(
  */
 function withBorrowed(
   own: FloorAgent[],
-  fills: { role: string; agent: string; source: string }[] | undefined,
+  fills: { role: string; agent: string; source: string; visitor?: boolean }[] | undefined,
   tickets: FloorTicket[],
   activity: Activity,
   team: string,
@@ -658,7 +696,8 @@ function withBorrowed(
     have.add(id);
     const seat: SeatKind = f.role === 'worker' || f.role === 'reviewer' || f.role === 'tester' ? f.role : 'member';
     const { active, held } = workingOn(activity, id);
-    const onThisTeam = team === CREW_ID || held === '' || ticketIDs.has(held);
+    // A visitor is here for this table's tickets only; with none in hand they are home.
+    const onThisTeam = team === CREW_ID || (held === '' ? !f.visitor : ticketIDs.has(held));
     out.push({
       id,
       seat,
@@ -717,8 +756,8 @@ export interface Activity {
   speakers: string[];
   /** agent → its most recent line. */
   lastBy: Map<string, { message: string; at: number; task: string }>;
-  /** Agents inside an agent_start … agent_end pair right now, with their ticket. */
-  working: Map<string, { task: string; at: number }>;
+  /** Agents inside an agent_start … agent_end pair right now, with their ticket and the phase they started in. */
+  working: Map<string, { task: string; at: number; phase: string }>;
   /** The phase of the newest line, and who spoke it. */
   phase: FloorPhase | null;
   /** agent → the phase it last spoke in. */
@@ -727,6 +766,40 @@ export interface Activity {
 
 /** An agent_start with no agent_end for this long is a crash, not work. */
 const WORKING_TTL_MS = 10 * 60_000;
+
+/**
+ * The pipeline's own phases, in the order a run walks them. A `phase` event
+ * naming one of these is the run moving on: anyone still "started" in an
+ * earlier one never sent their agent_end (the split phase's "assigned
+ * go-worker", the test phase's "verification pass") and is not working now.
+ * `init` is absent on purpose: it is also said mid-run, about set-up.
+ */
+const RUN_PHASES = new Set(['explore', 'charter', 'plan', 'split', 'execute', 'test', 'verify', 'integrate', 'learn', 'memory', 'skills', 'session', 'done']);
+
+/**
+ * The generic role names the execute loop also speaks in. A `worker` line in
+ * the middle of go-worker's turn (its file_change, its latency) is go-worker's,
+ * not a second person's.
+ */
+const GENERIC_ROLES = new Set(['worker', 'tester', 'reviewer', 'corrector']);
+
+/** Voices that are not people: the harness's own monitor, its bookkeeping. */
+const NOT_PEOPLE = new Set(['manager', 'loop', 'harness', 'rewind', 'graph']);
+
+/** The specialist a generic role line belongs to: whoever of that role is working now. */
+function specialistFor(role: string, working: Map<string, { task: string; at: number; phase: string }>, task: string): string {
+  let best = '';
+  let bestAt = -Infinity;
+  for (const [id, w] of working) {
+    if (id === role || !id.endsWith('-' + role)) continue;
+    if (task && w.task && w.task !== task) continue;
+    if (w.at > bestAt) {
+      best = id;
+      bestAt = w.at;
+    }
+  }
+  return best;
+}
 
 /**
  * readActivity is the floor's reading of the log: who is inside an
@@ -740,8 +813,10 @@ export function readActivity(events: RunEvent[]): Activity {
   const seen = new Set<string>();
   const speakers: string[] = [];
   const lastBy = new Map<string, { message: string; at: number; task: string }>();
-  const working = new Map<string, { task: string; at: number }>();
+  const working = new Map<string, { task: string; at: number; phase: string }>();
   const phaseOf = new Map<string, string>();
+  /** role → the specialist of that role heard from last (go-worker for worker). */
+  const lastOfRole = new Map<string, string>();
   const cur: { phase: FloorPhase | null } = { phase: null };
   let lastAgent = '';
   let lastTask = '';
@@ -749,7 +824,10 @@ export function readActivity(events: RunEvent[]): Activity {
   let lastModel = '';
   let lastAt = 0;
   for (const e of events) {
-    const agent = (e.agent ?? '').trim().toLowerCase();
+    let agent = (e.agent ?? '').trim().toLowerCase();
+    // A generic role's line inside (or trailing) a specialist's turn is the specialist's.
+    if (GENERIC_ROLES.has(agent)) agent = specialistFor(agent, working, e.task_id ?? '') || lastOfRole.get(agent) || agent;
+    else for (const r of GENERIC_ROLES) if (agent.endsWith('-' + r)) lastOfRole.set(r, agent);
     if (e.kind === 'token' || e.kind === 'delta' || e.kind === 'token_delta') {
       // Tokens are proof of life for whoever is inside a start/end pair.
       const w = agent ? working.get(agent) : undefined;
@@ -757,15 +835,28 @@ export function readActivity(events: RunEvent[]): Activity {
       continue;
     }
     const at = Date.parse(e.time) || lastAt;
+    // Debug and latency lines are the harness's bookkeeping, not anyone speaking.
+    if (e.kind === 'debug' || e.kind === 'latency') continue;
+    // The run moved on: whoever started in an earlier phase and never said
+    // agent_end is not working any more.
+    if (e.kind === 'phase' && RUN_PHASES.has(e.phase)) {
+      for (const [id, w] of working) {
+        if (w.phase !== e.phase && RUN_PHASES.has(w.phase)) working.delete(id);
+      }
+    }
     if (e.phase && (e.kind !== 'agent_end' || !cur.phase)) {
       const prev = cur.phase;
       cur.phase = { id: e.phase, agent: agent === 'manager' || agent === 'loop' ? '' : agent, message: e.message ?? '', since: prev && prev.id === e.phase ? prev.since : at };
     }
     if (!agent) continue;
-    // The charter voice and the loop are not people on a team.
-    if (agent === 'manager' || agent === 'loop') continue;
+    // The charter voice, the loop and the harness's bookkeeping are not people on a team.
+    if (NOT_PEOPLE.has(agent)) continue;
     if (e.phase) phaseOf.set(agent, e.phase);
-    if (e.kind === 'agent_start') working.set(agent, { task: e.task_id ?? '', at });
+    if (e.kind === 'agent_start') {
+      // A nested start (phase "go-tester" inside phase "test") keeps the outer phase.
+      const prev = working.get(agent);
+      working.set(agent, { task: e.task_id || prev?.task || '', at, phase: RUN_PHASES.has(e.phase) ? e.phase : prev?.phase ?? e.phase });
+    }
     if (e.kind === 'agent_end') working.delete(agent);
     if (!seen.has(agent)) {
       seen.add(agent);

@@ -3,11 +3,13 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/blocks"
 	"github.com/UnicoLab/slmcode/pkg/composer"
+	contextstore "github.com/UnicoLab/slmcode/pkg/context"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/squads"
 	"github.com/UnicoLab/slmcode/pkg/teams"
@@ -340,13 +342,50 @@ func (o *Orchestrator) splitGuidance() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## Teams — every task's files must stay inside ONE team\n\n")
+	charterBudget := 1000
 	for _, s := range o.squadPlan.Squads {
 		fmt.Fprintf(&b, "- `%s` owns %s\n", s.ID, strings.Join(s.Owns, ", "))
+		if s.Charter != "" {
+			line := "  Charter: " + s.Charter + "\n"
+			if n := contextstore.DefaultTokenCounter(line); n <= charterBudget {
+				b.WriteString(line)
+				charterBudget -= n
+			} else {
+				b.WriteString("  Charter omitted from this brief; read the full team contract before planning.\n")
+			}
+		}
+		if s.Acceptance != "" {
+			fmt.Fprintf(&b, "  Required acceptance: `%s`. Include the test files needed to run this check.\n", s.Acceptance)
+		}
 	}
 	b.WriteString("\nA task whose `files` span two teams belongs to neither: it runs alone, " +
 		"outside both lanes, and the parallel build you were asked for does not happen. " +
 		"Split it into one task per team, and use `depends_on` when the second genuinely " +
 		"needs the first.\n")
+	if len(o.squadPlan.Contract.Interfaces) > 0 {
+		b.WriteString("\n## Frozen interface contract — use these exact routes, symbols and data shapes\n\n")
+		contractPath := ".slmcode/CONTRACT.md"
+		if o.cfg != nil {
+			contractPath = filepath.Join(o.cfg.SlmDir(), squads.ContractFile)
+		}
+		fmt.Fprintf(&b, "Full contract: `%s`.\n", contractPath)
+		remaining := 1000 // Tokens, independent of the number or size of clauses.
+		for _, in := range o.squadPlan.Contract.Interfaces {
+			line := fmt.Sprintf("- %s: %s. Provider: %s; consumers: %s.\n", in.ID, in.Spec, in.Provider, strings.Join(in.Consumers, ", "))
+			n := contextstore.DefaultTokenCounter(line)
+			if n > remaining {
+				b.WriteString("Additional clauses omitted from this brief. Read the full contract before planning their implementation.\n")
+				break
+			}
+			b.WriteString(line)
+			remaining -= n
+		}
+		b.WriteString("The contract overrides conflicting implementation suggestions in exploration or architecture notes. " +
+			"Copy its identifiers into task descriptions and acceptance criteria; do not invent alternative endpoints or fields.\n")
+	}
+	if cmd := o.squadPlan.Integration.Acceptance; cmd != "" {
+		fmt.Fprintf(&b, "\nIntegration acceptance: `%s`. Plan checks of the contract between the halves, not just isolated builds.\n", cmd)
+	}
 	return b.String()
 }
 

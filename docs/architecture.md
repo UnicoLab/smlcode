@@ -82,12 +82,12 @@ Consumers: CLI, Studio SSE (`/api/events`), `/api/runs/latest`.
 worker → smoke + acceptance smoke + static/claims
       → reviewer / corrector (≤ max_retries)
       → escalate? → Studio/TUI pause (timeout → @escalate decides)
-finalize → placeholder polish → completeness bar → QA gate (pytest preferred)
+finalize → placeholder polish → completeness bar → QA gate (project-language checks)
       → continue-ask if work remains
 ```
 
 - Greenfield Python QA prefers **pytest**, not `compileall`
-- Whitelisted acceptance commands (`pytest`, `go test`, `python main.py`, …) run after workers
+- Whitelisted acceptance commands (`pytest`, `go test`, `node --test`, …) run after workers
 - Syntax-only QA cannot alone mark the run successful
 - Escalate timeout → dedicated **@escalate** arbitrator (or `escalate_timeout_agent`)
 

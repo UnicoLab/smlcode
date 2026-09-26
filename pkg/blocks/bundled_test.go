@@ -7,8 +7,43 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	"github.com/UnicoLab/slmcode/pkg/skills"
+	"github.com/UnicoLab/slmcode/pkg/teams"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
 )
+
+func TestBundledFrontendMatchesProjectRuntime(t *testing.T) {
+	reg := builtinRegistry(t)
+	for _, tc := range []struct {
+		name, query, want string
+		files             []string
+	}{
+		{"static", "Serve a Go counter and a static page in web with plain HTML and JavaScript, no npm and no framework", "frontend-static", []string{"go.mod", "cmd/server/main.go", "web/index.html", "web/app.js"}},
+		{"react", "Add a Go endpoint and the React page that calls it", "frontend-react", []string{"go.mod", "web/package.json", "web/index.html", "web/src/App.tsx"}},
+		{"react inventory", "Fix the counter", "frontend-react", []string{"web/package.json", "web/index.html", "web/src/App.jsx"}},
+		{"static inventory", "Fix the counter", "frontend-static", []string{"web/index.html", "web/app.js"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sel := teams.Select(reg.TeamRoster(), teams.Signals{Query: tc.query, Files: tc.files}, teams.Options{})
+			var frontend *teams.Team
+			for i := range sel.Teams {
+				if strings.HasPrefix(sel.Teams[i].ID, "frontend-") {
+					frontend = &sel.Teams[i]
+				}
+			}
+			if frontend == nil || frontend.ID != tc.want {
+				t.Fatalf("selected %v, want %s", sel.IDs(), tc.want)
+			}
+			if frontend.ID == "frontend-static" {
+				if frontend.Acceptance != "node --test web/*.test.js" || !workspace.IsSafeBash(frontend.Acceptance, workspace.SafePrefixes(nil)) {
+					t.Fatalf("static check must run without npm: %s", frontend.Acceptance)
+				}
+				if frontend.Worker != "worker" || frontend.Tester != "tester" {
+					t.Fatalf("static team must not inherit React or Go roles: %+v", frontend)
+				}
+			}
+		})
+	}
+}
 
 // builtinRegistry loads ONLY the embedded blocks, so a stray YAML in the
 // developer's ~/.slmcode or in this repo's .slmcode cannot make the suite pass

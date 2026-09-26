@@ -170,12 +170,38 @@ type structuredProvider struct {
 // ToolChoice are honored by the underlying OpenAI provider, so these reach the
 // wire even on the delegated path.
 func (p *structuredProvider) shape(req llm.CompletionRequest) llm.CompletionRequest {
+	req = p.shapeFinalization(req)
 	if len(p.directives.StopSequences) > 0 && len(req.StopSequences) == 0 {
 		req.StopSequences = append([]string(nil), p.directives.StopSequences...)
 	}
 	if req.ToolChoice == nil && strings.TrimSpace(p.directives.ToolChoice) != "" && len(req.Tools) > 0 {
 		req.ToolChoice = p.directives.ToolChoice
 	}
+	return req
+}
+
+// GoLangGraph v0.2.2 appends this worker-only instruction even to testers,
+// explorers and reviewers. Replace only that exact library-generated tail;
+// never rewrite the user's task or mutate a shared conversation slice.
+const graphFinalizeMessage = "Finalize now. Do NOT emit tool calls or <tool_call> XML. " +
+	`Reply with STRICT JSON only: {"status":"done|blocked","summary":"...","files_changed":[],"notes":""}`
+
+func (p *structuredProvider) shapeFinalization(req llm.CompletionRequest) llm.CompletionRequest {
+	n := len(req.Messages)
+	if n == 0 || req.Messages[n-1].Role != "user" || req.Messages[n-1].Content != graphFinalizeMessage {
+		return req
+	}
+	req.Messages = append([]llm.Message(nil), req.Messages...)
+	// Detect the active contract without the library's conflicting template.
+	req.Messages[n-1].Content = ""
+	finish := "Finalize now. Do NOT emit tool calls or <tool_call> XML. Follow the active role's output contract. " +
+		"Report only observed evidence; failed or unexecuted checks must not be reported as passed."
+	if spec, ok := schema.DetectRole(promptText(req), p.directives.SchemaRole); ok {
+		if raw, err := json.Marshal(spec.Schema); err == nil {
+			finish += " Emit STRICT JSON matching this schema: " + string(raw)
+		}
+	}
+	req.Messages[n-1].Content = finish
 	return req
 }
 

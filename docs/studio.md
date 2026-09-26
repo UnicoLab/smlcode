@@ -34,13 +34,13 @@ The listen address comes from `listen` in config (`127.0.0.1:7420` by default) u
 
 ## Building the UI
 
-Studio's front end is a React 18 + Vite + TypeScript SPA in `web/`. `make ui-react` builds it and
+Studio's front end is a React 19 + Vite + TypeScript SPA in `web/`. `make ui-react` builds it and
 copies `web/dist/*` into `cmd/slmcode/ui/`, which the binary embeds with `//go:embed all:ui`.
 Released binaries ship it already built; a binary you built yourself does not have it until you
 run:
 
 ```bash
-make bootstrap      # installs web/'s npm dependencies (Node 22+), then builds the UI
+make bootstrap      # installs web/'s npm dependencies (Node 22.22.2+ or 24.15+), then builds the UI
 make build
 ```
 
@@ -50,11 +50,10 @@ the same and gives the command. That placeholder is compiled into the server (`p
 checked into `cmd/slmcode/ui/`: the only tracked file there is `.gitkeep`, so building the UI never
 dirties a tracked file, and `go:embed` still has something to embed on a fresh clone.
 
-!!! warning "`web/package-lock.json` is out of date"
-    `web/package.json` gained `vitest`, `@testing-library/*` and `eslint`; the lock predates them,
-    so `npm ci` refuses to run. `make bootstrap` reports this and falls back to `npm install`,
-    which **regenerates `web/package-lock.json`** — commit the regenerated lock.
-    See [Troubleshooting](troubleshooting.md#studio-ui-wont-build).
+!!! note "Dependency changes"
+    Keep `web/package-lock.json` in sync with `web/package.json` and commit both
+    when updating dependencies. If `npm ci` fails, bootstrap reports the failure
+    and falls back to `npm install`. See [Troubleshooting](troubleshooting.md#studio-ui-wont-build).
 
 For UI work: `cd web && npm run dev` (Vite dev server), then `make ui-react` to fold it back into
 the binary. `make web-check` runs the SPA's lint, typecheck, tests and build.
@@ -127,6 +126,27 @@ Plain-key shortcuts are inert while typing in a field; the modifier ones are not
 ---
 
 ## The Live floor
+
+The delivery strip above the floor shows completed, active/review, queued and
+blocked/failed tasks. Its segments ease into their new sizes as the board
+changes. This is task completion, not a time estimate: when every task is done
+but the run is still active, it says **finishing checks**. Click the task count
+to open the Tasks panel, including on mobile. A disconnected stream marks the
+view as the last known state and offers **Reconnect now** without restarting
+the run.
+
+Use **Motion / Still** beside the floor controls to pause decorative animation
+while keeping live data, clicks and task updates working. This preference
+survives reloads, applies to both 3D and the map, and follows the system's
+reduced-motion preference when enabled. Phase changes scroll only the horizontal
+phase strip; they do not move the page or interrupt reading a task. Elapsed
+seconds no longer cause the entire status bar to be announced by screen readers.
+On phones, readable team cards above the map open each team's active or blocked
+ticket directly. Run insights stay collapsed while work is in progress, leaving
+room for the log, and expand when the run finishes.
+The 3D overview fits the actual canvas width when the activity rail or window
+changes size. Camera transitions use elapsed frame time for consistent movement
+on slower machines; Still mode and reduced-motion preferences make them immediate.
 
 The centre of the Live view is a 3D floor, drawn with three.js: one round table
 per team on its own rug, the manager at the head with the team's board on the

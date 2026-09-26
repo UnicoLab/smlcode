@@ -1,7 +1,7 @@
 # 🧩 Agents
 
-Twenty built-in specialist roles, plus 35 language-aware agent blocks that override three of
-them per language pack. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
+Twenty-two built-in specialist roles, plus 46 language, UI and task-specific
+agent blocks. Language packs select worker, tester and reviewer specialists. Scoped packs. No “hold the monorepo in your head” cosplay. 🎭
 
 <div class="slm-banner" markdown>
 <span class="slm-banner__emoji">🧬</span>
@@ -33,10 +33,27 @@ see <a href="providers.md">Providers</a>. Budget diplomacy is a feature.
 | `placeholder` | ✅ + `find_models` / `mcp_call` | status + gaps | Fill stubs / flag precise gaps 🩹 |
 | `escalate` | — | action JSON | HITL timeout arbitrator (retry/re-scope/…) ⚖️ |
 | `memory` | — | bullets | Learn 💾 |
+| `manager` | — | squads + interface contracts | Assemble teams and ownership boundaries |
+| `triage` | — | assignee + guidance | Route rejected work to another available agent |
 | `composer` | — | pipeline JSON | Assemble a task-specific pipeline (dynamic_pipeline) 🎯 |
 | `reviewer-strict` | — | approve JSON | Sequential second opinion, asked only when `reviewer` returns no readable verdict; temperature 0 🔍🔍 |
 | `describer` | — | prose | Architect half of the describer→editor pair (`architect_editor`) 🗣️ |
 | `editor` | ✅ + `find_models` / `mcp_call` | status | Editor half: applies a described change, minimal reasoning, strict format ✍️ |
+
+### Output contracts and recovery
+
+Implementation roles return `status`, `summary` and `files_changed`. Testers
+return `passed`, executed `commands`, `summary` and `failures`; a read-only
+verification task does not need an implementation edit. Reviewers return
+`approved`, `score`, `summary` and `issues`. These contracts are enforced by
+schema and delivery gates. Finalization and recovery preserve the active role's
+contract, including language-specific testers. Failed or unexecuted checks do
+not become passes because a file was written.
+
+Review and correction retain each team's charter and frozen interface. A fresh
+agent dispatch can read the files again after a predecessor's repetition guard
+has fired; repeated calls within that dispatch and task-wide retry budgets
+remain bounded.
 
 !!! note "🧰 Coding tools"
     Coding agents share `ws_*` + `git_*` plus **`find_models`** (auth-gated catalog)
@@ -57,10 +74,11 @@ curl -s localhost:7420/api/agents | jq '.[].id'
 
 ## Language agent blocks 🌍
 
-The twenty above are the **roles**. A language pack substitutes language-aware agents for some of
+The twenty-two above are the **roles**. A language pack substitutes language-aware agents for some of
 them: `override_worker` sets `execute.default_role`, `override_tester` sets the test phase's
 agent, and the pack's pipeline block names the reviewer directly (`execute.reviewer:`). Those
-substitutes ship as `agent` blocks (`pkg/blocks/bundled/agents/`), **35 of them**;
+substitutes ship alongside UI, repository-insight and OpenShift specialists as
+`agent` blocks (`pkg/blocks/bundled/agents/`), **46 in total**;
 `slmcode blocks list` prints the live set.
 
 | Pack | worker | tester | reviewer |

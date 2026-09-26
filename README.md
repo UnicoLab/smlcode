@@ -85,15 +85,17 @@ Details: **[docs/install-offline.md](docs/install-offline.md)**
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git && cd smlcode
-make bootstrap          # needs Node 22+: installs web/ deps and builds the Studio UI in
+make bootstrap          # needs Node 22.22.2+ or 24.15+: installs web/ deps and builds the Studio UI in
 make install-user       # → ~/.local/bin/slmcode
 ```
 
 `make bootstrap` is the one step that needs Node. It installs `web/`'s npm dependencies and runs
-the Vite build into `cmd/slmcode/ui/`, which is `go:embed`ed into the binary. Note that
-`web/package-lock.json` is currently out of date with `web/package.json`, so `npm ci` cannot run;
-`make bootstrap` says so and falls back to `npm install`, which regenerates the lock — **commit
-the regenerated `web/package-lock.json`**. Full story: [CONTRIBUTING.md](CONTRIBUTING.md#build).
+the Vite build into `cmd/slmcode/ui/`, which is `go:embed`ed into the binary.
+Keep `web/package-lock.json` in sync with `web/package.json`; commit any lockfile
+changes after updating dependencies. Full story: [CONTRIBUTING.md](CONTRIBUTING.md#build).
+
+Explore the [feature index](docs/features.md) for the full documentation map,
+including [external decision models](docs/laya.md).
 
 No Node? `go build ./cmd/slmcode` works on its own — everything except the Studio SPA. The binary
 then serves a built-in placeholder page that tells you to run `make bootstrap`, and `slmcode
@@ -185,9 +187,9 @@ Go, Python, JavaScript and JSON and return **in-band**. Full reference with fail
 
 ### Specialists
 
-20 built-in roles: `coordinator`, `orchestrator`, `context`, `explorer`, `docs`, `architect`,
+22 built-in roles: `coordinator`, `orchestrator`, `context`, `explorer`, `docs`, `architect`,
 `planner`, `splitter`, `worker`, `deep`, `reviewer`, `reviewer-strict`, `corrector`, `tester`,
-`placeholder`, `escalate`, `memory`, `composer`, `describer`, `editor`.
+`placeholder`, `escalate`, `memory`, `manager`, `triage`, `composer`, `describer`, `editor`.
 
 `describer`/`editor` is the architect/editor split: the describer reasons in prose with no
 tools and no format constraints, the editor only formats, with constrained decoding and tools.
@@ -198,13 +200,13 @@ Custom and per-language specialists come from YAML blocks. → **[docs/agents.md
 
 | Kind | Purpose | Built-in |
 |---|---|---|
-| **Pack** | Composes pipeline + quality + agents + skills | 13 |
-| **Pipeline** | Phase graph with language-specific slots | 13 |
-| **Agent** | Custom specialist or built-in override | 35 (`go-worker`, `ts-reviewer`, `kotlin-tester`, …) |
-| **Quality** | Lint/test/build commands per language | 13 |
+| **Pack** | Composes pipeline + quality + agents + skills | 15 |
+| **Pipeline** | Phase graph with language-specific slots | 15 |
+| **Agent** | Custom specialist or built-in override | 46 (`go-worker`, `ts-reviewer`, `kotlin-tester`, …) |
+| **Quality** | Lint/test/build commands per language | 15 |
 
-The thirteen packs: `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
-`dotnet`, `ruby`, `php`, `swift`, `cpp`. Also shipped: 29 skills and 13 provider stacks.
+The fifteen packs: `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
+`dotnet`, `ruby`, `php`, `swift`, `cpp`, `shadcn`, `untitledui`. Also shipped: 32 skills and 13 provider stacks.
 
 `slmcode init` picks the pack for you. Detection is scored, not first-match: a marker file in the
 root counts, a `detect.contains` proof of the file's *content* counts more, stray source files

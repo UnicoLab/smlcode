@@ -106,7 +106,7 @@ func skipOnSave(key string) bool {
 	switch key {
 	case "config_version":
 		return true // written explicitly, first
-	case "api_key", "embedding_api_key":
+	case "api_key", "embedding_api_key", "laya_api_key":
 		// Secrets live in .slmcode/auth.json or the environment. The opt-in
 		// escape hatch below is the only way they reach YAML.
 		return os.Getenv("SLMCODE_PERSIST_API_KEY") != "1"

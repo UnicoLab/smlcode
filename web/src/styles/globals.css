@@ -518,6 +518,19 @@
 @media (prefers-reduced-motion: reduce) { .floor3d-screen-phase { text-shadow: none; } }
 .floor-stage-live { animation: floorSelected 1.4s ease-in-out infinite; }
 
+/* Pausing the floor keeps its state current while removing decorative motion.
+   The 3D canvas also switches to rendering on demand through reducedMotion. */
+.floor-motion-paused *,
+.floor-motion-paused *::before,
+.floor-motion-paused *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+.delivery-progress-segment {
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease;
+}
+
 /* ── Life on the floor: moods, naps, the command center's crew ── */
 .floor3d-mood { display: inline-block; margin-right: 3px; animation: floorMoodBob 2.4s ease-in-out infinite; }
 @keyframes floorMoodBob { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-2px) rotate(-8deg); } }

@@ -78,6 +78,9 @@ and a critic that looks at the **disk**, not just the vibes.
 
 ## Start here 🗺️
 
+The [feature index](features.md) maps every public command group and the main
+harness capabilities to their guides.
+
 <div class="grid cards" markdown>
 
 -   :material-download:{ .lg .middle } **📦 Install**

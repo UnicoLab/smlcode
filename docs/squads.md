@@ -20,7 +20,7 @@ execute  squads: backend-go 2/4 working · frontend-react 1/3 working
 Teams come from a **library you own** — create, edit and delete them on the
 Teams page, attach them to a pipeline, pin them for one run. Which of them a
 request involves is decided from the words in the query and the files on disk,
-with **no model call**; see [The team library](#the-team-library-).
+with **no model call**; see [The team library](#the-team-library).
 
 ---
 
@@ -712,8 +712,20 @@ pkg/blocks/bundled/teams/    shipped with SLMCode
 .slmcode/blocks/teams/       this project — wins on an id clash
 ```
 
-Eight ship by default: `backend-go`, `backend-python`, `backend-node`,
-`frontend-react`, `docs`, `infra`, and two that are not language halves:
+Nine ship by default: `backend-go`, `backend-python`, `backend-node`,
+`frontend-react`, `frontend-static`, `docs`, `infra`, and two that are not language halves:
+
+`frontend-static` handles plain HTML, CSS and JavaScript without npm or a
+framework. Its generic worker/reviewer/tester seats avoid React-specific
+instructions. Acceptance runs `node --test web/*.test.js` using Node's built-in
+test runner (Node 22.22.2+ or 24.15+ recommended), with no package installation.
+Its tests should execute the real client source with `node:vm` and controlled
+DOM/fetch fakes. Empty suites fail the gate. Task-specific Node verification
+also takes precedence over a root Go module's language hint during work, review
+and correction.
+The team writes behavior tests alongside the client. Adjust the acceptance
+command when your client lives in a different directory. React projects retain
+their separate `frontend-react` team and npm build checks.
 
 - **`repo-insight` — Insight · What's going on.** A deep dive on the repository
   as it stands: `architect-worker` maps the structure, entry points and docs

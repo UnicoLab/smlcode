@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/tools"
 )
 
 func llmMessage(role string) llm.Message { return llm.Message{Role: role, Content: "x"} }
@@ -292,5 +294,37 @@ func TestLLMRequestsCountAssistantTurns(t *testing.T) {
 	}
 	if n := llmRequestsIn(res); n != 3 {
 		t.Fatalf("counted %d requests over three assistant turns", n)
+	}
+}
+
+type loopResetExec struct{ read tools.ToolExecutor }
+
+func (e loopResetExec) ExecuteSubAgents(ctx context.Context, reqs []ggagent.SubAgentRequest, _ *ggagent.SharedState) ([]ggagent.SubAgentResult, error) {
+	for _, req := range reqs {
+		for i := 0; i < 3; i++ {
+			if _, err := e.read(workspace.WithTaskID(ctx, req.TaskID), map[string]interface{}{"path": "app.js"}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return nil, nil
+}
+
+func TestAgentDispatchRestoresReadsWithoutDisablingLoopDetection(t *testing.T) {
+	tracker := workspace.NewCallTracker()
+	runs := 0
+	read := tracker.Wrap("ws_read", func(context.Context, map[string]interface{}) (interface{}, error) {
+		runs++
+		return "source", nil
+	})
+	o := &Orchestrator{cfg: config.Default(t.TempDir()), tracker: tracker, executor: loopResetExec{read: read}}
+	exec := o.gatedExecutor()
+	for i, role := range []string{"worker", "corrector", "tester"} {
+		if _, err := exec.ExecuteSubAgents(context.Background(), []ggagent.SubAgentRequest{{TaskID: "T1", AgentID: role}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if runs != i+1 {
+			t.Fatalf("%s: got %d real reads; want one per dispatch, with repeats still blocked", role, runs)
+		}
 	}
 }

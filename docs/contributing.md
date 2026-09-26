@@ -21,7 +21,15 @@ make install-user     # → ~/.local/bin/slmcode
 
 ### The Studio UI build
 
-`make bootstrap` is the only step that needs Node (18+). It installs `web/`'s npm dependencies
+Use an LTS Node version compatible with every locked dependency: 22.22.2+ or
+24.15+ (Node 26+ is also accepted). The authoritative range is the `engines.node`
+field in `web/package.json`. Studio tests cap jsdom file workers at four to avoid
+resource contention with locally served models. Functional interaction tests
+have a 15-second per-test deadline for scheduling headroom; assertions are
+unchanged and no tests are skipped.
+
+
+`make bootstrap` is the only step that needs Node (22.22.2+ or 24.15+). It installs `web/`'s npm dependencies
 and runs the Vite build into `cmd/slmcode/ui/`, which is `go:embed all:ui`ed into the binary.
 `go build` alone always works — it just produces a binary with no SPA, which serves a built-in
 placeholder page telling you to run `make bootstrap`. The CLI, the TUI and the Studio API are
@@ -29,10 +37,10 @@ unaffected.
 
 Two things worth knowing before your first build:
 
-- **`web/package-lock.json` is currently out of date with `web/package.json`** (it predates
-  `vitest`, `@testing-library/*` and `eslint`), so `npm ci` refuses to run. `make bootstrap`
-  detects this, says why, and falls back to `npm install` — which **regenerates the lock**.
-  Commit the regenerated `web/package-lock.json`; that is what puts everyone back on `npm ci`.
+- **Keep `web/package-lock.json` in sync with `web/package.json`.** `npm ci`
+  uses the committed lock; dependency changes require `npm install` and a
+  committed lockfile update. Bootstrap reports failures and can fall back to
+  `npm install`.
 - **`cmd/slmcode/ui/` holds exactly one tracked file, `.gitkeep`.** `index.html`, `assets/` and
   `vendor/` there are gitignored build output, so building the UI never dirties a tracked file.
   `.gitkeep` is what keeps `//go:embed all:ui` compiling on a fresh clone.

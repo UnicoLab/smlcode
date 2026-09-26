@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, ChevronDown, ChevronUp, LayoutTemplate } from 'lucide-react';
+import { Box, ChevronDown, ChevronUp, LayoutTemplate, Pause, Play } from 'lucide-react';
 import clsx from 'clsx';
 import { AppContext } from '@/App';
 import { usePersistentState } from '@/hooks/useUiState';
@@ -8,7 +8,7 @@ import type { RunEvent } from '@/types';
 import TeamFloorFlat from './TeamFloorFlat';
 import FloorDossier from './FloorDossier';
 import PulseFeed from './PulseFeed';
-import { diffFloors, freshPulses, type FloorModel, type FloorPulse } from './floorModel';
+import { diffFloors, freshPulses, workTables, type FloorModel, type FloorPulse } from './floorModel';
 import { floorStore } from './floorStore';
 import type { FloorSelection } from './floorShared';
 
@@ -141,6 +141,8 @@ export default function TeamFloor({ floor, running, events = NO_EVENTS, onTicket
   const toast = useToast();
   const dark = ctx?.dark ?? false;
   const reducedMotion = useReducedMotion();
+  const [motionPaused, setMotionPaused] = usePersistentState('live.floor.motionPaused', false);
+  const still = reducedMotion || motionPaused;
   const canGL = useMemo(() => webGLAvailable(), []);
   // The user's pick outlives the session: someone on a weak GPU who chose the
   // flat floor once should not have to choose it on every visit. With no pick
@@ -216,18 +218,54 @@ export default function TeamFloor({ floor, running, events = NO_EVENTS, onTicket
     </div>
   );
 
+  const motionToggle = (
+    <button
+      type="button"
+      aria-label="Reduce floor motion"
+      aria-pressed={still}
+      disabled={reducedMotion}
+      title={reducedMotion ? 'Reduced motion follows your system preference' : still ? 'Resume floor animations' : 'Keep live updates while pausing floor animations'}
+      onClick={() => setMotionPaused((paused) => !paused)}
+      className="focus-ring inline-flex items-center gap-1 rounded-md border border-gray-200/80 bg-white/80 px-2 py-1 text-[10px] text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-60 dark:border-gray-700/80 dark:bg-gray-900/80 dark:text-gray-300 dark:hover:bg-gray-800"
+    >
+      {still ? <Play size={11} aria-hidden="true" /> : <Pause size={11} aria-hidden="true" />}
+      {still ? 'Still' : 'Motion'}
+    </button>
+  );
+
   // The stage gets the width minus a fixed column at the right for the
   // 3D/map toggle and the feed: what slides in there never covers a label in
   // the scene, whatever the camera is doing. Below `sm` that column is gone;
   // the toggle moves into a strip along the bottom and the feed becomes a
   // sheet that slides up from it.
   return (
-    <div className="relative flex h-full w-full" data-testid="team-floor-shell">
+    <div className={clsx('relative flex h-full w-full', still && 'floor-motion-paused')} data-testid="team-floor-shell" data-motion={still ? 'reduced' : 'full'}>
       <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 snap-x gap-2 overflow-x-auto border-b border-gray-200/70 bg-white/70 p-2 dark:border-gray-800 dark:bg-gray-950/60 sm:hidden" aria-label="Team activity">
+          {workTables(floor).map((team) => {
+            const ticket = team.tickets.find((t) => t.state === 'working' || t.state === 'review')
+              ?? team.tickets.find((t) => t.state === 'blocked' || t.state === 'failed');
+            const agent = team.agents.find((a) => a.active) ?? team.agents.find((a) => a.seat === 'manager');
+            const target: FloorSelection = ticket ? { kind: 'ticket', id: ticket.id, team: team.id }
+              : agent ? { kind: 'agent', id: agent.id, team: team.id } : null;
+            return (
+              <button key={team.id} type="button" onClick={() => onSelect(target)} disabled={!target}
+                className="focus-ring min-w-[13rem] max-w-[16rem] shrink-0 snap-start rounded-lg border border-gray-200 bg-white px-3 py-2 text-left shadow-sm transition-colors hover:border-brand-400 dark:border-gray-700 dark:bg-gray-900"
+                aria-label={`${team.name}: ${ticket ? ticket.title : `${team.done} of ${team.total} tasks complete`}`}>
+                <span className="flex items-center justify-between gap-3 text-[11px] font-semibold text-gray-800 dark:text-gray-100">
+                  <span className="truncate">{team.name}</span><span className="shrink-0 font-mono text-gray-500">{team.done}/{team.total}</span>
+                </span>
+                <span className={clsx('mt-1 block truncate text-[10px]', ticket?.state === 'blocked' || ticket?.state === 'failed' ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400')}>
+                  {ticket ? `${ticket.id} · ${ticket.title}` : team.complete ? 'Tasks complete · see verification' : 'Waiting for the next task'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
         <div className="relative min-h-0 flex-1">
           {use3D ? (
             <Suspense fallback={<TeamFloorFlat {...stageProps} now={fixedNow} />}>
-              <TeamFloor3D {...stageProps} dark={dark} reducedMotion={reducedMotion} onContextLost={onContextLost} />
+              <TeamFloor3D {...stageProps} dark={dark} reducedMotion={still} onContextLost={onContextLost} />
             </Suspense>
           ) : (
             <TeamFloorFlat {...stageProps} now={fixedNow} />
@@ -242,7 +280,7 @@ export default function TeamFloor({ floor, running, events = NO_EVENTS, onTicket
             </div>
           )}
           <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-            {toggle || <span />}
+            <div className="flex items-center gap-1">{toggle}{motionToggle}</div>
             <button
               type="button"
               onClick={() => setSheetOpen((v) => !v)}
@@ -258,7 +296,7 @@ export default function TeamFloor({ floor, running, events = NO_EVENTS, onTicket
         </div>
       </div>
       <div className="relative hidden w-52 shrink-0 flex-col gap-2 border-l border-gray-200/70 bg-gray-50/60 p-2 dark:border-gray-800 dark:bg-gray-950/40 sm:flex" data-testid="floor-side">
-        {toggle && <div className="flex self-end">{toggle}</div>}
+        <div className="flex flex-wrap justify-end gap-1">{toggle}{motionToggle}</div>
         <PulseFeed pulses={pulses} now={now} onSelect={onSelect} running={running} />
       </div>
     </div>

@@ -31,6 +31,7 @@ import type {
 } from '@/types';
 import TeamPicker, { type TeamSelectionMode } from './TeamPicker';
 import NowBar from './NowBar';
+import RunProgress from './RunProgress';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
 import RunSetup from './RunSetup';
@@ -438,7 +439,7 @@ export default function LiveView() {
     [agents, specialist],
   );
 
-  const taskCount = derived.taskIds.size;
+  const taskCount = boardReady ? tasks.length : derived.taskIds.size;
   const totals = useMemo(() => ({ tokens: derived.tokens, cost: derived.cost }), [derived.tokens, derived.cost]);
 
   // The floor: everything the stage draws, derived once per change.
@@ -649,6 +650,8 @@ export default function LiveView() {
       {/* ── 4. Floor + rail ────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <RunProgress tasks={tasks} running={running} connection={ctx?.connection ?? 'connecting'}
+            onTasks={() => { setRailView('tasks'); setRailOpen(true); }} onReconnect={ctx?.reconnect} />
           <div className="relative min-h-0 flex-1">
             <TeamFloor
               floor={floor}
@@ -707,6 +710,7 @@ export default function LiveView() {
                 overlay={!isWide}
                 onClose={() => setRailOpen(false)}
                 derived={derived}
+                totalTasks={taskCount}
                 focusTaskId={focusTaskId}
               />
             </aside>

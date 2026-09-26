@@ -182,7 +182,7 @@ slmcode blocks apply go --force        # overwrite existing agent files
 In the TUI or the chat REPL:
 
 ```
-/pack <pack-id>   — apply a language pack (any of the thirteen)
+/pack <pack-id>   — apply a language pack (any of the fifteen)
 /blocks           — list all available blocks
 /skills           — list loaded skills
 ```
@@ -334,7 +334,7 @@ The **BlockManager** page (navigate to Blocks in the sidebar) provides a visual 
 
 The **PackSelector** in Settings lets you switch language packs directly from the settings page, alongside the Stack Selector.
 
-The **PipelineEditor** includes a preset selector listing every pipeline block the registry can see — the thirteen builtins plus anything under `.slmcode/blocks/pipelines/` — with one-click switching.
+The **PipelineEditor** includes a preset selector listing every pipeline block the registry can see — the fifteen builtins plus anything under `.slmcode/blocks/pipelines/` — with one-click switching.
 
 ---
 

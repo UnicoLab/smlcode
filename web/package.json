@@ -25,7 +25,7 @@
     "lucide-react": "^0.438.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-router-dom": "^6.26.0",
+    "react-router-dom": "7.18.4",
     "three": "^0.186.0"
   },
   "devDependencies": {
@@ -53,6 +53,6 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=22.10"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   }
 }

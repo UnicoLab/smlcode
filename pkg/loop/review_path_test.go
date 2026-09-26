@@ -486,3 +486,36 @@ func TestEveryDispatchTimeoutFitsTheRunway(t *testing.T) {
 		}
 	}
 }
+
+func TestTesterCorrectionPreservesVerdictContract(t *testing.T) {
+	for _, role := range []string{plan.RoleTester, "go-tester"} {
+		t.Run(role, func(t *testing.T) {
+			corrections := 0
+			exec := &scriptedExec{answer: func(req ggagent.SubAgentRequest, _ int) string {
+				if req.AgentID == role {
+					corrections++
+					if !strings.Contains(req.Input, `"passed":true|false`) || strings.Contains(req.Input, `{"status":"done"`) && strings.Contains(req.Input, "Use ws_edit/ws_write on real files, then finish") {
+						t.Error("tester correction received the worker finish contract")
+					}
+					return "Observation: ws_shell `go test ./...`\nok\nexit status 0\n" + `{"passed":true,"commands":["go test ./..."],"summary":"real checks passed","failures":[]}`
+				}
+				if req.AgentID == plan.RoleCorrector {
+					t.Error("tester correction dispatched to the worker-schema corrector")
+				}
+				return `{"approved":true,"score":90,"summary":"checked"}`
+			}}
+			r := defaultRunner(t, t.TempDir(), exec)
+			r.MaxRetries = 1
+			task := plan.Task{ID: "T1", Title: "Verify behavior", Role: role, Column: plan.ColInReview,
+				Output: `{"status":"done","summary":"wrong contract"}`}
+			board := &plan.Board{Tasks: []plan.Task{task}}
+			if err := r.reviewAndCorrect(context.Background(), board, task, nil); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := board.Get(task.ID)
+			if corrections != 1 || got.Column != plan.ColDone {
+				t.Fatalf("tester retry did not recover: corrections=%d task=%+v", corrections, got)
+			}
+		})
+	}
+}

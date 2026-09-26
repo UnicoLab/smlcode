@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PhaseRail from './PhaseRail';
 import type { PhaseState, RailGroup } from './PhaseRail';
@@ -12,6 +12,28 @@ const GROUPS: RailGroup[] = [
 const states = (m: Record<string, PhaseState>) => m;
 
 describe('PhaseRail', () => {
+  it('ignores completed phases omitted from the active pipeline', () => {
+    render(<PhaseRail groups={GROUPS} phaseState={{ init: 'completed', removed: 'completed' }} activePhase={null} running={false} />);
+    expect(screen.getByText('1/4')).toBeInTheDocument();
+  });
+
+  it('scrolls only the phase strip, respecting reduced motion', () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+      matches: query.includes('prefers-reduced-motion'), media: query,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList));
+    const scrollPage = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { rerender } = render(<PhaseRail groups={GROUPS} phaseState={{}} activePhase={null} running />);
+    const viewport = screen.getByTestId('phase-viewport');
+    const scrollStrip = vi.fn();
+    viewport.scrollTo = scrollStrip;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 200, width: 200 } as DOMRect);
+    vi.spyOn(screen.getByTitle('Verify · test · pending'), 'getBoundingClientRect').mockReturnValue({ left: 300, right: 360, width: 60 } as DOMRect);
+    rerender(<PhaseRail groups={GROUPS} phaseState={{ test: 'active' }} activePhase="test" running />);
+    expect(scrollStrip).toHaveBeenCalledWith({ left: 230, behavior: 'auto' });
+    expect(scrollPage).not.toHaveBeenCalled();
+    expect(screen.getByTitle('Verify · test · active')).toHaveAttribute('aria-current', 'step');
+  });
   it('renders every phase of every group', () => {
     render(
       <PhaseRail

@@ -551,8 +551,8 @@ spec:
 
 A pack composes a pipeline, quality block, agents, and skills into one apply-able unit.
 
-Thirteen ship built in — `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
-`dotnet`, `ruby`, `php`, `swift`, `cpp` — alongside 35 language agent blocks, 29 skills and 13
+Fifteen ship built in — `go`, `python`, `react`, `typescript`, `web`, `rust`, `java`, `kotlin`,
+`dotnet`, `ruby`, `php`, `swift`, `cpp`, `shadcn`, `untitledui` — alongside 46 specialist agent blocks, 32 skills and 13
 provider stacks. `slmcode blocks list` prints the live set; the tables in
 [Blocks](blocks.md#predefined-language-packs-builtin) name each pack's agents, smoke command and
 QA gate.
@@ -832,7 +832,7 @@ SLMCode uses markdown files in `.slmcode/` as persistent memory.
 # slmcode Project
 
 ## Stack
-- **Language**: Go 1.23+
+- **Language**: Go 1.25+ (the module selects the Go 1.26.7 toolchain)
 - **Framework**: net/http + chi router
 - **Database**: PostgreSQL via pgx
 - **Testing**: go test + testify

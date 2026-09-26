@@ -92,8 +92,6 @@ export default function NowBar({ events, running, squads, now: nowProp, totals }
 
   return (
     <div
-      role="status"
-      aria-live="polite"
       className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-200 bg-brand-50/60 px-3 py-1.5 text-[11px] dark:border-gray-800 dark:bg-brand-950/20 sm:px-4"
       data-testid="now-bar"
       data-working={now ? 'true' : 'false'}
@@ -130,7 +128,7 @@ export default function NowBar({ events, running, squads, now: nowProp, totals }
 
       {/* The message is the only part allowed to be long, so it is the only
           part allowed to truncate. */}
-      <span className="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-400" title={now ? now.message : last.message}>
+      <span role="status" aria-live="polite" className="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-400" title={now ? now.message : last.message}>
         {now ? now.message || 'in progress' : `${phase ? `${phase}: ` : ''}nobody is working — waiting for the next step`}
       </span>
 

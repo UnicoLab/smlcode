@@ -320,8 +320,8 @@ func (t *CallTracker) Wrap(name string, fn tools.ToolExecutor) tools.ToolExecuto
 // hardStopMessage is the terminal directive for a tool that cannot be withdrawn.
 func hardStopMessage() string {
 	return "QUALITY MONITOR HARD STOP: repeated the same tool call " +
-		"too many times. Stop calling tools. Finish NOW with STRICT JSON: " +
-		`{"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
+		"too many times. Stop calling tools. Finish NOW with the STRICT JSON contract " +
+		"required by your role. Report failures or blocked work honestly; do not claim unexecuted checks passed."
 }
 
 // withdrawnMessage tells the model the tool is gone, not merely discouraged.
@@ -332,7 +332,7 @@ func withdrawnMessage(tool string) string {
 		"called it repeatedly with the same arguments and were told to do something else. " +
 		"It will not run again for ANY arguments until you make a real change. " +
 		"Use a different tool (ws_edit, ws_patch, ws_write, ws_shell) or finish NOW with " +
-		`STRICT JSON: {"status":"done|blocked","summary":"…","files_changed":[],"notes":""}`
+		"the STRICT JSON contract required by your role. Report failures or blocked work honestly; do not claim unexecuted checks passed."
 }
 
 // LoopCorrectionMessage is steered back to the model on a loop refusal.

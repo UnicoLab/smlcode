@@ -194,7 +194,7 @@ Metadata: `~/.config/slmcode/install.json` (Windows: `%APPDATA%\slmcode\install.
 
 ## Build from source 🛠️
 
-Needs **Go 1.23+**. Module proxy pulls GoLangGraph — no sibling clone required.
+Needs **Go 1.25+ (the module selects the Go 1.26.7 toolchain)**. Module proxy pulls GoLangGraph — no sibling clone required.
 
 ```bash
 git clone https://github.com/UnicoLab/smlcode.git

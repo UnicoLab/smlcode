@@ -47,6 +47,25 @@ beforeEach(() => {
 });
 
 describe('TeamFloor', () => {
+  it('provides readable mobile team shortcuts to the active ticket', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    render(<TeamFloor floor={floor} running now={T0} />);
+    const activity = screen.getByLabelText('Team activity');
+    fireEvent.click(within(activity).getByRole('button', { name: 'Backend: Task T2' }));
+    expect(screen.getByTestId('floor-dossier')).toHaveAttribute('aria-label', 'About T2');
+  });
+  it('pauses decorative motion without hiding live tasks, and remembers the preference', () => {
+    const floor = buildFloor({ squads: chart, tasks, events, composition: null, running: true, now: T0 });
+    const { unmount } = render(<TeamFloor floor={floor} running now={T0} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reduce floor motion' })[0]);
+    expect(screen.getByTestId('team-floor-shell')).toHaveAttribute('data-motion', 'reduced');
+    expect(screen.getByTestId('ticket-T2')).toBeInTheDocument();
+    unmount();
+    render(<TeamFloor floor={floor} running now={T0} />);
+    expect(screen.getAllByRole('button', { name: 'Reduce floor motion' })[0]).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reduce floor motion' })[0]);
+    expect(screen.getByTestId('team-floor-shell')).toHaveAttribute('data-motion', 'full');
+  });
   it('draws every team as an island with its people and tickets', () => {
     // The same clock the floor was built with: the bubble reads "T2 · 1s" off
     // it. Without it the stage ticks on the real Date.now(), and the elapsed

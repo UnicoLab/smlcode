@@ -373,3 +373,19 @@ evolve: true
     `slmcode config set` takes a whole YAML/JSON document for them, not a dotted path. For
     anything non-trivial, edit `.slmcode/config.yaml` directly and check the result with
     `slmcode config show --origin`.
+
+## Optional external decision model
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `laya_provider` | `laya` | Native `laya` or OpenAI-compatible `openai` |
+| `laya_endpoint` | empty (disabled) | Native server root or OpenAI API base URL including `/v1` |
+| `laya_model` | `multilingual` | Native checkpoint alias or exact case-sensitive chat model ID |
+| `laya_timeout` | `2s` | Shared rerank deadline or per-guidance deadline |
+| `laya_guidance` | `false` | Add optional navigation, planning, review and repair hints |
+| `laya_api_key` | empty | Separate bearer token; prefer `SLMCODE_LAYA_API_KEY` |
+
+See [external decision models](laya.md) for deployment, protocol requirements,
+limits and fallback behavior. Setting an endpoint enables prior-knowledge
+reranking; guidance is a separate opt-in. Existing review, test and scope gates
+remain authoritative. Model hosting and training are external to SLMCode.

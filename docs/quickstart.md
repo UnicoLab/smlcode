@@ -118,13 +118,12 @@ Pick your fighter. Both talk to the same harness. 🥊
     saying the UI has not been built, and prints the same on startup. Fix:
 
     ```bash
-    make bootstrap      # installs web/ npm deps (needs Node 22+), then builds the UI
+    make bootstrap      # installs web/ npm deps (needs Node 22.22.2+ or 24.15+), then builds the UI
     make build
     ```
 
-    `web/package-lock.json` is currently out of date with `web/package.json`, so `npm ci`
-    cannot run; `make bootstrap` says so and falls back to `npm install`, which regenerates
-    the lock — commit it.
+    If `npm ci` reports a manifest/lockfile mismatch, update dependencies with
+    `npm install` in `web/` and commit the regenerated lockfile.
     → [Studio: building the UI](studio.md#building-the-ui) ·
     [Troubleshooting](troubleshooting.md#studio-ui-wont-build)
 

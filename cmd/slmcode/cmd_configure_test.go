@@ -195,3 +195,40 @@ func TestConfigureRejectsABadTimeout(t *testing.T) {
 		t.Error("an unparsable timeout must be refused rather than ignored")
 	}
 }
+
+func TestConfigureJSONPersistsBeforeReportingWritten(t *testing.T) {
+	root := configureWorkspace(t)
+	srv := modelServer(t, "Qwen2.5-Coder-14B-Instruct")
+	if _, err := runConfigure(t, "--json", "--yes", "--endpoint", srv.URL+"/v1"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Endpoint != srv.URL+"/v1" || cfg.Model != "Qwen2.5-Coder-14B-Instruct" {
+		t.Fatal("JSON success did not persist its choice")
+	}
+}
+
+func TestConfigureJSONFailureIsNonzeroAndDoesNotWrite(t *testing.T) {
+	root := configureWorkspace(t)
+	before, err := os.ReadFile(filepath.Join(root, ".slmcode", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := modelServer(t)
+	endpoint := srv.URL + "/v1"
+	srv.Close()
+	_, err = runConfigure(t, "--json", "--yes", "--endpoint", endpoint, "--timeout", "100ms")
+	if err == nil || exitCodeFor(err) == 0 {
+		t.Fatal("JSON failure exited successfully")
+	}
+	after, err := os.ReadFile(filepath.Join(root, ".slmcode", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed discovery changed config")
+	}
+}

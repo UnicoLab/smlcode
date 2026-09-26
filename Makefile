@@ -332,7 +332,7 @@ test: ## Run unit tests
 	go test ./...
 
 race: ## Run unit tests under the Go race detector (pkg/... — the engine core)
-	go test -race -count=1 ./pkg/...
+	go test -race -count=1 -timeout 30m ./pkg/...
 
 # The integration suite races the parts unit tests cannot: a full run has
 # parallel workers and background probes emitting while the run goroutine
@@ -347,11 +347,16 @@ cover: ## Run tests with coverage and fail if total coverage drops below the flo
 	@./scripts/coverage-check.sh
 
 govulncheck: ## Scan all packages for known vulnerabilities
-	@if ! command -v govulncheck >/dev/null 2>&1; then \
+	@set -e; \
+	task_vuln_tool="$$(command -v govulncheck || true)"; \
+	if [ -z "$$task_vuln_tool" ]; then \
 		echo "govulncheck not found — installing (go install golang.org/x/vuln/cmd/govulncheck@latest)…"; \
 		go install golang.org/x/vuln/cmd/govulncheck@latest; \
-	fi
-	govulncheck ./...
+		task_go_bin="$$(go env GOBIN)"; \
+		if [ -z "$$task_go_bin" ]; then task_go_bin="$$(go env GOPATH)/bin"; fi; \
+		task_vuln_tool="$$task_go_bin/govulncheck"; \
+	fi; \
+	"$$task_vuln_tool" ./...
 
 e2e: ## Run e2e tests (set RUN_E2E=1 for live oMLX tests)
 	go test ./test/e2e/ -count=1 -timeout 30m

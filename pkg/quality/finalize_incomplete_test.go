@@ -129,3 +129,17 @@ func TestGateSectionsAreStrippedBeforeCompletenessIsJudged(t *testing.T) {
 		})
 	}
 }
+
+// These nudges are shared by workers, testers and explorers. They must never
+// replace the active role's contract with worker-only fields.
+func TestSharedFinalizationNudgesPreserveRoleContract(t *testing.T) {
+	messages := []string{FinalizeWarnMessage(16), FinalizeSteerMessage(2),
+		FinishSteerMessage("empty_response", true), FinishSteerMessage("ended_on_tool_call", false),
+		CorrectionMessage("empty_response"), CorrectionMessage("ended_on_tool_call"),
+		CorrectionMessage("text_tool_calls:ws_read")}
+	for _, message := range messages {
+		if strings.Contains(message, `"status"`) || strings.Contains(message, `"files_changed"`) || !strings.Contains(message, "role") {
+			t.Errorf("shared nudge forces the wrong contract: %s", message)
+		}
+	}
+}

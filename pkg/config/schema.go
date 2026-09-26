@@ -186,6 +186,12 @@ var schemaFields = map[string]schemaMeta{
 	"session_event_log":      {"Session event log", "Write .slmcode/queries/<id>/events.jsonl during runs", "learning", nil, false, false, false, false},
 
 	// ── retrieval ──
+	"laya_provider":       {"Decision provider", "Native Laya or OpenAI-compatible chat completions", "retrieval", []string{"laya", "openai"}, false, false, false, true},
+	"laya_guidance":       {"Decision guidance", "Add optional prediction-based planning, navigation, review and repair hints; acceptance gates remain authoritative", "retrieval", nil, false, false, false, true},
+	"laya_endpoint":       {"Decision endpoint", "Empty disables predictions. Native Laya: server root; OpenAI: API base URL including /v1", "retrieval", nil, false, false, false, true},
+	"laya_model":          {"Decision model", "Laya checkpoint alias or exact case-sensitive served chat model ID", "retrieval", nil, false, false, false, true},
+	"laya_timeout":        {"Decision timeout", "Total deadline per rerank operation or guidance prediction", "retrieval", nil, false, false, false, true},
+	"laya_api_key":        {"Decision API key", "Separate bearer token; prefer SLMCODE_LAYA_API_KEY", "retrieval", nil, false, false, true, true},
 	"embedding_enabled":   {"Embeddings", "Use an embedding endpoint for context retrieval (falls back to lexical TF-IDF)", "retrieval", nil, false, false, false, false},
 	"embedding_endpoint":  {"Embedding endpoint", "OpenAI-compatible /v1/embeddings base URL (empty = the chat endpoint)", "retrieval", nil, false, false, false, false},
 	"embedding_model":     {"Embedding model", "Model id used for embeddings", "retrieval", nil, false, false, false, false},

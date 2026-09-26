@@ -132,3 +132,22 @@ func TestReviewPromptCarriesEvidenceEndToEnd(t *testing.T) {
 		t.Error("review prompt contains the evidence header but not its content")
 	}
 }
+
+func TestClientReviewAndCorrectionUseTaskVerification(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module mixed\n\ngo 1.22\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(nil, nil)
+	r.Root = root
+	task := plan.Task{ID: "T2", Role: plan.RoleTester, Files: []string{"web/app.js"}, Acceptance: "node --test web/*.test.js"}
+	for name, prompt := range map[string]string{
+		"review":   r.formatReviewPrompt(task),
+		"correct":  r.formatCorrectPrompt(task, plan.ReviewResult{Summary: "test failed"}),
+		"fallback": fallbackTaskPromptWithLang(task, detectProjectLangHint(root)),
+	} {
+		if !strings.Contains(prompt, "Node's built-in test runner") || strings.Contains(prompt, "Use ONLY go") {
+			t.Errorf("%s contradicts the task's verification command: %s", name, prompt)
+		}
+	}
+}

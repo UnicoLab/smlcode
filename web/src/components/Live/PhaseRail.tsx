@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Check } from 'lucide-react';
 import clsx from 'clsx';
+import { useMediaQuery } from '@/hooks/useUiState';
 
 /**
  * The pipeline as ONE journey.
@@ -48,16 +49,36 @@ export default function PhaseRail({
   running: boolean;
 }) {
   const activeRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
 
   // Keep the active phase in view as the run walks the track.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }, [activePhase]);
+    const viewport = viewportRef.current;
+    const active = activeRef.current;
+    if (!viewport || !active) return;
+    // Move only this horizontal strip. scrollIntoView also moved the page
+    // and interrupted someone reading a task or editing their next request.
+    const reveal = () => {
+      const bounds = viewport.getBoundingClientRect();
+      const stop = active.getBoundingClientRect();
+      if (stop.left < bounds.left || stop.right > bounds.right) {
+        viewport.scrollTo({
+          left: Math.max(0, viewport.scrollLeft + stop.left - bounds.left - (bounds.width - stop.width) / 2),
+          behavior: reducedMotion ? 'auto' : 'smooth',
+        });
+      }
+    };
+    reveal();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reveal);
+    observer?.observe(viewport);
+    return () => observer?.disconnect();
+  }, [activePhase, reducedMotion]);
 
   const shown = useMemo(() => groups.filter((g) => g.phases.length > 0), [groups]);
   const all = useMemo(() => shown.flatMap((g) => g.phases), [shown]);
   const total = all.length;
-  const done = Object.values(phaseState).filter((s) => s === 'completed').length;
+  const done = all.filter((phase) => phaseState[phase] === 'completed').length;
   // How far along the track the run is: the active stop, else the last
   // completed one, else the start.
   const activeIndex = activePhase ? all.indexOf(activePhase) : -1;
@@ -69,7 +90,7 @@ export default function PhaseRail({
   return (
     <div className="shrink-0 border-b border-gray-200 bg-white/90 dark:border-gray-800 dark:bg-gray-950/90">
       <div className="flex items-center gap-3 px-3 py-2 sm:px-4">
-        <div className="relative min-w-0 flex-1 overflow-x-auto pb-1 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]">
+        <div ref={viewportRef} data-testid="phase-viewport" className="relative min-w-0 flex-1 overflow-x-auto pb-1 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]">
           <div className="relative flex min-w-max items-stretch" role="list" aria-label="Pipeline phases">
             {/* The track: a base line and the lit portion the run has walked. */}
             <div className="pointer-events-none absolute left-4 right-4 top-[15px] h-1 rounded-full bg-gray-200 dark:bg-gray-800" aria-hidden="true" />
@@ -91,6 +112,7 @@ export default function PhaseRail({
                           key={phase}
                           ref={isActive ? activeRef : undefined}
                           role="listitem"
+                          aria-current={isActive ? 'step' : undefined}
                           title={`${group.label} · ${phase} · ${state}`}
                           className="relative flex w-[4.6rem] shrink-0 flex-col items-center px-1"
                         >

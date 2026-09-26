@@ -402,7 +402,7 @@ The binary embeds no SPA, so the server is serving the placeholder page compiled
 the CLI, the TUI and the whole Studio API are working. Build it:
 
 ```bash
-make bootstrap      # installs web/ npm deps (needs Node 22+), then builds the UI
+make bootstrap      # installs web/ npm deps (needs Node 22.22.2+ or 24.15+), then builds the UI
 make build
 ```
 
@@ -438,19 +438,14 @@ npm error package-lock.json are in sync. Please update your lock file with
 npm error `npm install` before continuing.
 ```
 
-This is expected right now: **`web/package-lock.json` is out of date with `web/package.json`.**
-The lock predates `vitest`, `@testing-library/*`, `eslint` and the rest of the test toolchain, and
-`npm ci` installs strictly from the lock, so it refuses to run at all.
+This means the manifest and lockfile disagree. Run `npm install` in `web/`,
+inspect the changes, and commit `web/package-lock.json` alongside the manifest.
+`make bootstrap` also reports the failure and falls back to `npm install`.
+A failed `npm ci` can have other causes; inspect its actual error before changing
+versions or removing the lockfile.
 
-`make bootstrap` handles it — it reports the mismatch and falls back to `npm install`, which
-resolves from `package.json` and **rewrites `web/package-lock.json`**.
-
-> **Commit the regenerated `web/package-lock.json`.** That is the real fix. Until it is committed,
-> every clone and every CI run pays for the fallback; once it is, `npm ci` works again and is both
-> faster and reproducible.
-
-If `npm install` itself fails, the npm registry is unreachable (offline, proxy, or an egress
-allowlist). The Go build does not need it: `make build` still works and the binary serves the
+If `npm install` itself fails, inspect its error for registry/network problems,
+unsupported Node versions or dependency conflicts. The Go build does not need it: `make build` still works and the binary serves the
 placeholder page.
 
 ### `port 7420 is in use`

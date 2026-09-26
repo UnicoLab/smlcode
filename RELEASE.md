@@ -1,7 +1,7 @@
 # Cutting a SLMCode release
 
 The exact sequence for shipping a version, written for the person running it. It assumes
-a clean checkout of `main`, push access to `UnicoLab/smlcode`, Go, Node 18+ and `make`.
+a clean checkout of `main`, push access to `UnicoLab/smlcode`, Go 1.25+ with the module-selected toolchain, Node 22.22.2+ or 24.15+ and `make`.
 
 The short version: **you tag; CI does the rest.** Everything between the tag landing and
 the release appearing is `.github/workflows/release.yml`. Your job is to make sure the
@@ -28,16 +28,9 @@ git switch main && git pull --ff-only
 git status --porcelain          # must be empty
 ```
 
-**Regenerate the web lockfile if it is stale.** `web/package-lock.json` currently predates
-several `devDependencies` in `web/package.json`, so a strict `npm ci` refuses to run. CI
-falls back to `npm install` and still builds, but the lockfile is the fix:
-
-```bash
-cd web && npm install && cd ..
-git diff --stat web/package-lock.json
-# if it changed:
-git add web/package-lock.json && git commit -m "chore(web): regenerate package-lock.json"
-```
+**Verify reproducible dependencies.** `web/package-lock.json` must match
+`web/package.json`. Run `npm ci` in `web/`; if dependency changes require
+`npm install`, inspect and commit the lockfile update before releasing.
 
 **Build the Studio UI and run the full gate.** `make bootstrap` is what puts the real SPA
 into `cmd/slmcode/ui/`; without it every binary you build locally serves the placeholder
@@ -45,6 +38,7 @@ page from `pkg/server`.
 
 ```bash
 make bootstrap                  # npm deps + vite build + sync into cmd/slmcode/ui/
+make docs-build                 # strict navigation and documentation build
 make check                      # gofmt, vet, golangci-lint (0 issues), coverage floor, -race, web lint+build
 ./scripts/check-version.sh      # version.go == Makefile == Formula
 ./scripts/check-repo-refs.sh    # no UnicoLab/slmcode download URLs
@@ -59,6 +53,18 @@ ls cmd/slmcode/ui/assets/*.js   # must list at least one bundle
 ./bin/slmcode studio            # open the printed URL (it carries ?t=…) — you should see
                                 # the real Studio, not "Studio not built"
 ```
+
+**Complete the runtime qualification.** Run `make e2e-release` against the
+actual coding provider/checkpoint used for the release. For an enabled decision
+provider, follow `docs/laya.md` and run its live smoke test. Record the exact
+server/model, results and any skipped checks; a green fake-server suite does not
+establish real-model quality. Also run `make govulncheck` and review findings.
+`make check` can explicitly skip missing tooling/network checks; a release must
+complete those checks in a provisioned environment.
+
+**Confirm documentation coverage.** Walk `docs/features.md`, compare the binary's
+`--help` and `config schema` output with the CLI/config guides, and verify the
+setup and fallback instructions for changed features.
 
 **Confirm the changelog is written.** `docs/changelog.md` needs a real `## vX.Y.Z` entry
 with a **Breaking behaviour changes** section, cross-linked to `docs/migration.md`. The

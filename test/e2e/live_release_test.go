@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,11 +15,14 @@ import (
 	"time"
 
 	"github.com/UnicoLab/slmcode/pkg/autoconfig"
+	"github.com/UnicoLab/slmcode/pkg/backends"
 	"github.com/UnicoLab/slmcode/pkg/config"
 	"github.com/UnicoLab/slmcode/pkg/harness"
+	"github.com/UnicoLab/slmcode/pkg/laya"
 	"github.com/UnicoLab/slmcode/pkg/orchestrator"
 	"github.com/UnicoLab/slmcode/pkg/readiness"
 	"github.com/UnicoLab/slmcode/pkg/squads"
+	"github.com/piotrlaczkowski/GoLangGraph/pkg/llm"
 )
 
 // TestLiveReleaseSurface is the check to run before cutting a release, against
@@ -64,6 +68,7 @@ func TestLiveReleaseSurface(t *testing.T) {
 	t.Run("discovery", liveDiscovery)
 	t.Run("configure", liveConfigure)
 	t.Run("chat", liveChat)
+	t.Run("decision_openai", liveDecisionOpenAI)
 	t.Run("squads", liveSquads)
 }
 
@@ -113,7 +118,7 @@ func liveDiscovery(t *testing.T) {
 // and the library being right does not prove the command is wired to it.
 func liveConfigure(t *testing.T) {
 	dir := t.TempDir()
-	mustLiveSlm(t, dir, "init", "-q")
+	mustLiveSlm(t, dir, "init")
 	cfgPath := filepath.Join(dir, ".slmcode", "config.yaml")
 	before, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -159,14 +164,14 @@ func liveConfigure(t *testing.T) {
 	if !wet.Written || wet.Scope != "project" {
 		t.Errorf("written=%v scope=%q, want true/project", wet.Written, wet.Scope)
 	}
-	body, err := os.ReadFile(cfgPath)
+	// Default-valued keys can be omitted from the intent-only YAML. Validate
+	// the effective configuration reloaded from disk, not literal key presence.
+	saved, err := config.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{wet.Choice.Endpoint, wet.Choice.Model, wet.Choice.Provider} {
-		if want != "" && !strings.Contains(string(body), want) {
-			t.Errorf("config does not carry %q after configure:\n%s", want, body)
-		}
+	if saved.Endpoint != wet.Choice.Endpoint || saved.Model != wet.Choice.Model || saved.Provider != wet.Choice.Provider {
+		t.Error("effective config does not match the choice reported as written")
 	}
 
 	// A working configuration is confirmed, never replaced. Run it again: the
@@ -205,21 +210,57 @@ func liveChat(t *testing.T) {
 	t.Logf("provider probe: ok=%v %s (%s, %dms) — %s",
 		check.OK, check.Label, check.Endpoint, check.Latency, check.Message)
 	if !check.OK {
-		t.Fatalf("the configured endpoint does not answer a completion: %s", check.Message)
+		t.Fatalf("the configured model is unavailable: %s", check.Message)
+	}
+	manager := llm.NewProviderManager()
+	if err := backends.RegisterLLM(manager, cfg); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := manager.GetProvider(cfg.Provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = provider.Close() }()
+	response, err := provider.Complete(ctx, llm.CompletionRequest{Model: cfg.Model, MaxTokens: 64,
+		Messages: []llm.Message{{Role: "user", Content: "Reply with the single word ready."}}})
+	if err != nil {
+		t.Fatalf("actual chat completion failed: %v", err)
+	}
+	if response == nil || len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].Message.Content) == "" {
+		t.Fatal("chat endpoint returned no assistant content")
+	}
+}
+
+// Exercise the optional JSON decision transport with an actual served chat
+// model. This checks compatibility, not the accuracy of its numeric judgment.
+func liveDecisionOpenAI(t *testing.T) {
+	cfg := config.Default(t.TempDir())
+	cfg.ResolveAPIKey()
+	endpoint := strings.TrimRight(cfg.Endpoint, "/")
+	if config.NormalizeProvider(cfg.Provider) == "ollama" {
+		endpoint += "/v1"
+	}
+	client, err := laya.New(laya.Options{Provider: "openai", Endpoint: endpoint, Model: cfg.Model, APIKey: cfg.APIKey, Timeout: 3 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	_, err = client.Probability(ctx, "Task: fix a JSON parser. Candidate: JSON parser error handling and tests.", "Is the candidate useful for this task?")
+	if err != nil {
+		t.Fatalf("actual JSON decision failed: %v", err)
 	}
 }
 
 // liveSquads runs the feature this cycle is named for, end to end, through a
 // real model: one query, two languages, a frozen contract between them.
 //
-// The fixture is deliberately toolchain-free apart from Go — a real React half
+// The fixture uses Go and Node's built-in test runner, with no package install — a real React half
 // would make this a test of whether npm can reach the registry, which is not
 // the thing under test and is the most likely way it would fail on someone
 // else's laptop.
 //
-// The assertions are all mechanism. Asking a 30B model twice for a todo app
-// gets two different todo apps, so "did it write good code" is unassertable
-// here; what must hold every time is that the teams were real teams: a
+// The assertions require a successful delivery as well as real teams: a
 // contract frozen before anyone started, and nobody writing in anybody else's
 // lane.
 func liveSquads(t *testing.T) {
@@ -227,6 +268,17 @@ func liveSquads(t *testing.T) {
 		t.Skip("RUN_E2E_SQUADS=0")
 	}
 	root := t.TempDir()
+	if artifacts := os.Getenv("SLMCODE_E2E_ARTIFACTS"); artifacts != "" {
+		if err := os.MkdirAll(artifacts, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		root, err = os.MkdirTemp(artifacts, "squads-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("retaining live workspace and run diagnostics: %s", root)
+	}
 	writeFixture(t, root, map[string]string{
 		"go.mod":             "module livesquads\n\ngo 1.22\n",
 		"cmd/server/main.go": "package main\n\nfunc main() {}\n",
@@ -240,7 +292,8 @@ func liveSquads(t *testing.T) {
 	cfg.Squads = true
 	cfg.ThinkPasses = 1
 	cfg.MaxParallel = 2
-	cfg.MaxRetries = 1
+	// Exercise the production retry allowance: a one-retry artificial ceiling
+	// prevented the correction loop from recovering ordinary model mistakes.
 	cfg.TaskTimeout = 10 * time.Minute
 	cfg.PlanApprove = "auto"
 	cfg.ClarifyMode = "auto"
@@ -276,6 +329,10 @@ func liveSquads(t *testing.T) {
 		t.Logf("outcome=%s success=%v failed=%d unexecuted=%d in %s",
 			res.Outcome, res.Success, res.FailedTasks, res.UnexecutedTasks, res.Duration)
 		t.Logf("summary:\n%s", res.Summary)
+	}
+
+	if outcomeErr := liveDeliveryError(res, err); outcomeErr != nil {
+		t.Error(outcomeErr)
 	}
 
 	slmDir := cfg.SlmDir()
@@ -375,11 +432,45 @@ func mustLiveSlm(t *testing.T, dir string, args ...string) string {
 	return out
 }
 
-// isDeadline reports whether a run merely ran out of the clock this test gave
-// it. A live SLM writing a two-language app can legitimately outlast the
-// budget, and that is a slow machine rather than a broken release — but a
-// transport or protocol failure must still fail hard, so the two are told
-// apart rather than both forgiven.
+// liveDeliveryError prevents a structurally valid but unsuccessful run from
+// passing release qualification. Keep checking the artifacts after reporting it.
+func liveDeliveryError(res *orchestrator.Result, err error) error {
+	if err != nil {
+		return fmt.Errorf("live delivery did not complete: %w", err)
+	}
+	if res == nil {
+		return errors.New("live delivery returned no result")
+	}
+	if !res.Success || res.FailedTasks != 0 || res.UnexecutedTasks != 0 {
+		return fmt.Errorf("live delivery failed qualification: outcome=%s failed=%d unexecuted=%d: %s", res.Outcome, res.FailedTasks, res.UnexecutedTasks, res.Summary)
+	}
+	return nil
+}
+
+func TestLiveDeliveryQualificationRequiresSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		result  *orchestrator.Result
+		err     error
+		wantErr bool
+	}{
+		{name: "no result", wantErr: true},
+		{name: "failed delivery", result: &orchestrator.Result{Success: false}, wantErr: true},
+		{name: "failed tasks", result: &orchestrator.Result{Success: true, FailedTasks: 1}, wantErr: true},
+		{name: "unfinished tasks", result: &orchestrator.Result{Success: true, UnexecutedTasks: 1}, wantErr: true},
+		{name: "deadline", result: &orchestrator.Result{Success: true}, err: context.DeadlineExceeded, wantErr: true},
+		{name: "completed", result: &orchestrator.Result{Success: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := liveDeliveryError(tc.result, tc.err); (err != nil) != tc.wantErr {
+				t.Fatalf("qualification error=%v, want error=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// isDeadline identifies timeouts so their partial artifacts can still be
+// inspected. liveDeliveryError above still fails qualification for that run.
 func isDeadline(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true

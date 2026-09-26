@@ -98,10 +98,21 @@ read-only, and this page used to say they were.
 
 **Build/test** — the runners a worker is expected to use:
 `go test|build|vet|fmt|mod|list` `gofmt` · `pytest` `python -m pytest|py_compile|compileall|unittest`
-· `node --check` · `npm test|run|ci|install` · `cargo test|build|clippy|fmt|check` ·
+· `node --check` · `node --test <project paths>` · `npm test|run|ci|install` · `cargo test|build|clippy|fmt|check` ·
 `mvn` `./mvnw` `gradle` `./gradlew` · `ctest` `cmake` · `bash -n` `shellcheck` ·
 `tsc` `eslint` `ruff` `mypy` `black` `flake8` · `gcc` `g++` `clang` `clang++` ·
 `uv run pytest` `uv sync` `uv pip`
+
+The Node test runner accepts test-name/skip patterns, concurrency, timeout,
+test-only and force-exit options. Preloads, custom loaders/reporters, diagnostic
+output flags and paths outside the project are refused. Plain JavaScript teams
+can run behavior tests without installing npm dependencies.
+Task acceptance also accepts directory-qualified test globs such as
+`node --test web/*.test.js`. A run reporting zero discovered tests fails
+acceptance even when Node exits successfully. Explicit test-file arguments that
+resolve to empty or comment-only files also fail; Node otherwise counts each
+as a passing file-level test. This detects empty bodies, not the quality of
+arbitrary assertions.
 
 Several of these take a flag whose **value names another program to run**, which would clear the
 allowlist while executing something it never inspected. Those flags are refused per binary:
@@ -293,6 +304,12 @@ Two engine-level rules back these up:
   Repository dirt that is unrelated to the task does not count either.
 - **Gates fail closed.** Truncated reviewer JSON is a rejection, not an approval. The QA gate
   cannot report green when tests actually failed.
+
+Tool-loop history resets when a new agent is dispatched for a task, so a
+corrector can inspect files even if the worker exhausted its read tool.
+Repeated calls remain blocked within that dispatch; task-wide call and retry
+budgets still apply. A loop stop asks for the active role's JSON contract and
+cannot manufacture a successful tester verdict.
 
 ## 8. Human-in-the-loop gates
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/UnicoLab/slmcode/pkg/loop"
+	"github.com/UnicoLab/slmcode/pkg/workspace"
 	ggagent "github.com/piotrlaczkowski/GoLangGraph/pkg/agent"
 )
 
@@ -125,6 +126,8 @@ type gatedExecutor struct {
 	gate  *runGate
 	// onRequests receives the number of LLM round-trips one result stood for.
 	onRequests func(n int)
+	advice     func(context.Context, string, string) string
+	tracker    *workspace.CallTracker
 }
 
 // ExecuteSubAgents implements loop.SubAgentRunner.
@@ -135,6 +138,23 @@ func (e *gatedExecutor) ExecuteSubAgents(ctx context.Context, reqs []ggagent.Sub
 		return nil, err
 	}
 	defer release()
+	// Each dispatch has a fresh conversation. A corrector must be able to read
+	// the worker's files even when the previous agent exhausted its read loop.
+	// Repeated calls inside this dispatch are still blocked, and the loop's
+	// task-wide call/retry budgets remain authoritative across dispatches.
+	if e.tracker != nil {
+		for _, req := range reqs {
+			if req.TaskID != "" {
+				e.tracker.ResetTask(req.TaskID)
+			}
+		}
+	}
+	if e.advice != nil {
+		reqs = append([]ggagent.SubAgentRequest(nil), reqs...)
+		for i := range reqs {
+			reqs[i].Input += e.advice(ctx, reqs[i].AgentID, reqs[i].Input)
+		}
+	}
 	res, err := e.inner.ExecuteSubAgents(ctx, reqs, shared)
 	if e.onRequests != nil {
 		for _, r := range res {
@@ -152,7 +172,7 @@ func (o *Orchestrator) gatedExecutor() loop.SubAgentRunner {
 	if o == nil || o.executor == nil {
 		return nil
 	}
-	return &gatedExecutor{inner: o.executor, gate: o.runGateFor(), onRequests: o.bumpLLMCalls}
+	return &gatedExecutor{inner: o.executor, gate: o.runGateFor(), onRequests: o.bumpLLMCalls, advice: o.decisionGuidance, tracker: o.tracker}
 }
 
 // llmRequestsIn counts the LLM round-trips one sub-agent result cost: every

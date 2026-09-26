@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/UnicoLab/slmcode/pkg/context/textutil"
+	"github.com/UnicoLab/slmcode/pkg/laya"
 )
 
 // Chunk is a retrievable memory unit.
@@ -53,6 +54,8 @@ type Config struct {
 	CacheDir string
 	// MaxInjectBytes caps the rendered "Retrieved prior knowledge" block.
 	MaxInjectBytes int
+	// Laya optionally reranks qualified memory hits. Empty endpoint disables it.
+	Laya laya.Options
 }
 
 // Calibrated score floors.
@@ -253,7 +256,7 @@ func (r *Retriever) SearchAll(ctx context.Context, query string, chunks []Chunk)
 		}
 		scored = append(scored, Scored{Chunk: c, Score: s})
 	}
-	sort.Slice(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].Score > scored[j].Score })
 	return scored, nil
 }
 
@@ -430,9 +433,8 @@ func RetrieveForQuery(ctx context.Context, slmDir, query string, cfg Config) (st
 	_ = cached.Flush()
 
 	threshold := CalibratedThreshold(mode, all, cfg.MinScore)
-	hits := topK(all, r.TopK)
 	var kept []Scored
-	for _, h := range hits {
+	for _, h := range all {
 		if h.Score >= threshold {
 			kept = append(kept, h)
 		}
@@ -440,7 +442,16 @@ func RetrieveForQuery(ctx context.Context, slmDir, query string, cfg Config) (st
 	if len(kept) == 0 {
 		return "", mode, nil
 	}
-	return FormatHitsBudget(kept, cfg.MaxInjectBytes), mode, nil
+	if cfg.Laya.Endpoint != "" && len(kept) > 1 {
+		ranked, rankErr := rerankLaya(ctx, query, kept, cfg.Laya)
+		if rankErr != nil {
+			// Return both usable baseline context and a visible warning.
+			return FormatHitsBudget(topK(kept, r.TopK), cfg.MaxInjectBytes), mode, rankErr
+		}
+		kept = ranked
+		mode += "+laya"
+	}
+	return FormatHitsBudget(topK(kept, r.TopK), cfg.MaxInjectBytes), mode, nil
 }
 
 // ErrDimensionMismatch is returned when two vectors are not in the same space.

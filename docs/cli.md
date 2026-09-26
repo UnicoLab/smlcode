@@ -1,6 +1,7 @@
 # ⌨️ CLI reference
 
 Binary: **`slmcode`**. Every command has `--help`; `slmcode --help` groups them.
+`slmcode help <command>` opens the same command help.
 
 ```bash
 slmcode --help
@@ -120,6 +121,7 @@ path is embedded in a file that may be committed. Older files are migrated forwa
 | Command | Purpose |
 |---|---|
 | `configure` | Find a model server and write a working config — start here |
+| `auth` | Manage provider credentials: `list`, `get`, `set`, `rm` (see `auth --help`) |
 | `config` | `show` · `get` · `set` · `unset` · `schema` · `path` |
 | `stack` | `list` · `show` · `apply` · `edit` · `new` — provider/model presets |
 | `agent` | `list` · `show` · `edit` · `clear-llm` — per-agent LLM pins |
@@ -147,6 +149,9 @@ path is embedded in a file that may be committed. Older files are migrated forwa
 | `memory` | `show` · `episodes` · `facts` · `forget` |
 | `evolve` | `rules` · `why` · `regressions` · `reset` |
 | `metrics` | `show` · `compare` |
+| `calibrate` | Measure a served model and tune runtime profiles |
+| `graph` | `stats` · `file` · `neighbors` · `walk` · `backfill` · `prune` · `forget` — see [knowledge graph](graph.md) |
+| `autoresearch` | Run bounded harness experiments — see [autoresearch](autoresearch.md) |
 | `version` | Version metadata (`--check` queries GitHub) |
 | `completion` | `bash\|zsh\|fish\|powershell` |
 
@@ -303,6 +308,11 @@ Details worth knowing:
   change?" is a more urgent question after a failure than after a success.
 
 ## `configure`
+
+`--json` is noninteractive: it writes the selected configuration unless
+`--dry-run` is also set. `written: true` is emitted only after persistence
+succeeds. When no usable endpoint is found it emits `ok: false` and exits nonzero.
+
 
 The first command to run, and the one to run when nothing works.
 

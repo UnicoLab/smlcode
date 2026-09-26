@@ -1314,7 +1314,7 @@ func TestTheSplitterIsToldWhereTheTeamBoundariesAre(t *testing.T) {
 	o, _ := routingOrchestrator(t, e2ePlan(t))
 
 	got := o.splitGuidance()
-	for _, want := range []string{"backend", "frontend", "cmd/**", "web/**", "depends_on"} {
+	for _, want := range []string{"backend", "frontend", "cmd/**", "web/**", "depends_on", "GET /api/todos", "200 -> []", "go test ./...", "npm --prefix web run build"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("split guidance is missing %q:\n%s", want, got)
 		}
@@ -1332,6 +1332,40 @@ func TestTheSplitterIsToldWhereTheTeamBoundariesAre(t *testing.T) {
 	o.squadPlan = &squads.Plan{Squads: []squads.Squad{{ID: "solo", Owns: []string{"**"}}}}
 	if o.splitGuidance() != "" {
 		t.Error("one team is the single-stream pipeline wearing a hat — no boundary to state")
+	}
+}
+
+func TestPlannerAndSplitterReceiveTheFrozenContract(t *testing.T) {
+	o, err := New(config.Default(fullstackRoot(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.squadPlan = e2ePlan(t)
+	o.squadPlan.Squads[0].Charter = "Serve the browser entrypoint and assets"
+	inputs := []string{
+		o.buildPlannerPrompt("build the app", "test-run", "planner", "", "Use GET /todos", plan.ScopePRD{}, plan.ClarifyResult{}, nil),
+		o.buildSplitterPrompt("build the app", "splitter", "Use GET /todos", plan.ScopePRD{}, plan.ClarifyResult{}, nil),
+	}
+	for _, input := range inputs {
+		for _, want := range []string{"Serve the browser entrypoint and assets", "Frozen interface contract", "GET /api/todos", "200 -> []", "contract overrides conflicting implementation suggestions", "Include the test files", "Integration acceptance"} {
+			if !strings.Contains(input, want) {
+				t.Errorf("planning input lacks %q", want)
+			}
+		}
+	}
+}
+
+func TestPlanningContractBriefDoesNotGrowWithLargeSpecs(t *testing.T) {
+	p := e2ePlan(t)
+	p.Contract.Interfaces[0].Spec = strings.Repeat("long schema field ", 10000)
+	p.Squads[0].Charter = strings.Repeat("long charter ", 10000)
+	o, _ := routingOrchestrator(t, p)
+	brief := o.splitGuidance()
+	if !strings.Contains(brief, "Additional clauses omitted") || !strings.Contains(brief, "CONTRACT.md") {
+		t.Fatal("oversized clauses must point to the full contract rather than silently truncating its schema")
+	}
+	if strings.Contains(brief, "long schema field") || strings.Contains(brief, "long charter") {
+		t.Fatal("a clause too large for the token budget must not be pasted into the planning prompt")
 	}
 }
 

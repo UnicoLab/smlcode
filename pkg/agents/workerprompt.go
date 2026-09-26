@@ -104,6 +104,8 @@ Never end on a tool call. Never soft-pass broken code.
 func smokeHintFor(lang string) string {
 	l := strings.ToLower(lang)
 	switch {
+	case strings.Contains(l, "node's built-in test runner"):
+		return "node --test with the task's acceptance paths"
 	case strings.Contains(l, "go") && !strings.Contains(l, "django") && !strings.Contains(l, "mongo"):
 		return "go build ./... / go test ./pkg/... -short"
 	case strings.Contains(l, "python"), strings.Contains(l, "pytest"):
@@ -149,13 +151,14 @@ type WorkerPromptOptions struct {
 // before the task's own instructions; the Column line, which changed between
 // attempts at the same task, is gone.
 func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
+	opt.LangHint = TaskLangHint(t, opt.LangHint)
 	desc := opt.Description
 	if strings.TrimSpace(desc) == "" {
 		desc = t.Description
 	}
 	pack, body := SplitScopedPack(desc)
 	lang := ""
-	if h := strings.TrimSpace(opt.LangHint); h != "" {
+	if h := opt.LangHint; h != "" {
 		lang = "## Project language\n" + h + "\n\n"
 	}
 
@@ -211,4 +214,15 @@ func BuildWorkerPrompt(t plan.Task, opt WorkerPromptOptions) string {
 	}
 	b.WriteString(WorkerTaskRules(opt.LangHint))
 	return b.String()
+}
+
+// TaskLangHint keeps explicit static-client verification authoritative in a
+// mixed repository. A root go.mod must not tell a browser task to use ONLY Go.
+// This selects guidance only; execution still passes through shell policy.
+func TaskLangHint(t plan.Task, projectHint string) string {
+	args := strings.Fields(t.Acceptance)
+	if len(args) >= 2 && args[0] == "node" && args[1] == "--test" {
+		return "Task verification: Node's built-in test runner. Run the task's acceptance command. Tests must load the actual source and exercise behavior; copied source literals and file-existence checks do not verify behavior. For browser code, use controlled DOM/fetch mocks and keep HTML asset references working. Go checks cannot verify JavaScript behavior. This runner needs no package installation."
+	}
+	return strings.TrimSpace(projectHint)
 }

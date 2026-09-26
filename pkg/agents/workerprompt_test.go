@@ -193,3 +193,25 @@ func TestAllBookkeepingRendersNoNotesSection(t *testing.T) {
 		t.Errorf("an empty Notes heading was rendered:\n%s", tail(got))
 	}
 }
+
+func TestTaskVerificationOverridesRepositoryLanguage(t *testing.T) {
+	base := "Project language: Go. Use ONLY go test ./..."
+	task := plan.Task{ID: "T1", Role: plan.RoleWorker, Files: []string{"web/app.js"}, Acceptance: "node --test web/*.test.js"}
+	got := BuildWorkerPrompt(task, WorkerPromptOptions{LangHint: base})
+	for _, want := range []string{"Node's built-in test runner", "actual source", "node --test web/*.test.js", "Focus files (HARD SCOPE)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("task prompt lost %q", want)
+		}
+	}
+	if strings.Contains(got, "Use ONLY go test") || strings.Contains(got, "smoke (go build") {
+		t.Fatal("root language still overrides explicit client verification")
+	}
+	task.Acceptance = "go test ./..."
+	if got := TaskLangHint(task, base); got != base {
+		t.Fatalf("Go-only guidance changed: %q", got)
+	}
+	task.Acceptance = "node --test-name-pattern=foo app.js"
+	if got := TaskLangHint(task, base); got != base {
+		t.Fatalf("prefix collision selected test guidance: %q", got)
+	}
+}

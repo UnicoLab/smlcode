@@ -93,13 +93,13 @@ func repeatsWithoutProgress(tc ToolCall, previous []ToolCall) bool {
 func CorrectionMessage(reason string) string {
 	switch {
 	case reason == "empty_response":
-		return "Your previous response was empty. STOP exploring. Emit STRICT status JSON now: " +
-			`{"status":"done|blocked","summary":"...","files_changed":["real/paths"],"notes":""}. ` +
+		return "Your previous response was empty. STOP exploring. Emit STRICT JSON matching the active role contract. " +
+			"Report only observed evidence; failed or unexecuted checks must not be reported as passed. " +
 			"Do not reply with only a tool call."
 	case reason == "ended_on_tool_call":
 		return "You ended on a tool call (or the harness blocked a tool-junk finalize). " +
-			"STOP calling tools. Emit STRICT status JSON summarizing completed work " +
-			`(or status=blocked with a precise gap): {"status":"done|blocked","summary":"...","files_changed":[],"notes":""}.`
+			"STOP calling tools. Emit STRICT JSON matching the active role contract, summarizing observed evidence and precise gaps. " +
+			"Failed or unexecuted checks must not be reported as passed."
 	case reason == "empty_tool_name":
 		return "Your tool call had an empty name. Use a real tool: ws_read, ws_write, " +
 			"ws_edit, ws_patch, ws_shell, ws_glob, ws_grep."
@@ -113,7 +113,7 @@ func CorrectionMessage(reason string) string {
 	case strings.HasPrefix(reason, "text_tool_calls:"):
 		names := strings.TrimPrefix(reason, "text_tool_calls:")
 		return "You embedded tool calls in text (" + names + "). Re-issue them as NATIVE " +
-			"tool calls (not fenced ```tool / <tool_call> prose), then finish with status JSON."
+			"tool calls (not fenced ```tool / <tool_call> prose), then finish with the active role JSON contract."
 	case strings.HasPrefix(reason, "malformed_args:"):
 		name := strings.TrimPrefix(reason, "malformed_args:")
 		return "The arguments for tool '" + name + "' were malformed (not valid JSON). " +

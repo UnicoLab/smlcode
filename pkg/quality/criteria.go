@@ -129,8 +129,9 @@ func (r CriteriaReport) FirstBlocking() (CriterionOutcome, bool) {
 // This is the ONLY door a criterion's verify command has into the executor,
 // and it is the same door prose acceptance commands use: the command must
 // begin with a whitelisted tool and survive SanitizeAcceptanceCommand, which
-// rejects every shell metacharacter and every token that is not a flag, a path
-// or a plain identifier. A criterion therefore cannot widen shell scope by one
+// rejects shell operators/substitutions and tokens that are not flags, paths
+// or plain identifiers (Node test paths may use directory-qualified globs).
+// A criterion therefore cannot widen shell scope by one
 // character over what the prose path already allowed.
 func SafeVerifyCommand(cmd string) string {
 	cmd = strings.TrimSpace(cmd)

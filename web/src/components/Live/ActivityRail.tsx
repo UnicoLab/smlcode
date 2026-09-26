@@ -43,9 +43,10 @@ export interface ActivityRailProps {
   derived?: RunDerived;
   /** A task the floor asked the Tasks view to scroll to and flash. */
   focusTaskId?: string;
+  totalTasks?: number;
 }
 
-export default function ActivityRail({ events, running, result, tokenStream, view, onView, onClose, overlay, derived, focusTaskId }: ActivityRailProps) {
+export default function ActivityRail({ events, running, result, tokenStream, view, onView, onClose, overlay, derived, focusTaskId, totalTasks }: ActivityRailProps) {
   const logRef = useStickToBottom<HTMLDivElement>(events, view === 'log');
   const fixes = useMemo(() => recoveryTally(buildRecovery(events)), [events]);
   const fixesBadge =
@@ -60,11 +61,12 @@ export default function ActivityRail({ events, running, result, tokenStream, vie
     return set.size;
   }, [derived, events]);
   const taskCount = useMemo(() => {
+    if (totalTasks !== undefined) return totalTasks;
     if (derived) return derived.taskIds.size;
     const ids = new Set<string>();
     for (const e of events) if (e.task_id) ids.add(e.task_id);
     return ids.size;
-  }, [derived, events]);
+  }, [derived, events, totalTasks]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -110,7 +112,7 @@ export default function ActivityRail({ events, running, result, tokenStream, vie
               <div className="space-y-3">
                 <CalibrationBanner events={events} />
                 <TokenStream text={tokenStream} running={running} />
-                <EventLog events={events} scrollRef={logRef} />
+                <EventLog events={events} scrollRef={logRef} running={running} />
               </div>
             )}
           </div>

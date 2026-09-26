@@ -76,7 +76,7 @@ query
   → escalate HITL if stuck (timeout → @escalate SLM decides)
   → placeholder polish → completeness bar
   → finalize tester (real commands required)
-  → QA gate (install deps + pytest preferred — not compileall alone)
+  → QA gate (project-language checks + configured dependency policy)
   → continue-ask if work remains
   → learn → evolve skills → session snapshot
 ```

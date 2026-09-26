@@ -142,6 +142,7 @@ nav:
       - 🧠 Concepts: concepts.md
       - 🔌 Providers: providers.md
   - 📘 Handbook:
+      - Feature index: features.md
       - 🧭 User guide: guide.md
       - 🖥️ TUI & chat: tui.md
       - 🎨 Studio: studio.md
@@ -161,6 +162,7 @@ nav:
       - 🧰 Tools (ACI): tools.md
       - 🔒 Constrained decoding: decoding.md
       - 📐 Context engineering: context.md
+      - External decision models: laya.md
       - 🛡️ Permissions & safety: permissions.md
       - ✅ Testing: testing.md
       - 🩺 Troubleshooting: troubleshooting.md
@@ -172,6 +174,13 @@ nav:
       - 🕸️ Knowledge graph: graph.md
       - 🔬 Autoresearch: autoresearch.md
   - 💚 Project:
+      - Release qualification: release-readiness.md
       - 🚚 Migration notes: migration.md
       - 📝 Changelog: changelog.md
       - 🤝 Contributing: contributing.md
+
+# Broken internal documentation links must block the strict release build.
+validation:
+  links:
+    not_found: warn
+    anchors: warn

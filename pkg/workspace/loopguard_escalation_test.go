@@ -195,3 +195,14 @@ func TestResetTaskClearsWithdrawals(t *testing.T) {
 		t.Error("ResetTask must clear the withdrawal along with the history")
 	}
 }
+
+func TestLoopGuardPreservesTheAgentsFinishContract(t *testing.T) {
+	for _, msg := range []string{hardStopMessage(), withdrawnMessage("ws_read")} {
+		if !strings.Contains(msg, "contract required by your role") || strings.Contains(msg, "files_changed") || strings.Contains(msg, `"status"`) {
+			t.Fatalf("loop guard must not force a worker schema onto testers or reviewers: %s", msg)
+		}
+		if !strings.Contains(msg, "do not claim unexecuted checks passed") {
+			t.Fatal("loop stop must not manufacture successful verification")
+		}
+	}
+}

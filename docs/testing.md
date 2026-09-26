@@ -44,7 +44,7 @@ cat hello.go && slmcode board && slmcode session list
 slmcode studio            # open the URL it prints — it carries ?t=<token>
 T=<the token from that URL>
 curl -s -H "X-SLMCode-Token: $T" http://127.0.0.1:7420/api/health | jq .
-curl -s -H "X-SLMCode-Token: $T" http://127.0.0.1:7420/api/agents | jq 'length'   # 20 built-ins + registry blocks
+curl -s -H "X-SLMCode-Token: $T" http://127.0.0.1:7420/api/agents | jq 'length'   # 22 built-ins + registry blocks
 
 # Auth is on by default and covers the HTML shell too, so both of these are 401:
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7420/api/health   # 401
@@ -85,6 +85,9 @@ make cover               # coverage against the floor in scripts/coverage-check.
 ```
 
 Frontend tests live in `web/`: `npm run lint && npm test` (Vitest + Testing Library).
+The coverage and race suites each allow 30 minutes per Go test package; the
+race detector can take substantially longer on a busy development machine.
+Timeouts still fail the gate and do not skip assertions.
 
 ### Before a release: `make e2e-release`
 
@@ -104,7 +107,7 @@ fake and a real server are precisely the ones a fixture cannot produce:
 
 So `test/e2e/live_release_test.go` drives the real binary against whatever is
 running: discovery → the `configure` command and the bytes it writes → a chat
-round-trip → a live two-language squads run. It asserts on **mechanism**, never
+round-trip → an OpenAI-compatible JSON decision → a live two-language squads run. It asserts on **mechanism**, never
 on the model's prose — the same model asked twice writes different code, and a
 test that demands particular code fails for the wrong reason.
 
@@ -112,13 +115,26 @@ test that demands particular code fails for the wrong reason.
 make e2e-release                      # everything (the squads run can take an hour)
 RUN_E2E_SQUADS=0 make e2e-release     # skip the slow two-language run
 make e2e-release ARGS="-run TestLiveReleaseSurface/configure"
+SLMCODE_E2E_ARTIFACTS=/tmp/slm-release make e2e-release # retain each squads workspace
 ```
 
 It runs with your **real** environment rather than the hermetic one
 `binary_acceptance_test.go` builds — the credentials live in `~/.omlx`,
 `~/.slmcode` and the environment, and hiding them would test a machine you do
-not have. Nothing is written outside a temp directory: no subtest passes
-`configure --user`.
+not have. Generated projects and configuration are written to temporary
+workspaces; no subtest passes `configure --user`. Normal user-level caches and
+adaptive learning stores can still be used and updated, just as in a regular run.
+
+Set `SLMCODE_E2E_ARTIFACTS` to retain a uniquely named squads workspace,
+including its generated code, board and `.slmcode/queries/*/events.jsonl`, for
+debugging either successful or failed runs. Otherwise temporary workspaces are
+removed by Go's test runner. The static frontend fixture uses Go and Node's
+built-in test runner; it needs no npm packages or framework.
+
+A live squads qualification requires a successful delivery with no failed or
+unexecuted tasks. A valid team plan, preserved scope, or partial files on disk
+alone cannot make that check pass. A timed-out run also fails qualification,
+while its available artifacts are still inspected.
 
 ### The two suites that stand in for a real run
 
@@ -314,8 +330,23 @@ failed live run is undiagnosable: the board says a task never left
 | Skills flywheel | `.slmcode/SKILLS.md` 🦋 |
 | Resume | `/stop` → `/resume` 🛟 |
 | Agent detail | Studio Agents → click row shows system prompt |
-| 20 built-in agents | `/api/agents` |
+| 22 built-in agents | `/api/agents` |
 
 Stuck? → [❓ FAQ](faq.md)
 
 ☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)
+
+## Optional decision-model qualification
+
+[External decision models](laya.md) have separate protocol, bounds, fallback and
+advisory-dispatch tests. These run under `make check`. Their opt-in
+`TestLiveDecisionServer` validates the actual Go client against a running Laya or
+OpenAI-compatible decision service. It explicitly skips without
+`SLMCODE_TEST_DECISION_ENDPOINT`; passing the offline gate does not substitute
+for that deployment check or representative project evaluations.
+
+For release qualification also run `make docs-build`, `make govulncheck`,
+`scripts/check-version.sh` and `scripts/check-repo-refs.sh`. Confirm that no
+required `make check` step was skipped, build the Studio assets before producing
+binaries, and follow the repository's
+[release checklist](https://github.com/UnicoLab/smlcode/blob/main/RELEASE.md).

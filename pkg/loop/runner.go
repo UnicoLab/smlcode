@@ -2306,7 +2306,7 @@ func (r *Runner) applyHardGates(current *plan.Task, review plan.ReviewResult, g 
 	}
 	// Tester gate: never accept "does not work" / passed:false / empty finalize.
 	// Exception: rename already satisfied on disk — do not reopen/escalate.
-	if review.Approved && strings.EqualFold(current.Role, plan.RoleTester) {
+	if review.Approved && plan.IsTesterRole(current.Role) {
 		if g.renameDisk {
 			r.logf("%s tester gate skipped: rename satisfied on disk", current.ID)
 		} else if tr, ok := r.parseTesterOutput(*current); ok && !tr.Passed {
@@ -2792,9 +2792,10 @@ func StripScopedPack(desc string) string {
 func (r *Runner) formatReviewPrompt(t plan.Task) string {
 	langHint := ""
 	if r != nil {
-		if h := detectProjectLangHint(r.Root); h != "" {
+		if h := agents.TaskLangHint(t, detectProjectLangHint(r.Root)); h != "" {
 			langHint = "\n## Project language\n" + h
 		}
+		langHint += r.squadBriefSection(t)
 	}
 	return fmt.Sprintf(`Review task %s (%s) role=@%s. Reply with JSON only — no tools.%s
 
@@ -2814,6 +2815,7 @@ Rules:
 - Reject if "## Claimed files gate" shows FAILED (hallucinated paths).
 - @explorer: approve if a real file path was found.
 - @tester: approve ONLY when output JSON has "passed":true AND real shell Observation (not fabricated commands[]). Reject if passed:false, failures listed, or "does not work".
+- Tester roles (including language-specific testers) verify behavior; they do not need to modify implementation files. Judge execution evidence and assertions, not whether the tester edited code.
 - Reject only if work is clearly missing or out of scope.
 `, t.ID, t.Title, t.Role, langHint, t.Acceptance, clipForReview(t.Output, 3500)) + r.feedbackSection()
 }
@@ -2905,7 +2907,8 @@ func (r *Runner) recoverIncompleteFinalize(ctx context.Context, t *plan.Task, ba
 		}
 		r.logf("%s incomplete finalize (%s); finish-steer pass %d/%d", t.ID, reason, pass+1, maxPasses)
 		r.fireIntervention(t.ID, reason, quality.PhraseForUser(reason), nudgeIssue)
-		r.fire(stream.KindAgentStart, r.correctorID(), t.ID, "fix incomplete finalize",
+		corrector := r.correctorIDFor(*t)
+		r.fire(stream.KindAgentStart, corrector, t.ID, "fix incomplete finalize",
 			strings.Join(t.Files, ", "), "")
 		corrIn := r.formatCorrectPrompt(*t, plan.ReviewResult{
 			Approved: false,
@@ -2913,7 +2916,7 @@ func (r *Runner) recoverIncompleteFinalize(ctx context.Context, t *plan.Task, ba
 			Summary:  "incomplete finalize",
 		})
 		corr, ok2 := r.execOne(ctx, t.ID, "finalize recovery", ggagent.SubAgentRequest{
-			AgentID: r.correctorID(), Input: corrIn,
+			AgentID: corrector, Input: corrIn,
 			Timeout: r.callTimeout(ctx), ShareState: true, TaskID: t.ID,
 		})
 		if !ok2 {
@@ -2923,14 +2926,14 @@ func (r *Runner) recoverIncompleteFinalize(ctx context.Context, t *plan.Task, ba
 			t.Output = out
 		}
 		r.noteAttempt(t.ID, []string{nudgeIssue})
-		r.fire(stream.KindAgentEnd, r.correctorID(), t.ID, "corrector finished", "", truncate(t.Output, 800))
+		r.fire(stream.KindAgentEnd, corrector, t.ID, "corrector finished", "", truncate(t.Output, 800))
 	}
 	reason, _, stillBad := r.incompleteFinalizeNudge(*t)
 	if !stillBad {
 		return
 	}
 	hasWrite := r.hasRealWriteEvidence(*t, baseline) || hasToolWriteEvidence(t.Output) || hasDiskEvidenceSection(t.Output)
-	if !hasWrite {
+	if !hasWrite || plan.IsTesterRole(t.Role) {
 		r.logf("%s incomplete finalize persists after recovery (%s)", t.ID, reason)
 		return
 	}

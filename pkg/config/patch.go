@@ -117,7 +117,18 @@ func (c *Config) applyExtra(p Patch) {
 		if _, patchable := PatchableField(k); !patchable {
 			continue
 		}
-		if err := c.Set(k, p.extra[k]); err != nil {
+		value := p.extra[k]
+		// Like the typed chat/embedding key patches, a masked settings
+		// round-trip must preserve the credential, not install "***" as a key.
+		if k == "laya_api_key" {
+			key, ok := value.(string)
+			key = strings.TrimSpace(key)
+			if !ok || key == "" || key == "***" {
+				continue
+			}
+			value = key
+		}
+		if err := c.Set(k, value); err != nil {
 			continue
 		}
 		// A patch is a person editing settings in Studio or the TUI, so the

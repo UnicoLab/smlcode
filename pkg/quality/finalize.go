@@ -47,15 +47,14 @@ func LooksLikeToolJunk(raw string) bool {
 }
 
 // FinishSteerMessage is the corrective prompt for incomplete finalize recovery.
-// When hasWriteEvidence is true, forbid new tool chains and demand status JSON.
+// When hasWriteEvidence is true, forbid new tool chains; preserve the active role contract.
 func FinishSteerMessage(reason string, hasWriteEvidence bool) string {
 	base := CorrectionMessage(reason)
 	if hasWriteEvidence {
 		return base + " Disk/tool write evidence already exists — do NOT start new tool chains. " +
-			`Emit STRICT JSON only: {"status":"done","summary":"what changed","files_changed":["real/paths"],"notes":""}.`
+			"Emit STRICT JSON matching the active role contract, reporting only observed evidence."
 	}
-	return base + " If you still need one edit, use ws_edit/ws_patch (ws_read first), then IMMEDIATELY " +
-		`emit STRICT JSON: {"status":"done|blocked","summary":"...","files_changed":[],"notes":""}. Never end on a tool call.`
+	return base + " Finish the active role with STRICT JSON. Report failed or unexecuted checks honestly. Never end on a tool call."
 }
 
 // ProvisionalDoneFromEvidence builds a reviewable done JSON when the model
@@ -89,7 +88,7 @@ func stripHarnessSections(s string) string {
 	return StripHarnessSections(s)
 }
 
-// FinalizeWarnMessage reminds the model to emit status JSON before turn-cap abort.
+// FinalizeWarnMessage reminds the model to emit its role JSON before turn-cap abort.
 // Port of little-coder finalize-warn — prevents "ran out of turns, no final JSON".
 func FinalizeWarnMessage(maxIter int) string {
 	if maxIter <= FinalizeWarnRemaining {
@@ -98,7 +97,7 @@ func FinalizeWarnMessage(maxIter int) string {
 	return fmt.Sprintf(
 		"\n## Turn budget\nYou have at most %d tool/thinking turns for this task. "+
 			"When you have ~%d turns left, STOP starting new tool chains: finish edits, "+
-			"run a quick smoke if needed, then emit STRICT status JSON. "+
+			"run a quick smoke if needed, then emit STRICT JSON matching the active role contract. "+
 			"Never end on a bare tool call.\n",
 		maxIter, FinalizeWarnRemaining,
 	)
@@ -112,8 +111,8 @@ func FinalizeSteerMessage(remaining int) string {
 	}
 	return fmt.Sprintf(
 		"TURN BUDGET: ~%d tool/thinking turns left. STOP starting new tool chains. "+
-			"Finish pending edits, run a quick smoke if needed, then emit STRICT status JSON "+
-			`({"status":"done"|"blocked",...}). Never end on a bare tool call.`,
+			"Finish pending work, run the required checks if possible, then emit STRICT JSON matching the active role contract. "+
+			"Failed or unexecuted checks must not be reported as passed. Never end on a bare tool call.",
 		remaining,
 	)
 }
@@ -146,7 +145,7 @@ func ThinkingBudgetNudge(enabled bool) string {
 func ThinkingBudgetBreachMessage() string {
 	return "THINKING BUDGET EXCEEDED. Stop deliberating. Commit to the simplest viable " +
 		"implementation now: use ws_edit/ws_patch (ws_read first), smoke with ws_shell, " +
-		"then emit status JSON. Do not plan further alternatives."
+		"then emit the active role JSON contract. Do not plan further alternatives."
 }
 
 // EstimateTokensApprox approximates tokens from rune/byte length (~4 chars/token).

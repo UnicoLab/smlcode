@@ -9,6 +9,21 @@
 
 ### Added
 
+- A `frontend-static` team for plain HTML/CSS/JavaScript, with Node's built-in
+  behavior tests and no npm build requirement. Static projects no longer need
+  a React team to own their browser files.
+- Live delivery progress with animated state segments, direct task navigation,
+  connection-loss feedback and a persistent Motion/Still floor control.
+  Both floor views respect reduced motion and retain live updates while still.
+- `SLMCODE_E2E_ARTIFACTS` retains live release workspaces for diagnosis.
+
+- Optional external decision models: native Laya and OpenAI-compatible JSON
+  predictions, bounded prior-knowledge reranking, and opt-in planning,
+  navigation, review and repair hints. Errors preserve normal harness behavior;
+  acceptance gates remain authoritative. See [configuration and limitations](laya.md).
+  Hosting, model weights and training remain external; no Python model tools
+  are bundled.
+
 - **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
   so: the dispatcher picks the teams, how they work and who manages them, and
   names its pick for the request being typed. Picking teams switches to Strict —
@@ -24,6 +39,70 @@
 - **Teams are editable at plan approval on every run.** A single-team run shows
   its team for editing, a team can be added to it from the library, and a
   two-team run can be taken down to one — all previously refused.
+
+### Fixed
+
+- Planner and splitter prompts now carry the frozen API contract, per-team
+  acceptance commands and integration checks. Earlier planning could propose
+  routes or JSON fields that contradicted the contract already given to workers.
+  Large contract excerpts are bounded in tokens and reference the full document.
+- Live insights no longer diagnose an active run as missing a terminal event;
+  task badges use the board count, and mobile team cards open readable task details.
+- The 3D camera fits the canvas width, preserves reset framing after resizing,
+  and uses frame-time-based easing. Still mode also disables camera glides and
+  orbit damping.
+
+- Phase transitions scroll only the phase strip, respect reduced motion and
+  count only phases in the active pipeline. Screen readers no longer announce
+  the whole activity ticker every second.
+- The shell policy allows `node --test <paths>` while refusing inline code,
+  preload/loader flags and custom reporter modules. Acceptance criteria and
+  team gates run the same guarded command, including directory-qualified test
+  globs, so static JavaScript tests no longer stay silently unverified.
+- Node runs that report zero discovered tests now fail acceptance, including
+  combined Go/JavaScript gates. Comment-only or empty explicit test files are
+  rejected too: Node can count those as a passing file-level test. A successful
+  exit with no executable test body is not evidence.
+- Worker, reviewer and corrector prompts honor a task's explicit Node test
+  command in mixed repositories instead of inheriting a contradictory Go-only
+  instruction. The static team uses standard-library DOM/fetch fakes, without
+  adding an uninstalled browser-test dependency.
+- Tester correction and finalize recovery preserve the tester role and verdict
+  schema. Language-specific testers also pass through the tester gate, and
+  reviewers are told that verification does not require implementation edits.
+  Loop-stop messages preserve the active role's JSON contract as well.
+- Finalization at the provider boundary preserves each role's JSON schema.
+  The underlying agent library previously appended a worker-only template to
+  tester, explorer and reviewer requests. Shared budget/recovery nudges now
+  preserve role contracts too; tester success is never synthesized from writes.
+- New agent dispatches reset exhausted tool-loop history so correctors can
+  inspect files before editing. Repetition remains blocked within each dispatch,
+  and task-wide retry/call budgets still bound the overall attempt.
+- Review and correction retain the team's charter, ownership boundaries and
+  interface contract instead of dropping constraints after the initial worker.
+- Planning receives bounded team charters as well as the interface contract,
+  including the static client's HTML/script loading and backend serving needs.
+
+- Live squads release qualification now rejects unsuccessful or timed-out
+  deliveries, even when their team structure and scope checks pass. Structural
+  validity can no longer conceal failed tasks behind a green release smoke.
+
+- Studio uses React Router 7.18.4 to address the reported navigation and
+  hydration advisories affecting its previous router dependencies. The npm
+  manifest and lockfile are updated together.
+
+- `configure --json` now persists the configuration before reporting
+  `written: true`, and exits nonzero when no usable endpoint is found.
+  `--dry-run` remains read-only. Release smoke checks now exercise a real chat
+  completion and a JSON decision, rather than only listing models.
+- The vulnerability-scan target locates its installed executable when Go's bin
+  directory is outside `PATH`; frontend dependency freshness includes the lockfile.
+
+### Breaking behavior changes
+
+Automation using `configure --json` only for discovery must add `--dry-run`;
+failed discovery now returns a nonzero exit status. Studio source-build Node
+requirements now match the locked dependencies. See [migration notes](migration.md#release-preparation-updates).
 
 ### Changed
 

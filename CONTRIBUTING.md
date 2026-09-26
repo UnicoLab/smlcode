@@ -11,13 +11,13 @@ make bootstrap        # installs web/ npm deps and builds the Studio UI → cmd/
 make build            # → ./bin/slmcode
 ```
 
-Needs Go 1.23+. `make bootstrap` additionally needs Node.js 22+ on your PATH — nothing else
+Needs Go 1.25+ (the module selects the Go 1.26.7 toolchain). `make bootstrap` additionally needs Node.js 22.22.2+ or 24.15+ on your PATH — nothing else
 in SLMCode does; it fails with an actionable message if `npm` is missing. `make install-user`
 puts the binary in `~/.local/bin`; `make install-system` installs system-wide.
 
 ### How the Studio UI gets into the binary
 
-The Studio SPA is React 18 + Vite + TypeScript in `web/`. `make ui-react` builds it and copies
+The Studio SPA is React 19 + Vite + TypeScript in `web/`. `make ui-react` builds it and copies
 `web/dist/*` into `cmd/slmcode/ui/`, which `cmd/slmcode/root.go` embeds with
 `//go:embed all:ui`. `make bootstrap` is `web-deps` + `ui-react`: it always ensures the npm
 dependencies are current and then builds. It is a bootstrap, not a cache check — it used to
@@ -41,23 +41,13 @@ command — and `slmcode studio` says the same thing on startup. Both use one pr
 So: `go build` alone always works and produces a usable binary (CLI, TUI and the whole Studio API
 are unaffected); only the web page is missing until you run `make bootstrap`.
 
-### `web/package-lock.json` is currently out of date — and how that is fixed
+### Keep the web lockfile reproducible
 
-`web/package.json` gained `vitest`, `@testing-library/*`, `eslint` and the rest of the test
-toolchain, and **`web/package-lock.json` predates them**. `npm ci` installs strictly from the
-lock and refuses to run at all when the two disagree:
-
-```
-npm ci can only install packages when your package.json and package-lock.json are in sync
-```
-
-`make bootstrap` handles this: `scripts/web-deps.sh` tries `npm ci`, and on failure explains why
-and falls back to **`npm install`**, which resolves from `package.json` and **rewrites
-`web/package-lock.json`**.
-
-> **Commit the regenerated `web/package-lock.json`.** That is the actual fix. Until it lands,
-> every clone and every CI run pays for the fallback; once it does, `npm ci` works again and is
-> both faster and reproducible.
+`web/package-lock.json` must match `web/package.json`. `npm ci` installs exactly
+that lockfile. If dependency edits cause a mismatch, run `npm install` in `web/`
+and commit the updated lockfile with the manifest. `make bootstrap` reports an
+`npm ci` failure and falls back to `npm install`; inspect that output instead of
+assuming the failure is always a lockfile mismatch.
 
 ### Test files never block the app build
 

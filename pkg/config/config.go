@@ -642,6 +642,14 @@ type Config struct {
 	// RetrievalCacheDir holds the on-disk embedding cache. Empty = .slmcode.
 	RetrievalCacheDir string `yaml:"retrieval_cache_dir,omitempty" json:"retrieval_cache_dir,omitempty"`
 
+	// Optional external decision model. Empty endpoint disables inference.
+	LayaProvider string        `yaml:"laya_provider" json:"laya_provider"`
+	LayaGuidance bool          `yaml:"laya_guidance" json:"laya_guidance"`
+	LayaEndpoint string        `yaml:"laya_endpoint,omitempty" json:"laya_endpoint,omitempty"`
+	LayaModel    string        `yaml:"laya_model" json:"laya_model"`
+	LayaTimeout  time.Duration `yaml:"laya_timeout" json:"laya_timeout"`
+	LayaAPIKey   string        `yaml:"laya_api_key,omitempty" json:"laya_api_key,omitempty"`
+
 	// Embedding retrieval for CONTEXT injection (OpenAI-compat /v1/embeddings).
 	// When disabled or unreachable, lexical TF-IDF ranking is used.
 	EmbeddingEnabled  bool   `yaml:"embedding_enabled" json:"embedding_enabled"`
@@ -771,6 +779,9 @@ func Default(root string) *Config {
 		OverEditGuard:         true,
 		ReadHeadLines:         80,
 		EmbeddingTopK:         5,
+		LayaProvider:          "laya",
+		LayaModel:             "multilingual",
+		LayaTimeout:           2 * time.Second,
 		ModelProfiles:         DefaultModelProfiles(),
 	}
 }
@@ -1165,6 +1176,18 @@ func normalize(c *Config) {
 		c.DryRun = true
 	}
 	c.ShellPermission = permissions.NormalizeShell(c.ShellPermission)
+	c.LayaEndpoint = strings.TrimRight(strings.TrimSpace(c.LayaEndpoint), "/")
+	c.LayaProvider = strings.ToLower(strings.TrimSpace(c.LayaProvider))
+	if c.LayaProvider == "" {
+		c.LayaProvider = "laya"
+	}
+	c.LayaModel = strings.TrimSpace(c.LayaModel)
+	if c.LayaModel == "" && c.LayaProvider == "laya" {
+		c.LayaModel = "multilingual"
+	}
+	if c.LayaTimeout <= 0 {
+		c.LayaTimeout = 2 * time.Second
+	}
 	if c.EmbeddingTopK <= 0 {
 		c.EmbeddingTopK = 5
 	}
@@ -1670,6 +1693,9 @@ func (c *Config) Public() Config {
 	}
 	if p.EmbeddingAPIKey != "" {
 		p.EmbeddingAPIKey = "***"
+	}
+	if p.LayaAPIKey != "" {
+		p.LayaAPIKey = "***"
 	}
 	return p
 }

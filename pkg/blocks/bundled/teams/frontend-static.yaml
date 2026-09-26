@@ -1,0 +1,41 @@
+api_version: blocks/v1
+kind: team
+id: frontend-static
+name: Frontend · Static web
+description: >-
+  Plain HTML, CSS and browser JavaScript without a framework, npm or a build
+  pipeline. Checks use Node's built-in test runner without installing packages.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: javascript
+tags: [frontend, html, javascript, team]
+icon: "🌐"
+shareable: true
+spec:
+  id: frontend-static
+  name: Frontend · Static web
+  charter: >-
+    Own the static browser client. Use plain HTML, CSS and JavaScript; do not
+    introduce React, npm, package dependencies or a build step. Keep browser
+    code testable and add web/*.test.js tests using node:test and node:assert
+    from Node's standard library. Execute the real source with node:vm and
+    minimal DOM/fetch fakes; do not import jsdom or other uninstalled packages.
+    Check the client behavior and error handling, not just file existence or
+    a copied source string. Ensure the HTML entrypoint loads the client script.
+    For a same-origin backend, coordinate serving the page and assets with the
+    backend owner and test that connection. Match the frozen API contract and leave server
+    files to their owner. The integration check must exercise the server and
+    client contract together using the project's existing runtime.
+  owns:
+    - web/**
+    - frontend/**
+    - client/**
+  acceptance: node --test web/*.test.js
+  worker: worker
+  reviewer: reviewer
+  tester: tester
+  match:
+    keywords: [static, html, vanilla, plain javascript, no framework, no npm]
+    files: [web/app.js]
+    extensions: [.html]

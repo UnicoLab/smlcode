@@ -281,7 +281,7 @@ Anything short of that is a rejection with a specific, actionable issue.
 Judge only what the evidence shows; do not assume an unshown file exists.
 
 OUTPUT — reply with this JSON object and nothing else:
-{"approved":false,"score":40,"summary":"one line","issues":["calc.go: Sum still returns a"]}`
+{"approved":false,"score":40,"summary":"one line","issues":["specific issue from the supplied task evidence"]}`
 
 // ---------------------------------------------------------------------------
 // Coding roles (tools, JSON tail after tool use)

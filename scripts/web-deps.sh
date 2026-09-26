@@ -22,16 +22,16 @@ STAMP="web/node_modules/.slmcode-deps.stamp"
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "ERROR: npm is not on PATH." >&2
-  echo "  The Studio UI in web/ is a React 18 + Vite + TypeScript app and needs Node.js 18+." >&2
+  echo "  The Studio UI in web/ is a React 19 + Vite + TypeScript app and needs Node.js 22.22.2+ or 24.15+." >&2
   echo "  Install Node (https://nodejs.org, 'brew install node', or nvm), then: make bootstrap" >&2
   echo "  Everything else — the CLI, the TUI, the Studio API — builds without Node." >&2
   exit 1
 fi
 
 # Fresh enough? node_modules exists, we installed it ourselves, and
-# package.json has not changed since. Cheap, so every target can depend on it.
-if [[ -d web/node_modules && -f "$STAMP" && ! web/package.json -nt "$STAMP" ]]; then
-  echo "web-deps: up to date (web/node_modules is newer than web/package.json)"
+# neither package.json nor package-lock.json has changed since. Cheap, so every target can depend on it.
+if [[ -d web/node_modules && -f "$STAMP" && ! web/package.json -nt "$STAMP" && ! web/package-lock.json -nt "$STAMP" ]]; then
+  echo "web-deps: up to date (web/node_modules is newer than the manifest and lockfile)"
   exit 0
 fi
 
@@ -45,15 +45,11 @@ if [[ -f web/package-lock.json ]]; then
   else
     cat <<'EOF'
 
-    'npm ci' failed. It installs strictly from package-lock.json and refuses to
-    run at all when the lock does not match package.json — which is the case in
-    this tree: package.json gained vitest, @testing-library/*, eslint and the
-    rest of the test toolchain that package-lock.json predates.
+    'npm ci' failed. Inspect its error above: it can indicate a manifest/lock
+    mismatch, a network failure, or an unsupported Node version.
 
-    Falling back to 'npm install', which resolves from package.json and
-    REWRITES web/package-lock.json.
-    >> Commit the regenerated web/package-lock.json. That is the actual fix, and
-    >> it is what puts CI and every other clone back on the faster 'npm ci'.
+    Falling back to 'npm install', which may rewrite web/package-lock.json.
+    Inspect and commit any dependency/lockfile changes before releasing.
 
 EOF
   fi

@@ -47,7 +47,7 @@ var BuildTestPrefixes = []string{
 	"python -m py_compile", "python3 -m py_compile",
 	"python -m compileall", "python3 -m compileall",
 	"python -m unittest", "python3 -m unittest",
-	"node --check",
+	"node --check", "node --test ",
 	"npm test", "npm run", "npm ci", "npm install",
 	"cargo test", "cargo build", "cargo clippy", "cargo fmt", "cargo check",
 	"mvn ", "./mvnw ", "gradle ", "./gradlew ",

@@ -340,6 +340,7 @@ var safeAcceptancePrefixes = []string{
 	"pytest ",
 	"pytest\t",
 	"go test",
+	"node --test ",
 	"npm test",
 	// `npm run <script>` — lint, typecheck and build are real verifications a
 	// criterion should be allowed to name, and refusing them was why "the
@@ -491,7 +492,8 @@ func trimAcceptancePunctuation(cmd string) string {
 const acceptanceShellMeta = "&|;`$(){}<>\\\n\r\"'*?!~#"
 
 // SanitizeAcceptanceCommand returns cmd if it is a plain argv-shaped command
-// starting with prefix, else "". No shell metacharacter survives.
+// starting with prefix, else "". Only directory-qualified Node test-file globs
+// may contain shell metacharacters; substitutions and operators never survive.
 func SanitizeAcceptanceCommand(cmd, prefix string) string {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" || len(cmd) > 300 {
@@ -500,7 +502,25 @@ func SanitizeAcceptanceCommand(cmd, prefix string) string {
 	if !strings.HasPrefix(strings.ToLower(cmd), strings.ToLower(strings.TrimSpace(prefix))) {
 		return ""
 	}
-	if strings.ContainsAny(cmd, acceptanceShellMeta) {
+	// Node's built-in runner supports test-file globs without a package.json.
+	// Admit only directory-qualified globs, so expansion cannot become a Node
+	// option, and apply the same preload/reporter/path guard as agent tools.
+	validated := cmd
+	if strings.TrimSpace(prefix) == "node --test" {
+		if !strings.HasPrefix(cmd, "node --test ") {
+			return ""
+		}
+		if _, blocked := workspace.DangerousInvocation(cmd); blocked {
+			return ""
+		}
+		for _, tok := range strings.Fields(cmd) {
+			if strings.Contains(tok, "*") && (strings.HasPrefix(tok, "-") || !strings.Contains(tok, "/") || strings.Index(tok, "*") < strings.Index(tok, "/")) {
+				return ""
+			}
+		}
+		validated = strings.ReplaceAll(cmd, "*", "x")
+	}
+	if strings.ContainsAny(validated, acceptanceShellMeta) {
 		return ""
 	}
 	if isLongRunningServer(cmd) {
@@ -512,7 +532,7 @@ func SanitizeAcceptanceCommand(cmd, prefix string) string {
 		}
 	}
 	// Every token must look like a flag, a path, or a simple identifier.
-	for _, tok := range strings.Fields(cmd) {
+	for _, tok := range strings.Fields(validated) {
 		if !acceptanceToken(tok) {
 			return ""
 		}
@@ -640,9 +660,37 @@ func RunSmoke(ctx context.Context, root, command string, timeout time.Duration) 
 		res.Summary = fmt.Sprintf("%s: %s", SmokeFailedMarker, firstLine(err.Error()+" "+out))
 		return res
 	}
+	if emptyNodeTestRun(command, out) {
+		res.Summary = SmokeFailedMarker + ": Node test runner discovered zero tests; add runnable behavior tests matching the acceptance command"
+		res.Output += "\n" + res.Summary
+		return res
+	}
+	if path := emptyNodeTestFile(root, command); path != "" {
+		res.Summary = SmokeFailedMarker + ": Node test file " + path + " contains only comments or whitespace; add executable behavior assertions using node:test, node:assert and node:vm"
+		res.Output += "\n" + res.Summary
+		return res
+	}
 	res.OK = true
 	res.Summary = SmokePassedMarker + ": " + command
 	return res
+}
+
+// Node 24 exits zero for an unmatched test glob. Successful process exit alone
+// must not let an absent suite satisfy either a task or a combined team gate.
+func emptyNodeTestRun(command, output string) bool {
+	args := strings.Fields(command)
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "node" || args[i+1] != "--test" {
+			continue
+		}
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#ℹ"))
+			if line == "tests 0" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // FormatSmokeSection renders a markdown section for task output / SCRATCH.

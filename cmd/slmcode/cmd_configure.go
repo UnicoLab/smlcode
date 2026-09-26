@@ -110,9 +110,12 @@ is present — never to a local port that merely might be a model server.`,
 
 			if !res.Found {
 				if asJSON {
-					return emitJSON(map[string]any{
+					if err := emitJSON(map[string]any{
 						"ok": false, "reason": res.NothingFound(), "tried": findingsJSON(res),
-					})
+					}); err != nil {
+						return err
+					}
+					return failf(1, "%s", res.NothingFound())
 				}
 				fmt.Println()
 				return failf(1, "%s", res.NothingFound())
@@ -131,6 +134,11 @@ is present — never to a local port that merely might be a model server.`,
 			}
 
 			if asJSON {
+				if !dryRun {
+					if err := writeChoice(cfg, choice, toUser); err != nil {
+						return err
+					}
+				}
 				return emitJSON(map[string]any{
 					"ok": true, "choice": choice, "tried": findingsJSON(res),
 					"written": !dryRun, "scope": scopeName(toUser),

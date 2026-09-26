@@ -297,3 +297,20 @@ func TestAWaveNoTeamOwnsSaysSo(t *testing.T) {
 		t.Errorf("a team was claimed live with nothing of its own in the wave:\n%s", joined)
 	}
 }
+
+func TestReviewAndCorrectionKeepTheSquadContract(t *testing.T) {
+	r := NewRunner(nil, nil)
+	r.Squads = twoSquadPlan()
+	r.Squads.Squads[1].Charter = "Use standard-library browser fakes; no uninstalled dependencies."
+	task := plan.Task{ID: "T2", Role: plan.RoleWorker, Squad: "frontend", Files: []string{"web/app.js"}}
+	for name, prompt := range map[string]string{
+		"review":     r.formatReviewPrompt(task),
+		"correction": r.formatCorrectPrompt(task, plan.ReviewResult{Summary: "dependency missing"}),
+	} {
+		for _, want := range []string{"standard-library browser fakes", "GET /api/todos", "cmd/**", "do not edit", "web/**"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s loses team obligation %q", name, want)
+			}
+		}
+	}
+}

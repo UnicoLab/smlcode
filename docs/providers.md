@@ -176,3 +176,11 @@ YAML: `.slmcode/agents/<id>.yaml`. Unique backend keys prevent gateway mix-ups
 → [⚙️ Config](config.md) · [🧪 Recipes](recipes.md) · [❓ FAQ](faq.md)
 
 ☀️ Made with ♥ by [UnicoLab](https://unicolab.ai)
+
+## Separate decision provider
+
+The coding provider above is independent of the optional [decision model](laya.md).
+Use `laya_provider: laya` for native `/v1/systemone` predictions, or
+`laya_provider: openai` for JSON chat predictions from another served model.
+Configure its endpoint, model and key separately. An empty `laya_endpoint`
+disables the integration; `laya_guidance` independently enables agent hints.

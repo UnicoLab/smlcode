@@ -448,11 +448,14 @@ func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) stri
 	var b strings.Builder
 	b.WriteString("Fix task " + t.ID + " after failed review.\n\n")
 	b.WriteString("## Original task\n" + StripScopedPack(t.Description) + "\n\n")
-	if h := detectProjectLangHint(r.rootDir()); h != "" {
+	if h := agents.TaskLangHint(t, detectProjectLangHint(r.rootDir())); h != "" {
 		b.WriteString("## Project language\n" + h + "\n\n")
 	}
 	if sec := agents.FocusFilesSection(t.Files); sec != "" {
 		b.WriteString(strings.TrimLeft(sec, "\n") + "\n")
+	}
+	if brief := r.squadBriefSection(t); brief != "" {
+		b.WriteString(brief + "\n")
 	}
 	if strings.TrimSpace(t.Acceptance) != "" {
 		b.WriteString("## Acceptance\n" + t.Acceptance + "\n\n")
@@ -461,7 +464,7 @@ func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) stri
 	if diff := r.focusDiff(t, 1500); diff != "" {
 		b.WriteString("## What the previous attempt actually changed (git diff)\n" +
 			"```diff\n" + diff + "\n```\n\n")
-	} else if t.Retries > 0 || r.budget().spent(t.ID) > 1 {
+	} else if !plan.IsTesterRole(t.Role) && (t.Retries > 0 || r.budget().spent(t.ID) > 1) {
 		b.WriteString("## What the previous attempt actually changed\n" +
 			"NOTHING — the focus files are byte-identical to their last committed state. " +
 			"Your previous answer did not reach disk. Make a real ws_edit/ws_patch this time.\n\n")
@@ -479,6 +482,10 @@ func (r *Runner) formatCorrectPrompt(t plan.Task, review plan.ReviewResult) stri
 	b.WriteString("## Review summary\n" + review.Summary + "\n")
 	if mem := r.memorySection(plan.RoleCorrector); mem != "" {
 		b.WriteString(mem)
+	}
+	if plan.IsTesterRole(t.Role) {
+		b.WriteString(agents.TesterTaskRules(agents.TaskLangHint(t, detectProjectLangHint(r.rootDir()))))
+		return b.String()
 	}
 	b.WriteString(`
 Use ws_edit/ws_write on real files, then finish with STRICT JSON:

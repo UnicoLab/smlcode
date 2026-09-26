@@ -3,6 +3,7 @@ package quality
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -51,10 +52,82 @@ func TestSafeVerifyCommandAcceptsWhitelistedTools(t *testing.T) {
 		"cargo test",
 		"python -m pytest -q",
 		"pytest tests/unit",
+		"node --test web/*.test.js",
+		"node --test --test-concurrency=2 ./tests/unit.test.cjs",
 	} {
 		if got := SafeVerifyCommand(cmd); got != cmd {
 			t.Errorf("SafeVerifyCommand(%q) = %q, want it accepted", cmd, got)
 		}
+	}
+}
+
+func TestNodeVerificationCannotWidenShellScope(t *testing.T) {
+	for _, cmd := range []string{
+		"node --test-name-pattern=x app.js", "node --test --import=./hook.js web/test.js",
+		"node --test --test-reporter=./hook.js web/test.js", "node --test -r./hook.js web/test.js",
+		"node --test ../outside.test.js", "node --test /tmp/outside.test.js",
+		"node --test *.js", "node --test */test.js", "node --test web/*.js && echo bad",
+		"node --test web/$(id).js", "node --test --test-reporter-destination=/tmp/report web/test.js",
+	} {
+		if got := SafeVerifyCommand(cmd); got != "" {
+			t.Errorf("unsafe command %q admitted as %q", cmd, got)
+		}
+	}
+}
+
+func TestNodeVerificationRunsActualTests(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("Node.js unavailable")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "web"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := "node --test web/*.test.cjs"
+	if got := ExtractAcceptanceCommands(cmd); len(got) != 1 || got[0] != cmd {
+		t.Fatalf("Node acceptance command not extracted: %v", got)
+	}
+	empty := verify(t, root, criteriaTask(plan.Criterion{ID: "C1", Text: "Behavior works", Verify: cmd, Priority: plan.PriorityMust}))
+	if len(empty.Outcomes) != 1 || empty.Outcomes[0].Verdict != CriterionFailed {
+		t.Fatalf("absent Node tests satisfied acceptance: %+v", empty)
+	}
+
+	for _, body := range []string{"", "// placeholder to satisfy acceptance\n/* no assertions */"} {
+		if err := os.WriteFile(filepath.Join(root, "web", "app.test.cjs"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := RunSmoke(context.Background(), root, cmd, 10*time.Second)
+		if got.OK || !got.Ran || !strings.Contains(got.Summary, "comments or whitespace") {
+			t.Fatalf("empty test file passed: %+v", got)
+		}
+	}
+	for _, pass := range []bool{true, false} {
+		body := "require('node:test')('real assertion', () => { require('node:assert/strict').equal(1, 1); });"
+		if !pass {
+			body = strings.Replace(body, "equal(1, 1)", "equal(1, 2)", 1)
+		}
+		if err := os.WriteFile(filepath.Join(root, "web", "app.test.cjs"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		report := verify(t, root, criteriaTask(plan.Criterion{ID: "C1", Text: "Behavior works", Verify: cmd, Priority: plan.PriorityMust}))
+		want := CriterionPassed
+		if !pass {
+			want = CriterionFailed
+		}
+		if !report.Ran || len(report.Outcomes) != 1 || report.Outcomes[0].Verdict != want {
+			t.Fatalf("pass=%v: %+v", pass, report)
+		}
+	}
+}
+
+func TestEmptyNodeSuiteInCombinedGate(t *testing.T) {
+	for _, output := range []string{"ℹ tests 0\nℹ pass 0", "TAP version 13\n1..0\n# tests 0\n# fail 0"} {
+		if !emptyNodeTestRun("go test ./... && node --test web/*.test.js", output) {
+			t.Errorf("zero-test combined gate accepted: %q", output)
+		}
+	}
+	if emptyNodeTestRun("node --test web/*.test.js", "# tests 2\n# pass 2") || emptyNodeTestRun("go test ./...", "# tests 0") {
+		t.Fatal("empty-suite detection rejected a real suite or unrelated runner")
 	}
 }
 

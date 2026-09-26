@@ -18,6 +18,7 @@ import clsx from 'clsx';
 
 interface EventLogProps {
   events: RunEvent[];
+  running?: boolean;
   summary?: RunEventSummary | null;
   /**
    * The scroll container the rows live in, for windowing. Without it every
@@ -118,10 +119,10 @@ type EventView = {
   chips: { label: string; tone?: 'phase' | 'agent' | 'task' | 'file' | 'kind'; id?: string }[];
 };
 
-function EventLog({ events, summary, scrollRef }: EventLogProps) {
+function EventLog({ events, summary, scrollRef, running = false }: EventLogProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const folded = useIncrementalSummary(events);
+  const folded = useIncrementalSummary(events, running);
   const insightSummary = summary || folded;
 
   const counts = useMemo(() => {
@@ -164,7 +165,12 @@ function EventLog({ events, summary, scrollRef }: EventLogProps) {
 
   return (
     <div className="space-y-2">
-      <RunInsightPanel summary={insightSummary} />
+      <details className="rounded-lg border border-gray-200 dark:border-gray-800" open={running ? undefined : true}>
+        <summary className="focus-ring cursor-pointer rounded-lg px-3 py-2 text-[11px] font-medium text-gray-600 dark:text-gray-300">
+          Run insights · {insightSummary.failures || 0} failure signals · {insightSummary.retries || 0} retries
+        </summary>
+        <RunInsightPanel summary={insightSummary} running={running} />
+      </details>
 
       {/* Summary + filter bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-800/40 text-[10px]">
@@ -867,18 +873,18 @@ function titleCase(value: string) {
     .join(' ');
 }
 
-function RunInsightPanel({ summary }: { summary: RunEventSummary }) {
+function RunInsightPanel({ summary, running }: { summary: RunEventSummary; running: boolean }) {
   const insights = summary.insights || [];
   const actions = summary.actions || [];
   return (
     <div className="rounded-lg border border-gray-200 bg-white/70 p-3 dark:border-gray-800 dark:bg-gray-900/50">
       <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Metric label="Elapsed" value={formatDuration(summary.duration_ms)} />
-        <Metric label="Tasks" value={String(summary.tasks || 0)} />
+        <Metric label="Tasks seen" value={String(summary.tasks || 0)} />
         <Metric label="Retries" value={String(summary.retries || 0)} tone={summary.retries >= 3 ? 'warning' : 'neutral'} />
         <Metric label="Replans" value={String(summary.replans || 0)} tone={summary.replans > 0 ? 'info' : 'neutral'} />
         <Metric label="Failures" value={String(summary.failures || 0)} tone={summary.failures > 0 ? 'error' : 'neutral'} />
-        <Metric label="Final" value={summary.final_phase || 'pending'} tone={summary.final_phase === 'error' ? 'error' : 'neutral'} />
+        <Metric label={running ? 'Current' : 'Final'} value={summary.final_phase || 'pending'} tone={summary.final_phase === 'error' ? 'error' : 'neutral'} />
       </div>
 
       <div className="mt-3 grid gap-3 lg:grid-cols-[1.2fr_1fr]">
@@ -1094,19 +1100,19 @@ function foldSummary(acc: SummaryAcc, event: RunEvent): void {
   }
 }
 
-function finishSummary(acc: SummaryAcc): RunEventSummary {
+function finishSummary(acc: SummaryAcc, running: boolean): RunEventSummary {
   const { retries, replans, count } = acc;
   const insights: NonNullable<RunEventSummary['insights']> = [...acc.failureInsights];
   const actions: NonNullable<RunEventSummary['actions']> = [];
   if (replans > 0) insights.push({ severity: 'info', title: 'Plan was revised', detail: `${replans} replan signal${replans === 1 ? '' : 's'} detected.` });
   if (retries >= 3) insights.push({ severity: 'warning', title: 'High retry pressure', detail: `${retries} retry signals detected; consider narrowing scope or using a larger local model.` });
-  if (count > 0 && !acc.terminalSuccess) insights.push({ severity: 'warning', title: 'No successful terminal event', detail: 'The visible event window has no clear run_done marker.' });
+  if (!running && count > 0 && !acc.terminalSuccess) insights.push({ severity: 'warning', title: 'No successful terminal event', detail: 'The visible event window has no clear run_done marker.' });
   if (acc.providerIssue) actions.push({ title: 'Check the model endpoint', detail: 'The timeline looks like a provider or local runtime connectivity failure.', command: 'slmcode doctor' });
   if (acc.modelIssue) actions.push({ title: 'Verify the configured model', detail: 'The selected model may not be served by the current endpoint.', command: 'slmcode stack list' });
   if (acc.contextIssue || retries >= 3) actions.push({ title: 'Shrink the next attempt', detail: 'Use Request Replan or split the request into fewer files/tasks for the local model.' });
   if (acc.qaIssue) actions.push({ title: 'Run the project QA gate', detail: 'A test/build/lint gate appears to be the blocker.', command: 'slmcode status' });
   if (acc.permissionIssue) actions.push({ title: 'Review command permissions', detail: 'A shell or filesystem guardrail may have stopped execution.', command: 'slmcode config show' });
-  if (count > 0 && !acc.terminalSuccess && actions.length === 0) actions.push({ title: 'Inspect the final phase', detail: 'The run did not record a clean terminal event; open the last error/output row before resuming.' });
+  if (!running && count > 0 && !acc.terminalSuccess && actions.length === 0) actions.push({ title: 'Inspect the final phase', detail: 'The run did not record a clean terminal event; open the last error/output row before resuming.' });
 
   const final = acc.final;
   return {
@@ -1141,11 +1147,11 @@ function finishSummary(acc: SummaryAcc): RunEventSummary {
  * just the tail since last time: same first event and no fewer events means
  * the prefix is what we already counted. Anything else starts over.
  */
-function useIncrementalSummary(events: RunEvent[]): RunEventSummary {
-  const memo = useRef<{ events: RunEvent[]; acc: SummaryAcc; out: RunEventSummary } | null>(null);
+function useIncrementalSummary(events: RunEvent[], running: boolean): RunEventSummary {
+  const memo = useRef<{ events: RunEvent[]; running: boolean; acc: SummaryAcc; out: RunEventSummary } | null>(null);
   return useMemo(() => {
     const prev = memo.current;
-    if (prev && prev.events === events) return prev.out;
+    if (prev && prev.events === events && prev.running === running) return prev.out;
     let acc: SummaryAcc;
     let from = 0;
     const sameHead = prev && prev.events.length > 0 && events.length >= prev.events.length && events[0] === prev.events[0] && events[prev.events.length - 1] === prev.events[prev.events.length - 1];
@@ -1156,10 +1162,10 @@ function useIncrementalSummary(events: RunEvent[]): RunEventSummary {
       acc = newSummaryAcc();
     }
     for (let i = from; i < events.length; i++) foldSummary(acc, events[i]);
-    const out = finishSummary(acc);
-    memo.current = { events, acc, out };
+    const out = finishSummary(acc, running);
+    memo.current = { events, running, acc, out };
     return out;
-  }, [events]);
+  }, [events, running]);
 }
 
 function rankCounts(counts: Map<string, number>, limit: number) {

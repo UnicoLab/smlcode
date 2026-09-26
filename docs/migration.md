@@ -4,6 +4,19 @@ Behaviour changes that affect existing workspaces and scripts. Nothing here requ
 migration — `.slmcode/config.yaml` is migrated forward automatically — but several defaults are
 now more conservative, and a few of them will change what your scripts see.
 
+## Release preparation updates
+
+- `slmcode configure --json` now saves before reporting `written: true` and
+  exits nonzero when discovery fails. If an automation only wants to inspect
+  available configuration, use `slmcode configure --json --dry-run`.
+- Studio source builds require a Node version supported by the dependency lock:
+  Node 22.22.2+ on the 22.x line, 24.15+ on the 24.x line, or 26+.
+  Released binaries do not require Node. Run `make bootstrap` after pulling
+  the router/security dependency updates to rebuild the embedded UI.
+- External decisions are opt-in. Existing configurations make no additional
+  prediction requests. See [decision models](laya.md) before setting `laya_*`
+  fields; native Laya and OpenAI-compatible endpoints use different protocols.
+
 ---
 
 ## 1. The shell whitelist is tiered — interpreters and file mutators are refused

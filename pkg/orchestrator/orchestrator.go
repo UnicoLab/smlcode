@@ -22,6 +22,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/hooks"
 	"github.com/UnicoLab/slmcode/pkg/instructions"
 	"github.com/UnicoLab/slmcode/pkg/internal/atomicfile"
+	"github.com/UnicoLab/slmcode/pkg/laya"
 	"github.com/UnicoLab/slmcode/pkg/learning"
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/mcp"
@@ -349,7 +350,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	// or as `api_key:` in a user-level config file lives ONLY in the resolved
 	// Config — and an agent that runs `env` or `cat` in a repo that happens to
 	// contain it would have got it back verbatim.
-	ws.AddSecrets(cfg.APIKey, cfg.EmbeddingAPIKey)
+	ws.AddSecrets(cfg.APIKey, cfg.EmbeddingAPIKey, cfg.LayaAPIKey)
 	if err := models.RegisterFindModelsTool(toolReg, cfg); err != nil {
 		return nil, err
 	}
@@ -1402,6 +1403,7 @@ func (o *Orchestrator) injectPriorKnowledge(ctx context.Context, query string) {
 		// retrieval_min_score raises the similarity floor above the calibrated
 		// per-embedder default; 0 keeps the calibrated value.
 		MinScore: o.cfg.RetrievalMinScore,
+		Laya:     laya.Options{Provider: o.cfg.LayaProvider, Endpoint: o.cfg.LayaEndpoint, Model: o.cfg.LayaModel, APIKey: o.cfg.LayaAPIKey, Timeout: o.cfg.LayaTimeout},
 	})
 	if err != nil {
 		o.emit("init", "retrieval warning: "+err.Error(), "")
@@ -2893,6 +2895,9 @@ func (o *Orchestrator) buildPlannerPrompt(query, runID, planAgent, exploreOut, a
 		prompt += "\nTreat Locked PRD as hard requirements unless contradicted by the query.\n"
 	}
 	prompt += projectLanguageGuidance(o.cfg.Root)
+	// The manager freezes the interface before planning. Without this brief,
+	// the planner can invent a conflicting route and hand workers two specs.
+	prompt += o.splitGuidance()
 	if block := replanInstructionBlock(replanNotes, "Revise the previous approach accordingly. Make the plan smaller, safer, and easier for SLM specialists to execute."); block != "" {
 		prompt += block
 	}

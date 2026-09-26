@@ -29,7 +29,10 @@ var execFlagPrefixes = map[string][]string{
 	// of the caller's choosing. None of them is needed to build or test.
 	"go": {"-exec", "-toolexec", "-vettool", "-overlay",
 		"-gcflags", "-asmflags", "-ldflags", "-compiler"},
-	"gofmt":  nil,
+	"gofmt": nil,
+	// Allow the built-in test runner, but not caller-supplied preload code,
+	// loaders or reporter modules that execute before the project's tests.
+	"node":   {"-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader", "--test-reporter"},
 	"cargo":  {"--config"},
 	"npm":    {"--node-options"},
 	"pnpm":   {"--node-options"},
@@ -207,13 +210,28 @@ func DangerousInvocation(segment string) (reason string, blocked bool) {
 				"source tree, i.e. arbitrary commands chosen by the repository. " +
 				"Run the generator you actually need as its own approved command.", true
 		}
+	case "node":
+		if len(args) > 0 && unquote(args[0]) == "--test" {
+			return nodeTestInvocation(args[1:])
+		}
+		for _, raw := range args {
+			a := unquote(raw)
+			if a == "--" {
+				break
+			}
+			for _, short := range []string{"-e", "-p", "-r"} {
+				if strings.HasPrefix(a, short) && len(a) > len(short) {
+					return "shell refused — Node inline code or preload flags can execute an arbitrary program. Run node --test with project test paths only.", true
+				}
+			}
+		}
 	}
 
 	if flags, ok := execFlagPrefixes[bin]; ok {
 		for _, f := range flags {
 			if at := flagIndex(args, f); at >= 0 {
 				return fmt.Sprintf(
-					"shell refused — `%s %s` names another program for %s to execute, so the "+
+					"shell refused — `%s %s` names another program for %s to execute (arbitrary code), so the "+
 						"whitelist would not see it.\nRun the verification command directly "+
 						"(e.g. `go test ./pkg/x -short`, `python -m pytest -q`).", bin, f, bin), true
 			}
@@ -230,6 +248,41 @@ func DangerousInvocation(segment string) (reason string, blocked bool) {
 					"shell refused — `%s %s` creates a path outside the project root. "+
 						"The harness only operates on files inside the workspace.", bin, p), true
 			}
+		}
+	}
+	return "", false
+}
+
+// nodeTestInvocation keeps the newly allowed runner narrower than arbitrary
+// Node execution. Preloads, custom reporters and diagnostic-output flags can
+// execute code or write outside the project's test paths.
+func nodeTestInvocation(args []string) (string, bool) {
+	pathsOnly := false
+	for i := 0; i < len(args); i++ {
+		a := unquote(args[i])
+		if a == "--" {
+			pathsOnly = true
+			continue
+		}
+		if !pathsOnly && strings.HasPrefix(a, "-") {
+			flag, _, inline := strings.Cut(a, "=")
+			switch flag {
+			case "--test-only", "--test-force-exit":
+				continue
+			case "--test-name-pattern", "--test-skip-pattern", "--test-concurrency", "--test-timeout":
+				if !inline {
+					i++ // The value is a pattern or number, never another program.
+					if i >= len(args) || strings.HasPrefix(unquote(args[i]), "-") {
+						return "shell refused — node --test option needs a value.", true
+					}
+				}
+				continue
+			default:
+				return "shell refused — node --test only allows test selection and timing flags; other flags may run an arbitrary program or write untracked files.", true
+			}
+		}
+		if outsideWorkspaceRel(a) {
+			return "shell refused — node --test paths must stay inside the project root.", true
 		}
 	}
 	return "", false

@@ -221,6 +221,11 @@ func isGenericWorkerRole(role string) bool {
 // holding the failing work, and leaving it on the model that could not fix it
 // twice would make the whole ladder decorative.
 func (r *Runner) correctorIDFor(t plan.Task) string {
+	// A tester retry must retain the tester schema and real-execution verdict.
+	// The corrector's worker-shaped status object can never satisfy that gate.
+	if plan.IsTesterRole(t.Role) {
+		return r.execAgentFor(t)
+	}
 	return r.escalate(r.correctorID(), t)
 }
 

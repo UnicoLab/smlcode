@@ -402,7 +402,7 @@ export default function TeamFloor3D({ floor, running, dark, reducedMotion, selec
             <IntegrationPad integration={floor.integration} unassigned={floor.unassigned.length} />
           )}
           <ContactShadows position={[0, 0.01, 0]} opacity={dark ? 0.55 : 0.35} scale={width + 20} blur={2.6} far={5} color={dark ? '#000' : '#4c1d95'} />
-          <CameraRig focus={focus} distance={focusDistance} home={home} homeCam={homeCam} autoRotate={autoRotate && animate} resetSignal={resetSignal} />
+          <CameraRig focus={focus} distance={focusDistance} home={home} homeCam={homeCam} span={span} reducedMotion={reducedMotion} autoRotate={autoRotate && animate} resetSignal={resetSignal} />
         </Suspense>
       </Canvas>
 
@@ -1598,12 +1598,20 @@ function IntegrationPad({ integration, unassigned }: { integration: NonNullable<
  * beside the dossier, not under it. The glide stops the moment the user takes
  * the camera back (any drag or wheel).
  */
-function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: { focus: THREE.Vector3 | null; distance: number | null; home: THREE.Vector3; homeCam: THREE.Vector3; autoRotate: boolean; resetSignal: number }) {
+function CameraRig({ focus, distance, home, homeCam, span, reducedMotion, autoRotate, resetSignal }: { focus: THREE.Vector3 | null; distance: number | null; home: THREE.Vector3; homeCam: THREE.Vector3; span: number; reducedMotion: boolean; autoRotate: boolean; resetSignal: number }) {
   const controls = useRef<OrbitControlsImpl>(null);
   const target = useRef(home.clone());
   const want = useRef<number | null>(null);
   const glide = useRef<THREE.Vector3 | null>(null);
-  const { invalidate, camera } = useThree();
+  const { invalidate, camera, size } = useThree();
+  const fittedHome = useMemo(() => {
+    // Fit horizontal world bounds into the actual canvas, not the window.
+    // Opening the activity rail used to clip the outer team's table.
+    const aspect = Math.max(0.35, size.width / Math.max(1, size.height));
+    const offset = homeCam.clone().sub(home);
+    const fitDistance = span * 0.6 / (Math.tan(22 * Math.PI / 180) * aspect);
+    return home.clone().add(offset.setLength(Math.min(160, Math.max(offset.length(), fitDistance))));
+  }, [home, homeCam, span, size.width, size.height]);
   // A camera the user left on a previous visit: restored on mount, and the
   // first "re-frame home" below is skipped so it is not undone a frame later.
   const restoredRef = useRef(false);
@@ -1616,9 +1624,9 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: 
       skipHomeRef.current = false;
       return;
     }
-    glide.current = homeCam.clone();
+    glide.current = fittedHome.clone();
     invalidate();
-  }, [homeCam, focus, invalidate]);
+  }, [fittedHome, focus, invalidate]);
   useEffect(() => {
     const t = focus ? focus.clone() : home.clone();
     if (focus && distance !== null && distance < 10) {
@@ -1665,32 +1673,30 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: 
     };
   }, [camera, invalidate]);
   // reset view: back to the saved home, forgetting the remembered camera.
-  const firstReset = useRef(true);
+  const lastReset = useRef(resetSignal);
   useEffect(() => {
-    if (firstReset.current) {
-      firstReset.current = false;
-      return;
-    }
+    if (lastReset.current === resetSignal) return;
+    lastReset.current = resetSignal;
     const c = controls.current;
     if (!c) return;
     want.current = null;
-    glide.current = null;
-    c.reset();
-    target.current.copy(c.target);
+    glide.current = fittedHome.clone();
+    target.current.copy(home);
     rememberCamera(null);
     invalidate();
-  }, [resetSignal, invalidate]);
-  useFrame(() => {
+  }, [resetSignal, invalidate, fittedHome, home]);
+  useFrame((_, delta) => {
     const c = controls.current;
     if (!c) return;
     let moved = false;
+    const blend = reducedMotion ? 1 : 1 - Math.exp(-8 * Math.min(delta, 0.1));
     if (c.target.distanceToSquared(target.current) > 0.0004) {
-      c.target.lerp(target.current, 0.08);
+      c.target.lerp(target.current, blend);
       moved = true;
     }
     if (glide.current) {
       if (camera.position.distanceToSquared(glide.current) > 0.01) {
-        camera.position.lerp(glide.current, 0.06);
+        camera.position.lerp(glide.current, blend);
         moved = true;
       } else {
         glide.current = null;
@@ -1702,7 +1708,7 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: 
       const have = _dir.length();
       if (Math.abs(have - want.current) > 0.05) {
         _goal.copy(c.target).add(_dir.normalize().multiplyScalar(want.current));
-        camera.position.lerp(_goal, 0.08);
+        camera.position.lerp(_goal, blend);
         moved = true;
       } else {
         want.current = null;
@@ -1714,7 +1720,7 @@ function CameraRig({ focus, distance, home, homeCam, autoRotate, resetSignal }: 
       invalidate();
     }
   });
-  return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} minDistance={4} maxDistance={70} maxPolarAngle={Math.PI / 2.05} autoRotate={autoRotate} autoRotateSpeed={0.6} target={[home.x, home.y, home.z]} />;
+  return <OrbitControls ref={controls} makeDefault enableDamping={!reducedMotion} dampingFactor={0.08} minDistance={4} maxDistance={Math.max(70, fittedHome.distanceTo(home) * 1.2)} maxPolarAngle={Math.PI / 2.05} autoRotate={autoRotate} autoRotateSpeed={0.6} target={[home.x, home.y, home.z]} />;
 }
 
 function Legend({ floor }: { floor: FloorModel }) {

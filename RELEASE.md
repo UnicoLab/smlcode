@@ -153,9 +153,9 @@ The `bump` dropdown forces the level when you disagree with the commits:
 
 | Commits since the last tag | Version chosen |
 |---|---|
-| any `feat!:` / `BREAKING CHANGE:` | major — but **held inside 0.x** (0.27.1 → 0.27.1) |
-| any `feat:` | minor (0.27.1 → 0.27.1) |
-| only `fix:` / `perf:` | patch (0.27.1 → 0.24.1) |
+| any `feat!:` / `BREAKING CHANGE:` | major policy, held to a minor bump while on 0.x |
+| any `feat:` | minor |
+| only `fix:` / `perf:` | patch |
 | only `chore:`, `docs:`, `ci:` … | patch |
 | subjects that are not conventional at all | counted, but they drive nothing |
 

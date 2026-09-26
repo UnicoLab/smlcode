@@ -1,34 +1,6 @@
 # Changelog
 
-## v0.27.1 — 2026-09-25
-
-- Light the tables that work, and a floor with no two tables alike (#41)
-- Sync Homebrew formula + prebuilt binaries for v0.27.0 [skip ci]
-
-## v0.27.0 — 2026-09-25
-
-- A command center and a floor that lives (#40)
-- Sync Homebrew formula + prebuilt binaries for v0.26.0 [skip ci]
-
-## v0.26.0 — 2026-09-24
-
-- Dynamic/strict team selection, a harness table on the floor, insight and OpenShift teams
-- Sync Homebrew formula + prebuilt binaries for v0.25.0 [skip ci]
-
-## Unreleased
-
-### Fixed
-
-- **The Live floor's team tables light up again.** A specialist working a
-  ticket of a team that did not name one (the pipeline's go-worker doing the
-  docs team's ticket) was lit at no table at all; it now works at that table,
-  drawn as lent, and its chair at home says where it went. The execute loop's
-  generic `worker`/`tester` lines count as the specialist's, not a phantom
-  at the command center; a start with no end (the split phase's "assigned
-  go-worker", the test phase's "verification pass") is dropped when the run
-  moves on instead of lighting that agent for the rest of the run; debug and
-  latency lines no longer make anyone "speak". Verified against a captured
-  two-team Studio run.
+## v0.28.0 — 2026-09-27
 
 ### Added
 
@@ -46,40 +18,6 @@
   acceptance gates remain authoritative. See [configuration and limitations](laya.md).
   Hosting, model weights and training remain external; no Python model tools
   are bundled.
-
-- **A floor with more life, and no two tables alike.** Idle agents chat with
-  a neighbour, scroll a phone, think, stroll a path of their own, and walk to
-  a shared break room behind the tables — a coffee bar and a foosball table —
-  where people from every table and the command center's crew meet. Managers
-  walk their table through the board. Tables applaud a ticket landing, wince
-  at one failing and turn to a teammate starting; a clicked agent waves back.
-  Every table has its own habits and its own party programme, every agent a
-  favourite pastime, and a long wait in a live run no longer puts a whole
-  table to sleep.
-- **A command center and a floor that lives.** On the Live floor the harness's
-  agents wait inside a glass command center instead of crowding a table; whoever
-  is on walks out through its sliding door onto a pad, speaks, and walks back.
-  Everyone else has a mood — watching the worker, a coffee break, a stretch, a
-  walk round the table, a nap after a long wait — shown as a pose, a badge and a
-  line in their dossier. A table whose tickets are all done celebrates (beers, a
-  kick-about, a dance), and the whole floor joins in when the run ships. The
-  flat map shows the same moods; after a run the 3D floor keeps living at an
-  ambient 30 fps for a few minutes, then settles.
-- **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
-  so: the dispatcher picks the teams, how they work and who manages them, and
-  names its pick for the request being typed. Picking teams switches to Strict —
-  exactly those teams, nothing added on evidence — and one click goes back.
-  Dynamic also overrides a saved pin for the run (`team_selection: "dynamic"`).
-- **A separate harness table on the floor.** The dispatcher and the phase agents
-  sit at their own table; a team's table seats only the team, its manager and
-  whoever worked its tickets.
-- **Two new teams.** `repo-insight` (a challenged deep dive on the current state
-  of an existing repository, with recommendations and maintenance) and
-  `openshift` (OpenShift deployment specs for non-DevOps developers), with seven
-  new agents and the `repo-deep-dive` and `openshift-manifests` skills.
-- **Teams are editable at plan approval on every run.** A single-team run shows
-  its team for editing, a team can be added to it from the library, and a
-  two-team run can be taken down to one — all previously refused.
 
 ### Fixed
 
@@ -144,6 +82,72 @@
 Automation using `configure --json` only for discovery must add `--dry-run`;
 failed discovery now returns a nonzero exit status. Studio source-build Node
 requirements now match the locked dependencies. See [migration notes](migration.md#release-preparation-updates).
+
+## v0.27.1 — 2026-09-25
+
+- Light the tables that work, and a floor with no two tables alike (#41)
+- Sync Homebrew formula + prebuilt binaries for v0.27.0 [skip ci]
+
+## v0.27.0 — 2026-09-25
+
+- A command center and a floor that lives (#40)
+- Sync Homebrew formula + prebuilt binaries for v0.26.0 [skip ci]
+
+## v0.26.0 — 2026-09-24
+
+- Dynamic/strict team selection, a harness table on the floor, insight and OpenShift teams
+- Sync Homebrew formula + prebuilt binaries for v0.25.0 [skip ci]
+
+## Shipped in v0.26.0–v0.27.1 — details
+
+### Fixed
+
+- **The Live floor's team tables light up again.** A specialist working a
+  ticket of a team that did not name one (the pipeline's go-worker doing the
+  docs team's ticket) was lit at no table at all; it now works at that table,
+  drawn as lent, and its chair at home says where it went. The execute loop's
+  generic `worker`/`tester` lines count as the specialist's, not a phantom
+  at the command center; a start with no end (the split phase's "assigned
+  go-worker", the test phase's "verification pass") is dropped when the run
+  moves on instead of lighting that agent for the rest of the run; debug and
+  latency lines no longer make anyone "speak". Verified against a captured
+  two-team Studio run.
+
+### Added
+
+- **A floor with more life, and no two tables alike.** Idle agents chat with
+  a neighbour, scroll a phone, think, stroll a path of their own, and walk to
+  a shared break room behind the tables — a coffee bar and a foosball table —
+  where people from every table and the command center's crew meet. Managers
+  walk their table through the board. Tables applaud a ticket landing, wince
+  at one failing and turn to a teammate starting; a clicked agent waves back.
+  Every table has its own habits and its own party programme, every agent a
+  favourite pastime, and a long wait in a live run no longer puts a whole
+  table to sleep.
+- **A command center and a floor that lives.** On the Live floor the harness's
+  agents wait inside a glass command center instead of crowding a table; whoever
+  is on walks out through its sliding door onto a pad, speaks, and walks back.
+  Everyone else has a mood — watching the worker, a coffee break, a stretch, a
+  walk round the table, a nap after a long wait — shown as a pose, a badge and a
+  line in their dossier. A table whose tickets are all done celebrates (beers, a
+  kick-about, a dance), and the whole floor joins in when the run ships. The
+  flat map shows the same moods; after a run the 3D floor keeps living at an
+  ambient 30 fps for a few minutes, then settles.
+- **Dynamic or Strict teams, on the run bar.** Dynamic is the default and says
+  so: the dispatcher picks the teams, how they work and who manages them, and
+  names its pick for the request being typed. Picking teams switches to Strict —
+  exactly those teams, nothing added on evidence — and one click goes back.
+  Dynamic also overrides a saved pin for the run (`team_selection: "dynamic"`).
+- **A separate harness table on the floor.** The dispatcher and the phase agents
+  sit at their own table; a team's table seats only the team, its manager and
+  whoever worked its tickets.
+- **Two new teams.** `repo-insight` (a challenged deep dive on the current state
+  of an existing repository, with recommendations and maintenance) and
+  `openshift` (OpenShift deployment specs for non-DevOps developers), with seven
+  new agents and the `repo-deep-dive` and `openshift-manifests` skills.
+- **Teams are editable at plan approval on every run.** A single-team run shows
+  its team for editing, a team can be added to it from the library, and a
+  two-team run can be taken down to one — all previously refused.
 
 ### Changed
 

@@ -1,9 +1,9 @@
 # Release qualification — 2026-09-26–27
 
-**Status: final qualification in progress.** Earlier live attempts exposed
-release blockers, now addressed below. A fresh complete delivery and final gate
-must pass before this record can qualify the release. No release was published
-during this audit.
+**Status: local runtime qualification passed; publication requires the merged-tree CI gate.**
+The release candidate includes the newer v0.27.1 Studio floor work and the
+changes below. The intended release is v0.28.0. Publishing follows the repository's
+release workflow after its full gate and artifact checks.
 
 ## Implemented and hardened
 
@@ -30,13 +30,11 @@ during this audit.
 
 ## Verification record
 
-This audit ran on macOS arm64 with Go 1.27.0 and Node 24.21.0. The source's
-release version remains 0.26.0; changing it, committing, tagging and publishing
-are separate release operations.
+This audit ran on macOS arm64 with Go 1.27.0 and Node 24.21.0. The release workflow stamps the final version and commit into every artifact.
 
 | Check | Result |
 | --- | --- |
-| Complete gate (`GOFLAGS=-p=4 make -j2 check`) | Passed with 72.2% coverage and 342 Studio tests; final role-finalization changes are being rechecked |
+| Complete gate (`GOFLAGS=-p=4 make -j2 check`) | Passed before the upstream Studio merge: 72.2% coverage; final merged-tree CI is required before release |
 | Studio browser checks | Passed on desktop and phone: layout, task navigation, motion preference persistence and 3D rendering; no page errors |
 | Packaged Studio | Real binary: all ten main pages navigate, authenticated API works and unauthenticated config access is denied; no browser exceptions or server errors |
 | CLI configuration regression tests | Passed |
@@ -49,7 +47,8 @@ are separate release operations.
 | Native Laya Go-client smoke | Passed against upstream `laya-serve` 0.3.20, `multilingual`, CPU; temporary server stopped afterward |
 | Live discovery, configure, chat and OpenAI-compatible decision smoke | Passed against oMLX with `Qwen3-Coder-30B-A3B-Instruct-MLX-4bit` |
 | Release binary cross-compilation | macOS, Linux and Windows; arm64 and amd64; real Studio assets embedded |
-| Live two-team application delivery | Passed: real-model two-team delivery completed in 771 seconds; independent artifact checks and integration with current main are pending |
+| Generated application, independently verified | Passed: Go race tests, current acceptance guard, real browser loading/refresh, 24 concurrent increments, HTTP/network failure states and no page exceptions |
+| Live two-team application delivery | Passed: 3/3 tasks done, zero failed or unexecuted; correct frontend-static/backend-go teams; 771 seconds including setup |
 
 Cross-compilation is not execution on all six platforms. Numeric model-response
 smokes establish protocol compatibility, not predictive accuracy or a speedup.
@@ -57,7 +56,13 @@ The decision feature remains opt-in until evaluated on representative projects.
 Go lint reports zero findings. Studio lint passes with 41 existing warnings and
 zero errors; the warnings remain cleanup work.
 
-## Qualification history
+The live suite ran before the final comment-only Node-file guard. Its retained
+application then passed that newer guard independently. The generated JavaScript
+checks validate source structure; the separate real-browser checks provide the
+behavioral evidence listed above. Upstream integration changed Studio and release
+metadata, and the merged Studio was rebuilt and checked again in Chromium.
+
+## Resolved qualification blockers
 
 The live scenario asked for a Go counter endpoint and a plain HTML/JavaScript
 client, with no npm or framework. It activated `backend-go` and `frontend-react`
@@ -90,18 +95,19 @@ success is not synthesized from file writes. Review and correction preserve
 the team charter, and a new dispatch can read files even if its predecessor
 exhausted its repetition guard.
 
-A follow-up attempt lost its local oMLX endpoint mid-run. The server was restored
-and that interrupted run was not counted as a passing qualification. A fresh
-complete run is required against the updated source:
+One earlier attempt lost its local oMLX endpoint mid-run; it was restored and
+that interrupted attempt was not counted as passing. The successful rerun used
+the strict delivery guard, which requires the underlying result to report
+success with no failed or unfinished tasks.
+
+To repeat qualification against a deployment's actual provider/checkpoint:
 
 ```bash
-make e2e-release ARGS='-run TestLiveReleaseSurface/squads'
+SLMCODE_E2E_ARTIFACTS=/tmp/slm-release make e2e-release
 ```
 
-Run the complete `make e2e-release` suite against the intended release
-provider/checkpoint. Do not infer success from an earlier legacy PASS label,
-skip integration, or treat an unavailable check as passing. Retain diagnostics
-with `SLMCODE_E2E_ARTIFACTS=/tmp/slm-release` when investigating a failure.
+Do not infer success from an earlier legacy PASS label, skip integration, or
+treat an unavailable check as passing.
 
 ## Documentation coverage
 

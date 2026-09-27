@@ -1,9 +1,11 @@
 # Release qualification — 2026-09-26–27
 
-**Status: local runtime qualification passed; publication requires the merged-tree CI gate.**
-The release candidate includes the newer v0.27.1 Studio floor work and the
-changes below. The intended release is v0.28.0. Publishing follows the repository's
-release workflow after its full gate and artifact checks.
+**Status: v0.28.0 published and verified.**
+[PR #42](https://github.com/UnicoLab/smlcode/pull/42) merged after every CI check
+passed. The [release workflow](https://github.com/UnicoLab/smlcode/actions/runs/36280848232)
+passed its full gate and published [v0.28.0](https://github.com/UnicoLab/smlcode/releases/tag/v0.28.0)
+from commit `fb8cddc`. All downloadable binaries and installers were then
+checksum-verified, and the published macOS arm64 binary passed the Studio smoke.
 
 ## Implemented and hardened
 
@@ -30,13 +32,16 @@ release workflow after its full gate and artifact checks.
 
 ## Verification record
 
-This audit ran on macOS arm64 with Go 1.27.0 and Node 24.21.0. The release workflow stamps the final version and commit into every artifact.
+Local checks ran on macOS arm64 with Go 1.27.0 and Node 24.21.0. Release CI
+ran on Linux with the module-selected Go toolchain and Node 22. The workflow
+stamps the final version, source commit and build time into every artifact.
 
 | Check | Result |
 | --- | --- |
-| Complete gate (`GOFLAGS=-p=4 make -j2 check`) | Passed before the upstream Studio merge: 72.2% coverage; final merged-tree CI is required before release |
+| Complete local gate (`GOFLAGS=-p=4 make -j2 check`) | Passed; 72.2% coverage |
+| Merged-tree CI and release gate | Passed, including package/integration race tests, lint, coverage and frontend checks; release-run coverage 71.2% against the 63% floor; 365 Studio tests |
 | Studio browser checks | Passed on desktop and phone: layout, task navigation, motion preference persistence and 3D rendering; no page errors |
-| Packaged Studio | Real binary: all ten main pages navigate, authenticated API works and unauthenticated config access is denied; no browser exceptions or server errors |
+| Published macOS arm64 Studio | Downloaded release binary: all ten main pages navigate, authenticated API works and unauthenticated config access is denied; no browser exceptions or server errors |
 | CLI configuration regression tests | Passed |
 | Live delivery qualification guard regression tests | Passed; failed, unfinished, missing and timed-out results cannot qualify |
 | Strict documentation build | Passed; internal broken links now fail the build |
@@ -46,7 +51,9 @@ This audit ran on macOS arm64 with Go 1.27.0 and Node 24.21.0. The release workf
 | Full npm dependency audit, including development dependencies | Zero reported vulnerabilities after updates |
 | Native Laya Go-client smoke | Passed against upstream `laya-serve` 0.3.20, `multilingual`, CPU; temporary server stopped afterward |
 | Live discovery, configure, chat and OpenAI-compatible decision smoke | Passed against oMLX with `Qwen3-Coder-30B-A3B-Instruct-MLX-4bit` |
-| Release binary cross-compilation | macOS, Linux and Windows; arm64 and amd64; real Studio assets embedded |
+| Release binaries | Six published macOS/Linux/Windows arm64/amd64 binaries; real Studio assets embedded; all downloaded checksums verified |
+| Distribution metadata | All three installer checksums, four Homebrew binary hashes and both offline macOS bundles match the release |
+| Binary identity | Linux amd64 smoke passed in CI; downloaded macOS arm64 reports v0.28.0, commit fb8cddc, build time and empty SourceRoot |
 | Generated application, independently verified | Passed: Go race tests, current acceptance guard, real browser loading/refresh, 24 concurrent increments, HTTP/network failure states and no page exceptions |
 | Live two-team application delivery | Passed: 3/3 tasks done, zero failed or unexecuted; correct frontend-static/backend-go teams; 771 seconds including setup |
 

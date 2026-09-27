@@ -49,7 +49,7 @@ replace itself. Its role and limits are documented on the [decision-model page](
 ## Operation and release
 
 See the [dated release qualification record](release-readiness.md) for verified
-checks and remaining blockers from the latest audit.
+checks and qualification limits from the latest audit.
 
 - [Testing](testing.md): automated gates, fake-server binary acceptance, live-model
   release checks and how to interpret their evidence.

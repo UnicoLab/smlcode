@@ -1205,6 +1205,14 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 				if o.Pipeline().PhaseWhen("architect") == pipeline.WhenAlways {
 					needArch = true
 				}
+				// Do not speculate architect before clarify when an interview will run,
+				// so architect designs against the user's locked PRD & UX decisions.
+				if o.phaseEnabled("clarify") &&
+					(plan.NormalizeClarifyMode(o.cfg.ClarifyMode) == plan.ClarifyAsk ||
+						(plan.NormalizeClarifyMode(o.cfg.ClarifyMode) != plan.ClarifyOff &&
+							(plan.NeedsClarification(query) || forceClarifyGreenfield(query)))) {
+					needArch = false
+				}
 				var exploreErr error
 				exploreOut, archOut, docsOut, exploreErr = o.speculateDigs(ctx, query, explorePrompt, inventory, needDocs, needArch)
 				if exploreErr != nil {
@@ -1264,62 +1272,55 @@ func (o *Orchestrator) runSLM(ctx context.Context, runID, query, skillPack strin
 		o.mu.Unlock()
 	}
 
-	// 2b+2c Architect + Clarify run in parallel after explore.
-	// Both depend on explore output but not on each other.
+	// 2b Clarify / scope interview runs BEFORE Architect so locked PRD & UX
+	// decisions feed directly into architecture, planning, and task splitting.
 	var interview plan.ScopeInterview
 	var clarify plan.ClarifyResult
 	var prd plan.ScopePRD
-
-	archClarifyResults := o.runPhases(ctx,
-		func() phaseResult {
-			// --- 2b Architect (skip if already ran in speculative digs) ---
-			archWhen := o.Pipeline().PhaseWhen("architect")
-			wantArch := o.phaseEnabled("architect") && archWhen != pipeline.WhenNever &&
-				(archWhen == pipeline.WhenAlways || wantsArchitect(query))
-			if wantArch && strings.TrimSpace(archOut) == "" {
-				if err := o.runPipelineSlots(ctx, "architect", "before", query, exploreOut, ""); err != nil {
-					return phaseResult{name: "architect", err: err}
-				}
-				if o.Pipeline().HasReplace("architect") {
-					if err := o.runPipelineSlots(ctx, "architect", "replace", query, exploreOut, ""); err != nil {
-						return phaseResult{name: "architect", err: err}
-					}
-				} else {
-					archAgent := o.phaseAgent("architect", "architect")
-					o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
-					archPack, _ := o.packBuild(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
-					archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPack.Render()+"\nExploration:\n"+truncate(exploreOut, 2500)+"\nReturn STRICT JSON design.")
-					if strings.TrimSpace(archOut) != "" {
-						_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
-						o.shared.SetGlobal("architecture", archOut)
-					}
-				}
-				if err := o.runPipelineSlots(ctx, "architect", "after", query, exploreOut, ""); err != nil {
-					return phaseResult{name: "architect", err: err}
-				}
-			}
-			return phaseResult{name: "architect"}
-		},
-		func() phaseResult {
-			// --- 2c Clarify / scope interview ---
-			// pipeline gate: phaseEnabled("clarify") — when=never skips this phase
-			if !o.phaseEnabled("clarify") {
-				o.emit("clarify", "phase disabled — skipping interview", "")
-				return phaseResult{name: "clarify"}
-			}
-			interview = o.runScopeInterview(ctx, query, exploreOut)
-			clarify = interview.ToClarifyResult()
-			prd = interview.PRD
-			return phaseResult{name: "clarify"}
-		},
-	)
-
-	// Architect errors are fatal.
-	if err := canceledPhase(ctx, archClarifyResults); err != nil {
+	if !o.phaseEnabled("clarify") {
+		o.emit("clarify", "phase disabled — skipping interview", "")
+	} else {
+		interview = o.runScopeInterview(ctx, query, exploreOut)
+		clarify = interview.ToClarifyResult()
+		prd = interview.PRD
+	}
+	if err := ctx.Err(); err != nil {
 		return o.checkpointInterrupt(ctx, &plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
 	}
-	if r, ok := archClarifyResults["architect"]; ok && r.err != nil {
-		return nil, r.err
+
+	// 2c Architect (skip if already ran in speculative digs)
+	archWhen := o.Pipeline().PhaseWhen("architect")
+	wantArch := o.phaseEnabled("architect") && archWhen != pipeline.WhenNever &&
+		(archWhen == pipeline.WhenAlways || wantsArchitect(query))
+	if wantArch && strings.TrimSpace(archOut) == "" {
+		if err := o.runPipelineSlots(ctx, "architect", "before", query, exploreOut, ""); err != nil {
+			return nil, err
+		}
+		if o.Pipeline().HasReplace("architect") {
+			if err := o.runPipelineSlots(ctx, "architect", "replace", query, exploreOut, ""); err != nil {
+				return nil, err
+			}
+		} else {
+			archAgent := o.phaseAgent("architect", "architect")
+			o.emitAgent("architect", archAgent, "", "minimal design pass", "", "")
+			archPack, _ := o.packBuild(archAgent, query, contextstore.LeanDocsForRole("architect"), nil, o.skillPackFor(archAgent, query))
+			archPrompt := archPack.Render() + "\nExploration:\n" + truncate(exploreOut, 2500)
+			if len(prd.Constraints) > 0 || len(clarify.Assumptions) > 0 {
+				archPrompt += "\n\n" + sanitizeForContract(truncate(plan.FormatPRDMarkdown(prd, clarify.Assumptions), 1500))
+			}
+			archPrompt += "\nReturn STRICT JSON design."
+			archOut, _ = o.runRoleTracked(ctx, archAgent, "", archPrompt)
+			if strings.TrimSpace(archOut) != "" {
+				_ = o.store.Append(contextstore.DocScratch, "Architecture", archOut)
+				o.shared.SetGlobal("architecture", archOut)
+			}
+		}
+		if err := o.runPipelineSlots(ctx, "architect", "after", query, exploreOut, ""); err != nil {
+			return nil, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return o.checkpointInterrupt(ctx, &plan.Board{QueryID: runID, Query: query}, session.PhasePlan, err)
 	}
 
 	// 3+4 Plan / Split / approval — extracted so runSLM reads as a pipeline

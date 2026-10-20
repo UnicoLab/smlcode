@@ -399,7 +399,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
           if (action === 'recommended') {
             await clarifyUseRecommended(notes, askId);
           } else {
-            await answerClarify(answers, notes, askId);
+            await answerClarify(answers, notes, askId, action === 'followup');
           }
           break;
         }
@@ -465,7 +465,7 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div data-testid="hitl-backdrop" className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
 
       {/* Modal */}
       <div
@@ -474,13 +474,29 @@ export default function HITLPopup({ running, askSignal = 0 }: HITLPopupProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         className={clsx(
-          'relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-2xl shadow-2xl ring-1',
+          'relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full flex-col overflow-hidden rounded-2xl shadow-2xl ring-1',
           'bg-white dark:bg-gray-900',
           modalWidth,
           COLOR_RING[color],
           COLOR_BORDER[color],
         )}
       >
+        {/* Top-edge countdown progress bar */}
+        <div
+          data-testid="hitl-countdown-bar"
+          className={clsx('h-1 w-full overflow-hidden', COLOR_PROGRESS_TRACK[color])}
+          aria-hidden="true"
+        >
+          <div
+            className={clsx(
+              'h-full transition-[width] duration-1000 ease-linear',
+              COLOR_PROGRESS_BG[color],
+              urgency && 'animate-pulse',
+            )}
+            style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }}
+          />
+        </div>
+
         {/* Header */}
         <div className="flex items-center gap-3 px-6 pt-5 pb-3">
           <div
@@ -688,8 +704,18 @@ function ClarifyBody({
 
       {data.query && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2.5">
-          <div className="text-[10px] font-semibold uppercase text-gray-400 dark:text-gray-500">
-            Request
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] font-semibold uppercase text-gray-400 dark:text-gray-500">
+              Request
+            </div>
+            {data.round && data.round > 1 && (
+              <span
+                data-testid="hitl-round-badge"
+                className="rounded-full bg-purple-100 dark:bg-purple-900/50 px-2 py-0.5 text-[10px] font-semibold text-purple-700 dark:text-purple-300"
+              >
+                Follow-up Round {data.round}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs text-gray-700 dark:text-gray-300 break-words">{data.query}</p>
         </div>
@@ -734,11 +760,35 @@ function ClarifyBody({
         const questionId = q.id || `q${index + 1}`;
         const options = Array.isArray(q.options) ? q.options : [];
         const showFreeform = q.allow_freeform || options.length === 0;
+        const facetLabel =
+          q.facet === 'ux'
+            ? 'UX & Flow'
+            : q.facet === 'architecture'
+              ? 'Architecture'
+              : q.facet === 'verification'
+                ? 'Verification'
+                : q.facet === 'product'
+                  ? 'Product Scope'
+                  : '';
         return (
-          <div key={questionId}>
-            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-1">
-              {q.header || `Question ${index + 1}`}
-            </h3>
+          <div
+            key={questionId}
+            className="studio-enter rounded-xl border border-gray-200/80 bg-white/60 p-3.5 shadow-xs transition-shadow hover:shadow-sm dark:border-gray-800 dark:bg-gray-900/40"
+            style={{ animationDelay: `${index * 45}ms` }}
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                {q.header || `Question ${index + 1}`}
+              </h3>
+              {facetLabel && (
+                <span
+                  data-testid={q.facet ? `hitl-question-facet-${q.facet}` : undefined}
+                  className="rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300"
+                >
+                  {facetLabel}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
               {q.question || 'Choose the option that best matches the intended specification.'}
             </p>
@@ -749,10 +799,10 @@ function ClarifyBody({
                   <label
                     key={opt.label}
                     className={clsx(
-                      'flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer transition-colors border',
+                      'group flex items-start gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer border transition-all duration-200 ease-out active:scale-[0.99]',
                       checked
-                        ? 'border-purple-400 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/20'
-                        : 'border-gray-200 dark:border-gray-700 hover:border-purple-300 dark:hover:border-purple-700',
+                        ? 'border-purple-400 dark:border-purple-600 bg-purple-50 dark:bg-purple-900/20 shadow-xs ring-1 ring-purple-500/20 scale-[1.005]'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-purple-300 dark:hover:border-purple-700 hover:bg-purple-50/30 dark:hover:bg-purple-950/20',
                     )}
                   >
                     <input
@@ -761,21 +811,27 @@ function ClarifyBody({
                       checked={checked}
                       onChange={() => onToggle(questionId, opt.label, q.multi_select)}
                       className="mt-0.5 w-4 h-4 rounded border-gray-300 dark:border-gray-600
-                                 text-purple-600 focus:ring-purple-500 dark:bg-gray-800"
+                                 text-purple-600 focus:ring-purple-500 dark:bg-gray-800 transition-transform duration-150 group-active:scale-90"
                     />
                     <div className="flex-1 min-w-0">
                       <span
                         className={clsx(
-                          'text-sm font-medium',
+                          'flex flex-wrap items-center gap-1.5 text-sm font-medium',
                           checked
                             ? 'text-purple-800 dark:text-purple-200'
                             : 'text-gray-700 dark:text-gray-300',
                         )}
                       >
-                        {opt.label}
+                        <span>{opt.label}</span>
                         {opt.recommended && (
-                          <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-wide text-purple-500 dark:text-purple-400">
+                          <span className="rounded-full bg-purple-100/80 dark:bg-purple-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-500 dark:text-purple-400">
                             recommended
+                          </span>
+                        )}
+                        {checked && (
+                          <span className="ml-auto inline-flex items-center gap-0.5 rounded-full bg-purple-600 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white shadow-xs transition-transform duration-200">
+                            <Check className="h-2.5 w-2.5" aria-hidden="true" />
+                            Selected
                           </span>
                         )}
                       </span>
@@ -1217,15 +1273,16 @@ function ClarifyActions({
         className="w-full resize-none rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500/30"
       />
       <ActionHint>
-        Submit answers to lock the specification. Use recommended keeps selected defaults and attaches these notes to the ask.
+        Submit answers to lock the specification, or click Ask Follow-ups to probe deeper UX, product, or architecture details first.
       </ActionHint>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <button
           ref={firstActionRef}
+          data-testid="hitl-submit"
           disabled={answering}
           onClick={() => onAnswer('submit')}
           className={clsx(
-            'flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all',
+            'flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 active:scale-[0.98]',
             COLOR_BTN_PRIMARY[color],
             'disabled:opacity-50',
           )}
@@ -1234,10 +1291,25 @@ function ClarifyActions({
           {answering ? 'Submitting…' : 'Submit Answers'}
         </button>
         <button
+          data-testid="hitl-followup"
+          disabled={answering}
+          onClick={() => onAnswer('followup')}
+          className={clsx(
+            'flex items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2.5 text-sm font-medium transition-all duration-200 active:scale-[0.98]',
+            COLOR_BTN_GHOST[color],
+            'disabled:opacity-50',
+          )}
+          title="Save these answers and ask 1–3 deeper follow-up questions before locking the PRD"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          Ask Follow-ups
+        </button>
+        <button
+          data-testid="hitl-recommended"
           disabled={answering}
           onClick={() => onAnswer('recommended')}
           className={clsx(
-            'rounded-xl border px-4 py-2.5 text-sm font-medium transition-all',
+            'rounded-xl border px-4 py-2.5 text-sm font-medium transition-all duration-200 active:scale-[0.98]',
             COLOR_BTN_GHOST[color],
             'disabled:opacity-50',
           )}

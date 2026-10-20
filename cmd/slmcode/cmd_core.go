@@ -224,12 +224,34 @@ func runCmd() *cobra.Command {
 				return fmt.Errorf("nothing to run — give a query or --issue")
 			}
 
+			workflow, _ := cmd.Flags().GetString("workflow")
 			mode, _ := cmd.Flags().GetString("mode")
 			agent, _ := cmd.Flags().GetString("agent")
 			pinSkills, _ := cmd.Flags().GetStringSlice("skill")
 			pinTeams, _ := cmd.Flags().GetStringSlice("team")
 			dynamic, _ := cmd.Flags().GetBool("dynamic")
 			noDynamic, _ := cmd.Flags().GetBool("no-dynamic")
+			switch strings.ToLower(strings.TrimSpace(workflow)) {
+			case "discover", "interview", "scope":
+				h.Config.Mode = config.ModeFull
+				h.Config.ClarifyMode = plan.ClarifyAsk
+				h.Config.PlanApprove = plan.PlanApproveModeAsk
+				pinSkills = append(pinSkills, "hve-ux-design", "hve-requirements")
+			case "hve-rpi", "rpi":
+				h.Config.Mode = config.ModeFull
+				pinSkills = append(pinSkills, "hve-rpi")
+			case "plan", "plan-first":
+				h.Config.Mode = config.ModeFull
+				h.Config.PlanApprove = plan.PlanApproveModeAsk
+			case "fast", "fast-build":
+				h.Config.Mode = config.ModeFull
+				h.Config.ClarifyMode = plan.ClarifyOff
+				h.Config.PlanApprove = plan.PlanApproveModeAuto
+			case "specialist":
+				h.Config.Mode = config.ModeSpecialist
+			case "auto":
+				h.Config.Mode = config.ModeFull
+			}
 			if mode != "" {
 				h.Config.Mode = mode
 			}
@@ -389,6 +411,7 @@ func runCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().String("workflow", "", "lifecycle workflow preset: auto | discover | hve-rpi | plan | fast | specialist")
 	cmd.Flags().String("mode", "", "full | specialist (overrides config)")
 	cmd.Flags().String("agent", "", "run a single specialist (worker, explorer, …)")
 	cmd.Flags().Bool("dynamic", false, "run the composer specialist to assemble a task-specific pipeline (default: on)")

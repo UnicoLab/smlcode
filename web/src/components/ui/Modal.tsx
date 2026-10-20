@@ -123,7 +123,7 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="studio-enter absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-200"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -135,7 +135,7 @@ export function Modal({
         aria-describedby={description ? descId : undefined}
         tabIndex={-1}
         className={clsx(
-          'relative z-10 w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-2xl',
+          'studio-pop relative z-10 w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-2xl',
           'dark:border-gray-800 dark:bg-gray-900',
           className,
         )}

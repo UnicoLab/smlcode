@@ -136,7 +136,7 @@ export default function Layout() {
       {ctx?.streamGap && (
         <div
           role="status"
-          className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-50 px-4 py-1.5 text-[11px]
+          className="studio-enter flex items-center gap-2 border-b border-amber-500/30 bg-amber-50 px-4 py-1.5 text-[11px]
                      text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
         >
           <AlertTriangle size={13} aria-hidden="true" />
@@ -162,7 +162,9 @@ export default function Layout() {
             does not poison the next one. */}
         <main id="main" className="min-w-0 flex-1 overflow-auto bg-surface">
           <ErrorBoundary resetKey={location.pathname}>
-            <Outlet />
+            <div key={location.pathname} className="studio-enter h-full">
+              <Outlet />
+            </div>
           </ErrorBoundary>
         </main>
       </div>

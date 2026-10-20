@@ -1,6 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Archive, Bot, Compass, ListChecks, Moon, Search, Sun, Users } from 'lucide-react';
+import { Archive, Bot, Compass, FileText, ListChecks, Moon, Search, Sun, Users, Workflow } from 'lucide-react';
 import type { ReactNode } from 'react';
 import clsx from 'clsx';
 import { AppContext } from '@/App';
@@ -17,7 +17,7 @@ import { useFocusTrap } from './Modal';
 
 interface Command {
   id: string;
-  group: 'Pages' | 'Tasks' | 'Agents' | 'Teams' | 'Recent runs' | 'Theme';
+  group: 'Pages' | 'Workflows' | 'Living Docs' | 'Tasks' | 'Agents' | 'Teams' | 'Recent runs' | 'Theme';
   label: string;
   hint?: string;
   keywords: string;
@@ -72,12 +72,13 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
       }
       if (agents.status === 'fulfilled') {
         for (const a of agents.value ?? []) {
+          const agent = a as typeof a & { category?: string; handoffs?: string[] };
           out.push({
             id: `agent:${a.id}`,
             group: 'Agents',
             label: a.title || a.id,
-            hint: a.id,
-            keywords: `${a.id} ${a.title ?? ''} ${a.description ?? ''}`,
+            hint: agent.category ? `${a.id} · ${agent.category}` : a.id,
+            keywords: `${a.id} ${a.title ?? ''} ${a.description ?? ''} ${agent.category ?? ''} ${(agent.handoffs ?? []).join(' ')}`,
             icon: <Bot size={14} aria-hidden="true" />,
             run: go(`/agents?agent=${encodeURIComponent(a.id)}`),
           });
@@ -121,6 +122,17 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
       onClose();
       navigate(path);
     };
+    const runWorkflow = (pairs: Array<[string, string]>) => () => {
+      try {
+        for (const [k, v] of pairs) {
+          localStorage.setItem(k, v);
+        }
+      } catch {
+        /* ignore storage failures */
+      }
+      onClose();
+      navigate('/');
+    };
     const pages: Command[] = GO_TARGETS.map((t) => ({
       id: `page:${t.path}`,
       group: 'Pages',
@@ -130,6 +142,110 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
       icon: <Compass size={14} aria-hidden="true" />,
       run: go(t.path),
     }));
+    const workflows: Command[] = [
+      {
+        id: 'workflow:discover',
+        group: 'Workflows',
+        label: 'Workflow: Scope & UX Interview',
+        hint: 'discover · ask',
+        keywords: 'workflow discover scope ux interview clarify product prd requirements',
+        icon: <Workflow size={14} aria-hidden="true" />,
+        run: runWorkflow([
+          ['slmcode-live-workflow', 'discover'],
+          ['slmcode-live-clarify', 'ask'],
+          ['slmcode-live-approve', 'ask'],
+        ]),
+      },
+      {
+        id: 'workflow:hve-rpi',
+        group: 'Workflows',
+        label: 'Workflow: HVE RPI Loop (Research → Plan → Implement)',
+        hint: 'hve-rpi',
+        keywords: 'workflow hve rpi loop research plan implement hypervelocity engineering',
+        icon: <Workflow size={14} aria-hidden="true" />,
+        run: runWorkflow([['slmcode-live-workflow', 'hve-rpi']]),
+      },
+      {
+        id: 'workflow:plan',
+        group: 'Workflows',
+        label: 'Workflow: Plan First',
+        hint: 'plan · approve',
+        keywords: 'workflow plan first approve architecture',
+        icon: <Workflow size={14} aria-hidden="true" />,
+        run: runWorkflow([
+          ['slmcode-live-workflow', 'plan'],
+          ['slmcode-live-approve', 'ask'],
+        ]),
+      },
+      {
+        id: 'workflow:fast',
+        group: 'Workflows',
+        label: 'Workflow: Fast Build',
+        hint: 'fast',
+        keywords: 'workflow fast build autonomous quick',
+        icon: <Workflow size={14} aria-hidden="true" />,
+        run: runWorkflow([
+          ['slmcode-live-workflow', 'fast'],
+          ['slmcode-live-clarify', 'off'],
+        ]),
+      },
+    ];
+    const livingDocs: Command[] = [
+      {
+        id: 'doc:PRD.md',
+        group: 'Living Docs',
+        label: 'PRD.md',
+        hint: '/docs/PRD.md',
+        keywords: 'living docs doc prd.md /docs/PRD.md product ux requirements spec',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/PRD.md'),
+      },
+      {
+        id: 'doc:CONTRACT.md',
+        group: 'Living Docs',
+        label: 'CONTRACT.md',
+        hint: '/docs/CONTRACT.md',
+        keywords: 'living docs doc contract.md /docs/CONTRACT.md squad interface contract schema',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/CONTRACT.md'),
+      },
+      {
+        id: 'doc:PLAN.md',
+        group: 'Living Docs',
+        label: 'PLAN.md',
+        hint: '/docs/PLAN.md',
+        keywords: 'living docs doc plan.md /docs/PLAN.md architecture implementation plan',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/PLAN.md'),
+      },
+      {
+        id: 'doc:TASKS.md',
+        group: 'Living Docs',
+        label: 'TASKS.md',
+        hint: '/docs/TASKS.md',
+        keywords: 'living docs doc tasks.md /docs/TASKS.md task breakdown status board',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/TASKS.md'),
+      },
+      {
+        id: 'doc:CONTEXT.md',
+        group: 'Living Docs',
+        label: 'CONTEXT.md',
+        hint: '/docs/CONTEXT.md',
+        keywords: 'living docs doc context.md /docs/CONTEXT.md workspace repo context',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/CONTEXT.md'),
+      },
+      {
+        id: 'doc:SCRATCH.md',
+        group: 'Living Docs',
+        label: 'SCRATCH.md',
+        hint: '/docs/SCRATCH.md',
+        keywords: 'living docs doc scratch.md /docs/SCRATCH.md research notes scratchpad',
+        icon: <FileText size={14} aria-hidden="true" />,
+        run: go('/docs/SCRATCH.md'),
+      },
+    ];
     const theme: Command = {
       id: 'theme:toggle',
       group: 'Theme',
@@ -141,12 +257,16 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
         onClose();
       },
     };
-    return [...pages, theme, ...loaded];
+    return [...pages, ...workflows, ...livingDocs, theme, ...loaded];
   }, [loaded, ctx, navigate, onClose]);
 
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return commands.filter((c) => c.group === 'Pages' || c.group === 'Theme').slice(0, MAX_RESULTS);
+    if (!needle) {
+      return commands
+        .filter((c) => c.group === 'Pages' || c.group === 'Workflows' || c.group === 'Living Docs' || c.group === 'Theme')
+        .slice(0, MAX_RESULTS);
+    }
     const terms = needle.split(/\s+/);
     return commands
       .map((c) => {
@@ -193,7 +313,7 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="relative z-10 w-full max-w-xl overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900"
+        className="studio-pop relative z-10 w-full max-w-xl overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900"
       >
         <div className="flex items-center gap-2 border-b border-gray-100 px-3 dark:border-gray-800">
           <Search size={15} className="shrink-0 text-gray-400" aria-hidden="true" />

@@ -32,6 +32,15 @@ import DiffView, { type DiffMode } from './DiffView';
 /** Poll interval while a run is writing, for servers without the SSE nudge. */
 const REVIEW_POLL_MS = 15_000;
 
+const HVE_REVIEWERS = [
+  { id: 'code-review-functional-reviewer', label: 'Functional' },
+  { id: 'code-review-security-reviewer', label: 'Security' },
+  { id: 'code-review-performance-reviewer', label: 'Performance' },
+  { id: 'code-review-reliability-reviewer', label: 'Reliability' },
+  { id: 'accessibility-reviewer', label: 'Accessibility' },
+  { id: 'ux-reviewer', label: 'UX' },
+] as const;
+
 export default function ReviewView() {
   const ctx = useContext(AppContext);
   const toast = useToast();
@@ -141,7 +150,7 @@ export default function ReviewView() {
   const isReviewMode = queue?.permission === 'review';
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="studio-enter flex h-full flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
         <div className="flex items-center gap-2">
           <FileDiff size={16} className="text-brand-600" aria-hidden="true" />
@@ -199,6 +208,29 @@ export default function ReviewView() {
           Apply all
         </button>
       </header>
+
+      {/* HVE Multi-Perspective Review Bar */}
+      <div
+        className="flex flex-wrap items-center gap-2 border-b border-gray-200 bg-gray-50/70 px-4 py-2 dark:border-gray-800 dark:bg-gray-900/40"
+        aria-label="HVE Multi-Perspective Review"
+      >
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-violet-700 dark:text-violet-300">
+          <Bot size={13} aria-hidden="true" />
+          HVE Multi-Perspective Review:
+        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {HVE_REVIEWERS.map((r) => (
+            <Link
+              key={r.id}
+              to={`/?agent=${encodeURIComponent(r.id)}`}
+              title={`Launch ${r.label} specialist review pass (@${r.id})`}
+              className="focus-ring inline-flex items-center gap-1 rounded-full border border-violet-200/80 bg-white px-2.5 py-0.5 font-mono text-[11px] text-gray-700 shadow-2xs transition-all duration-150 hover:-translate-y-0.5 hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700 hover:shadow-xs dark:border-violet-800/60 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-brand-500 dark:hover:bg-brand-900/30 dark:hover:text-brand-200"
+            >
+              <span>@{r.id}</span>
+            </Link>
+          ))}
+        </div>
+      </div>
 
       {!isReviewMode && queue && queue.count === 0 && (
         <p className="border-b border-amber-500/30 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">

@@ -1,0 +1,40 @@
+api_version: blocks/v1
+kind: team
+id: hve-product-discovery
+name: HVE Product Discovery & Architecture
+description: >-
+  Scoping, Design Thinking (DFV), Business & Product Requirements (BRD/PRD),
+  Architecture Decision Records (ADR), and Mermaid C4 diagrams.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, discovery, brd, prd, adr, architecture, team]
+icon: "🧭"
+shareable: true
+spec:
+  id: hve-product-discovery
+  name: HVE Product Discovery & Architecture
+  charter: >-
+    Turn ambiguous ideas into structured BRDs, 7-phase PRDs, Architecture Decision
+    Records (ADRs), and Mermaid diagrams grounded in the repository's real modules.
+  owns:
+    - docs/specs/**
+    - docs/adr/**
+    - specs/**
+  acceptance: ""
+  worker: prd-builder-worker
+  reviewer: plan-validator-reviewer
+  agents:
+    - dt-coach-architect
+    - dt-tutor-worker
+    - brd-builder-worker
+    - adr-creation-worker
+    - arch-diagram-worker
+    - functional-planner
+    - backlog-manager-worker
+  skills:
+    - hve-requirements
+    - hve-ux-design
+  match:
+    keywords: [brd, prd, adr, stakeholder, mendelow, discovery-canvas]
+    priority: -1

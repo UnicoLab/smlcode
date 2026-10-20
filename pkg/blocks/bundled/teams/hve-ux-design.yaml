@@ -1,0 +1,36 @@
+api_version: blocks/v1
+kind: team
+id: hve-ux-design
+name: HVE UX & Accessibility Studio
+description: >-
+  Information architecture, 5-state interactive UX flows (idle, loading, empty,
+  error, success), WCAG 2.2 AA accessibility planning, and polished UI delivery.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, ux, ui, accessibility, wcag, team]
+icon: "🎨"
+shareable: true
+spec:
+  id: hve-ux-design
+  name: HVE UX & Accessibility Studio
+  charter: >-
+    Design and implement intuitive, responsive user interfaces with complete
+    5-state interaction coverage and WCAG 2.2 AA keyboard and screen-reader accessibility.
+  owns:
+    - web/src/**
+    - ui/**
+  acceptance: ""
+  worker: ux-worker
+  reviewer: ux-reviewer
+  agents:
+    - ux-architect
+    - dt-coach-architect
+    - accessibility-planner
+    - accessibility-reviewer
+  skills:
+    - hve-ux-design
+    - hve-accessibility
+  match:
+    keywords: [wireframe, wcag, aria-apg, design-thinking, state-matrix]
+    priority: -1

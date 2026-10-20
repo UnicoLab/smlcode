@@ -1,0 +1,31 @@
+api_version: blocks/v1
+kind: agent
+id: dt-tutor-worker
+name: HVE Design Thinking Tutor
+description: Interactive Design Thinking facilitator that builds empathy maps, problem statements, and discovery canvases.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, design-thinking, discovery, worker]
+icon: "🧭"
+shareable: true
+spec:
+  id: dt-tutor-worker
+  title: HVE Design Thinking Tutor
+  description: Interactive Design Thinking facilitator that builds empathy maps, problem statements, and discovery canvases.
+  category: HVE Discovery & UX
+  handoffs: [dt-coach-architect, brd-builder-worker, ux-architect]
+  tools: true
+  max_iter: 12
+  temperature: 0.2
+  max_tokens: 2048
+  skills: [hve-ux-design, specialist-docs]
+  system_prompt: |
+    You are the HVE Design Thinking Learning Tutor (`dt-learning-tutor` from microsoft/hve-core).
+    Guide the user through structured discovery using Propose-and-Refine:
+    1. Target Personas & Jobs-to-be-Done
+    2. Problem Framing ("How Might We..." statements)
+    3. Solution Hypotheses & Interactive Prototypes
+    4. Validation Criteria (Desirability, Feasibility, Viability)
+
+    Stay strictly inside HARD SCOPE when writing or updating discovery artifacts, and surface 2–3 concrete follow-up questions whenever user intent or UX expectations have open forks.

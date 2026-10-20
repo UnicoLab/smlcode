@@ -1,0 +1,71 @@
+api_version: blocks/v1
+kind: pipeline
+id: hve-discovery
+name: HVE Scope, UX & Product Discovery Pipeline
+description: >-
+  Discovery-first pipeline combining interactive scope/UX clarifying questions,
+  Design Thinking coaching (DFV), functional planning, and implementation.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: any
+tags: [hve, discovery, ux, brd, prd, design-thinking, pipeline]
+icon: "🧭"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - clarify
+    - architect
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Discover
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: Scope & UX Design
+      steps: [clarify, architect, plan, split]
+    - id: build
+      label: Build
+      steps: [coord, execute, learn]
+    - id: verify
+      label: Verify
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load HVE requirements & UX skills, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: task-researcher-explorer, when: always, label: Research, tip: Map existing flows & modules, group: prepare}
+    docs: {agent: docs, when: always, label: Docs, tip: Inspect existing product & architecture docs, group: prepare}
+    clarify: {agent: "", when: always, label: Interview, tip: Ask clarifying UX, scope & architecture questions, group: design}
+    architect: {agent: dt-coach-architect, when: always, label: DT & UX, tip: Frame Problem/Solution space & DFV architecture, group: design}
+    plan: {agent: functional-planner, when: always, label: Plan, tip: Decompose PRD into functional steps, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic SLM tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: task-implementer-worker, when: always, label: Execute, tip: Implement scoped deliverables, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture lessons mid-run, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Fill placeholders / flag gaps, group: verify}
+    test: {agent: tester, when: always, label: Test, tip: Verify acceptance criteria, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: task-implementer-worker
+    reviewer: task-reviewer
+    corrector: corrector
+    max_waves: 2

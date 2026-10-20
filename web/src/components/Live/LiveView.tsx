@@ -2,13 +2,20 @@ import { useState, useEffect, useRef, useContext, useMemo, useCallback } from 'r
 import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
+  ArrowRight,
   Bot,
   Circle,
+  ClipboardCheck,
+  Compass,
+  HelpCircle,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
   Play,
+  Rocket,
+  Sparkles,
   Square,
+  Zap,
 } from 'lucide-react';
 import { AppContext } from '@/App';
 import {
@@ -28,6 +35,7 @@ import type {
   DynamicComposition,
   InterruptedRun,
   TeamSpec,
+  WorkflowMode,
 } from '@/types';
 import TeamPicker, { type TeamSelectionMode } from './TeamPicker';
 import NowBar from './NowBar';
@@ -76,6 +84,59 @@ const PIPELINE_GROUPS: RailGroup[] = [
   { id: 'build', label: 'Build', phases: ['coord', 'execute', 'learn'] },
   { id: 'verify', label: 'Verify', phases: ['polish', 'test'] },
   { id: 'finish', label: 'Finish', phases: ['memory', 'done'] },
+];
+
+interface WorkflowPreset {
+  id: WorkflowMode;
+  label: string;
+  shortLabel: string;
+  hint: string;
+  placeholder: string;
+}
+
+const WORKFLOW_PRESETS: WorkflowPreset[] = [
+  {
+    id: 'auto',
+    label: 'Auto Pipeline',
+    shortLabel: 'Auto',
+    hint: 'Adaptive full pipeline: explore, scope, plan, implement & verify.',
+    placeholder: 'Plan, code, test, or inspect a change   ( / to focus )',
+  },
+  {
+    id: 'discover',
+    label: 'Scope & UX Interview',
+    shortLabel: 'Scope & UX',
+    hint: 'Asks clarifying UX, product scope & architecture questions first, locks a PRD, then builds.',
+    placeholder: 'Describe a feature, product idea, or UX flow — SLMCode will ask clarifying questions first…',
+  },
+  {
+    id: 'hve-rpi',
+    label: 'HVE RPI Loop',
+    shortLabel: 'HVE RPI',
+    hint: 'Hypervelocity Engineering: Research (FAR) → Challenge → Plan → Validate → Implement → Review.',
+    placeholder: 'Describe an engineering task for the HVE Research → Challenge → Plan → Implement loop…',
+  },
+  {
+    id: 'plan',
+    label: 'Plan First',
+    shortLabel: 'Plan First',
+    hint: 'Explores and pauses at the execution plan for interactive review/editing before writing code.',
+    placeholder: 'Describe a change to plan and review before implementation…',
+  },
+  {
+    id: 'fast',
+    label: 'Fast Build',
+    shortLabel: 'Fast',
+    hint: 'Applies recommended defaults and proceeds directly to implementation and verification.',
+    placeholder: 'Describe a concrete code change or bug fix to implement immediately…',
+  },
+  {
+    id: 'specialist',
+    label: 'Specialist / HVE Coach',
+    shortLabel: 'Specialist',
+    hint: 'Run a dedicated HVE coach, UX architect, BRD/PRD builder, security planner, or reviewer.',
+    placeholder: 'Ask the selected HVE specialist or coach…',
+  },
 ];
 
 /** Where the side rail becomes a column instead of an overlay. */
@@ -127,10 +188,27 @@ export default function LiveView() {
   // not strand an overlay nobody asked to open. Not persisted for that reason:
   // a stored `true` restored on a phone is the same trap.
   const isWide = useMediaQuery(WIDE_VIEWPORT);
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [railOpen, setRailOpen] = useState(isWide);
   useEffect(() => {
     setRailOpen(isWide);
   }, [isWide]);
+
+  const withViewTransition = useCallback(
+    (update: () => void) => {
+      const doc = typeof document !== 'undefined' ? (document as Document & { startViewTransition?: (cb: () => void) => unknown }) : null;
+      if (!reducedMotion && doc && typeof doc.startViewTransition === 'function') {
+        try {
+          doc.startViewTransition(update);
+          return;
+        } catch {
+          // Fall back to synchronous update if View Transition API rejects
+        }
+      }
+      update();
+    },
+    [reducedMotion],
+  );
 
   // ── What is selected on the floor lives in the URL ──
   //
@@ -187,6 +265,74 @@ export default function LiveView() {
   }, [isWide, setRailView]);
   const [agents, setAgents] = useState<AgentSpec[]>([]);
   const [specialist, setSpecialist] = useState('');
+  const [workflowMode, setWorkflowMode] = usePersistentState<WorkflowMode>('live.workflow.mode', 'auto');
+  const [askClarifyOverride, setAskClarifyOverride] = useState<boolean | null>(null);
+  const [askPlanOverride, setAskPlanOverride] = useState<boolean | null>(null);
+
+  const effectiveClarifyAsk = useMemo(() => {
+    if (askClarifyOverride !== null) return askClarifyOverride;
+    if (workflowMode === 'discover') return true;
+    if (workflowMode === 'fast') return false;
+    return ctx?.config?.clarify_mode === 'ask';
+  }, [askClarifyOverride, workflowMode, ctx?.config?.clarify_mode]);
+
+  const effectivePlanAsk = useMemo(() => {
+    if (askPlanOverride !== null) return askPlanOverride;
+    if (workflowMode === 'discover' || workflowMode === 'plan') return true;
+    if (workflowMode === 'fast') return false;
+    return ctx?.config?.plan_approve === 'ask';
+  }, [askPlanOverride, workflowMode, ctx?.config?.plan_approve]);
+
+  const handleSelectWorkflow = useCallback(
+    (nextMode: WorkflowMode) => {
+      withViewTransition(() => {
+        setWorkflowMode(nextMode);
+        setAskClarifyOverride(null);
+        setAskPlanOverride(null);
+        if (nextMode !== 'specialist' && specialist) {
+          setSpecialist('');
+        } else if (nextMode === 'specialist' && !specialist && agents.length > 0) {
+          const defaultCoach =
+            agents.find((a) => a.id === 'dt-coach-architect') ||
+            agents.find((a) => a.id === 'ux-architect') ||
+            agents[0];
+          if (defaultCoach) setSpecialist(defaultCoach.id);
+        }
+      });
+    },
+    [withViewTransition, setWorkflowMode, specialist, agents],
+  );
+
+  const groupedAgents = useMemo(() => {
+    const order = [
+      'HVE Discovery & UX',
+      'HVE Product & Architecture',
+      'HVE RPI',
+      'HVE Review & Quality',
+      'HVE Security, RAI & A11y',
+      'HVE Data Science & Meta',
+      'Core & Language Specialists',
+    ];
+    const buckets = new Map<string, AgentSpec[]>();
+    for (const a of agents) {
+      const cat = a.category?.trim() || 'Core & Language Specialists';
+      const list = buckets.get(cat) || [];
+      list.push(a);
+      buckets.set(cat, list);
+    }
+    const resultGroups: Array<{ label: string; items: AgentSpec[] }> = [];
+    for (const label of order) {
+      const items = buckets.get(label);
+      if (items && items.length > 0) {
+        resultGroups.push({ label, items });
+        buckets.delete(label);
+      }
+    }
+    for (const [label, items] of buckets.entries()) {
+      if (items.length > 0) resultGroups.push({ label, items });
+    }
+    return resultGroups;
+  }, [agents]);
   // Teams for THIS run. Empty means the library decides from the request and
   // the workspace; a pick pins them for the run only (the server restores the
   // saved pins when it ends). The library itself is fetched once per visit
@@ -321,6 +467,9 @@ export default function LiveView() {
         query: q,
         mode: specialist ? 'specialist' : undefined,
         specialist: specialist || undefined,
+        workflow: specialist ? 'specialist' : workflowMode,
+        clarify_mode: specialist ? undefined : effectiveClarifyAsk ? 'ask' : workflowMode === 'fast' ? 'off' : 'auto',
+        plan_approve: specialist ? undefined : effectivePlanAsk ? 'ask' : 'auto',
         skills: ctx?.config?.pinned_skills,
         teams: effectiveTeamMode === 'strict' && runTeams.length > 0 ? runTeams : undefined,
         team_selection: effectiveTeamMode,
@@ -439,6 +588,19 @@ export default function LiveView() {
     [agents, specialist],
   );
 
+  const activeWorkflowPreset = useMemo(
+    () => WORKFLOW_PRESETS.find((w) => w.id === (specialist ? 'specialist' : workflowMode)) || WORKFLOW_PRESETS[0],
+    [specialist, workflowMode],
+  );
+
+  const handoffSpecs = useMemo(() => {
+    const source = selectedAgentSpec || activeAgentSpec;
+    if (!source?.handoffs?.length) return [];
+    return source.handoffs
+      .map((id) => agents.find((a) => a.id === id))
+      .filter((a): a is AgentSpec => Boolean(a));
+  }, [selectedAgentSpec, activeAgentSpec, agents]);
+
   const taskCount = boardReady ? tasks.length : derived.taskIds.size;
   const totals = useMemo(() => ({ tokens: derived.tokens, cost: derived.cost }), [derived.tokens, derived.cost]);
 
@@ -456,17 +618,120 @@ export default function LiveView() {
   // top of the list whatever was clicked.
   const focusTicket = useCallback(
     (id: string) => {
-      setFocusTaskId(id);
-      setRailView('tasks');
-      setRailOpen(true);
+      withViewTransition(() => {
+        setFocusTaskId(id);
+        setRailView('tasks');
+        setRailOpen(true);
+      });
     },
-    [setRailView],
+    [withViewTransition, setRailView],
+  );
+
+  const handleSelectRailView = useCallback(
+    (nextView: RailView) => {
+      withViewTransition(() => {
+        setRailView(nextView);
+      });
+    },
+    [withViewTransition, setRailView],
+  );
+
+  const handleSelectFloor = useCallback(
+    (sel: FloorSelection) => {
+      withViewTransition(() => {
+        setSelection(sel);
+      });
+    },
+    [withViewTransition, setSelection],
   );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 dark:bg-gray-950">
       {/* ── 1. Command bar ─────────────────────────────────────────── */}
       <div className="shrink-0 border-b border-gray-200 bg-white px-3 py-2.5 dark:border-gray-800 dark:bg-gray-950 sm:px-4">
+        {/* Lifecycle Workflow Switcher + Interactive Gate Quick-Toggles */}
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div
+            data-testid="workflow-switcher"
+            className="flex flex-wrap items-center gap-1"
+            role="group"
+            aria-label="Lifecycle workflow mode"
+          >
+            {WORKFLOW_PRESETS.map((preset) => {
+              const active = (specialist ? 'specialist' : workflowMode) === preset.id;
+              const Icon =
+                preset.id === 'discover'
+                  ? Compass
+                  : preset.id === 'hve-rpi'
+                    ? Rocket
+                    : preset.id === 'plan'
+                      ? ClipboardCheck
+                      : preset.id === 'fast'
+                        ? Zap
+                        : preset.id === 'specialist'
+                          ? Bot
+                          : Sparkles;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  disabled={running}
+                  aria-pressed={active}
+                  onClick={() => handleSelectWorkflow(preset.id)}
+                  title={preset.hint}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-all duration-200 ease-out active:scale-95',
+                    active
+                      ? 'border-brand-400 bg-brand-50 text-brand-700 shadow-xs ring-2 ring-brand-500/20 dark:border-brand-700 dark:bg-brand-950/60 dark:text-brand-200 dark:ring-brand-400/25'
+                      : 'border-gray-200 bg-gray-50/70 text-gray-600 hover:-translate-y-0.5 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400 dark:hover:bg-gray-800',
+                    running && 'opacity-60 cursor-not-allowed',
+                  )}
+                >
+                  <Icon size={12} className="shrink-0" />
+                  <span>{preset.shortLabel}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {!specialist && (
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <button
+                type="button"
+                disabled={running}
+                aria-pressed={effectiveClarifyAsk}
+                onClick={() => setAskClarifyOverride(!effectiveClarifyAsk)}
+                title="When active, SLMCode interviews you with clarifying UX, product scope, and architecture questions before planning."
+                className={clsx(
+                  'inline-flex items-center gap-1 rounded-md border px-2 py-1 font-medium transition-all duration-200 ease-out active:scale-95',
+                  effectiveClarifyAsk
+                    ? 'border-purple-300 bg-purple-50 text-purple-700 shadow-xs ring-2 ring-purple-500/20 dark:border-purple-800 dark:bg-purple-950/50 dark:text-purple-300'
+                    : 'border-gray-200 bg-white text-gray-500 hover:-translate-y-0.5 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400',
+                )}
+              >
+                <HelpCircle size={11} />
+                <span>Ask Questions</span>
+              </button>
+              <button
+                type="button"
+                disabled={running}
+                aria-pressed={effectivePlanAsk}
+                onClick={() => setAskPlanOverride(!effectivePlanAsk)}
+                title="When active, pauses after planning so you can review, edit, or replan tasks before code is written."
+                className={clsx(
+                  'inline-flex items-center gap-1 rounded-md border px-2 py-1 font-medium transition-all duration-200 ease-out active:scale-95',
+                  effectivePlanAsk
+                    ? 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-700 shadow-xs ring-2 ring-fuchsia-500/20 dark:border-fuchsia-800 dark:bg-fuchsia-950/50 dark:text-fuchsia-300'
+                    : 'border-gray-200 bg-white text-gray-500 hover:-translate-y-0.5 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400',
+                )}
+              >
+                <ClipboardCheck size={11} />
+                <span>Approve Plan</span>
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <span
             className={clsx(
@@ -486,7 +751,7 @@ export default function LiveView() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleRun()}
-            placeholder="Plan, code, test, or inspect a change   ( / to focus )"
+            placeholder={activeWorkflowPreset.placeholder}
             aria-label="Run prompt"
             className="input focus-ring h-9 min-w-0 flex-1 text-sm"
             disabled={running}
@@ -507,17 +772,29 @@ export default function LiveView() {
             {agents.length > 0 && (
               <select
                 value={specialist}
-                onChange={(e) => setSpecialist(e.target.value)}
-                className="input h-9 min-w-0 flex-1 text-xs sm:w-44 lg:w-52"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSpecialist(val);
+                  if (val) {
+                    setWorkflowMode('specialist');
+                  } else if (workflowMode === 'specialist') {
+                    setWorkflowMode('auto');
+                  }
+                }}
+                className="input h-9 min-w-0 flex-1 text-xs sm:w-48 lg:w-56"
                 disabled={running}
                 aria-label="Agent"
               >
-                <option value="">Any agent</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.title || a.id}
-                    {a.effective_model ? ` · ${a.effective_model}` : ''}
-                  </option>
+                <option value="">Any agent (Pipeline)</option>
+                {groupedAgents.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.items.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.title || a.id}
+                        {a.effective_model ? ` · ${a.effective_model}` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             )}
@@ -591,16 +868,68 @@ export default function LiveView() {
 
         {selectedAgentSpec && (
           <div
-            className="mt-2 flex items-center gap-2 rounded-md border border-brand-200 bg-brand-50/60 px-2.5 py-1.5 text-[11px] dark:border-brand-900/70 dark:bg-brand-950/25"
+            className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-brand-200 bg-brand-50/60 px-2.5 py-1.5 text-[11px] dark:border-brand-900/70 dark:bg-brand-950/25"
             title={selectedAgentSpec.description}
           >
-            <span className="badge-brand shrink-0 text-[10px]">specialist</span>
+            <span className="badge-brand shrink-0 text-[10px]">
+              {selectedAgentSpec.category || 'specialist'}
+            </span>
             <span className="truncate font-semibold text-brand-800 dark:text-brand-200">
               {selectedAgentSpec.title || selectedAgentSpec.id}
             </span>
+            {selectedAgentSpec.description && (
+              <span className="hidden truncate text-gray-500 dark:text-gray-400 md:inline">
+                — {selectedAgentSpec.description}
+              </span>
+            )}
             <span className="ml-auto shrink-0 truncate font-mono text-brand-500">
               {selectedAgentSpec.effective_model || selectedAgentSpec.model || 'inherit'}
             </span>
+          </div>
+        )}
+
+        {handoffSpecs.length > 0 && (
+          <div data-testid="agent-handoffs" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="inline-flex items-center gap-1 font-semibold uppercase tracking-wide text-[10px] text-gray-400 dark:text-gray-500">
+              <ArrowRight size={11} />
+              Handoff to:
+            </span>
+            {handoffSpecs.map((target, idx) => (
+              <button
+                key={target.id}
+                type="button"
+                disabled={running}
+                onClick={() => {
+                  withViewTransition(() => {
+                    setSpecialist(target.id);
+                    setWorkflowMode('specialist');
+                  });
+                  promptRef.current?.focus();
+                }}
+                title={target.description || target.id}
+                style={{ animationDelay: `${idx * 40}ms` }}
+                className="studio-enter inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-700 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 active:scale-95 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-brand-700 dark:hover:bg-brand-950/50"
+              >
+                <span>{target.title || target.id}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => {
+                withViewTransition(() => {
+                  setSpecialist('');
+                  setWorkflowMode('hve-rpi');
+                });
+                promptRef.current?.focus();
+              }}
+              title="Switch to full HVE RPI Loop (Research → Challenge → Plan → Implement → Review)"
+              style={{ animationDelay: `${handoffSpecs.length * 40}ms` }}
+              className="studio-enter inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50/70 px-2 py-0.5 text-[11px] font-medium text-brand-700 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-brand-100 active:scale-95 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300"
+            >
+              <Rocket size={11} />
+              <span>Full HVE RPI Loop</span>
+            </button>
           </div>
         )}
       </div>
@@ -651,7 +980,7 @@ export default function LiveView() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <RunProgress tasks={tasks} running={running} connection={ctx?.connection ?? 'connecting'}
-            onTasks={() => { setRailView('tasks'); setRailOpen(true); }} onReconnect={ctx?.reconnect} />
+            onTasks={() => withViewTransition(() => { setRailView('tasks'); setRailOpen(true); })} onReconnect={ctx?.reconnect} />
           <div className="relative min-h-0 flex-1">
             <TeamFloor
               floor={floor}
@@ -659,7 +988,7 @@ export default function LiveView() {
               events={events}
               onTicket={focusTicket}
               selection={selection}
-              onSelect={setSelection}
+              onSelect={handleSelectFloor}
             />
           </div>
           {/* What is happening RIGHT NOW, pinned under the floor as a ticker.
@@ -706,7 +1035,7 @@ export default function LiveView() {
                 result={result}
                 tokenStream={ctx?.tokenStream ?? ''}
                 view={railView}
-                onView={setRailView}
+                onView={handleSelectRailView}
                 overlay={!isWide}
                 onClose={() => setRailOpen(false)}
                 derived={derived}

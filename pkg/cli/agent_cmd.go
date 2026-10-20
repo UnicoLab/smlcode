@@ -268,6 +268,7 @@ func FormatAgentListWithGlobals(custom []agents.CustomSpec, globalProvider, glob
 	for _, a := range agents.PublicSpecsWithCustom(custom) {
 		id, _ := a["id"].(string)
 		title, _ := a["title"].(string)
+		cat, _ := a["category"].(string)
 		mark := "·"
 		if c, _ := a["custom"].(bool); c {
 			mark = "★"
@@ -285,12 +286,15 @@ func FormatAgentListWithGlobals(custom []agents.CustomSpec, globalProvider, glob
 			effM = globalModel
 		}
 		extra := ""
+		if strings.TrimSpace(cat) != "" {
+			extra += " " + Dim("["+strings.TrimSpace(cat)+"]")
+		}
 		if effP != "" || effM != "" {
 			tag := strings.TrimSpace(effP + "/" + effM)
 			if strings.TrimSpace(prov) == "" && strings.TrimSpace(model) == "" && (globalProvider != "" || globalModel != "") {
 				tag += " (inherit)"
 			}
-			extra = "  " + Dim(tag)
+			extra += "  " + Dim(tag)
 		}
 		fmt.Fprintf(&b, "  %s @%-14s %s%s\n", mark, id, title, extra)
 	}
@@ -305,7 +309,7 @@ func FormatAgentShow(a map[string]interface{}) string {
 		return "not found\n"
 	}
 	keys := []string{
-		"id", "title", "description", "provider", "model", "endpoint",
+		"id", "title", "description", "category", "handoffs", "provider", "model", "endpoint",
 		"effective_provider", "effective_model", "inherits_model", "inherits_provider",
 		"active_stack", "skills", "tools", "temperature", "max_tokens", "max_iter",
 		"system_prompt", "custom", "builtin", "override", "path",

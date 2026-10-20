@@ -29,6 +29,7 @@ type ScopeOption struct {
 type ScopeQuestion struct {
 	ID            string        `json:"id,omitempty"`
 	Header        string        `json:"header,omitempty"`
+	Facet         string        `json:"facet,omitempty"` // "ux" | "product" | "architecture" | "verification"
 	Question      string        `json:"question"`
 	Options       []ScopeOption `json:"options,omitempty"`
 	MultiSelect   bool          `json:"multi_select,omitempty"`
@@ -70,17 +71,19 @@ type ScopeAnswer struct {
 
 // ScopeAnswers is the full decision handshake payload.
 type ScopeAnswers struct {
-	AskID      string        `json:"ask_id,omitempty"`
-	Answers    []ScopeAnswer `json:"answers"`
-	UseAllRec  bool          `json:"use_all_recommended,omitempty"`
-	Notes      string        `json:"notes,omitempty"`
-	AnsweredAt string        `json:"answered_at,omitempty"`
+	AskID           string        `json:"ask_id,omitempty"`
+	Answers         []ScopeAnswer `json:"answers"`
+	UseAllRec       bool          `json:"use_all_recommended,omitempty"`
+	RequestFollowUp bool          `json:"request_follow_up,omitempty"`
+	Notes           string        `json:"notes,omitempty"`
+	AnsweredAt      string        `json:"answered_at,omitempty"`
 }
 
 // ScopeAsk is emitted to Studio/TUI/file when clarify_mode=ask.
 type ScopeAsk struct {
 	ID        string          `json:"id"`
 	Kind      string          `json:"kind,omitempty"`
+	Round     int             `json:"round,omitempty"`
 	Query     string          `json:"query"`
 	Questions []ScopeQuestion `json:"questions"`
 	PRDDraft  ScopePRD        `json:"prd_draft,omitempty"`
@@ -248,6 +251,9 @@ func normalizeInterview(in *ScopeInterview) {
 				q.Header = q.Question
 			}
 		}
+		if strings.TrimSpace(q.Facet) == "" {
+			q.Facet = InferQuestionFacet(q.Header, q.Question)
+		}
 	}
 	// Fold top-level fields into PRD.
 	if in.PRD.Language == "" {
@@ -265,6 +271,48 @@ func normalizeInterview(in *ScopeInterview) {
 	if len(in.PRD.Constraints) == 0 && len(in.Assumptions) > 0 {
 		in.PRD.Constraints = append([]string{}, in.Assumptions...)
 	}
+}
+
+// InferQuestionFacet classifies a scope question into ux, verification, architecture, or product.
+func InferQuestionFacet(header, question string) string {
+	blob := strings.ToLower(header + " " + question)
+	words := make(map[string]bool)
+	for _, w := range strings.FieldsFunc(blob, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		words[w] = true
+	}
+	hasKeyword := func(kw string) bool {
+		if len(kw) <= 4 && !strings.Contains(kw, " ") {
+			return words[kw]
+		}
+		return strings.Contains(blob, kw)
+	}
+	for _, kw := range []string{
+		"test", "verify", "verification", "acceptance", "pytest", "coverage", "benchmark", "gate",
+	} {
+		if hasKeyword(kw) {
+			return "verification"
+		}
+	}
+	for _, kw := range []string{
+		"ux", "ui", "layout", "screen", "modal", "dialog", "flow", "button",
+		"state", "loading", "empty", "theme", "style", "accessibility", "a11y",
+		"keyboard", "navigation", "view", "drawer", "component",
+	} {
+		if hasKeyword(kw) {
+			return "ux"
+		}
+	}
+	for _, kw := range []string{
+		"language", "runtime", "stack", "database", "storage", "api", "auth",
+		"entrypoint", "entry point", "module", "package", "architecture", "schema", "protocol",
+	} {
+		if hasKeyword(kw) {
+			return "architecture"
+		}
+	}
+	return "product"
 }
 
 // NeedsUserDecision reports whether the interview has real forks to resolve.

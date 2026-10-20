@@ -1,0 +1,83 @@
+api_version: blocks/v1
+kind: pipeline
+id: hve-ux-product
+name: HVE UX & Accessibility Engineering Pipeline
+description: >-
+  End-to-end UX and frontend delivery pipeline with UX state-matrix architecture,
+  WCAG 2.2 accessibility planning, UX implementation, and dual UX/A11y review.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: typescript
+tags: [hve, ux, ui, accessibility, wcag, frontend, pipeline]
+icon: "🎨"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - clarify
+    - architect
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Prepare
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: UX & A11y Design
+      steps: [clarify, architect, plan, split]
+    - id: build
+      label: UI Build
+      steps: [coord, execute, learn]
+    - id: verify
+      label: UX & A11y Verify
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load HVE UX & Accessibility skills, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: task-researcher-explorer, when: always, label: Explore, tip: Map UI components, styles & state hooks, group: prepare}
+    docs: {agent: docs, when: auto, label: Docs, tip: Read UI conventions, group: prepare}
+    clarify: {agent: "", when: always, label: UX Interview, tip: Clarify user flows & interactive states, group: design}
+    architect: {agent: ux-architect, when: always, label: UX Architect, tip: Design 5-state UI matrix & component tree, group: design}
+    plan: {agent: accessibility-planner, when: always, label: A11y & Plan, tip: Plan WCAG 2.2 & component implementation steps, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic UI tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: ux-worker, when: always, label: UX Build, tip: Implement accessible UI components, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture UX lessons mid-run, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Ensure zero placeholder UI states, group: verify}
+    test: {agent: tester, when: always, label: Test, tip: Run UI lint, typecheck & tests, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: ux-worker
+    reviewer: ux-reviewer
+    corrector: corrector
+    max_waves: 2
+  slots:
+    - id: hve-a11y-audit
+      agent: accessibility-reviewer
+      title: WCAG 2.2 Accessibility Audit
+      after: execute
+      when: always
+      persist_to: scratch
+      fail_mode: continue
+      input: |
+        Audit the implemented UI changes for WCAG 2.2 AA, semantic HTML, ARIA attributes,
+        and keyboard navigation:
+        {{query}}

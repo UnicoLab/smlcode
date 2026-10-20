@@ -160,14 +160,35 @@ export default function TopBar() {
 
   const authOk = auth ? auth.configured : true;
   const stackLabel = ctx?.config?.active_stack;
+  const isRunning = Boolean(ctx?.liveRunning) && ctx?.connection === 'live';
 
   return (
     <>
       <UpdateBanner />
-      <header className="h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10">
-      <button onClick={() => navigate('/')} className="focus-ring flex items-center gap-2 shrink-0" aria-label="Go to the Live view">
-        <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
-          <Zap size={14} className="text-white" />
+      <header
+        className={clsx(
+          'h-14 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-800 glass shrink-0 z-10 transition-shadow duration-300',
+          isRunning && 'shadow-[0_1px_16px_-4px_rgba(139,92,246,0.28)]',
+        )}
+      >
+      <button
+        onClick={() => navigate('/')}
+        className="group focus-ring flex items-center gap-2 shrink-0 rounded-lg py-1 pr-1.5 transition-transform duration-150 active:scale-[0.98]"
+        aria-label="Go to the Live view"
+      >
+        <div
+          className={clsx(
+            'relative w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center transition-all duration-200 [transition-timing-function:var(--spring-snappy)] group-hover:scale-105',
+            isRunning && 'ring-2 ring-brand-500/40 shadow-[0_0_12px_rgba(139,92,246,0.45)]',
+          )}
+        >
+          {isRunning && (
+            <span
+              aria-hidden="true"
+              className="absolute inset-0 rounded-md bg-brand-400/30 animate-ping"
+            />
+          )}
+          <Zap size={14} className="relative text-white" />
         </div>
         <span className="font-bold text-sm tracking-tight logo-glow hidden sm:inline">
           SLMCode
@@ -190,14 +211,20 @@ export default function TopBar() {
             )}
           >
             {specialist || 'Any agent'}
-            <ChevronDown size={12} />
+            <ChevronDown
+              size={12}
+              className={clsx(
+                'transition-transform duration-200 [transition-timing-function:var(--spring-snappy)]',
+                showAgentMenu && 'rotate-180',
+              )}
+            />
           </button>
           {showAgentMenu && (
-            <div className="absolute top-full right-0 mt-1 w-64 card p-1 shadow-lg z-20 max-h-72 overflow-auto">
+            <div className="studio-pop origin-top-right absolute top-full right-0 mt-1 w-64 card p-1 shadow-lg z-20 max-h-72 overflow-auto">
               <button
                 onClick={() => handleAgentSelect('')}
                 className={clsx(
-                  'w-full text-left px-3 py-2 rounded-lg text-sm',
+                  'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
                   !specialist ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700' : 'hover:bg-gray-50 dark:hover:bg-gray-800',
                 )}
               >
@@ -247,11 +274,17 @@ export default function TopBar() {
             authOk ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500',
           )} />
           <span className="truncate max-w-[120px]">{currentModel || 'model'}</span>
-          <ChevronDown size={12} />
+          <ChevronDown
+            size={12}
+            className={clsx(
+              'transition-transform duration-200 [transition-timing-function:var(--spring-snappy)]',
+              showModelMenu && 'rotate-180',
+            )}
+          />
         </button>
 
         {showModelMenu && (
-          <div className="absolute top-full right-0 mt-1 w-72 card p-1 shadow-xl z-20 animate-fade-in max-h-80 overflow-auto">
+          <div className="studio-pop origin-top-right absolute top-full right-0 mt-1 w-72 card p-1 shadow-xl z-20 animate-fade-in max-h-80 overflow-auto">
             <div className="px-2 py-1.5 sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800">
               <input
                 ref={modelFilterRef}
@@ -326,26 +359,33 @@ export default function TopBar() {
 
       <button
         onClick={ctx?.toggleDark}
-        className="btn-ghost focus-ring p-2 rounded-lg"
+        className="group btn-ghost focus-ring p-2 rounded-lg"
         title="Toggle theme"
         aria-label={ctx?.dark ? 'Switch to light theme' : 'Switch to dark theme'}
       >
-        {ctx?.dark ? <Sun size={18} /> : <Moon size={18} />}
+        <span className="inline-flex transition-transform duration-200 [transition-timing-function:var(--spring-snappy)] group-hover:rotate-12 group-hover:scale-110">
+          {ctx?.dark ? <Sun size={18} /> : <Moon size={18} />}
+        </span>
       </button>
 
       <button
         onClick={() => navigate('/settings')}
-        className="btn-ghost focus-ring p-2 rounded-lg"
+        className="group btn-ghost focus-ring p-2 rounded-lg"
         title="Settings"
         aria-label="Open settings"
       >
-        <Settings size={18} />
+        <span className="inline-flex transition-transform duration-200 [transition-timing-function:var(--spring-snappy)] group-hover:rotate-45 group-hover:scale-110">
+          <Settings size={18} />
+        </span>
       </button>
 
       {ctx?.config && (
         <span
-          className="hidden md:inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-semibold uppercase
-                     bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 tracking-wider"
+          className={clsx(
+            'hidden md:inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-semibold uppercase',
+            'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 tracking-wider',
+            isRunning && 'studio-shimmer border border-brand-500/30',
+          )}
           title={auth?.message || (stackLabel ? `stack:${stackLabel}` : '')}
         >
           <span className={clsx('w-1.5 h-1.5 rounded-full', authOk ? 'bg-emerald-500' : 'bg-amber-500')} />

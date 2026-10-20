@@ -45,6 +45,8 @@ const navItems: NavItem[] = [
 ];
 
 const docItems: NavItem[] = [
+  { to: '/docs/PRD.md', label: 'PRD.md', icon: <FileText size={16} /> },
+  { to: '/docs/CONTRACT.md', label: 'CONTRACT.md', icon: <FileText size={16} /> },
   { to: '/docs/CONTEXT.md', label: 'CONTEXT.md', icon: <FileText size={16} /> },
   { to: '/docs/PLAN.md', label: 'PLAN.md', icon: <FileText size={16} /> },
   { to: '/docs/TASKS.md', label: 'TASKS.md', icon: <FileText size={16} /> },
@@ -93,16 +95,16 @@ export default function Sidebar() {
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     clsx(
-      'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
+      'group relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
       isActive
-        ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300'
+        ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 shadow-sm'
         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-100',
       compact && 'justify-center px-0 w-10 h-10 mx-auto',
     );
 
   const docLinkClass = ({ isActive }: { isActive: boolean }) =>
     clsx(
-      'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors',
+      'group relative flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors',
       isActive
         ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400'
         : 'text-gray-500 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800',
@@ -144,15 +146,33 @@ export default function Sidebar() {
               className={({ isActive }) => clsx(linkClass({ isActive }), 'focus-ring')}
               title={compact ? item.label : undefined}
             >
-              {item.icon}
-              {!compact && <span className="flex-1">{item.label}</span>}
-              {count > 0 && (
-                <span
-                  className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white"
-                  aria-label={`${count} changes awaiting review`}
-                >
-                  {count}
-                </span>
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className="studio-pop absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r-full bg-brand-600 dark:bg-brand-400"
+                    />
+                  )}
+                  <span
+                    aria-hidden="true"
+                    className={clsx(
+                      'inline-flex shrink-0 transition-transform duration-200 [transition-timing-function:var(--spring-snappy)] group-hover:scale-110',
+                      isActive && 'text-brand-600 dark:text-brand-400',
+                    )}
+                  >
+                    {item.icon}
+                  </span>
+                  {!compact && <span className="flex-1">{item.label}</span>}
+                  {count > 0 && (
+                    <span
+                      className="studio-pop rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white shadow-sm"
+                      aria-label={`${count} changes awaiting review`}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </>
               )}
             </NavLink>
           );
@@ -175,7 +195,12 @@ export default function Sidebar() {
             className={docLinkClass}
             title={compact ? item.label : undefined}
           >
-            {item.icon}
+            <span
+              aria-hidden="true"
+              className="inline-flex shrink-0 transition-transform duration-200 [transition-timing-function:var(--spring-snappy)] group-hover:scale-110"
+            >
+              {item.icon}
+            </span>
             {!compact && <span className="truncate">{item.label}</span>}
           </NavLink>
         ))}
@@ -224,9 +249,13 @@ export default function Sidebar() {
 
           {/* Running indicator */}
           {agentRunning && (
-            <div className="flex items-center gap-2 text-xs">
-              <Activity size={12} className="text-brand-500 animate-pulse" />
-              <span className="text-brand-600 dark:text-brand-400 animate-pulse">
+            <div className="studio-enter flex items-center gap-2.5 rounded-lg border border-brand-500/20 bg-brand-50/60 dark:bg-brand-950/30 px-2.5 py-1.5 text-xs">
+              <span className="relative flex h-3.5 w-3.5 items-center justify-center shrink-0" aria-hidden="true">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-75 animate-ping" />
+                <span className="absolute inline-flex h-2.5 w-2.5 rounded-full bg-brand-500/40 animate-pulse" />
+                <Activity size={12} className="relative text-brand-600 dark:text-brand-400" />
+              </span>
+              <span className="font-medium text-brand-700 dark:text-brand-300 animate-pulse">
                 Agent running…
               </span>
             </div>
@@ -246,8 +275,10 @@ export default function Sidebar() {
           )}
           {/* Running indicator icon only */}
           {agentRunning && (
-            <span title="Agent running">
-              <Activity size={14} className="text-brand-500 animate-pulse" />
+            <span title="Agent running" className="relative flex h-5 w-5 items-center justify-center">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-60 animate-ping" aria-hidden="true" />
+              <span className="absolute inline-flex h-3.5 w-3.5 rounded-full bg-brand-500/30 animate-pulse" aria-hidden="true" />
+              <Activity size={14} className="relative text-brand-500" />
             </span>
           )}
         </div>

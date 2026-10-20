@@ -12,11 +12,21 @@ import {
   X,
   Check,
   Edit3,
+  Search,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import ErrorState from '@/components/ui/ErrorState';
+
+type SkillCategory = 'all' | 'hve' | 'invocable' | 'custom';
+
+const SKILL_CATEGORIES: { id: SkillCategory; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'hve', label: 'HVE Methodology' },
+  { id: 'invocable', label: 'User Invocable' },
+  { id: 'custom', label: 'Project & Custom' },
+];
 
 export default function SkillManager() {
   const confirm = useConfirm();
@@ -29,6 +39,8 @@ export default function SkillManager() {
   const [newDesc, setNewDesc] = useState('');
   const [newAgentsList, setNewAgentsList] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [category, setCategory] = useState<SkillCategory>('all');
+  const [skillSearch, setSkillSearch] = useState('');
   // Edit state: skill name being edited + form fields
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{ name: string; description: string; agents: string[]; triggers: string[]; user_invocable: boolean; body: string }>({
@@ -260,6 +272,21 @@ export default function SkillManager() {
     }
   };
 
+  const filteredSkills = useMemo(() => {
+    const q = skillSearch.trim().toLowerCase();
+    return skills.filter((skill) => {
+      if (category === 'hve' && !skill.name.startsWith('hve-')) return false;
+      if (category === 'invocable' && !skill.user_invocable) return false;
+      if (category === 'custom' && (skill.name.startsWith('hve-') || skill.path?.startsWith('builtin:'))) return false;
+      if (!q) return true;
+      const inName = skill.name.toLowerCase().includes(q);
+      const inDesc = (skill.description || '').toLowerCase().includes(q);
+      const inTriggers = (skill.triggers || []).some((t) => t.toLowerCase().includes(q));
+      const inAgents = (skill.agents || []).some((a) => a.toLowerCase().includes(q));
+      return inName || inDesc || inTriggers || inAgents;
+    });
+  }, [skills, category, skillSearch]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400">
@@ -270,7 +297,7 @@ export default function SkillManager() {
   }
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="h-full overflow-auto studio-enter">
       <div className="mx-auto w-full max-w-[120rem] space-y-6 p-4 2xl:p-8">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -427,14 +454,52 @@ export default function SkillManager() {
           </div>
         )}
 
+        {/* Skill Category Filter & Search Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Skill categories">
+            {SKILL_CATEGORIES.map((cat) => {
+              const active = category === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setCategory(cat.id)}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                    active
+                      ? 'bg-brand-500 text-white shadow-2xs'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700',
+                  )}
+                >
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="relative flex-1 min-w-[16rem] max-w-sm">
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+            <input
+              type="search"
+              value={skillSearch}
+              onChange={(e) => setSkillSearch(e.target.value)}
+              placeholder="Search skills by name, trigger, or agent…"
+              aria-label="Search skills by name, trigger, or agent"
+              className="input pl-8 text-xs py-1.5 w-full"
+            />
+          </div>
+        </div>
+
         {/* Skills grid */}
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
-          {skills.map((skill) => {
+          {filteredSkills.map((skill) => {
             const isExpanded = expanded === skill.name;
+            const isHve = skill.name.startsWith('hve-');
             return (
               <div
                 key={skill.name}
-                className="card-hover p-4 group"
+                className="studio-enter card-hover p-4 group"
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -486,6 +551,11 @@ export default function SkillManager() {
 
                 {/* Meta badges */}
                 <div className="flex items-center gap-2 mt-3 flex-wrap">
+                  {isHve && (
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                      HVE
+                    </span>
+                  )}
                   {skill.user_invocable && (
                     <span className="badge-success">@invocable</span>
                   )}

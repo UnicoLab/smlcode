@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle,
-  ChevronDown,
   ChevronRight,
   Edit3,
   FileText,
@@ -189,13 +188,16 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
     }
   };
 
+  const isActiveWork = task.status === 'running' || task.status === 'correcting' || task.status === 'review';
+
   return (
     <div
       ref={setNodeRef}
       style={style}
       className={clsx(
-        'card group relative cursor-default select-none overflow-hidden p-3 pl-3.5 transition-shadow',
-        isDragOverlay && 'shadow-xl',
+        'card group relative cursor-default select-none overflow-hidden p-3 pl-3.5 transition-all duration-200',
+        isDragOverlay && 'scale-[1.02] rotate-[0.5deg] shadow-2xl ring-2 ring-brand-500/40',
+        isActiveWork && 'card-working-glow',
         task.status === 'failed' && 'ring-1 ring-red-300 dark:ring-red-800',
         task.status === 'done' && 'ring-1 ring-emerald-300 dark:ring-emerald-800',
       )}
@@ -240,7 +242,7 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
               className="mt-0.5 shrink-0 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
               title={expanded ? 'Collapse task' : 'Show full task details'}
             >
-              {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <ChevronRight size={13} className={clsx('transition-transform duration-200', expanded && 'rotate-90')} />
             </button>
             <div
               className="min-w-0 flex-1 text-xs font-semibold leading-snug text-gray-800 hover:text-brand-600 dark:text-gray-100 dark:hover:text-brand-400"
@@ -277,6 +279,15 @@ export default function TaskCard({ task, columns, columnLabels, teams = [], onUp
             <span className="badge-neutral text-[9px]" title={`Column: ${task.column || 'to_scope'}`}>
               {columnLabels[task.column] || task.column || 'To Scope'}
             </span>
+            {isActiveWork && (
+              <span className="badge-brand inline-flex items-center gap-1.5 text-[9px]" title={`Status: ${task.status}`}>
+                <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-brand-500" />
+                </span>
+                {task.status}
+              </span>
+            )}
             {STATUS_ICON[task.status]}
             {task.priority > 0 && <span className="badge-warn text-[9px]">P{task.priority}</span>}
             {task.depends_on?.length > 0 && <span className="badge-neutral text-[9px]">{task.depends_on.length} dep</span>}

@@ -16,6 +16,8 @@ type CustomSpec struct {
 	ID           string   `yaml:"id" json:"id"`
 	Title        string   `yaml:"title" json:"title"`
 	Description  string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Category     string   `yaml:"category,omitempty" json:"category,omitempty"`
+	Handoffs     []string `yaml:"handoffs,omitempty" json:"handoffs,omitempty"`
 	SystemPrompt string   `yaml:"system_prompt" json:"system_prompt"`
 	Skills       []string `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Model        string   `yaml:"model,omitempty" json:"model,omitempty"`
@@ -62,6 +64,7 @@ func NormalizeCustom(c *CustomSpec) error {
 	c.ID = strings.ToLower(strings.TrimSpace(c.ID))
 	c.Title = strings.TrimSpace(c.Title)
 	c.Description = strings.TrimSpace(c.Description)
+	c.Category = strings.TrimSpace(c.Category)
 	c.SystemPrompt = strings.TrimSpace(c.SystemPrompt)
 	c.Model = strings.TrimSpace(c.Model)
 	c.Provider = strings.TrimSpace(c.Provider)
@@ -121,6 +124,18 @@ func NormalizeCustom(c *CustomSpec) error {
 		skills = append(skills, s)
 	}
 	c.Skills = skills
+
+	var handoffs []string
+	seenHandoff := map[string]bool{}
+	for _, h := range c.Handoffs {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" || h == c.ID || seenHandoff[h] {
+			continue
+		}
+		seenHandoff[h] = true
+		handoffs = append(handoffs, h)
+	}
+	c.Handoffs = handoffs
 	return nil
 }
 
@@ -226,6 +241,8 @@ func WriteCustom(dir string, c CustomSpec) (string, error) {
 		ID:           c.ID,
 		Title:        c.Title,
 		Description:  c.Description,
+		Category:     c.Category,
+		Handoffs:     c.Handoffs,
 		SystemPrompt: c.SystemPrompt,
 		Skills:       c.Skills,
 		Model:        c.Model,
@@ -282,6 +299,9 @@ func (c CustomSpec) ToRoleSpec(codingTools []string) RoleSpec {
 	return RoleSpec{
 		ID:           c.ID,
 		Title:        c.Title,
+		Description:  c.Description,
+		Category:     c.Category,
+		Handoffs:     append([]string{}, c.Handoffs...),
 		SystemPrompt: prompt,
 		Tools:        tools,
 		MaxIter:      c.MaxIter,
@@ -342,5 +362,11 @@ func ApplyOverride(base *RoleSpec, o CustomSpec, codingTools []string) {
 	}
 	if len(o.Skills) > 0 {
 		base.Skills = append([]string{}, o.Skills...)
+	}
+	if strings.TrimSpace(o.Category) != "" {
+		base.Category = strings.TrimSpace(o.Category)
+	}
+	if len(o.Handoffs) > 0 {
+		base.Handoffs = append([]string{}, o.Handoffs...)
 	}
 }

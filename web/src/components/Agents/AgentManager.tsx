@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { getAgents, getAgent, createAgent, updateAgent, deleteAgent, getSkills } from '@/api/client';
 import type { AgentSpec, Skill } from '@/types';
 import {
+  ArrowRight,
   Bot,
   Plus,
   Trash2,
@@ -16,6 +17,109 @@ import clsx from 'clsx';
 import { useConfirm } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import ErrorState from '@/components/ui/ErrorState';
+
+const PREFERRED_CATEGORY_ORDER = [
+  'Core',
+  'Specialists',
+  'HVE RPI',
+  'HVE Discovery & UX',
+  'HVE Product & Architecture',
+  'HVE Review & Quality',
+  'HVE Security, RAI & A11y',
+  'HVE Data Science & Meta',
+];
+
+const CATEGORY_ALIASES: Record<string, string> = {
+  core: 'Core',
+  specialist: 'Specialists',
+  specialists: 'Specialists',
+  'hve-rpi': 'HVE RPI',
+  'hve rpi': 'HVE RPI',
+  'hve-discovery-ux': 'HVE Discovery & UX',
+  'hve discovery & ux': 'HVE Discovery & UX',
+  'hve-product-architecture': 'HVE Product & Architecture',
+  'hve product & architecture': 'HVE Product & Architecture',
+  'hve-review-quality': 'HVE Review & Quality',
+  'hve review & quality': 'HVE Review & Quality',
+  'hve-security-rai-a11y': 'HVE Security, RAI & A11y',
+  'hve security, rai & a11y': 'HVE Security, RAI & A11y',
+  'hve-data-science-meta': 'HVE Data Science & Meta',
+  'hve data science & meta': 'HVE Data Science & Meta',
+};
+
+const CORE_ROLE_IDS = new Set([
+  'planner',
+  'scoper',
+  'architect',
+  'worker',
+  'coder',
+  'reviewer',
+  'corrector',
+  'verifier',
+  'tester',
+  'qa',
+  'researcher',
+  'dispatcher',
+  'project-manager',
+  'manager',
+  'lead',
+  'synthesizer',
+  'evolver',
+]);
+
+interface NormalizedHandoff {
+  target: string;
+  label: string;
+  prompt?: string;
+}
+
+function getRawCategory(agent: AgentSpec): string {
+  const rec = agent as unknown as { category?: unknown };
+  if (typeof rec.category !== 'string') return '';
+  const trimmed = rec.category.trim();
+  if (!trimmed) return '';
+  return CATEGORY_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+}
+
+function resolveAgentCategory(agent: AgentSpec): string {
+  const explicit = getRawCategory(agent);
+  if (explicit) return explicit;
+  if (CORE_ROLE_IDS.has(agent.id)) return 'Core';
+  return 'Specialists';
+}
+
+function getAgentHandoffs(agent: AgentSpec): NormalizedHandoff[] {
+  const rec = agent as unknown as { handoffs?: unknown };
+  if (!Array.isArray(rec.handoffs)) return [];
+  const out: NormalizedHandoff[] = [];
+  const seen = new Set<string>();
+  for (const item of rec.handoffs) {
+    if (typeof item === 'string' && item.trim()) {
+      const target = item.trim();
+      if (!seen.has(target)) {
+        seen.add(target);
+        out.push({ target, label: target });
+      }
+    } else if (item && typeof item === 'object') {
+      const obj = item as { agent?: unknown; to?: unknown; id?: unknown; label?: unknown; prompt?: unknown };
+      const target =
+        typeof obj.agent === 'string'
+          ? obj.agent.trim()
+          : typeof obj.to === 'string'
+            ? obj.to.trim()
+            : typeof obj.id === 'string'
+              ? obj.id.trim()
+              : '';
+      if (target && !seen.has(`${target}:${typeof obj.label === 'string' ? obj.label : ''}`)) {
+        seen.add(`${target}:${typeof obj.label === 'string' ? obj.label : ''}`);
+        const label = typeof obj.label === 'string' && obj.label.trim() ? obj.label.trim() : target;
+        const prompt = typeof obj.prompt === 'string' && obj.prompt.trim() ? obj.prompt.trim() : undefined;
+        out.push({ target, label, prompt });
+      }
+    }
+  }
+  return out;
+}
 
 const EMPTY_AGENT: AgentSpec = {
   id: '',
@@ -45,6 +149,63 @@ export default function AgentManager() {
   const [allSkills, setAllSkills] = useState<Skill[]>([]);
   const [skillsLoaded, setSkillsLoaded] = useState(false);
   const [skillSearch, setSkillSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [focusedAgentId, setFocusedAgentId] = useState<string | null>(null);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of agents) {
+      const cat = resolveAgentCategory(a);
+      counts.set(cat, (counts.get(cat) ?? 0) + 1);
+    }
+    return counts;
+  }, [agents]);
+
+  const categoryTabs = useMemo(() => {
+    const present = new Set<string>(['Core', 'Specialists', ...categoryCounts.keys()]);
+    const ordered = [
+      ...PREFERRED_CATEGORY_ORDER.filter((c) => present.has(c)),
+      ...[...present]
+        .filter((c) => !PREFERRED_CATEGORY_ORDER.includes(c))
+        .sort((a, b) => a.localeCompare(b)),
+    ].filter((c) => c === 'Core' || c === 'Specialists' || (categoryCounts.get(c) ?? 0) > 0);
+    return [
+      { name: 'All', count: agents.length },
+      ...ordered.map((name) => ({ name, count: categoryCounts.get(name) ?? 0 })),
+    ];
+  }, [agents.length, categoryCounts]);
+
+  const visibleAgents = useMemo(() => {
+    if (selectedCategory === 'All') return agents;
+    return agents.filter((a) => resolveAgentCategory(a) === selectedCategory);
+  }, [agents, selectedCategory]);
+
+  const handleFocusHandoff = useCallback(
+    (targetId: string) => {
+      const target = agents.find((a) => a.id === targetId);
+      if (target && selectedCategory !== 'All' && resolveAgentCategory(target) !== selectedCategory) {
+        setSelectedCategory('All');
+      }
+      setFocusedAgentId(targetId);
+      if (editing || creating) {
+        setCreating(false);
+        setEditing(null);
+      }
+    },
+    [agents, creating, editing, selectedCategory],
+  );
+
+  useEffect(() => {
+    if (!focusedAgentId) return undefined;
+    const id = window.requestAnimationFrame(() => {
+      const el = document.getElementById(`agent-card-${focusedAgentId}`);
+      if (el) {
+        el.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+        el.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [focusedAgentId, selectedCategory]);
 
   const fetch = useCallback(async () => {
     try {
@@ -218,6 +379,9 @@ export default function AgentManager() {
                   {editing?.override && (
                     <span className="badge-brand ml-2 text-xs align-middle">override</span>
                   )}
+                  {editing && getRawCategory(editing) && (
+                    <span className="badge-brand ml-2 text-xs align-middle">{getRawCategory(editing)}</span>
+                  )}
                 </h2>
                 <div className="flex items-center gap-2">
                   <button onClick={handleCancel} className="btn-ghost text-sm">Cancel</button>
@@ -238,6 +402,28 @@ export default function AgentManager() {
 
                 {!detailLoading && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {getAgentHandoffs(form).length > 0 && (
+                      <div className="md:col-span-2 rounded-lg border border-brand-200/70 bg-brand-50/40 p-3 dark:border-brand-900/50 dark:bg-brand-950/20">
+                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-300">
+                          Declarative Handoffs
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {getAgentHandoffs(form).map((h) => (
+                            <button
+                              key={`${h.target}-${h.label}`}
+                              type="button"
+                              onClick={() => handleFocusHandoff(h.target)}
+                              title={h.prompt ? `${h.label} → ${h.target}\n${h.prompt}` : `Jump to ${h.target}`}
+                              className="inline-flex items-center gap-1 rounded-full border border-brand-300/80 bg-white px-2.5 py-0.5 font-mono text-[11px] font-medium text-brand-700 shadow-sm transition-all duration-150 hover:-translate-y-px hover:border-brand-500 hover:bg-brand-50 dark:border-brand-800 dark:bg-gray-900 dark:text-brand-300 dark:hover:bg-brand-900/40"
+                            >
+                              <span>{h.label}</span>
+                              <ArrowRight size={11} className="shrink-0 opacity-75" />
+                              <span className="opacity-75">{h.target}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <label className="label" htmlFor="agent-id-input">Agent ID</label>
                       <input
@@ -429,105 +615,190 @@ export default function AgentManager() {
           </div>
         )}
 
+        {/* Category Filter Bar */}
+        {agents.length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-1.5 rounded-xl border border-gray-200/80 bg-white/80 p-1.5 shadow-sm backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/70"
+            role="tablist"
+            aria-label="Filter agents by category"
+            data-testid="agent-category-bar"
+          >
+            {categoryTabs.map((tab) => {
+              const active = selectedCategory === tab.name;
+              return (
+                <button
+                  key={tab.name}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setSelectedCategory(tab.name)}
+                  data-testid={`agent-category-${tab.name}`}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200',
+                    active
+                      ? 'bg-brand-600 text-white shadow-sm dark:bg-brand-500'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-gray-100',
+                  )}
+                >
+                  <span>{tab.name}</span>
+                  <span
+                    className={clsx(
+                      'rounded-full px-1.5 py-0.2 text-[10px] font-semibold tabular-nums transition-colors duration-200',
+                      active
+                        ? 'bg-white/20 text-white'
+                        : 'bg-gray-200/70 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
+                    )}
+                  >
+                    {tab.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Agent list */}
         <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
-          {agents.map((agent) => (
-            <div
-              key={agent.id}
-              className="card-hover group flex min-h-[17rem] flex-col p-4"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex min-w-0 items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/30">
-                    <Bot size={20} className="text-brand-600" />
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-bold leading-snug line-clamp-2" title={agent.title || agent.id}>
-                      {agent.title || agent.id}
-                    </h3>
-                    <p className="font-mono text-[10px] text-gray-400 truncate" title={agent.id}>{agent.id}</p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
-                  <button
-                    onClick={() => handleEdit(agent)}
-                    className="btn-ghost p-1.5 rounded-lg"
-                    title="Edit"
-                  >
-                    <Edit3 size={14} />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(agent)}
-                    className="btn-ghost p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-                    title="Delete"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-
-              {agent.description && (
-                <details className="mt-3 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
-                  <summary className="cursor-pointer list-none text-xs font-medium text-gray-700 line-clamp-3 dark:text-gray-200" title={agent.description}>
-                    {agent.description}
-                  </summary>
-                  <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-gray-600 dark:text-gray-300">
-                    {agent.description}
-                  </p>
-                </details>
-              )}
-
-              {agent.system_prompt && (
-                <details className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
-                  <summary className="cursor-pointer list-none font-mono text-[10px] text-gray-500 line-clamp-2 dark:text-gray-400" title={agent.system_prompt}>
-                    {agent.system_prompt}
-                  </summary>
-                  <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-gray-600 dark:text-gray-300">
-                    {agent.system_prompt}
-                  </pre>
-                </details>
-              )}
-
-              <div className="mt-auto flex items-center gap-2 pt-3 flex-wrap">
-                {agent.custom && <span className="badge-brand">custom</span>}
-                {!agent.custom && <span className="badge-neutral">built-in</span>}
-                {agent.override && <span className="badge-brand">override</span>}
-                {agent.skills && agent.skills.length > 0 && (
-                  <span className="badge-brand" title={agent.skills.join(', ')}>
-                    {agent.skills.length} skills
-                  </span>
+          {visibleAgents.map((agent) => {
+            const rawCategory = getRawCategory(agent);
+            const categoryLabel = rawCategory || resolveAgentCategory(agent);
+            const handoffs = getAgentHandoffs(agent);
+            const isFocused = focusedAgentId === agent.id;
+            return (
+              <div
+                key={agent.id}
+                id={`agent-card-${agent.id}`}
+                data-testid={`agent-card-${agent.id}`}
+                data-selected={isFocused ? 'true' : undefined}
+                className={clsx(
+                  'card-hover group flex min-h-[17rem] flex-col p-4 transition-all duration-200',
+                  isFocused && 'ring-2 ring-brand-500 shadow-lg bg-brand-50/20 dark:bg-brand-950/20',
                 )}
-                <span
-                  className="badge-neutral flex max-w-full items-center gap-1 whitespace-normal break-all text-left"
-                  title={`Effective LLM after stack inheritance: ${agent.effective_provider || agent.provider || 'stack'}/${agent.effective_model || agent.model || 'inherit'}`}
-                >
-                  <Cpu size={10} className="shrink-0" />
-                  <span className="min-w-0">
-                    {agent.effective_provider || agent.provider || 'stack'}/
-                    {agent.effective_model || agent.model || 'inherit'}
-                  </span>
-                </span>
-                {agent.inherits_model && agent.inherits_provider && (
-                  <span className="badge-neutral">inherits stack</span>
-                )}
-              </div>
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/30">
+                      <Bot size={20} className="text-brand-600" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold leading-snug line-clamp-2" title={agent.title || agent.id}>
+                        {agent.title || agent.id}
+                      </h3>
+                      <p className="font-mono text-[10px] text-gray-400 truncate" title={agent.id}>{agent.id}</p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                    <button
+                      onClick={() => void handleEdit(agent)}
+                      className="btn-ghost p-1.5 rounded-lg"
+                      title="Edit"
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                    <button
+                      onClick={() => void handleDelete(agent)}
+                      className="btn-ghost p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      title="Delete"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
 
-              <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-gray-400">
-                <div className="flex min-w-0 items-center gap-1">
-                  <Thermometer size={10} />
-                  {agent.temperature}
+                {agent.description && (
+                  <details className="mt-3 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
+                    <summary className="cursor-pointer list-none text-xs font-medium text-gray-700 line-clamp-3 dark:text-gray-200" title={agent.description}>
+                      {agent.description}
+                    </summary>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+                      {agent.description}
+                    </p>
+                  </details>
+                )}
+
+                {agent.system_prompt && (
+                  <details className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 p-2 dark:border-gray-800 dark:bg-gray-800/40">
+                    <summary className="cursor-pointer list-none font-mono text-[10px] text-gray-500 line-clamp-2 dark:text-gray-400" title={agent.system_prompt}>
+                      {agent.system_prompt}
+                    </summary>
+                    <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-gray-600 dark:text-gray-300">
+                      {agent.system_prompt}
+                    </pre>
+                  </details>
+                )}
+
+                {handoffs.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1" data-testid={`agent-handoffs-${agent.id}`}>
+                    <span className="mr-0.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                      Handoffs:
+                    </span>
+                    {handoffs.map((h) => (
+                      <button
+                        key={`${h.target}-${h.label}`}
+                        type="button"
+                        onClick={() => handleFocusHandoff(h.target)}
+                        title={h.prompt ? `${h.label} → ${h.target}\n${h.prompt}` : `Select ${h.target}`}
+                        data-testid={`handoff-chip-${agent.id}-${h.target}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-brand-200/80 bg-brand-50/60 px-2 py-0.5 font-mono text-[10px] font-medium text-brand-700 transition-all duration-150 hover:-translate-y-px hover:border-brand-400 hover:bg-brand-100/80 hover:shadow-sm dark:border-brand-800/70 dark:bg-brand-950/40 dark:text-brand-300 dark:hover:bg-brand-900/50"
+                      >
+                        <ArrowRight size={9} className="shrink-0" />
+                        <span>{h.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-auto flex items-center gap-2 pt-3 flex-wrap">
+                  {categoryLabel && (
+                    <span
+                      className={clsx(
+                        categoryLabel.startsWith('HVE') ? 'badge-brand' : 'badge-neutral',
+                      )}
+                      data-testid={`agent-category-badge-${agent.id}`}
+                    >
+                      {categoryLabel}
+                    </span>
+                  )}
+                  {agent.custom && <span className="badge-brand">custom</span>}
+                  {!agent.custom && <span className="badge-neutral">built-in</span>}
+                  {agent.override && <span className="badge-brand">override</span>}
+                  {agent.skills && agent.skills.length > 0 && (
+                    <span className="badge-brand" title={agent.skills.join(', ')}>
+                      {agent.skills.length} skills
+                    </span>
+                  )}
+                  <span
+                    className="badge-neutral flex max-w-full items-center gap-1 whitespace-normal break-all text-left"
+                    title={`Effective LLM after stack inheritance: ${agent.effective_provider || agent.provider || 'stack'}/${agent.effective_model || agent.model || 'inherit'}`}
+                  >
+                    <Cpu size={10} className="shrink-0" />
+                    <span className="min-w-0">
+                      {agent.effective_provider || agent.provider || 'stack'}/
+                      {agent.effective_model || agent.model || 'inherit'}
+                    </span>
+                  </span>
+                  {agent.inherits_model && agent.inherits_provider && (
+                    <span className="badge-neutral">inherits stack</span>
+                  )}
                 </div>
-                <div className="flex min-w-0 items-center gap-1" title={`${agent.max_tokens} tokens`}>
-                  <BrainCircuit size={10} />
-                  {agent.max_tokens} tok
-                </div>
-                <div className="flex min-w-0 items-center gap-1">
-                  <Wrench size={10} />
-                  {agent.tools !== false ? 'tools' : 'no tools'}
+
+                <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] text-gray-400">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Thermometer size={10} />
+                    {agent.temperature}
+                  </div>
+                  <div className="flex min-w-0 items-center gap-1" title={`${agent.max_tokens} tokens`}>
+                    <BrainCircuit size={10} />
+                    {agent.max_tokens} tok
+                  </div>
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Wrench size={10} />
+                    {agent.tools !== false ? 'tools' : 'no tools'}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {loadError !== null && !showForm && <ErrorState error={loadError} what="agents" onRetry={fetch} />}

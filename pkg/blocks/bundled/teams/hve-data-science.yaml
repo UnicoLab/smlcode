@@ -1,0 +1,34 @@
+api_version: blocks/v1
+kind: team
+id: hve-data-science
+name: HVE Data Science & Experimentation
+description: >-
+  Exploratory Data Analysis (EDA), Bronze/Silver/Gold DataOps engineering,
+  DS_CATALOG_V1 conventions, and Minimum Viable Experiment (MVE) design.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, data-science, dataops, experiments, ml, team]
+icon: "📊"
+shareable: true
+spec:
+  id: hve-data-science
+  name: HVE Data Science & Experimentation
+  charter: >-
+    Design falsifiable Minimum Viable Experiments (MVEs) and build reproducible
+    Bronze/Silver/Gold data and evaluation pipelines.
+  owns:
+    - notebooks/**
+    - experiments/**
+    - data/**
+  acceptance: ""
+  worker: data-science-worker
+  reviewer: council-critic-reviewer
+  agents:
+    - experiment-designer-planner
+    - task-researcher-explorer
+  skills:
+    - hve-data-science
+  match:
+    keywords: [eda, dataops, bronze-silver-gold, ablation, mve]
+    priority: -1

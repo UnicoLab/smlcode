@@ -21,6 +21,8 @@ type RoleSpec struct {
 	ID           string   `json:"id"`
 	Title        string   `json:"title"`
 	Description  string   `json:"description,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	Handoffs     []string `json:"handoffs,omitempty"`
 	SystemPrompt string   `json:"-"`
 	Tools        []string `json:"tools,omitempty"`
 	MaxIter      int      `json:"max_iter"`
@@ -221,6 +223,8 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 			"role":        s.Title,
 			"title":       s.Title,
 			"description": s.Description,
+			"category":    s.Category,
+			"handoffs":    s.Handoffs,
 			"tools":       len(s.Tools) > 0,
 			"max_iter":    s.MaxIter,
 			"temperature": s.Temperature,
@@ -238,6 +242,12 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 			m["path"] = o.Path
 			if o.Description != "" {
 				m["description"] = o.Description
+			}
+			if o.Category != "" {
+				m["category"] = o.Category
+			}
+			if len(o.Handoffs) > 0 {
+				m["handoffs"] = o.Handoffs
 			}
 			if o.Title != "" {
 				m["title"] = o.Title
@@ -279,6 +289,8 @@ func PublicSpecsWithCustom(custom []CustomSpec) []map[string]interface{} {
 			"role":          c.Title,
 			"title":         c.Title,
 			"description":   c.Description,
+			"category":      c.Category,
+			"handoffs":      c.Handoffs,
 			"tools":         c.ToolsEnabled(),
 			"max_iter":      c.MaxIter,
 			"temperature":   c.Temperature,

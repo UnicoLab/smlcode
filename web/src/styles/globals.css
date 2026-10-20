@@ -9,6 +9,33 @@
   --color-surface-alt: #f8f9fa;
   --color-surface-hover: #f1f3f5;
   color-scheme: light;
+
+  /* Physics-based spring & bounce easing curves using CSS linear() */
+  --spring-easing: linear(
+    0, 0.009, 0.035 2.1%, 0.141, 0.281 6.7%, 0.723 12.9%, 0.938 16.7%, 1.017,
+    1.077, 1.121, 1.149 24.3%, 1.159, 1.163, 1.161, 1.154 29.9%, 1.129 32.8%,
+    1.051 39.6%, 1.017 43.1%, 0.991, 0.977 51%, 0.974 53.8%, 0.975 57.1%,
+    0.997 69.8%, 1.003 76.9%, 1.004 83.8%, 1
+  );
+  --spring-snappy: linear(
+    0, 0.014, 0.053 2.5%, 0.214 5.5%, 0.625 11.5%, 0.892 15.8%, 1.028 19.2%,
+    1.089 22.1%, 1.111 24.8%, 1.106 28.2%, 1.045 36.8%, 1.006 44.2%,
+    0.992 51.8%, 0.997 66.5%, 1
+  );
+  --bounce-easing: linear(
+    0, 0.004, 0.016, 0.035, 0.063 9.1%, 0.141, 0.25, 0.391, 0.563, 0.765, 1,
+    0.891, 0.813 45.5%, 0.785, 0.766, 0.754, 0.75, 0.754, 0.766, 0.785,
+    0.813 63.6%, 0.891, 1 72.7%, 0.973, 0.953, 0.941, 0.938, 0.941, 0.953,
+    0.973, 1, 0.988, 0.984, 0.988, 1
+  );
+}
+
+@supports not (animation-timing-function: linear(0, 1)) {
+  :root {
+    --spring-easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --spring-snappy: cubic-bezier(0.22, 1.35, 0.36, 1);
+    --bounce-easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
 }
 
 .dark {
@@ -572,3 +599,202 @@
 .floor-avatar-away .floor-avatar-inner { opacity: 0.35; }
 .floor3d-breakroom { display: inline-block; padding: 3px 10px; border-radius: 9999px; background: rgba(254, 243, 199, 0.92); color: #78350f; font-size: 10.5px; font-weight: 700; white-space: nowrap; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
 .dark .floor3d-breakroom { background: rgba(69, 26, 3, 0.85); color: #fde68a; }
+
+/* ── Studio motion system & compositor-only utilities ──────────────────── */
+.studio-enter {
+  animation: studioEnter 260ms var(--spring-snappy) both;
+  transition:
+    opacity 220ms ease-out,
+    transform 260ms var(--spring-snappy);
+  @starting-style {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+}
+@keyframes studioEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.studio-pop {
+  animation: studioPop 320ms var(--spring-easing) both;
+  transition:
+    opacity 180ms ease-out,
+    transform 320ms var(--spring-easing);
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.94) translate3d(0, 4px, 0);
+  }
+}
+@keyframes studioPop {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translate3d(0, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+.studio-slide-right {
+  animation: studioSlideRight 280ms var(--spring-snappy) both;
+  transition:
+    opacity 200ms ease-out,
+    transform 280ms var(--spring-snappy);
+  @starting-style {
+    opacity: 0;
+    transform: translate3d(14px, 0, 0);
+  }
+}
+@keyframes studioSlideRight {
+  from {
+    opacity: 0;
+    transform: translate3d(14px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.studio-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.studio-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 20%,
+    rgba(139, 92, 246, 0.08) 45%,
+    rgba(167, 139, 250, 0.16) 50%,
+    rgba(139, 92, 246, 0.08) 55%,
+    transparent 80%
+  );
+  transform: translate3d(-100%, 0, 0);
+  animation: studioShimmer 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes studioShimmer {
+  0%   { transform: translate3d(-100%, 0, 0); }
+  100% { transform: translate3d(100%, 0, 0); }
+}
+
+.journey-beam {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.65) 45%,
+    rgba(196, 181, 253, 0.85) 50%,
+    rgba(255, 255, 255, 0.65) 55%,
+    transparent 100%
+  );
+  animation: journeyBeam 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+@keyframes journeyBeam {
+  0%   { transform: translate3d(-100%, 0, 0); }
+  100% { transform: translate3d(200%, 0, 0); }
+}
+
+.now-wave-bar {
+  transform-origin: center bottom;
+  animation: nowWave 1.1s ease-in-out infinite;
+  will-change: transform;
+}
+.now-wave-bar:nth-child(2) { animation-delay: 0.15s; }
+.now-wave-bar:nth-child(3) { animation-delay: 0.3s; }
+.now-wave-bar:nth-child(4) { animation-delay: 0.45s; }
+.now-wave-bar:nth-child(5) { animation-delay: 0.6s; }
+@keyframes nowWave {
+  0%, 100% { transform: scaleY(0.35); opacity: 0.65; }
+  50%      { transform: scaleY(1); opacity: 1; }
+}
+
+.conduit-packet {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: conduitPacketPulse 1.4s ease-in-out infinite;
+}
+@keyframes conduitPacketPulse {
+  0%, 100% { transform: scale(0.9); opacity: 0.8; }
+  50%      { transform: scale(1.25); opacity: 1; }
+}
+
+.radar-sweep {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: radarSweep 8s linear infinite;
+}
+@keyframes radarSweep {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.card-working-glow {
+  animation: cardWorkingGlow 2.4s ease-in-out infinite;
+}
+@keyframes cardWorkingGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0), 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22), 0 4px 14px -2px rgba(139, 92, 246, 0.18);
+  }
+}
+
+.toast-lifetime-bar {
+  transform-origin: left center;
+  animation-name: toastLifetime;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes toastLifetime {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* ── View Transitions API ──────────────────────────────────────────────── */
+::view-transition-old(root) {
+  animation: vtFadeOut 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+::view-transition-new(root) {
+  animation: vtFadeIn 220ms var(--spring-snappy) both;
+}
+@keyframes vtFadeOut {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to   { opacity: 0; transform: translate3d(0, -4px, 0); }
+}
+@keyframes vtFadeIn {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+  .studio-enter,
+  .studio-pop,
+  .studio-slide-right,
+  .studio-shimmer::after,
+  .journey-beam,
+  .now-wave-bar,
+  .conduit-packet,
+  .radar-sweep,
+  .card-working-glow,
+  .toast-lifetime-bar {
+    animation: none !important;
+  }
+}

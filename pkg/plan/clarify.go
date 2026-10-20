@@ -57,10 +57,18 @@ func NeedsClarification(query string) bool {
 	if hasVague && len(words) <= 18 {
 		return true
 	}
-	if len(words) <= 8 {
-		return true
+	// UX / product / design asks without concrete file paths or test specs
+	// benefit from upfront UX & scope clarification.
+	uxProduct := []string{
+		"ux", "ui", "gui", "dashboard", "interface", "redesign",
+		"user flow", "onboarding", "wizard", "landing page",
 	}
-	return false
+	for _, u := range uxProduct {
+		if strings.Contains(lower, u) && len(words) <= 28 {
+			return true
+		}
+	}
+	return len(words) <= 8
 }
 
 // ParseClarifyJSON extracts ClarifyResult from model output.

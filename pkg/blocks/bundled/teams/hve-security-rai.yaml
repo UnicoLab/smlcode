@@ -1,0 +1,35 @@
+api_version: blocks/v1
+kind: team
+id: hve-security-rai
+name: HVE Security, SSSC & Responsible AI
+description: >-
+  STRIDE threat modeling, OWASP code review, OpenSSF/SLSA Software Supply Chain
+  Security, and NIST AI RMF 1.0 Responsible AI governance.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, security, stride, sssc, rai, team]
+icon: "🛡️"
+shareable: true
+spec:
+  id: hve-security-rai
+  name: HVE Security, SSSC & Responsible AI
+  charter: >-
+    Audit trust boundaries, dependencies, and AI execution paths against STRIDE,
+    OpenSSF/SLSA supply chain standards, and NIST AI RMF 1.0 guardrails.
+  owns:
+    - reports/security/**
+    - SECURITY.md
+  acceptance: ""
+  worker: task-implementer-worker
+  reviewer: code-review-security-reviewer
+  agents:
+    - security-planner
+    - sssc-planner
+    - rai-planner
+    - code-review-reliability-reviewer
+  skills:
+    - hve-security-rai
+  match:
+    keywords: [stride, threat-model, sbom, slsa, nist-ai-rmf]
+    priority: -1

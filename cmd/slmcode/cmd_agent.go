@@ -40,6 +40,7 @@ Clear pins:      slmcode stack apply <name> --clear-agent-llm`),
 					return err
 				}
 				custom, _ := cli.LoadProjectCustoms(ws.Config.AgentsDir())
+				custom = append(custom, blockAgentSpecs(ws.Config.Root, custom)...)
 				a := agents.AgentDetail(args[0], custom)
 				if a == nil {
 					return fmt.Errorf("agent %q not found", args[0])

@@ -31,6 +31,7 @@ const shellPending: PendingResponse<ShellAsk> = {
 };
 
 const approveShell = vi.fn(async () => ({ ok: true }));
+const answerClarify = vi.fn(async () => ({ ok: true }));
 const getShellPending = vi.fn(async (): Promise<PendingResponse<ShellAsk>> => shellPending);
 const getClarifyPending = vi.fn(async (): Promise<PendingResponse<ClarifyAsk>> => notPending);
 const getPlanPending = vi.fn(async (): Promise<PendingResponse<PlanAsk>> => notPending);
@@ -43,7 +44,7 @@ vi.mock('@/api/client', () => ({
   getContinuePending: (...a: unknown[]) => getContinuePending(...(a as [])),
   getEscalatePending: (...a: unknown[]) => getEscalatePending(...(a as [])),
   getShellPending: (...a: unknown[]) => getShellPending(...(a as [])),
-  answerClarify: vi.fn(async () => ({ ok: true })),
+  answerClarify: (...a: unknown[]) => answerClarify(...(a as [])),
   clarifyUseRecommended: vi.fn(async () => ({ ok: true })),
   approvePlan: vi.fn(async () => ({ ok: true })),
   answerContinue: vi.fn(async () => ({ ok: true })),
@@ -138,5 +139,50 @@ describe('HITLPopup', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(await screen.findByText(/waits for an answer/i)).toBeInTheDocument();
     expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it('renders clarify facet badges and submits follow-up requests when Ask Follow-ups is clicked', async () => {
+    const user = userEvent.setup();
+    getShellPending.mockResolvedValue(notPending);
+    getClarifyPending.mockResolvedValueOnce({
+      pending: true,
+      ask: {
+        id: 'ask-clarify-1',
+        kind: 'clarify',
+        round: 2,
+        query: 'Redesign the workflow bar UX',
+        questions: [
+          {
+            id: 'q1',
+            header: 'Navigation Layout',
+            facet: 'ux',
+            question: 'How should workflow modes be presented?',
+            options: [
+              { label: 'Command bar pills', description: '1-click switching', recommended: true },
+              { label: 'Dropdown menu', description: 'Compact select' },
+            ],
+            recommended: 'Command bar pills',
+          },
+        ],
+        created_at: new Date().toISOString(),
+        timeout_sec: 120,
+      },
+    });
+
+    render(<HITLPopup running askSignal={0} />);
+    await screen.findByRole('dialog');
+    expect(screen.getByText('UX & Flow')).toBeInTheDocument();
+    expect(screen.getByText('Follow-up Round 2')).toBeInTheDocument();
+
+    const followUpBtn = await screen.findByRole('button', { name: /ask follow-ups/i });
+    await user.click(followUpBtn);
+
+    await waitFor(() => expect(answerClarify).toHaveBeenCalledTimes(1));
+    expect(answerClarify).toHaveBeenCalledWith(
+      [{ question_id: 'q1', selected: ['Command bar pills'], freeform: undefined }],
+      '',
+      'ask-clarify-1',
+      true,
+    );
   });
 });

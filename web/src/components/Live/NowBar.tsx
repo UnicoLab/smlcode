@@ -85,6 +85,7 @@ export default function NowBar({ events, running, squads, now: nowProp, totals }
   if (!running || !last) return null;
 
   const seconds = now ? Math.max(0, Math.round((tick - now.since) / 1000)) : 0;
+  const isLongStep = Boolean(now && seconds >= 120);
   const teamID = now ? now.team || teamOfTask(squads, now.task) : '';
   const team = squads?.ok && teamID ? (squads.squads ?? []).find((s) => s.id === teamID) : undefined;
   const color = teamColor(team?.id);
@@ -92,22 +93,47 @@ export default function NowBar({ events, running, squads, now: nowProp, totals }
 
   return (
     <div
-      className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-200 bg-brand-50/60 px-3 py-1.5 text-[11px] dark:border-gray-800 dark:bg-brand-950/20 sm:px-4"
+      className={clsx(
+        'flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-200 px-3 py-1.5 text-[11px] transition-colors duration-300 dark:border-gray-800 sm:px-4',
+        isLongStep
+          ? 'bg-amber-50/50 ring-1 ring-inset ring-amber-400/25 dark:bg-amber-950/15 dark:ring-amber-500/25'
+          : 'bg-brand-50/60 dark:bg-brand-950/20',
+      )}
       data-testid="now-bar"
       data-working={now ? 'true' : 'false'}
     >
       {now ? (
-        <Loader2 size={13} className="shrink-0 animate-spin text-brand-500" aria-hidden="true" />
+        <span className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">
+          <Loader2 size={13} className="shrink-0 animate-spin text-brand-500" />
+          <span className="inline-flex h-3 items-end gap-0.5">
+            <span
+              className="now-wave-bar h-2 w-0.5 rounded-full bg-brand-500/80 animate-pulse"
+              style={{ animationDelay: '0ms' }}
+            />
+            <span
+              className="now-wave-bar h-3 w-0.5 rounded-full bg-brand-500 animate-pulse"
+              style={{ animationDelay: '160ms' }}
+            />
+            <span
+              className="now-wave-bar h-1.5 w-0.5 rounded-full bg-brand-500/80 animate-pulse"
+              style={{ animationDelay: '320ms' }}
+            />
+          </span>
+        </span>
       ) : (
         <Hourglass size={13} className="shrink-0 text-gray-400" aria-hidden="true" />
       )}
 
       {now?.agent && (
-        <EntityLink kind="agent" id={now.agent} label={`@${now.agent}`} params={{ team: teamID || undefined }} title={`Agent ${now.agent} — open on the floor`} />
+        <span key={`agent-${now.agent}`} className="studio-enter inline-flex items-center">
+          <EntityLink kind="agent" id={now.agent} label={`@${now.agent}`} params={{ team: teamID || undefined }} title={`Agent ${now.agent} — open on the floor`} />
+        </span>
       )}
 
       {now?.task && (
-        <EntityLink kind="task" id={now.task} params={{ team: teamID || undefined }} title={`Task ${now.task} — open on the floor`} />
+        <span key={`task-${now.task}`} className="studio-enter inline-flex items-center">
+          <EntityLink kind="task" id={now.task} params={{ team: teamID || undefined }} title={`Task ${now.task} — open on the floor`} />
+        </span>
       )}
 
       {team && (
@@ -136,11 +162,13 @@ export default function NowBar({ events, running, squads, now: nowProp, totals }
       {now && (
         <span
           className={clsx(
-            'inline-flex shrink-0 items-center gap-1 font-mono tabular-nums',
+            'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 font-mono tabular-nums transition-all duration-300',
             // Past two minutes on one step, say so in a colour rather than
             // leaving the reader to do the arithmetic. Local 30B calls really do
             // take this long, and a user who knows that is a user who waits.
-            seconds >= 120 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500',
+            seconds >= 120
+              ? 'bg-amber-500/10 text-amber-600 ring-1 ring-amber-500/30 animate-pulse dark:text-amber-400'
+              : 'text-gray-500',
           )}
           title="Time on this step. A local 30B routinely takes minutes per call."
         >

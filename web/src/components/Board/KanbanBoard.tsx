@@ -409,10 +409,18 @@ export default function KanbanBoard() {
                     </button>
                   </h3>
                   <div className="flex items-center gap-1">
-                    <span className="badge-neutral text-[10px]">{tasks.length}</span>
+                    <span
+                      key={tasks.length}
+                      className={clsx(
+                        'badge-neutral text-[10px] tabular-nums transition-all duration-200',
+                        tasks.length > 0 && 'font-semibold text-gray-700 dark:text-gray-200',
+                      )}
+                    >
+                      {tasks.length}
+                    </span>
                     <button
                       onClick={() => handleOpenAdd(col)}
-                      className="btn-ghost rounded-md p-1"
+                      className="btn-ghost rounded-md p-1 transition-transform duration-150 hover:scale-105"
                       title={`Add task to ${columnLabel(col)}`}
                     >
                       <Plus size={12} />
@@ -425,11 +433,17 @@ export default function KanbanBoard() {
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="flex-1 space-y-2 overflow-y-auto min-h-[60px]">
-                    {tasks.map((task) => (
-                      <TaskCard key={task.id} task={task} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={() => void fetchBoard()} />
+                    {tasks.map((task, idx) => (
+                      <div
+                        key={task.id}
+                        className="studio-fade-up transition-all duration-200"
+                        style={{ animationDelay: `${Math.min(idx * 30, 180)}ms` }}
+                      >
+                        <TaskCard task={task} columns={columns} columnLabels={COLUMN_LABELS} teams={teamIDs} onUpdate={() => void fetchBoard()} />
+                      </div>
                     ))}
                     {tasks.length === 0 && (
-                      <div className="flex items-center justify-center h-16 text-[10px] text-gray-400 italic border border-dashed rounded-lg border-gray-300 dark:border-gray-700">
+                      <div className="flex items-center justify-center h-16 text-[10px] text-gray-400 italic border border-dashed rounded-lg border-gray-300 transition-colors duration-200 dark:border-gray-700">
                         Drop tasks here
                       </div>
                     )}

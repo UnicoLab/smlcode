@@ -81,7 +81,7 @@ export default function FloorDossier({ floor, events, selection, running, now, o
   return (
     <aside
       ref={asideRef}
-      className="floor-dossier pointer-events-auto absolute left-2 top-2 z-[60] flex max-h-[calc(100%-1rem)] w-[min(20rem,calc(100%-1rem))] flex-col overflow-hidden rounded-lg border border-gray-200/90 bg-white/92 text-xs shadow-xl backdrop-blur-md dark:border-gray-700/80 dark:bg-gray-900/92"
+      className="floor-dossier studio-slide-right pointer-events-auto absolute left-2 top-2 z-[60] flex max-h-[calc(100%-1rem)] w-[min(20rem,calc(100%-1rem))] flex-col overflow-hidden rounded-lg border border-gray-200/90 bg-white/92 text-xs shadow-xl backdrop-blur-md transition-all duration-200 dark:border-gray-700/80 dark:bg-gray-900/92"
       data-testid="floor-dossier"
       role="dialog"
       aria-label={person ? `About ${person.agent.id}` : onStage ? `About ${onStage.id}` : `About ${ticket!.ticket.id}`}
@@ -152,9 +152,12 @@ function AgentDossier({
       />
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5">
         {/* Status */}
-        <section data-testid="dossier-status">
-          <div className={clsx('flex items-center gap-1.5 font-semibold', active ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-600 dark:text-gray-300')}>
-            <span className={clsx('inline-block h-2 w-2 rounded-full', active ? 'floor-dot-live bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')} aria-hidden="true" />
+        <section className="transition-colors duration-200" data-testid="dossier-status">
+          <div className={clsx('flex items-center gap-1.5 font-semibold transition-colors duration-200', active ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-600 dark:text-gray-300')}>
+            <span className="relative inline-flex h-2 w-2 shrink-0" aria-hidden="true">
+              {active && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />}
+              <span className={clsx('relative inline-block h-2 w-2 rounded-full transition-colors duration-200', active ? 'floor-dot-live bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')} />
+            </span>
             {active ? (
               <>
                 working{agent.task ? <> on <TicketLink id={agent.task} onSelect={onSelect} team={team.id} /></> : null}
@@ -178,7 +181,7 @@ function AgentDossier({
         </section>
 
         {/* Management */}
-        <section className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px] dark:bg-gray-800/60" data-testid="dossier-management">
+        <section className="rounded-md bg-gray-50 px-2 py-1.5 text-[11px] transition-colors duration-200 dark:bg-gray-800/60" data-testid="dossier-management">
           {isManager ? (
             <>
               <div className="font-semibold text-gray-700 dark:text-gray-200">
@@ -227,7 +230,7 @@ function AgentDossier({
                   <button
                     type="button"
                     onClick={() => onSelect({ kind: 'ticket', id: t.id, team: team.id })}
-                    className="focus-ring flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+                    className="focus-ring flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors duration-150 hover:bg-gray-100 dark:hover:bg-gray-800"
                   >
                     <span className="inline-block h-2 w-3 shrink-0 rounded-sm" style={{ background: TICKET_HEX[t.state] }} aria-hidden="true" />
                     <span className="font-mono font-semibold">{t.id}</span>
@@ -376,9 +379,12 @@ function StageDossier({ seat, floor, events, running, now, onSelect }: { seat: F
     <>
       <Header hex="#8b5cf6" glyph="🎓" title={seat.id} sub={`harness · internal${seat.phase ? ` · ${seat.phase} phase` : ''}`} onClose={() => onSelect(null)} />
       <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5">
-        <section data-testid="dossier-status">
-          <div className={clsx('flex items-center gap-1.5 font-semibold', active ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-600 dark:text-gray-300')}>
-            <span className={clsx('inline-block h-2 w-2 rounded-full', active ? 'floor-dot-live bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')} aria-hidden="true" />
+        <section className="transition-colors duration-200" data-testid="dossier-status">
+          <div className={clsx('flex items-center gap-1.5 font-semibold transition-colors duration-200', active ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-600 dark:text-gray-300')}>
+            <span className="relative inline-flex h-2 w-2 shrink-0" aria-hidden="true">
+              {active && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />}
+              <span className={clsx('relative inline-block h-2 w-2 rounded-full transition-colors duration-200', active ? 'floor-dot-live bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600')} />
+            </span>
             {active ? (
               <>speaking{seat.lastAt ? <span className="font-mono font-normal text-gray-400">· {clock(seat.lastAt, now)}</span> : null}</>
             ) : seat.spoke ? (
@@ -437,7 +443,7 @@ function AgentChip({ agent, team, running, onSelect }: { agent: FloorAgent; team
       type="button"
       onClick={() => onSelect({ kind: 'agent', id: agent.id, team })}
       className={clsx(
-        'focus-ring inline-flex items-center gap-1 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold hover:bg-white dark:hover:bg-gray-900',
+        'focus-ring inline-flex items-center gap-1 rounded-full border px-1.5 py-px font-mono text-[10px] font-semibold transition-all duration-150 hover:-translate-y-px hover:bg-white hover:shadow-sm dark:hover:bg-gray-900',
         live ? 'border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300' : 'border-gray-200 text-gray-700 dark:border-gray-700 dark:text-gray-200',
       )}
       title={`${agent.id} · ${agent.seat}`}

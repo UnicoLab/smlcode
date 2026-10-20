@@ -208,6 +208,7 @@ function EventLog({ events, summary, scrollRef, running = false }: EventLogProps
         {win.start > 0 && <div style={{ height: win.top }} aria-hidden="true" />}
         {displayEvents.slice(win.start, win.end).map((item, k) => {
           const i = win.start + k;
+          const isNewest = running && i === displayEvents.length - 1;
           const event = item.event;
           const view = item.view;
           const rowKey = `${item.signature}-${event.time}-${i}`;
@@ -218,16 +219,18 @@ function EventLog({ events, summary, scrollRef, running = false }: EventLogProps
             <div
               key={rowKey}
               data-row
+              data-latest={isNewest ? 'true' : undefined}
               className={clsx(
-                'rounded-lg px-3 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50',
+                'group rounded-lg border border-transparent px-3 py-2 transition-all duration-200 hover:border-gray-200/80 hover:bg-gray-50/90 hover:shadow-xs dark:hover:border-gray-800 dark:hover:bg-gray-800/50',
                 style.row,
                 event.phase === 'error' && 'bg-red-50/50 dark:bg-red-900/10',
+                isNewest && 'studio-enter ring-1 ring-brand-500/20 bg-brand-50/25 dark:bg-brand-950/15',
               )}
             >
               <div className="flex items-start gap-3">
                 <span
                   className={clsx(
-                    'mt-0.5 flex h-6 w-10 shrink-0 items-center justify-center rounded-md border font-sans text-[9px] font-bold tracking-wide',
+                    'mt-0.5 flex h-6 w-10 shrink-0 items-center justify-center rounded-md border font-sans text-[9px] font-bold tracking-wide transition-transform duration-200 group-hover:scale-105',
                     lvl === 'error' && 'border-red-200 bg-red-100 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300',
                     lvl === 'problem' && 'border-orange-200 bg-orange-100 text-orange-700 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-300',
                     lvl === 'warning' && 'border-amber-200 bg-amber-100 text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300',

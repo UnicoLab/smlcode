@@ -13,14 +13,16 @@ import (
 
 // Document names under .slmcode/
 const (
-	DocProject = "PROJECT.md"
-	DocContext = "CONTEXT.md"
-	DocQuery   = "QUERY.md"
-	DocPlan    = "PLAN.md"
-	DocTasks   = "TASKS.md"
-	DocMemory  = "MEMORY.md"
-	DocScratch = "SCRATCH.md"
-	DocSkills  = "SKILLS.md"
+	DocProject  = "PROJECT.md"
+	DocContext  = "CONTEXT.md"
+	DocQuery    = "QUERY.md"
+	DocPRD      = "PRD.md"
+	DocContract = "CONTRACT.md"
+	DocPlan     = "PLAN.md"
+	DocTasks    = "TASKS.md"
+	DocMemory   = "MEMORY.md"
+	DocScratch  = "SCRATCH.md"
+	DocSkills   = "SKILLS.md"
 )
 
 // Store reads/writes the markdown context workspace used as durable memory.

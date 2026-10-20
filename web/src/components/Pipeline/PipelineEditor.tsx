@@ -286,7 +286,7 @@ export default function PipelineEditor() {
   const activePipe = ctx?.config?.active_pipeline;
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="h-full overflow-auto studio-enter">
       <div className="mx-auto w-full max-w-[110rem] space-y-6 p-4 2xl:p-8">
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -323,7 +323,7 @@ export default function PipelineEditor() {
         )}
 
         {/* Pipeline Library — all pipeline blocks (builtin + custom) */}
-        <div className="card p-4 space-y-3">
+        <div className="card studio-enter p-4 space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2 text-sm font-bold">
               <Layers size={16} className="text-brand-500" />Pipeline Library
@@ -343,15 +343,18 @@ export default function PipelineEditor() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               {presets.map((p: any) => {
                 const isActive = activePipe === p.id;
+                const isHve = typeof p.id === 'string' && p.id.startsWith('hve-');
                 const deletable = p.custom || p.path;
                 return (
                   <div
                     key={p.id}
                     className={clsx(
-                      'rounded-xl border p-3 transition-all hover:shadow-md',
+                      'studio-enter card-hover rounded-xl border p-3 transition-all hover:shadow-md',
                       isActive
                         ? 'border-brand-300 bg-brand-50/60 dark:border-brand-700 dark:bg-brand-900/15'
-                        : 'border-gray-200 dark:border-gray-700',
+                        : isHve
+                          ? 'border-violet-200/80 dark:border-violet-800/60 hover:border-brand-400/70 dark:hover:border-brand-500/70'
+                          : 'border-gray-200 dark:border-gray-700',
                     )}
                   >
                     <div className="flex items-start gap-2.5">
@@ -360,6 +363,7 @@ export default function PipelineEditor() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-sm font-bold truncate">{p.name}</span>
                           {isActive && <span className="badge-brand">active</span>}
+                          {isHve && <span className="badge-brand">HVE Workflow</span>}
                           {p.builtin && !p.custom && <span className="badge-neutral">builtin</span>}
                           {p.custom && <span className="badge-brand">custom</span>}
                         </div>
@@ -550,7 +554,7 @@ export default function PipelineEditor() {
         {groups.map((group, gi) => {
           const groupPhases = group.steps.filter((id) => config.phases[id]);
           return (
-            <div key={group.id} className="card overflow-hidden">
+            <div key={group.id} className="card studio-enter overflow-hidden">
               {/* Group header */}
               <div className={clsx('px-3 py-2 flex items-center gap-2', GROUP_COLORS[group.id] || 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300')}>
                 <input
@@ -826,7 +830,7 @@ function PhaseRow({ phase, phaseId, agents, groups, defaultAgent, index, groupLe
   const currentGroup = groupOf(groups, phaseId);
   const canReorder = onReorder !== undefined && index !== undefined && groupLen !== undefined;
   return (
-    <div className={clsx('flex items-center gap-2 px-3 py-2.5 flex-wrap lg:flex-nowrap transition-opacity', !isEnabled && 'opacity-60')}>
+    <div className={clsx('studio-enter flex items-center gap-2 px-3 py-2.5 flex-wrap lg:flex-nowrap transition-opacity', !isEnabled && 'opacity-60')}>
       {/* Grip + per-phase reorder */}
       <div className="flex flex-col items-center gap-px w-4 shrink-0 self-start lg:self-center pt-1.5 lg:pt-0">
         <GripVertical size={14} className="text-gray-300 dark:text-gray-600" />

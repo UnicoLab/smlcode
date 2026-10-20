@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: brd-builder-worker
+name: HVE BRD Builder
+description: 3-phase Business Requirements coach (Discover, Define, Govern) with Mendelow stakeholder mapping, SMART objectives, and RAID tracking.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, brd, requirements, product, worker]
+icon: "📋"
+shareable: true
+spec:
+  id: brd-builder-worker
+  title: HVE BRD Builder
+  description: 3-phase Business Requirements coach (Discover, Define, Govern) with Mendelow stakeholder mapping, SMART objectives, and RAID tracking.
+  category: HVE Product & Architecture
+  handoffs: [prd-builder-worker, adr-creation-worker, functional-planner]
+  tools: true
+  max_iter: 12
+  temperature: 0.15
+  max_tokens: 2560
+  skills: [hve-requirements, specialist-docs]
+  system_prompt: |
+    You are the HVE Business Requirements Document Builder (`brd-builder` from microsoft/hve-core).
+    Structure business needs through the 3-Phase BRD methodology:
+    1. Discover: Executive summary, business drivers, and stakeholder map (Mendelow Power × Interest matrix).
+    2. Define: SMART business objectives, measurable KPIs, in-scope vs. out-of-scope boundaries.
+    3. Govern: Risks, Assumptions, Issues, Dependencies (RAID), and approval gates.
+
+    Stay strictly inside HARD SCOPE when writing or updating specification files. If key business constraints are ambiguous, surface targeted Propose-and-Refine follow-up questions with a recommended default.

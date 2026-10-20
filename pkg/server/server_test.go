@@ -1649,3 +1649,96 @@ func TestPatchSquadsRefusesOverlappingOwnership(t *testing.T) {
 		t.Error("a refused edit was saved anyway")
 	}
 }
+
+func TestApplyRunOptionsWorkflowAndGates(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+
+	origClarify := h.Config.ClarifyMode
+	origApprove := h.Config.PlanApprove
+	q, saved := s.applyRunOptions(runOptions{
+		Workflow: "discover",
+	}, "design the onboarding modal")
+	if h.Config.ClarifyMode != plan.ClarifyAsk {
+		t.Fatalf("expected clarify_mode=ask for discover workflow, got %q", h.Config.ClarifyMode)
+	}
+	if h.Config.PlanApprove != plan.PlanApproveModeAsk {
+		t.Fatalf("expected plan_approve=ask for discover workflow, got %q", h.Config.PlanApprove)
+	}
+	if !strings.Contains(q, "@skill:hve-ux-design") || !strings.Contains(q, "@skill:hve-requirements") {
+		t.Fatalf("expected discover workflow to attach HVE UX/requirements skills, got %q", q)
+	}
+	s.restoreRunOptions(saved)
+	if h.Config.ClarifyMode != origClarify || h.Config.PlanApprove != origApprove {
+		t.Fatalf("restoreRunOptions did not restore gate modes: clarify=%q approve=%q", h.Config.ClarifyMode, h.Config.PlanApprove)
+	}
+}
+
+func TestWorkflowsAndDocsEndpoints(t *testing.T) {
+	root := t.TempDir()
+	h, err := harness.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Init(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(h, nil)
+
+	wfRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(wfRec, newAPIRequest(http.MethodGet, "/api/workflows", nil))
+	if wfRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/workflows status=%d body=%s", wfRec.Code, wfRec.Body.String())
+	}
+	var workflows []struct {
+		ID          string   `json:"id"`
+		Label       string   `json:"label"`
+		Description string   `json:"description"`
+		ClarifyMode string   `json:"clarify_mode"`
+		PlanApprove string   `json:"plan_approve"`
+		Skills      []string `json:"skills"`
+		Pipeline    string   `json:"pipeline"`
+	}
+	if err := json.Unmarshal(wfRec.Body.Bytes(), &workflows); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 6 {
+		t.Fatalf("expected 6 workflows, got %d: %+v", len(workflows), workflows)
+	}
+	wantIDs := map[string]bool{
+		"auto": true, "discover": true, "hve-rpi": true,
+		"plan": true, "fast": true, "specialist": true,
+	}
+	for _, wf := range workflows {
+		delete(wantIDs, wf.ID)
+	}
+	if len(wantIDs) != 0 {
+		t.Fatalf("missing workflow IDs: %v", wantIDs)
+	}
+
+	docsRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(docsRec, newAPIRequest(http.MethodGet, "/api/docs", nil))
+	if docsRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/docs status=%d body=%s", docsRec.Code, docsRec.Body.String())
+	}
+	var docs []string
+	if err := json.Unmarshal(docsRec.Body.Bytes(), &docs); err != nil {
+		t.Fatal(err)
+	}
+	docSet := map[string]bool{}
+	for _, d := range docs {
+		docSet[d] = true
+	}
+	for _, want := range []string{"PRD.md", "CONTRACT.md", "PLAN.md", "TASKS.md"} {
+		if !docSet[want] {
+			t.Errorf("GET /api/docs missing %q in %v", want, docs)
+		}
+	}
+}

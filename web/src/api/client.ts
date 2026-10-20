@@ -544,10 +544,16 @@ export async function answerClarify(
   answers: { question_id: string; selected: string[]; freeform?: string; comment?: string }[],
   notes?: string,
   askId?: string,
+  requestFollowUp?: boolean,
 ): Promise<{ ok: boolean }> {
   return request('/clarify/answer', {
     method: 'POST',
-    body: JSON.stringify({ answers, notes: notes || undefined, ask_id: askId || undefined }),
+    body: JSON.stringify({
+      answers,
+      notes: notes || undefined,
+      ask_id: askId || undefined,
+      request_follow_up: requestFollowUp || undefined,
+    }),
   });
 }
 

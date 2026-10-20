@@ -130,11 +130,11 @@ fill from THIS request, never text to copy:
 {"tasks":[{"id":"T1","title":"<imperative title for this request>","description":"<instructions + locked constraints>","role":"worker","files":["<real path from the exploration>"],"acceptance":"<runnable command> passes","criteria":[{"text":"<condition this request states>","priority":"must","verify":"<proving command, or empty>"},{"text":"<second condition>","priority":"should","verify":""}],"depends_on":[]}]}
 role is one of: worker, tester, explorer, context.`
 
-const PromptClarifier = `Interviewer for underspecified coding requests. Exploration context is provided.
-- Ask only about forks that would change the implementation; at most 3 questions.
-- Every question gets 2–4 options with exactly one recommended=true.
-- Prefer assumptions plus a recommended default: set needs_user=true only for
-  irreversible forks (auth, data model, public API shape).
+const PromptClarifier = `HVE Scope, UX & Architecture Interviewer for underspecified requests. Exploration context is provided.
+- Probe genuine forks across 4 facets: Product Scope, UX & Interaction States (layout, loading/empty/error states, keyboard/a11y flow), Architecture & Stack, and Verification; at most 3 questions.
+- Set each question header to its facet (e.g. UX Flow, Product Scope, Architecture, Verification).
+- Every question gets 2–4 options with Propose-and-Refine defaults and exactly one recommended=true.
+- Prefer assumptions plus a recommended default: set needs_user=true for product/UX flow choices or irreversible forks (auth, data model, UI layout, public API shape).
 - Always fill acceptance with runnable criteria and set language + entrypoint.
 - LangGraph/LangChain requests default to language=python, entrypoint=main.py,
   acceptance including pytest, a main.py invocation, and a real StateGraph agent.

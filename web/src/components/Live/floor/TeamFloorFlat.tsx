@@ -244,6 +244,20 @@ function Island({
     <g data-testid={`island-${team.id}`} className={clsx('floor-island', active && running && 'floor-island-active')}>
       {/* Thickness, then the top face. */}
       <ellipse cx={cx} cy={cy + ISLAND_DEPTH} rx={ISLAND_RX} ry={ISLAND_RY} fill={hex} opacity="0.22" filter="url(#floor-shadow)" />
+      {active && running && (
+        <ellipse
+          cx={cx}
+          cy={cy}
+          rx={ISLAND_RX + 14}
+          ry={ISLAND_RY + 9}
+          fill="none"
+          stroke={hex}
+          strokeWidth="1.5"
+          strokeOpacity="0.45"
+          strokeDasharray="10 14"
+          className="floor-flow floor-flow-on floor-halo-ring"
+        />
+      )}
       <ellipse cx={cx} cy={cy} rx={ISLAND_RX} ry={ISLAND_RY} fill={`url(#island-${cssID(team.id)})`} stroke={rim} strokeWidth={rimWidth} className="floor-face" />
       {team.waitingOn.length > 0 && (
         <ellipse cx={cx} cy={cy} rx={ISLAND_RX + 8} ry={ISLAND_RY + 6} fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="6 8" className="floor-waiting" />
@@ -591,6 +605,16 @@ function Conduit({ from, to, label, stalled, running }: { from: Placed; to: Plac
     <g data-testid={`conduit-${from.team.id}-${to.team.id}`} data-stalled={stalled ? 'true' : undefined}>
       <path d={d} fill="none" stroke={color} strokeWidth="6" strokeOpacity="0.14" strokeLinecap="round" />
       <path d={d} fill="none" stroke={color} strokeWidth="2" strokeDasharray="8 10" strokeLinecap="round" className={clsx('floor-flow', running && !stalled && 'floor-flow-on', stalled && 'floor-flow-stalled')} />
+      {running && !stalled && (
+        <>
+          <circle r="3.5" fill={color} filter="url(#floor-glow)">
+            <animateMotion dur="2.2s" begin="0s" repeatCount="indefinite" path={d} />
+          </circle>
+          <circle r="2.75" fill="#c4b5fd" opacity="0.85" filter="url(#floor-glow)">
+            <animateMotion dur="2.2s" begin="-1.1s" repeatCount="indefinite" path={d} />
+          </circle>
+        </>
+      )}
       <g transform={`translate(${mx} ${(y1 + y2) / 2 + bow / 2})`}>
         <rect x="-70" y="-10" width="140" height="18" rx="9" fill={color} opacity={stalled ? 0.95 : 0.85} />
         <text y="3" textAnchor="middle" className="floor-bubble-text" fill="#fff">
@@ -622,6 +646,9 @@ function Handoff({ handoff, placed, tick }: { handoff: FloorHandoff; placed: Map
   return (
     <g data-testid={`handoff-${handoff.task}`} opacity={fade}>
       <path d={d} fill="none" stroke="#7c3aed" strokeWidth="2" strokeDasharray="4 6" />
+      <circle r="3" fill="#a78bfa" opacity="0.55" filter="url(#floor-glow)">
+        <animateMotion dur="1.8s" begin="-0.25s" repeatCount="indefinite" path={d} />
+      </circle>
       <circle r="5" fill="#7c3aed" filter="url(#floor-glow)">
         <animateMotion dur="1.8s" repeatCount="indefinite" path={d} />
       </circle>
@@ -683,6 +710,14 @@ function IdleFloor() {
       <div className="floor-ground absolute inset-0" aria-hidden="true" />
       <div className="floor-tilt absolute inset-0 opacity-60">
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="h-full w-full" aria-hidden="true">
+          <g transform={`translate(${W / 2} ${H / 2 + 20})`}>
+            <circle r="190" fill="none" stroke="#8b5cf6" strokeOpacity="0.14" strokeDasharray="3 7" />
+            <g>
+              <path d="M 0 0 L 180 -36 A 185 185 0 0 1 180 36 Z" fill="#8b5cf6" fillOpacity="0.06" />
+              <line x1="0" y1="0" x2="184" y2="0" stroke="#8b5cf6" strokeOpacity="0.28" strokeWidth="1.5" strokeLinecap="round" />
+              <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="14s" repeatCount="indefinite" />
+            </g>
+          </g>
           {[0.3, 0.5, 0.7].map((f, i) => (
             <g key={f} className="floor-ghost" style={{ animationDelay: `${i * 0.6}s` }}>
               <ellipse cx={W * f} cy={H / 2 + 20} rx="120" ry="60" fill="#8b5cf6" opacity="0.08" stroke="#8b5cf6" strokeOpacity="0.25" strokeDasharray="6 8" />
@@ -696,6 +731,16 @@ function IdleFloor() {
           Describe a change above and press Run. The teams that take it, their managers, their tickets
           and who is working on what appear here as the run goes.
         </p>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
+          {['Scope & UX Interview', 'HVE RPI Loop', 'Multi-Team Squads'].map((cap) => (
+            <span
+              key={cap}
+              className="rounded-full border border-brand-200/70 bg-white/75 px-2.5 py-0.5 text-[10px] font-medium text-brand-700 shadow-sm backdrop-blur-sm dark:border-brand-800/60 dark:bg-gray-900/75 dark:text-brand-300"
+            >
+              {cap}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );

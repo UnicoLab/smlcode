@@ -71,7 +71,7 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	switch mode {
 	case plan.ClarifyAsk:
 		if interview.NeedsUserDecision() {
-			resolved = o.resolveAsk(ctx, query, interview)
+			resolved = o.resolveAskWithFollowUp(ctx, query, exploreOut, interview)
 		} else {
 			resolved = plan.ApplyScopeAnswers(interview, plan.ResolveWithDefaults(interview))
 			o.emit("clarify", "no blocking forks — applied recommended defaults", "")
@@ -104,6 +104,52 @@ func forceClarifyGreenfield(query string) bool {
 }
 
 func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview plan.ScopeInterview) plan.ScopeInterview {
+	return o.resolveAskWithFollowUp(ctx, query, "", interview)
+}
+
+func (o *Orchestrator) resolveAskWithFollowUp(ctx context.Context, query, exploreOut string, interview plan.ScopeInterview) plan.ScopeInterview {
+	ans := o.waitScopeAskRound(ctx, query, interview, 1)
+	resolved := plan.ApplyScopeAnswers(interview, ans)
+	if !ans.RequestFollowUp || ans.UseAllRec || o.executor == nil {
+		return resolved
+	}
+
+	o.emitAgent("clarify", "ux-architect", "", "follow-up UX & scope interview (round 2)", "", "")
+	lockedMD := plan.FormatPRDMarkdown(resolved.PRD, resolved.Assumptions)
+	followPrompt := agents.PromptClarifier +
+		"\n\n## Query\n" + truncate(query, 1200) +
+		"\n\n## Round 1 Locked Decisions\n" + sanitizeForContract(truncate(lockedMD, 1600)) +
+		"\n\n## User Follow-up Notes\n" + sanitizeForContract(truncate(ans.Notes, 600)) +
+		"\n\n## Exploration\n" + sanitizeForContract(truncate(exploreOut, 1500)) +
+		"\n\nAsk 1 to 3 targeted follow-up questions probing remaining UX interaction states (loading, empty, error, keyboard flow), product edge cases, or architecture details not yet locked in Round 1. Set needs_user=true.\nReturn STRICT JSON interview object."
+	followOut, err := o.runRoleTracked(ctx, plan.RolePlanner, "", followPrompt)
+	if err != nil || strings.TrimSpace(followOut) == "" {
+		return resolved
+	}
+	followUp := plan.ParseScopeInterview(followOut)
+	if !followUp.NeedsUserDecision() {
+		return resolved
+	}
+	// Preserve Round 1 locked assumptions and PRD fields before applying Round 2 answers.
+	followUp.Assumptions = append(append([]string{}, resolved.Assumptions...), followUp.Assumptions...)
+	if followUp.Language == "" {
+		followUp.Language = resolved.Language
+	}
+	if followUp.Entrypoint == "" {
+		followUp.Entrypoint = resolved.Entrypoint
+	}
+	followUp.PRD.Constraints = append(append([]string{}, resolved.PRD.Constraints...), followUp.PRD.Constraints...)
+	if len(followUp.PRD.Goals) == 0 {
+		followUp.PRD.Goals = resolved.PRD.Goals
+	}
+	if len(followUp.PRD.Acceptance) == 0 {
+		followUp.PRD.Acceptance = resolved.PRD.Acceptance
+	}
+	ans2 := o.waitScopeAskRound(ctx, query, followUp, 2)
+	return plan.ApplyScopeAnswers(followUp, ans2)
+}
+
+func (o *Orchestrator) waitScopeAskRound(ctx context.Context, query string, interview plan.ScopeInterview, round int) plan.ScopeAnswers {
 	timeout := o.cfg.ClarifyTimeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -111,6 +157,7 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 	ask := plan.ScopeAsk{
 		ID:        fmt.Sprintf("ask-%d", time.Now().UnixNano()),
 		Kind:      "clarify",
+		Round:     round,
 		Query:     query,
 		Questions: interview.Questions,
 		PRDDraft:  interview.PRD,
@@ -121,8 +168,8 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 	_ = plan.WriteScopeAsk(o.cfg.SlmDir(), ask)
 	payload := plan.MarshalAskJSON(ask)
 	o.emitFull("clarify", stream.KindAsk, "interviewer", "",
-		fmt.Sprintf("waiting for answers (%d questions) — POST /api/clarify/answer or use recommended",
-			len(ask.Questions)),
+		fmt.Sprintf("waiting for answers (round %d, %d questions) — POST /api/clarify/answer or use recommended",
+			round, len(ask.Questions)),
 		"", payload)
 
 	var ans plan.ScopeAnswers
@@ -143,7 +190,7 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 			ans, got = a, true
 		} else if err != nil && ctx.Err() != nil {
 			// canceled
-			return plan.ApplyScopeAnswers(interview, plan.ResolveWithDefaults(interview))
+			return plan.ResolveWithDefaults(interview)
 		}
 	}
 	if !got {
@@ -152,7 +199,7 @@ func (o *Orchestrator) resolveAsk(ctx context.Context, query string, interview p
 	} else {
 		o.emit("clarify", "user answers received — locking PRD", "")
 	}
-	return plan.ApplyScopeAnswers(interview, ans)
+	return ans
 }
 
 // runScopeJudgeGate ensures every task has a concrete PRD/acceptance before execute.

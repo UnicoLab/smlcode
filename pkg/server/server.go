@@ -477,6 +477,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/docs", s.handleListDocs)
 	s.mux.HandleFunc("GET /api/docs/{name}", s.handleGetDoc)
 	s.mux.HandleFunc("PUT /api/docs/{name}", s.handlePutDoc)
+	s.mux.HandleFunc("GET /api/workflows", s.handleListWorkflows)
 	s.mux.HandleFunc("GET /api/tasks", s.handleGetTasks)
 	s.mux.HandleFunc("PUT /api/tasks", s.handlePutTasks)
 	s.mux.HandleFunc("POST /api/tasks", s.handleAddTask)
@@ -686,10 +687,74 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListDocs(w http.ResponseWriter, r *http.Request) {
 	names := []string{
 		contextstore.DocProject, contextstore.DocContext, contextstore.DocQuery,
+		contextstore.DocPRD, contextstore.DocContract,
 		contextstore.DocPlan, contextstore.DocTasks, contextstore.DocMemory,
 		contextstore.DocSkills, contextstore.DocScratch,
 	}
 	writeJSON(w, names)
+}
+
+func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
+	type workflowItem struct {
+		ID          string   `json:"id"`
+		Label       string   `json:"label"`
+		Description string   `json:"description"`
+		ClarifyMode string   `json:"clarify_mode,omitempty"`
+		PlanApprove string   `json:"plan_approve,omitempty"`
+		Skills      []string `json:"skills"`
+		Pipeline    string   `json:"pipeline,omitempty"`
+	}
+	workflows := []workflowItem{
+		{
+			ID:          "auto",
+			Label:       "Auto",
+			Description: "Dynamic SLM pipeline with adaptive gates.",
+			ClarifyMode: plan.ClarifyAuto,
+			PlanApprove: plan.PlanApproveModeAuto,
+			Skills:      []string{},
+		},
+		{
+			ID:          "discover",
+			Label:       "Discover & UX",
+			Description: "Clarifying interview, UX flow & PRD design, and interactive plan approval before coding.",
+			ClarifyMode: plan.ClarifyAsk,
+			PlanApprove: plan.PlanApproveModeAsk,
+			Skills:      []string{"hve-ux-design", "hve-requirements"},
+			Pipeline:    "hve-discovery",
+		},
+		{
+			ID:          "hve-rpi",
+			Label:       "HVE RPI",
+			Description: "Research -> Plan -> Implement -> Review lifecycle with evidence gates.",
+			ClarifyMode: plan.ClarifyAuto,
+			PlanApprove: plan.PlanApproveModeAuto,
+			Skills:      []string{"hve-rpi"},
+			Pipeline:    "hve-rpi",
+		},
+		{
+			ID:          "plan",
+			Label:       "Plan First",
+			Description: "Generate architecture and task plan, then pause for approval before implementation.",
+			ClarifyMode: plan.ClarifyAuto,
+			PlanApprove: plan.PlanApproveModeAsk,
+			Skills:      []string{},
+		},
+		{
+			ID:          "fast",
+			Label:       "Fast Build",
+			Description: "Skip interview and plan gates for direct implementation and test verification.",
+			ClarifyMode: plan.ClarifyOff,
+			PlanApprove: plan.PlanApproveModeAuto,
+			Skills:      []string{},
+		},
+		{
+			ID:          "specialist",
+			Label:       "Specialist",
+			Description: "Run a single specialist agent directly on the query.",
+			Skills:      []string{},
+		},
+	}
+	writeJSON(w, workflows)
 }
 
 func (s *Server) handleGetDoc(w http.ResponseWriter, r *http.Request) {
@@ -1054,6 +1119,9 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		// TeamSelection "dynamic" lets the dispatcher choose for this run,
 		// ignoring saved and pipeline pins; "strict" (or empty) keeps pins.
 		TeamSelection string `json:"team_selection"`
+		Workflow      string `json:"workflow"`
+		ClarifyMode   string `json:"clarify_mode"`
+		PlanApprove   string `json:"plan_approve"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Query) == "" {
 		http.Error(w, "query required", 400)
@@ -1073,8 +1141,11 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	// (see runOptions / "wiring required"), but until orchestrator.Run accepts
 	// them they are applied to the shared config under the write lock and
 	// restored the same way, so /api/config readers never observe a torn state.
-	opts := runOptions{Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills, Teams: req.Teams,
-		TeamsDynamic: strings.EqualFold(strings.TrimSpace(req.TeamSelection), "dynamic") && len(req.Teams) == 0}
+	opts := runOptions{
+		Mode: req.Mode, Specialist: req.Specialist, Skills: req.Skills, Teams: req.Teams,
+		TeamsDynamic: strings.EqualFold(strings.TrimSpace(req.TeamSelection), "dynamic") && len(req.Teams) == 0,
+		Workflow:     req.Workflow, ClarifyMode: req.ClarifyMode, PlanApprove: req.PlanApprove,
+	}
 	query, saved := s.applyRunOptions(opts, req.Query)
 
 	// Ensure SSE stays wired for this run (config rebuilds call wireOrchestratorEvents too).
@@ -1188,16 +1259,22 @@ type runOptions struct {
 	Teams []string
 	// TeamsDynamic clears every pin for this run: the dispatcher decides.
 	TeamsDynamic bool
+	Workflow     string
+	ClarifyMode  string
+	PlanApprove  string
 }
 
 // savedRunOptions is the config state to restore once the run ends.
 type savedRunOptions struct {
-	Mode       string
-	Specialist string
-	Skills     []string
-	Teams      []string
-	Dynamic    bool
-	applied    bool
+	Mode            string
+	Specialist      string
+	Skills          []string
+	Teams           []string
+	Dynamic         bool
+	ClarifyMode     string
+	PlanApprove     string
+	DynamicPipeline bool
+	applied         bool
 }
 
 // applyRunOptions installs per-run overrides under the config write lock and
@@ -1212,6 +1289,32 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 		saved.Skills = append([]string{}, c.PinnedSkills...)
 		saved.Teams = append([]string{}, c.Teams...)
 		saved.Dynamic = c.TeamsDynamic
+		saved.ClarifyMode = c.ClarifyMode
+		saved.PlanApprove = c.PlanApprove
+		saved.DynamicPipeline = c.DynamicPipeline
+
+		extraSkills := append([]string{}, opts.Skills...)
+		switch strings.ToLower(strings.TrimSpace(opts.Workflow)) {
+		case "discover", "interview", "scope":
+			c.Mode = config.ModeFull
+			c.ClarifyMode = plan.ClarifyAsk
+			c.PlanApprove = plan.PlanApproveModeAsk
+			extraSkills = append(extraSkills, "hve-ux-design", "hve-requirements")
+		case "hve-rpi", "rpi":
+			c.Mode = config.ModeFull
+			extraSkills = append(extraSkills, "hve-rpi")
+		case "plan", "plan-first":
+			c.Mode = config.ModeFull
+			c.PlanApprove = plan.PlanApproveModeAsk
+		case "fast", "fast-build":
+			c.Mode = config.ModeFull
+			c.ClarifyMode = plan.ClarifyOff
+			c.PlanApprove = plan.PlanApproveModeAuto
+		case "specialist":
+			c.Mode = config.ModeSpecialist
+		case "auto":
+			c.Mode = config.ModeFull
+		}
 
 		if opts.Mode != "" {
 			c.Mode = opts.Mode
@@ -1220,9 +1323,15 @@ func (s *Server) applyRunOptions(opts runOptions, query string) (string, savedRu
 			c.Specialist = opts.Specialist
 			c.Mode = config.ModeSpecialist
 		}
-		if len(opts.Skills) > 0 {
+		if strings.TrimSpace(opts.ClarifyMode) != "" {
+			c.ClarifyMode = plan.NormalizeClarifyMode(opts.ClarifyMode)
+		}
+		if strings.TrimSpace(opts.PlanApprove) != "" {
+			c.PlanApprove = plan.NormalizePlanApprove(opts.PlanApprove)
+		}
+		if len(extraSkills) > 0 {
 			pins := append([]string{}, saved.Skills...)
-			for _, sk := range opts.Skills {
+			for _, sk := range extraSkills {
 				sk = strings.TrimSpace(sk)
 				if sk == "" {
 					continue
@@ -1258,6 +1367,9 @@ func (s *Server) restoreRunOptions(saved savedRunOptions) {
 		c.PinnedSkills = saved.Skills
 		c.Teams = saved.Teams
 		c.TeamsDynamic = saved.Dynamic
+		c.ClarifyMode = saved.ClarifyMode
+		c.PlanApprove = saved.PlanApprove
+		c.DynamicPipeline = saved.DynamicPipeline
 	})
 }
 

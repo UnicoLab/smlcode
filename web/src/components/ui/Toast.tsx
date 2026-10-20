@@ -148,6 +148,13 @@ const TONE_CLASS: Record<ToastTone, string> = {
   error: 'border-red-500/40 bg-red-50 dark:bg-red-950/50 text-red-900 dark:text-red-100',
 };
 
+const TONE_BAR_CLASS: Record<ToastTone, string> = {
+  info: 'bg-sky-500/50 dark:bg-sky-400/50',
+  success: 'bg-emerald-500/50 dark:bg-emerald-400/50',
+  warning: 'bg-amber-500/50 dark:bg-amber-400/50',
+  error: 'bg-red-500/50 dark:bg-red-400/50',
+};
+
 function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div
@@ -161,7 +168,7 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
           role={t.tone === 'error' ? 'alert' : 'status'}
           aria-live={t.tone === 'error' ? 'assertive' : 'polite'}
           className={clsx(
-            'flex items-start gap-2 rounded-lg border px-3 py-2 shadow-lg animate-fade-in',
+            'studio-pop relative overflow-hidden flex items-start gap-2 rounded-lg border px-3 py-2.5 shadow-lg backdrop-blur-sm animate-fade-in',
             TONE_CLASS[t.tone],
           )}
         >
@@ -174,10 +181,20 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
             type="button"
             onClick={() => onDismiss(t.id)}
             aria-label={`Dismiss notification: ${t.title}`}
-            className="focus-ring shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
+            className="focus-ring shrink-0 rounded p-0.5 opacity-60 transition-opacity hover:opacity-100"
           >
             <X size={14} aria-hidden="true" />
           </button>
+          {t.ttl > 0 && (
+            <span
+              aria-hidden="true"
+              style={{ animationDuration: `${t.ttl}ms` }}
+              className={clsx(
+                'toast-lifetime-bar pointer-events-none absolute inset-x-0 bottom-0 h-0.5',
+                TONE_BAR_CLASS[t.tone],
+              )}
+            />
+          )}
         </div>
       ))}
     </div>

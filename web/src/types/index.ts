@@ -571,6 +571,8 @@ export interface InterruptedRun {
 }
 
 // ── Run Request ──
+export type WorkflowMode = 'auto' | 'discover' | 'hve-rpi' | 'plan' | 'fast' | 'specialist';
+
 export interface RunRequest {
   query: string;
   mode?: string;
@@ -586,6 +588,12 @@ export interface RunRequest {
    * pipeline pins; 'strict' (or absent) keeps them.
    */
   team_selection?: 'dynamic' | 'strict';
+  /** Per-run lifecycle workflow mode (auto, discover, hve-rpi, plan, fast, specialist). */
+  workflow?: WorkflowMode | string;
+  /** Per-run clarify gate override ('ask' | 'auto' | 'off'). */
+  clarify_mode?: 'ask' | 'auto' | 'off';
+  /** Per-run plan approval gate override ('ask' | 'auto'). */
+  plan_approve?: 'ask' | 'auto';
 }
 
 // ── Pipeline ──
@@ -653,6 +661,8 @@ export interface AgentSpec {
   title?: string;
   role?: string;
   description?: string;
+  category?: string;
+  handoffs?: string[];
   system_prompt?: string;
   skills: string[];
   model: string;
@@ -812,6 +822,7 @@ export interface AppStatus {
 export interface ClarifyQuestion {
   id: string;
   header: string;
+  facet?: 'ux' | 'product' | 'architecture' | 'verification' | string;
   question: string;
   options: ClarifyOption[];
   multi_select?: boolean;
@@ -828,6 +839,7 @@ export interface ClarifyOption {
 export interface ClarifyAsk {
   id?: string;
   kind?: string;
+  round?: number;
   query?: string;
   questions: ClarifyQuestion[];
   prd_draft?: {

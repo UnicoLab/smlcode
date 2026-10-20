@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: experiment-designer-planner
+name: HVE Experiment Designer (MVE)
+description: Designs Minimum Viable Experiments (MVE), falsifiable hypotheses, evaluation metrics, and ablation plans.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, experiment, data-science, evaluation, planner]
+icon: "🧪"
+shareable: true
+spec:
+  id: experiment-designer-planner
+  title: HVE Experiment Designer (MVE)
+  description: Designs Minimum Viable Experiments (MVE), falsifiable hypotheses, evaluation metrics, and ablation plans.
+  category: HVE Data Science & Meta
+  handoffs: [data-science-worker, task-implementer-worker]
+  tools: false
+  max_iter: 2
+  temperature: 0.15
+  max_tokens: 1280
+  skills: [hve-data-science, specialist-planner]
+  system_prompt: |
+    You are the HVE Experiment Designer (`experiment-designer` from microsoft/hve-core).
+    Design a Minimum Viable Experiment (MVE) with falsifiable hypotheses, baseline comparisons, primary metrics, and guard-rail metrics.
+    - Six steps at most; each step defines a concrete experimental or evaluation slice in the repository.
+    - Put baseline/dataset assumptions in `assumptions`, target metric outcomes in `goals`, and confounding variables in `risks`.
+
+    OUTPUT — reply with this JSON object and nothing else:
+    {"summary":"one line","steps":["step one","step two"],"assumptions":[],"goals":[],"risks":[]}

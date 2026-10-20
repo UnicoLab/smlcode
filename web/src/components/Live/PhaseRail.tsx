@@ -95,12 +95,21 @@ export default function PhaseRail({
             {/* The track: a base line and the lit portion the run has walked. */}
             <div className="pointer-events-none absolute left-4 right-4 top-[15px] h-1 rounded-full bg-gray-200 dark:bg-gray-800" aria-hidden="true" />
             <div
-              className="journey-fill pointer-events-none absolute left-4 top-[15px] h-1 rounded-full bg-gradient-to-r from-sky-500 via-violet-500 to-emerald-500"
+              className="journey-fill pointer-events-none absolute left-4 top-[15px] h-1 overflow-hidden rounded-full bg-gradient-to-r from-sky-500 via-violet-500 to-emerald-500 transition-[width] duration-500 ease-out"
               style={{ width: `calc((100% - 2rem) * ${progress / 100})` }}
               aria-hidden="true"
-            />
+            >
+              {running && (
+                <div
+                  className="journey-beam pointer-events-none absolute inset-0 rounded-full bg-gradient-to-r from-transparent via-white/60 to-transparent"
+                  aria-hidden="true"
+                />
+              )}
+            </div>
             {shown.map((group) => {
               const tone = toneFor(group.id);
+              const groupActive = group.phases.some((p) => (phaseState[p] ?? 'pending') === 'active');
+              const groupCompleted = !groupActive && group.phases.every((p) => phaseState[p] === 'completed');
               return (
                 <div key={group.id} className="relative flex shrink-0 flex-col">
                   <div className="flex items-start">
@@ -118,27 +127,56 @@ export default function PhaseRail({
                         >
                           <span className="relative flex h-8 w-8 items-center justify-center">
                             {isActive && running && (
-                              <span className="journey-active-ring absolute inset-0 rounded-full" style={{ background: tone.hex, opacity: 0.35 }} aria-hidden="true" />
+                              <>
+                                <span
+                                  className="journey-active-ring absolute inset-0 rounded-full"
+                                  style={{ background: tone.hex, opacity: 0.35 }}
+                                  aria-hidden="true"
+                                />
+                                <span
+                                  className="journey-active-ring absolute inset-0.5 rounded-full animate-ping"
+                                  style={{ border: `1.5px solid ${tone.hex}`, opacity: 0.45, animationDuration: '1.8s' }}
+                                  aria-hidden="true"
+                                />
+                              </>
                             )}
                             <span
                               className={clsx(
-                                'relative flex items-center justify-center rounded-full border-2 transition-all',
-                                isActive ? 'h-7 w-7 shadow-md' : 'h-5 w-5',
+                                'relative flex items-center justify-center rounded-full border-2 transition-all duration-300 ease-out',
+                                isActive ? 'h-7 w-7 scale-110 shadow-md' : 'h-5 w-5',
+                                state === 'completed' && 'scale-100 shadow-xs',
                                 state === 'pending' && 'border-dashed border-gray-300 bg-white dark:border-gray-700 dark:bg-gray-950',
                               )}
                               style={
                                 state === 'pending'
                                   ? undefined
-                                  : { borderColor: tone.hex, background: state === 'completed' ? tone.hex : '#fff' }
+                                  : {
+                                      borderColor: tone.hex,
+                                      background: state === 'completed' ? tone.hex : '#fff',
+                                      ...(isActive ? { boxShadow: `0 0 12px -1px ${tone.hex}66` } : undefined),
+                                    }
                               }
                             >
-                              {state === 'completed' && <Check size={11} className="text-white" aria-hidden="true" strokeWidth={3} />}
-                              {isActive && <span className={clsx('h-2.5 w-2.5 rounded-full', running && 'animate-pulse')} style={{ background: tone.hex }} aria-hidden="true" />}
+                              {state === 'completed' && (
+                                <Check
+                                  size={11}
+                                  className="text-white transition-transform duration-300 ease-out"
+                                  aria-hidden="true"
+                                  strokeWidth={3}
+                                />
+                              )}
+                              {isActive && (
+                                <span
+                                  className={clsx('h-2.5 w-2.5 rounded-full transition-transform duration-300', running && 'animate-pulse')}
+                                  style={{ background: tone.hex }}
+                                  aria-hidden="true"
+                                />
+                              )}
                             </span>
                           </span>
                           <span
                             className={clsx(
-                              'mt-1 max-w-full truncate text-[10.5px] leading-tight',
+                              'mt-1 max-w-full truncate text-[10.5px] leading-tight transition-colors duration-200',
                               isActive ? 'font-bold text-gray-900 dark:text-gray-50' : state === 'completed' ? 'font-medium text-gray-600 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600',
                             )}
                           >
@@ -148,7 +186,16 @@ export default function PhaseRail({
                       );
                     })}
                   </div>
-                  <span className={clsx('mt-0.5 self-center rounded px-1.5 text-[9px] font-bold uppercase tracking-[0.14em]', tone.text, tone.soft)}>
+                  <span
+                    className={clsx(
+                      'mt-0.5 self-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] transition-all duration-300',
+                      tone.text,
+                      tone.soft,
+                      groupActive && 'scale-105 ring-1 ring-current/30 shadow-xs',
+                      !groupActive && !groupCompleted && 'opacity-80',
+                    )}
+                    style={groupActive ? { boxShadow: `0 0 10px -2px ${tone.hex}55` } : undefined}
+                  >
                     {group.label}
                   </span>
                 </div>

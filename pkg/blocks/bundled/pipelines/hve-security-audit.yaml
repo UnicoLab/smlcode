@@ -1,0 +1,71 @@
+api_version: blocks/v1
+kind: pipeline
+id: hve-security-audit
+name: HVE Security, SSSC & Responsible AI Pipeline
+description: >-
+  Security-hardened pipeline with STRIDE threat modeling, Software Supply Chain
+  Security (SSSC), Responsible AI (NIST AI RMF) checks, and security code review.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: any
+tags: [hve, security, stride, sssc, rai, pipeline]
+icon: "🛡️"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - clarify
+    - architect
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: prepare
+      label: Recon
+      steps: [init, skills, context, explore, docs]
+    - id: design
+      label: Threat Model & Plan
+      steps: [clarify, architect, plan, split]
+    - id: build
+      label: Harden
+      steps: [coord, execute, learn]
+    - id: verify
+      label: Security Audit
+      steps: [polish, test]
+    - id: finish
+      label: Finish
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: prepare}
+    skills: {agent: "", when: always, label: Skills, tip: Load STRIDE, SSSC & RAI skills, group: prepare}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: prepare}
+    explore: {agent: task-researcher-explorer, when: always, label: Recon, tip: Map trust boundaries, inputs & dependencies, group: prepare}
+    docs: {agent: docs, when: auto, label: Docs, tip: Inspect security & architecture docs, group: prepare}
+    clarify: {agent: "", when: auto, label: Clarify, tip: Clarify trust boundaries & compliance scope, group: design}
+    architect: {agent: architect, when: always, label: Architect, tip: Define security boundaries & controls, group: design}
+    plan: {agent: security-planner, when: always, label: STRIDE Plan, tip: Plan STRIDE mitigations & hardening steps, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic security tasks, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus, group: build}
+    execute: {agent: task-implementer-worker, when: always, label: Harden, tip: Implement security controls + review, group: build}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture security lessons, group: build}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Verify complete mitigations, group: verify}
+    test: {agent: tester, when: always, label: Verify, tip: Run security & regression tests, group: verify}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: task-implementer-worker
+    reviewer: code-review-security-reviewer
+    corrector: corrector
+    max_waves: 2

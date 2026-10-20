@@ -133,3 +133,21 @@ func TestNormalizeClarifyMode(t *testing.T) {
 		t.Fatal()
 	}
 }
+
+func TestInferQuestionFacetAndUXClarification(t *testing.T) {
+	if got := InferQuestionFacet("UX Flow", "Should the modal show a loading state?"); got != "ux" {
+		t.Fatalf("expected ux facet, got %q", got)
+	}
+	if got := InferQuestionFacet("Verification", "Which pytest suite should run?"); got != "verification" {
+		t.Fatalf("expected verification facet, got %q", got)
+	}
+	if got := InferQuestionFacet("Stack", "Which database runtime should store sessions?"); got != "architecture" {
+		t.Fatalf("expected architecture facet, got %q", got)
+	}
+	if got := InferQuestionFacet("Scope", "Who is the primary stakeholder persona?"); got != "product" {
+		t.Fatalf("expected product facet, got %q", got)
+	}
+	if !NeedsClarification("redesign the studio dashboard ux and onboarding flow") {
+		t.Fatal("expected UX redesign query without file paths to trigger clarification")
+	}
+}

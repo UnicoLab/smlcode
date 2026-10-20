@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.29.0 — 2026-10-20
+
+### Added
+
+- **Hypervelocity Engineering (`hve-core`) Agents, Skills, Pipelines & Teams**:
+  - 25 bundled HVE specialist agent blocks across *HVE RPI*, *HVE Discovery & UX*, *HVE Product & Architecture*, *HVE Review & Quality*, *HVE Security, RAI & A11y*, and *HVE Data Science & Meta*, with `category` and declarative `handoffs` metadata (`pkg/blocks/bundled/agents/`).
+  - 6 progressive-disclosure HVE domain skills (`hve-rpi`, `hve-ux-design`, `hve-requirements`, `hve-security-rai`, `hve-accessibility`, `hve-data-science`) under `pkg/skills/bundled/`.
+  - 4 bundled HVE lifecycle pipelines (`hve-rpi`, `hve-discovery`, `hve-ux-product`, `hve-security-audit`) and 4 HVE specialist teams (`hve-product-discovery`, `hve-ux-design`, `hve-security-rai`, `hve-data-science`).
+- **Pre-Architect Multi-Facet UX/Product/Architecture Clarification & Follow-up Rounds**:
+  - Re-ordered the default planning phase so `clarify` executes before `architect`, feeding the locked `.slmcode/PRD.md` into `architect` and `planner`.
+  - Upgraded `@clarifier` and `NeedsClarification` to probe 4 facets (`ux`, `product`, `architecture`, `verification`) with Propose-and-Refine defaults and iterative multi-round follow-up questioning (`request_follow_up`).
+- **Lifecycle Workflow Switcher, CLI `--workflow`, and `/api/workflows`**:
+  - Added `GET /api/workflows`, per-run `workflow` / `clarify_mode` / `plan_approve` overrides on `POST /api/runs`, and `slmcode run --workflow <auto|discover|hve-rpi|plan|fast|specialist>`.
+  - Exposed `PRD.md` and `CONTRACT.md` in `GET /api/docs`, the Studio Sidebar, and the Living Docs editor (with 1-click doc switcher pills, Split/Editor/Preview mode toggle, and PRD/ADR/RPI templates).
+- **Studio Physics-Based Motion System & UX Upgrades**:
+  - Added CSS `linear()` physics spring/bounce easing curves, `@starting-style` entry transitions, and progressive-enhancement View Transitions (`document.startViewTransition`) in Studio.
+  - Upgraded the Live Command Bar (`LiveView`), `PhaseRail` (travelling shimmer beam + sonar rings), `NowBar` (live 3-bar equalizer waveform), `HITLPopup` (facet badges, countdown bar, and **Ask Follow-ups** action), `TeamFloorFlat` (streaming SVG conduit data packets, comet handoff trails, rotating radar idle stage), `CommandPalette` (`⌘K` workflows & Living Docs), `AgentManager` (HVE category tabs & clickable handoffs), `SkillManager` (HVE filter & search), and `ReviewView` (1-click Multi-Perspective Review bar).
+
 ## v0.28.0 — 2026-09-27
 
 ### Added

@@ -52,19 +52,19 @@ export default function PulseFeed({ pulses, now, onSelect, running }: PulseFeedP
   }
   return (
     <ol className="floor-feed flex min-h-0 flex-col gap-1.5 overflow-hidden" aria-live="polite" aria-label="What just happened" data-testid="floor-feed">
-      {shown.map((p) => {
+      {shown.map((p, idx) => {
         const age = (now - p.at) / 1000;
         const target: FloorSelection = p.ticket ? { kind: 'ticket', id: p.ticket, team: p.team } : p.agent ? { kind: 'agent', id: p.agent, team: p.team } : null;
         return (
-          <li key={p.id} className={clsx('floor-feed-card', age > 15 && 'floor-feed-card-fading')} style={{ animationDelay: '0s' }}>
+          <li key={p.id} className={clsx('floor-feed-card', age > 15 && 'floor-feed-card-fading')} style={{ animationDelay: `${idx * 40}ms` }}>
             <button
               type="button"
               disabled={!target}
               onClick={target ? () => onSelect(target) : undefined}
               className={clsx(
-                'flex w-full items-start gap-1.5 rounded-md border px-2 py-1 text-left text-[10.5px] shadow-sm',
+                'flex w-full items-start gap-1.5 rounded-md border px-2 py-1 text-left text-[10.5px] shadow-sm transition-all duration-150',
                 TONE_CLASS[p.tone],
-                target ? 'focus-ring hover:brightness-95 dark:hover:brightness-110' : 'cursor-default',
+                target ? 'focus-ring hover:-translate-y-0.5 hover:shadow-md hover:brightness-95 active:translate-y-0 dark:hover:brightness-110' : 'cursor-default',
               )}
               data-kind={p.kind}
             >

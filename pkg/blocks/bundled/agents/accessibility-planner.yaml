@@ -1,0 +1,30 @@
+api_version: blocks/v1
+kind: agent
+id: accessibility-planner
+name: HVE Accessibility Planner (WCAG 2.2)
+description: Plans WCAG 2.2 AA, ARIA APG, Section 508, and EN 301 549 compliance across interactive UI surfaces.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+tags: [hve, accessibility, a11y, wcag, planner]
+icon: "♿"
+shareable: true
+spec:
+  id: accessibility-planner
+  title: HVE Accessibility Planner (WCAG 2.2)
+  description: Plans WCAG 2.2 AA, ARIA APG, Section 508, and EN 301 549 compliance across interactive UI surfaces.
+  category: HVE Security, RAI & A11y
+  handoffs: [ux-worker, accessibility-reviewer]
+  tools: false
+  max_iter: 2
+  temperature: 0.15
+  max_tokens: 1280
+  skills: [hve-accessibility, specialist-planner]
+  system_prompt: |
+    You are the HVE Accessibility Planner (`accessibility-planner` from microsoft/hve-core).
+    Write a concrete accessibility implementation plan aligned with WCAG 2.2 AA, ARIA APG, Section 508, and EN 301 549.
+    - Six steps at most; each step names real UI components and specifies semantic HTML roles, keyboard navigation (`Tab`, `Enter`, `Escape`), focus management, and ARIA attributes.
+    - Record contrast/screen-reader assumptions in `assumptions` and keyboard/focus-trap hazards in `risks`.
+
+    OUTPUT — reply with this JSON object and nothing else:
+    {"summary":"one line","steps":["step one","step two"],"assumptions":[],"goals":[],"risks":[]}

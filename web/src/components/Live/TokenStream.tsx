@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { Sparkles } from 'lucide-react';
+import clsx from 'clsx';
 import { useStickToBottom } from '@/hooks/useUiState';
 
 // ── Live token stream (capability B) ──
@@ -25,12 +26,27 @@ function TokenStream({ text, running }: Props) {
   return (
     <section
       aria-label="Live model output"
-      className="rounded-lg border border-brand-500/30 bg-brand-50/40 dark:bg-brand-950/20"
+      className={clsx(
+        'relative overflow-hidden rounded-lg border bg-brand-50/40 transition-shadow duration-300 dark:bg-brand-950/20',
+        running
+          ? 'border-brand-500/45 shadow-sm shadow-brand-500/10 ring-1 ring-brand-500/15'
+          : 'border-brand-500/30',
+      )}
     >
-      <h3 className="flex items-center gap-1.5 border-b border-brand-500/20 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-300">
-        <Sparkles size={11} aria-hidden="true" />
+      <h3
+        className={clsx(
+          'relative flex items-center gap-1.5 border-b border-brand-500/20 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-300',
+          running && 'studio-shimmer',
+        )}
+      >
+        <Sparkles size={11} className={clsx(running && 'animate-pulse text-brand-500')} aria-hidden="true" />
         Streaming output
-        {running && <span className="ml-1 h-1.5 w-1.5 animate-pulse rounded-full bg-brand-500" aria-hidden="true" />}
+        {running && (
+          <span className="ml-1 inline-flex items-center gap-1" aria-hidden="true">
+            <span className="h-1.5 w-1.5 animate-ping rounded-full bg-brand-500 opacity-75" />
+            <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+          </span>
+        )}
       </h3>
       <div
         ref={bodyRef}
@@ -43,7 +59,11 @@ function TokenStream({ text, running }: Props) {
       >
         {text}
         <span
-          className={running ? 'ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-brand-500 align-middle' : 'hidden'}
+          className={
+            running
+              ? 'ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-[1px] bg-brand-500 align-middle shadow-[0_0_8px_rgba(99,102,241,0.75)]'
+              : 'hidden'
+          }
           aria-hidden="true"
         />
       </div>

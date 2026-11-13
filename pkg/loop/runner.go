@@ -1712,6 +1712,21 @@ func (r *Runner) correctorID() string {
 	return plan.RoleCorrector
 }
 
+func (r *Runner) isTeamworkReview() bool {
+	if r == nil {
+		return false
+	}
+	rev := strings.ToLower(strings.TrimSpace(r.reviewerID()))
+	switch rev {
+	case "teamwork-review", "teamwork_review",
+		"adversarial_reviewer", "adversarial-reviewer",
+		"adversarial_review", "adversarial-review",
+		"challenger":
+		return true
+	}
+	return strings.HasSuffix(rev, "teamwork-review") || strings.HasSuffix(rev, "teamwork_review")
+}
+
 // normalizeExecRole maps a task role to the executor agent id. Empty/legacy
 // roles use the pipeline's execute.default_role (a language-specific worker
 // when a preset is active), falling back to the generic worker.
@@ -1797,6 +1812,10 @@ type gateState struct {
 	// never blocks; it only denies the reviewer fast path, because an
 	// unchecked condition is exactly the case a judgement call is for.
 	criteriaOpen bool
+
+	teamworkReview  bool
+	evidenceMissing bool
+	evidenceWhy     string
 }
 
 // hasEvidence reports whether anything at all proves a write happened.
@@ -1807,13 +1826,16 @@ func (g gateState) hasEvidence() bool {
 // blocking reports whether a hard gate failed.
 func (g gateState) blocking() bool {
 	return g.shellFail || g.smokeFail || g.acceptFail || g.staticFail || g.claimsFail ||
-		g.smokeMissing || g.criteriaFail
+		g.smokeMissing || g.criteriaFail || g.evidenceMissing || g.scopeWhy != ""
 }
 
 // fastPath reports whether the reviewer LLM can be skipped entirely.
 func (g gateState) fastPath(role string) bool {
 	if g.renameDisk {
 		return true
+	}
+	if g.teamworkReview {
+		return false
 	}
 	// An open criterion denies the fast path even when every hard gate is
 	// clean. Disk write evidence proves the worker CHANGED something; it says
@@ -1830,9 +1852,14 @@ func (g gateState) fastPath(role string) bool {
 // rejectReason returns the summary/issue for the highest-priority hard failure.
 func (g gateState) rejectReason() (summary string, issue string) {
 	switch {
+	case g.scopeWhy != "":
+		return "rejected: scope violation — " + g.scopeWhy, g.scopeWhy
 	case g.claimsFail:
 		return "rejected: hallucinated files_changed paths",
 			"files_changed lists paths missing on disk — reconcile claims"
+	case g.evidenceMissing:
+		return "rejected by evidence gate: " + g.evidenceWhy,
+			g.evidenceWhy
 	case g.staticFail:
 		return "rejected: static quality gate (stubs/placeholders)",
 			"stub/placeholder code detected — replace with real implementation"
@@ -1873,6 +1900,14 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 	g.claimsFail = quality.ClaimsFailedInOutput(current.Output)
 	g.criteriaFail = quality.CriteriaBlockedInOutput(current.Output)
 	g.criteriaOpen = quality.CriteriaUnverifiedInOutput(current.Output)
+	g.teamworkReview = r.isTeamworkReview()
+
+	if r.ClaimsGate && !g.renameDisk && !plan.IsTesterRole(current.Role) {
+		if ok, why := r.evidenceOK(*current, baseline); !ok {
+			g.evidenceMissing = true
+			g.evidenceWhy = why
+		}
+	}
 
 	// Review-time criteria insurance, mirroring the static and smoke ones
 	// below: a corrector that overwrote the output, or a skipped-worker path,
@@ -1958,22 +1993,26 @@ func (r *Runner) gatherGateSignals(ctx context.Context, current *plan.Task, base
 // decideReview produces the review verdict: the disk fast path, the harness
 // fast-reject, or the reviewer LLM.
 func (r *Runner) decideReview(ctx context.Context, current plan.Task, g gateState) (plan.ReviewResult, string, error) {
-	if g.fastPath(current.Role) {
-		review := plan.ReviewResult{Approved: true, Score: 85}
-		switch {
-		case g.renameDisk:
-			review.Summary = "auto-approved: rename satisfied on disk"
-		case g.satisfied && !g.hasEvidence():
-			review.Summary = "auto-approved: acceptance already satisfied on disk"
-		default:
-			review.Summary = "auto-approved: disk write evidence on focus files"
-		}
-		r.logf("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
-		return review, "", nil
-	}
 	if review, ok := g.fastReject(current); ok {
 		r.logf("%s review fast-reject (skip reviewer LLM): %s", current.ID, review.Summary)
 		return review, "", nil
+	}
+	if g.fastPath(current.Role) {
+		if !g.renameDisk && r.isTeamworkReview() {
+			r.logf("%s review fast-path denied under teamwork review: dispatching adversarial reviewer", current.ID)
+		} else {
+			review := plan.ReviewResult{Approved: true, Score: 85, Verdict: "approve"}
+			switch {
+			case g.renameDisk:
+				review.Summary = "auto-approved: rename satisfied on disk"
+			case g.satisfied && !g.hasEvidence():
+				review.Summary = "auto-approved: acceptance already satisfied on disk"
+			default:
+				review.Summary = "auto-approved: disk write evidence on focus files"
+			}
+			r.logf("%s review fast-path (skip reviewer LLM): %s", current.ID, review.Summary)
+			return review, "", nil
+		}
 	}
 	return r.llmReview(ctx, current, g)
 }
@@ -1995,16 +2034,20 @@ func (g gateState) fastReject(current plan.Task) (plan.ReviewResult, bool) {
 	if plan.IsTesterRole(current.Role) || g.renameDisk {
 		return plan.ReviewResult{}, false
 	}
-	if g.blocking() {
-		summary, issue := g.rejectReason()
-		return plan.ReviewResult{Approved: false, Score: 20, Summary: summary, Issues: []string{issue}}, true
-	}
 	if why, ok := workerReportedBlocked(current.Output); ok && !g.hasEvidence() && !g.satisfied {
 		return plan.ReviewResult{
 			Approved: false, Score: 10,
 			Summary: "rejected: worker reported blocked — " + why,
 			Issues:  []string{why},
 		}, true
+	}
+	if g.blocking() {
+		summary, issue := g.rejectReason()
+		score := 20
+		if g.evidenceMissing {
+			score = 0
+		}
+		return plan.ReviewResult{Approved: false, Score: score, Summary: summary, Issues: []string{issue}}, true
 	}
 	return plan.ReviewResult{}, false
 }
@@ -2212,7 +2255,7 @@ func bestReviewParse(raw, repaired string) plan.ReviewResult {
 // a small reviewer model returns a broken or over-strict verdict.
 func (r *Runner) slmApprovalFallback(review plan.ReviewResult, current plan.Task,
 	g gateState, reviewRaw string) plan.ReviewResult {
-	if review.Approved || plan.IsTesterRole(current.Role) || g.blocking() {
+	if review.Approved || plan.IsTesterRole(current.Role) || g.blocking() || g.criteriaOpen {
 		return review
 	}
 	// review.NoVerdict is the PARSER's own report that it could not read a
@@ -2300,9 +2343,23 @@ func (r *Runner) applyHardGates(current *plan.Task, review plan.ReviewResult, g 
 		summary, issue := g.rejectReason()
 		review.Approved = false
 		review.Score = 20
+		if g.evidenceMissing {
+			review.Score = 0
+		}
 		review.Summary = summary
 		review.Issues = []string{issue}
 		r.logf("%s overriding approve: %s", current.ID, review.Summary)
+	}
+	// Adversarial review veto or reject override:
+	if review.Approved && (strings.EqualFold(review.Verdict, "veto") || strings.EqualFold(review.Verdict, "reject")) {
+		review.Approved = false
+		if review.Score > 20 {
+			review.Score = 20
+		}
+		if review.Summary == "" {
+			review.Summary = "rejected: adversarial reviewer verdict " + review.Verdict
+		}
+		r.logf("%s overriding approve: adversarial reviewer issued %s", current.ID, review.Verdict)
 	}
 	// Tester gate: never accept "does not work" / passed:false / empty finalize.
 	// Exception: rename already satisfied on disk — do not reopen/escalate.
@@ -2324,7 +2381,7 @@ func (r *Runner) applyHardGates(current *plan.Task, review plan.ReviewResult, g 
 		}
 	}
 	// Evidence gate: never mark done when targets are missing or no write occurred.
-	if review.Approved && !g.renameDisk {
+	if review.Approved && !g.renameDisk && !plan.IsTesterRole(current.Role) {
 		if ok, why := r.evidenceOK(*current, baseline); !ok {
 			review.Approved = false
 			review.Score = 0
@@ -2563,6 +2620,11 @@ func (r *Runner) reviewAndCorrectTask(ctx context.Context, t plan.Task, baseline
 			r.logf("%s stopping after attempt %d — the last correction scored %d against %d "+
 				"before it, so it made the work worse; another round starts from the worse version",
 				current.ID, attempt, scores[len(scores)-1], scores[len(scores)-2])
+			return r.escalateTask(current, review, attempt, outOfBudget)
+		}
+		if strings.EqualFold(review.Verdict, "veto") {
+			r.logf("%s stopping after attempt %d — adversarial reviewer issued an unrecoverable veto",
+				current.ID, attempt)
 			return r.escalateTask(current, review, attempt, outOfBudget)
 		}
 

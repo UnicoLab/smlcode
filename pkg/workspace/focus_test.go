@@ -288,3 +288,88 @@ func TestWorkspaceWriteRefusalNamesTheRole(t *testing.T) {
 		t.Fatalf("role never reached the tool layer:\n%s", err)
 	}
 }
+
+func TestTeamworkReadOnlyRolesRefusal(t *testing.T) {
+	readOnly := []string{
+		"interviewer", "specification", "spec", "interview",
+		"adversarial_reviewer", "adversarial-reviewer",
+		"adversarial_review", "adversarial-review",
+		"challenger", "teamwork_spec", "teamwork_review",
+		// Language-specialized variants
+		"go-interviewer", "py-specification", "ts-spec",
+		"go-adversarial_reviewer", "py-challenger",
+		// Case and whitespace variants
+		"  Interviewer  ", "CHALLENGER", " Adversarial_Reviewer ", "SPEC",
+	}
+
+	for _, role := range readOnly {
+		t.Run("read_only_"+strings.TrimSpace(role), func(t *testing.T) {
+			if !IsReadOnlyRole(role) {
+				t.Fatalf("expected IsReadOnlyRole(%q) = true, got false", role)
+			}
+		})
+	}
+
+	writable := []string{
+		"worker", "corrector", "deep", "go-worker", "py-corrector",
+	}
+	for _, role := range writable {
+		t.Run("writable_"+role, func(t *testing.T) {
+			if IsReadOnlyRole(role) {
+				t.Fatalf("expected IsReadOnlyRole(%q) = false, got true", role)
+			}
+		})
+	}
+}
+
+func TestReadOnlyRoleRefusalEvenWhenInFocusOrDisabled(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Guard disabled (no wave set)
+	g := NewFocusGuard()
+	if g.Enabled() {
+		t.Fatal("expected guard to be disabled initially")
+	}
+	err := g.Check(WithRole(ctx, "interviewer"), "pkg/foo/bar.go")
+	if err == nil {
+		t.Fatal("disabled guard must still refuse read-only interviewer role")
+	}
+	if !strings.Contains(err.Error(), "the interviewer role does not edit files at all") {
+		t.Fatalf("unexpected refusal text:\n%s", err.Error())
+	}
+
+	// 2. Guard enabled and target file IS in the wave allowlist
+	g.SetWave([][]string{{"pkg/foo/bar.go"}})
+	if !g.Allow("pkg/foo/bar.go") {
+		t.Fatal("expected allow for focus file under normal circumstances")
+	}
+	err = g.Check(WithRole(ctx, "adversarial_reviewer"), "pkg/foo/bar.go")
+	if err == nil {
+		t.Fatal("guard must refuse adversarial_reviewer even if path is a focus file")
+	}
+	if !strings.Contains(err.Error(), "the adversarial_reviewer role does not edit files at all") {
+		t.Fatalf("unexpected refusal text:\n%s", err.Error())
+	}
+
+	// 3. Workspace with nil Focus
+	root := t.TempDir()
+	w := &Workspace{Root: root, Focus: nil}
+	err = w.checkFocus(WithRole(ctx, "challenger"), "pkg/foo/bar.go")
+	if err == nil {
+		t.Fatal("Workspace with nil Focus must refuse read-only challenger role")
+	}
+	if !strings.Contains(err.Error(), "the challenger role does not edit files at all") {
+		t.Fatalf("unexpected refusal text:\n%s", err.Error())
+	}
+
+	// 4. Workspace writeFile with read-only role and nil Focus
+	_, err = w.writeFile(WithRole(ctx, "specification"), map[string]interface{}{
+		"path": "spec.md", "content": "# Spec\n",
+	})
+	if err == nil {
+		t.Fatal("writeFile must refuse specification role")
+	}
+	if !strings.Contains(err.Error(), "the specification role does not edit files at all") {
+		t.Fatalf("unexpected refusal text:\n%s", err.Error())
+	}
+}

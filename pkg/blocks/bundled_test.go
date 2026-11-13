@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
+	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/skills"
 	"github.com/UnicoLab/slmcode/pkg/teams"
 	"github.com/UnicoLab/slmcode/pkg/workspace"
@@ -262,5 +263,56 @@ func TestLanguagePackCoverage(t *testing.T) {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		t.Errorf("missing language packs %v (have: %v)", missing, have)
+	}
+}
+
+func TestBundledPipelineTeamworkParity(t *testing.T) {
+	reg := builtinRegistry(t)
+	block, ok := reg.GetPipeline("teamwork")
+	if !ok || block == nil {
+		t.Fatal("bundled pipeline teamwork not found in builtin registry")
+	}
+	if err := block.Validate(); err != nil {
+		t.Fatalf("teamwork block validate failed: %v", err)
+	}
+
+	codePipe := pipeline.Teamwork()
+	codePipe.Normalize()
+
+	// Assert order parity
+	if len(block.Spec.Order) != len(codePipe.Order) {
+		t.Fatalf("order length mismatch: yaml=%d, go=%d", len(block.Spec.Order), len(codePipe.Order))
+	}
+	for i := range block.Spec.Order {
+		if block.Spec.Order[i] != codePipe.Order[i] {
+			t.Errorf("order[%d] mismatch: yaml=%q, go=%q", i, block.Spec.Order[i], codePipe.Order[i])
+		}
+	}
+
+	// Assert groups parity
+	if len(block.Spec.Groups) != len(codePipe.Groups) {
+		t.Fatalf("groups length mismatch: yaml=%d, go=%d", len(block.Spec.Groups), len(codePipe.Groups))
+	}
+	for i := range block.Spec.Groups {
+		yg := block.Spec.Groups[i]
+		cg := codePipe.Groups[i]
+		if yg.ID != cg.ID {
+			t.Errorf("group[%d] ID mismatch: yaml=%q, go=%q", i, yg.ID, cg.ID)
+		}
+		if len(yg.Steps) != len(cg.Steps) {
+			t.Errorf("group[%d] steps length mismatch: yaml=%d, go=%d", i, len(yg.Steps), len(cg.Steps))
+		}
+	}
+
+	// Assert execute loop parity
+	if block.Spec.Execute != codePipe.Execute {
+		t.Errorf("execute loop mismatch: yaml=%+v, go=%+v", block.Spec.Execute, codePipe.Execute)
+	}
+
+	// Assert key phase agents parity
+	for _, phase := range []string{"clarify", "plan", "execute"} {
+		if block.Spec.Phases[phase].Agent != codePipe.Phases[phase].Agent {
+			t.Errorf("phase %s agent mismatch: yaml=%q, go=%q", phase, block.Spec.Phases[phase].Agent, codePipe.Phases[phase].Agent)
+		}
 	}
 }

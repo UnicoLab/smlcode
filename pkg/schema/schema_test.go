@@ -20,6 +20,19 @@ func TestForKnownRolesAndAliases(t *testing.T) {
 		{"corrector", RoleWorker},
 		{"memory", RoleLessons},
 		{"TESTER", RoleTester},
+		{"teamwork_spec", RoleTeamworkSpec},
+		{"teamwork-spec", RoleTeamworkSpec},
+		{"spec", RoleTeamworkSpec},
+		{"interview", RoleTeamworkSpec},
+		{"teamwork_plan", RoleTeamworkPlan},
+		{"teamwork-plan", RoleTeamworkPlan},
+		{"architecture", RoleTeamworkPlan},
+		{"teamwork_worker", RoleTeamworkWorker},
+		{"teamwork-worker", RoleTeamworkWorker},
+		{"teamwork_review", RoleTeamworkReview},
+		{"teamwork-review", RoleTeamworkReview},
+		{"adversarial_review", RoleTeamworkReview},
+		{"challenger", RoleTeamworkReview},
 	}
 	for _, c := range cases {
 		got, ok := For(c.in)
@@ -58,6 +71,28 @@ func TestValidate(t *testing.T) {
 		{"clarify options min", RoleClarify,
 			`{"needs_user":true,"assumptions":[],"acceptance":[],"questions":[{"id":"q1","header":"h","question":"q","options":[{"label":"a","description":"d"}]}]}`,
 			"needs at least 2 items"},
+		{"teamwork spec ok", RoleTeamworkSpec,
+			`{"needs_user":false,"assumptions":["SQLite"],"acceptance":["go test ./... passes"]}`, ""},
+		{"teamwork spec missing required", RoleTeamworkSpec,
+			`{"assumptions":["SQLite"],"acceptance":["go test ./... passes"]}`, `missing required key "needs_user"`},
+		{"teamwork spec bad facet", RoleTeamworkSpec,
+			`{"needs_user":false,"assumptions":[],"acceptance":[],"questions":[{"id":"q1","header":"h","question":"q","facet":"invalid_facet","options":[{"label":"a","description":"d"},{"label":"b","description":"d2"}]}]}`, `is not one of`},
+		{"teamwork plan ok", RoleTeamworkPlan,
+			`{"strategy":"s","milestones":[{"id":"M1","title":"t","acceptance":"a"}],"file_ownership":[{"owner":"o","paths":["p"]}]}`, ""},
+		{"teamwork plan missing ownership", RoleTeamworkPlan,
+			`{"strategy":"s","milestones":[{"id":"M1","title":"t","acceptance":"a"}]}`, `missing required key "file_ownership"`},
+		{"teamwork plan empty milestones", RoleTeamworkPlan,
+			`{"strategy":"s","milestones":[],"file_ownership":[{"owner":"o","paths":["p"]}]}`, "needs at least 1 items"},
+		{"teamwork worker ok", RoleTeamworkWorker,
+			`{"status":"done","summary":"s","files_changed":["a.go"]}`, ""},
+		{"teamwork worker bad status", RoleTeamworkWorker,
+			`{"status":"completed","summary":"s","files_changed":[]}`, `is not one of`},
+		{"teamwork review ok", RoleTeamworkReview,
+			`{"approved":true,"score":95,"verdict":"approve","summary":"looks good"}`, ""},
+		{"teamwork review bad verdict", RoleTeamworkReview,
+			`{"approved":true,"score":95,"verdict":"pass","summary":"looks good"}`, `is not one of`},
+		{"teamwork review score out of range", RoleTeamworkReview,
+			`{"approved":true,"score":150,"verdict":"approve","summary":"looks good"}`, `above maximum 100`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -126,6 +161,24 @@ func TestCoerce(t *testing.T) {
 			role: RoleWorker,
 			raw:  `{"status":"done","summary":"s","files_changed":null}`,
 			want: map[string]any{"status": "done", "summary": "s", "files_changed": []any{}},
+		},
+		{
+			name: "teamwork review string bool and percent score",
+			role: RoleTeamworkReview,
+			raw:  `{"approved":"true","score":"90%","verdict":"approve","summary":"fine"}`,
+			want: map[string]any{"approved": true, "score": float64(90), "verdict": "approve", "summary": "fine"},
+		},
+		{
+			name: "teamwork worker null files_changed",
+			role: RoleTeamworkWorker,
+			raw:  `{"status":"done","summary":"ok","files_changed":null}`,
+			want: map[string]any{"status": "done", "summary": "ok", "files_changed": []any{}},
+		},
+		{
+			name: "teamwork spec string bool",
+			role: RoleTeamworkSpec,
+			raw:  `{"needs_user":"false","assumptions":"SQLite","acceptance":"go test"}`,
+			want: map[string]any{"needs_user": false, "assumptions": []any{"SQLite"}, "acceptance": []any{"go test"}},
 		},
 	}
 	for _, c := range cases {
@@ -212,6 +265,23 @@ func TestDetectRoleFromPromptContract(t *testing.T) {
 	// The reviewer agent is bound to "review" but also runs the scope judge.
 	if got, _ := DetectRole(judgeContract, RoleReview); got.Name != RoleScopeJudge {
 		t.Errorf("scope-judge prompt under reviewer hint detected as %q", got.Name)
+	}
+	teamworkSpecContract := `{"needs_user":false,"assumptions":["SQLite"],"acceptance":["go test"],"entrypoint":"main.go","features":[],"language":"go","non_goals":[],"questions":[]}`
+	teamworkPlanContract := `{"strategy":"s","milestones":[],"file_ownership":[],"contracts":[],"risks":[]}`
+	teamworkWorkerContract := `{"status":"done","summary":"s","files_changed":[],"action_plan":[],"diff_summary":"d","notes":""}`
+	teamworkReviewContract := `{"approved":true,"score":90,"verdict":"approve","summary":"s","challenge_scenarios":[],"edge_cases":[],"issues":[]}`
+
+	if got, _ := DetectRole(teamworkSpecContract, ""); got.Name != RoleTeamworkSpec {
+		t.Errorf("teamwork spec detected as %q, want %q", got.Name, RoleTeamworkSpec)
+	}
+	if got, _ := DetectRole(teamworkPlanContract, ""); got.Name != RoleTeamworkPlan {
+		t.Errorf("teamwork plan detected as %q, want %q", got.Name, RoleTeamworkPlan)
+	}
+	if got, _ := DetectRole(teamworkWorkerContract, ""); got.Name != RoleTeamworkWorker {
+		t.Errorf("teamwork worker detected as %q, want %q", got.Name, RoleTeamworkWorker)
+	}
+	if got, _ := DetectRole(teamworkReviewContract, ""); got.Name != RoleTeamworkReview {
+		t.Errorf("teamwork review detected as %q, want %q", got.Name, RoleTeamworkReview)
 	}
 	// No contract in the prompt at all → fall back to the bound hint.
 	if got, ok := DetectRole("just do the thing", RoleReview); !ok || got.Name != RoleReview {

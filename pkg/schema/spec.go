@@ -55,6 +55,12 @@ const (
 	RoleOrchestrate = "orchestrator"
 	RolePlaceholder = "placeholder"
 	RoleLessons     = "lessons"
+
+	// Teamwork multi-agent pipeline roles (M1).
+	RoleTeamworkSpec   = "teamwork_spec"
+	RoleTeamworkPlan   = "teamwork_plan"
+	RoleTeamworkWorker = "teamwork_worker"
+	RoleTeamworkReview = "teamwork_review"
 )
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -376,6 +382,102 @@ func init() {
 		},
 		"slots": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 	}, "summary", "phases", "execute"))
+
+	register(RoleTeamworkSpec, false, obj(map[string]any{
+		"needs_user":  boolv(),
+		"assumptions": strListMax(8),
+		"acceptance":  strListMax(8),
+		"entrypoint":  str(),
+		"features": map[string]any{
+			"type":     "array",
+			"maxItems": 8,
+			"items": obj(map[string]any{
+				"id":          str(),
+				"title":       str(),
+				"description": str(),
+				"acceptance":  str(),
+				"priority":    enum("must", "should", "nice"),
+			}, "id", "title", "acceptance", "priority"),
+		},
+		"language":  str(),
+		"non_goals": strListMax(8),
+		"questions": map[string]any{
+			"type":     "array",
+			"maxItems": 3,
+			"items": obj(map[string]any{
+				"id":       str(),
+				"header":   str(),
+				"facet":    enum("scope", "ux", "architecture", "verification"),
+				"question": str(),
+				"options": map[string]any{
+					"type":     "array",
+					"minItems": 2,
+					"maxItems": 4,
+					"items": obj(map[string]any{
+						"label":       str(),
+						"description": str(),
+						"recommended": boolv(),
+					}, "label", "description"),
+				},
+				"allow_freeform": boolv(),
+				"recommended":    str(),
+			}, "id", "header", "question", "options"),
+		},
+	}, "needs_user", "assumptions", "acceptance"))
+
+	register(RoleTeamworkPlan, true, obj(map[string]any{
+		"strategy": str(),
+		"milestones": map[string]any{
+			"type":     "array",
+			"minItems": 1,
+			"maxItems": 6,
+			"items": obj(map[string]any{
+				"id":          str(),
+				"title":       str(),
+				"description": str(),
+				"acceptance":  str(),
+				"depends_on":  strListMax(4),
+			}, "id", "title", "acceptance"),
+		},
+		"file_ownership": map[string]any{
+			"type":     "array",
+			"maxItems": 8,
+			"items": obj(map[string]any{
+				"owner": str(),
+				"paths": strListMax(8),
+			}, "owner", "paths"),
+		},
+		"contracts": map[string]any{
+			"type":     "array",
+			"maxItems": 8,
+			"items": obj(map[string]any{
+				"interface_id": str(),
+				"provider":     str(),
+				"consumers":    strListMax(4),
+				"spec":         str(),
+			}, "interface_id", "provider", "spec"),
+		},
+		"risks": strListMax(8),
+	}, "strategy", "milestones", "file_ownership"))
+
+	register(RoleTeamworkWorker, true, obj(map[string]any{
+		"status":        enum("done", "blocked"),
+		"summary":       str(),
+		"files_changed": strListMax(20),
+		"action_plan":   strListMax(6),
+		"diff_summary":  str(),
+		"notes":         str(),
+	}, "status", "summary", "files_changed"))
+
+	register(RoleTeamworkReview, true, obj(map[string]any{
+		"approved":            boolv(),
+		"score":               intRange(0, 100),
+		"verdict":             enum("approve", "reject", "veto"),
+		"summary":             str(),
+		"challenge_scenarios": strListMax(6),
+		"edge_cases":          strListMax(6),
+		"issues":              strListMax(12),
+	}, "approved", "score", "verdict", "summary"))
 }
 
 // For returns the Spec registered for a schema role id.
@@ -419,6 +521,15 @@ func normalizeRole(role string) string {
 		return RoleWorker
 	case "memory", "learner":
 		return RoleLessons
+	// Teamwork pipeline roles and aliases:
+	case "teamwork_spec", "teamwork-spec", "spec", "interview", "teamwork_interview", "teamwork-interview":
+		return RoleTeamworkSpec
+	case "teamwork_plan", "teamwork-plan", "architecture", "teamwork_architecture", "teamwork-architecture", "teamwork_architect", "teamwork-architect":
+		return RoleTeamworkPlan
+	case "teamwork_worker", "teamwork-worker", "teamwork_execution", "teamwork-execution":
+		return RoleTeamworkWorker
+	case "teamwork_review", "teamwork-review", "adversarial_review", "adversarial-review", "adversarial_reviewer", "adversarial-reviewer", "challenger":
+		return RoleTeamworkReview
 	default:
 		return r
 	}

@@ -32,6 +32,107 @@ func TestDefaultValidateAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTeamworkValidateAndRoundTrip(t *testing.T) {
+	cfg := Teamwork()
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Teamwork validate failed: %v", err)
+	}
+
+	// 1. Order assertions (16 phases, clarify precedes architect)
+	wantOrder := []string{
+		"init", "skills", "context", "explore", "docs", "clarify",
+		"architect", "plan", "split", "coord", "execute", "learn",
+		"polish", "test", "memory", "done",
+	}
+	if len(cfg.Order) != len(wantOrder) {
+		t.Fatalf("order length = %d, want %d", len(cfg.Order), len(wantOrder))
+	}
+	for i, step := range wantOrder {
+		if cfg.Order[i] != step {
+			t.Errorf("order[%d] = %q, want %q", i, cfg.Order[i], step)
+		}
+	}
+
+	// 2. Groups assertions (5 groups covering all 16 phases)
+	if len(cfg.Groups) != 5 {
+		t.Fatalf("groups length = %d, want 5", len(cfg.Groups))
+	}
+	wantGroups := map[string][]string{
+		"interview": {"init", "skills", "context", "explore", "docs", "clarify"},
+		"design":    {"architect", "plan", "split"},
+		"execute":   {"coord", "execute", "learn"},
+		"review":    {"polish", "test"},
+		"finish":    {"memory", "done"},
+	}
+	for _, g := range cfg.Groups {
+		steps, ok := wantGroups[g.ID]
+		if !ok {
+			t.Errorf("unexpected group id %q", g.ID)
+			continue
+		}
+		if len(g.Steps) != len(steps) {
+			t.Errorf("group %q steps count = %d, want %d", g.ID, len(g.Steps), len(steps))
+		}
+		for i, s := range steps {
+			if i < len(g.Steps) && g.Steps[i] != s {
+				t.Errorf("group %q step[%d] = %q, want %q", g.ID, i, g.Steps[i], s)
+			}
+		}
+	}
+
+	// 3. Phase agents and loop configuration
+	if agent := cfg.PhaseAgent("clarify", ""); agent != "teamwork-spec" {
+		t.Errorf("clarify agent = %q, want teamwork-spec", agent)
+	}
+	if agent := cfg.PhaseAgent("plan", ""); agent != "teamwork-plan" {
+		t.Errorf("plan agent = %q, want teamwork-plan", agent)
+	}
+	if agent := cfg.PhaseAgent("execute", ""); agent != "teamwork-worker" {
+		t.Errorf("execute agent = %q, want teamwork-worker", agent)
+	}
+	if cfg.Execute.DefaultRole != "teamwork-worker" {
+		t.Errorf("execute.default_role = %q, want teamwork-worker", cfg.Execute.DefaultRole)
+	}
+	if cfg.Execute.Reviewer != "teamwork-review" {
+		t.Errorf("execute.reviewer = %q, want teamwork-review", cfg.Execute.Reviewer)
+	}
+	if cfg.Execute.Corrector != "corrector" {
+		t.Errorf("execute.corrector = %q, want corrector", cfg.Execute.Corrector)
+	}
+	if cfg.Execute.MaxWaves != 2 {
+		t.Errorf("execute.max_waves = %d, want 2", cfg.Execute.MaxWaves)
+	}
+
+	// 4. TeamworkPipeline helper
+	pipe := TeamworkPipeline()
+	if pipe == nil || len(pipe.Order) != 16 {
+		t.Fatalf("TeamworkPipeline returned invalid pipeline: %+v", pipe)
+	}
+
+	// 5. EnsureTeamworkFile
+	dir := t.TempDir()
+	if err := EnsureTeamworkFile(dir); err != nil {
+		t.Fatalf("EnsureTeamworkFile failed: %v", err)
+	}
+	// Calling EnsureTeamworkFile again is a no-op
+	if err := EnsureTeamworkFile(dir); err != nil {
+		t.Fatalf("EnsureTeamworkFile second call failed: %v", err)
+	}
+
+	// 6. Save/Load roundtrip
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.PhaseAgent("clarify", "") != "teamwork-spec" {
+		t.Errorf("loaded clarify agent = %q, want teamwork-spec", loaded.PhaseAgent("clarify", ""))
+	}
+	if loaded.Execute.Reviewer != "teamwork-review" {
+		t.Errorf("loaded execute reviewer = %q, want teamwork-review", loaded.Execute.Reviewer)
+	}
+}
+
 func TestLoadFallsBackToPipelineBackup(t *testing.T) {
 	cfg := Default()
 	cfg.Execute.MaxWaves = 2

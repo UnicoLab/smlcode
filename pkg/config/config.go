@@ -267,6 +267,18 @@ const (
 	ModeSpecialist = "specialist"
 )
 
+// Workflow preset constants.
+const (
+	WorkflowAuto       = "auto"
+	WorkflowTeamwork   = "teamwork"
+	WorkflowCode       = "code"
+	WorkflowDiscover   = "discover"
+	WorkflowHveRPI     = "hve-rpi"
+	WorkflowPlan       = "plan"
+	WorkflowFast       = "fast"
+	WorkflowSpecialist = "specialist"
+)
+
 // Config is persisted in .slmcode/config.yaml and overridable via flags/env.
 //
 // Precedence, lowest first: built-in defaults → user file → project file →
@@ -338,6 +350,9 @@ type Config struct {
 	EscalateAfter int `yaml:"escalate_after,omitempty" json:"escalate_after,omitempty"`
 
 	Backend string `yaml:"backend" json:"backend"` // slmcode | claude-code
+
+	// Workflow selects the lifecycle workflow preset: auto | teamwork | discover | hve-rpi | plan | fast | specialist
+	Workflow string `yaml:"workflow,omitempty" json:"workflow,omitempty"`
 
 	// Mode: full (default pipeline) | specialist (single role)
 	Mode string `yaml:"mode" json:"mode"`
@@ -686,6 +701,7 @@ func Default(root string) *Config {
 		Endpoint:      DefaultEndpoint,
 		Model:         DefaultModel,
 		Backend:       BackendSLMCode,
+		Workflow:      WorkflowAuto,
 		Mode:          ModeFull,
 		// Dynamic pipeline is on by default: the composer assembles a
 		// task-specific pipeline (phases, team, tools, skills) per run. Disable
@@ -1091,6 +1107,7 @@ func readConfigBytes(path string) ([]byte, bool, error) {
 }
 
 func normalize(c *Config) {
+	c.Workflow = NormalizeWorkflow(c.Workflow)
 	c.Provider = NormalizeProvider(c.Provider)
 	if c.Endpoint == "" {
 		c.Endpoint = DefaultEndpointFor(c.Provider)
@@ -1302,6 +1319,7 @@ type Patch struct {
 	Endpoint               *string                  `json:"endpoint,omitempty"`
 	APIKey                 *string                  `json:"api_key,omitempty"`
 	Backend                *string                  `json:"backend,omitempty"`
+	Workflow               *string                  `json:"workflow,omitempty"`
 	Mode                   *string                  `json:"mode,omitempty"`
 	Specialist             *string                  `json:"specialist,omitempty"`
 	DynamicPipeline        *bool                    `json:"dynamic_pipeline,omitempty"`
@@ -1427,6 +1445,9 @@ func (c *Config) ApplyPatch(p Patch) {
 	}
 	if p.Backend != nil && *p.Backend != "" {
 		c.Backend = *p.Backend
+	}
+	if p.Workflow != nil && *p.Workflow != "" {
+		c.Workflow = *p.Workflow
 	}
 	if p.Mode != nil && *p.Mode != "" {
 		c.Mode = *p.Mode
@@ -1871,4 +1892,37 @@ func (c *Config) RoleContextPercent(role string) int {
 		return 0
 	}
 	return c.ContextRoleBudget[strings.ToLower(strings.TrimSpace(role))]
+}
+
+// NormalizeWorkflow returns the canonical form of a workflow preset name.
+func NormalizeWorkflow(w string) string {
+	switch strings.ToLower(strings.TrimSpace(w)) {
+	case WorkflowTeamwork:
+		return WorkflowTeamwork
+	case "discover", "interview", "scope":
+		return WorkflowDiscover
+	case "hve-rpi", "rpi":
+		return WorkflowHveRPI
+	case "plan", "plan-first":
+		return WorkflowPlan
+	case "fast", "fast-build":
+		return WorkflowFast
+	case "specialist":
+		return WorkflowSpecialist
+	case "code", "auto", "":
+		return WorkflowAuto
+	default:
+		return strings.ToLower(strings.TrimSpace(w))
+	}
+}
+
+// IsValidWorkflow reports whether the given workflow string is a recognized preset.
+func IsValidWorkflow(w string) bool {
+	switch strings.ToLower(strings.TrimSpace(w)) {
+	case "teamwork", "discover", "interview", "scope", "hve-rpi", "rpi",
+		"plan", "plan-first", "fast", "fast-build", "specialist", "code", "auto", "":
+		return true
+	default:
+		return false
+	}
 }

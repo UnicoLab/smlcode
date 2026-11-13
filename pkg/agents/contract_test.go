@@ -77,6 +77,8 @@ func TestPromptContractsMatchSchemaAndGrammar(t *testing.T) {
 		schema.RolePlan, schema.RoleTasks, schema.RoleWorker, schema.RoleReview,
 		schema.RoleTester, schema.RoleEscalate, schema.RoleComposition,
 		schema.RoleCoordinator,
+		schema.RoleTeamworkSpec, schema.RoleTeamworkPlan,
+		schema.RoleTeamworkWorker, schema.RoleTeamworkReview,
 	} {
 		if !covered[role] {
 			t.Errorf("schema role %q is not stated by any prompt", role)
@@ -99,6 +101,10 @@ func TestUnboundPromptContractsMatchGrammarToo(t *testing.T) {
 		{"clarify via planner", PromptClarifier, schema.RolePlan, schema.RoleClarify},
 		{"scope judge via reviewer", PromptScopeJudge, schema.RoleReview, schema.RoleScopeJudge},
 		{"learner via memory", PromptLearner, "", schema.RoleLessons},
+		{"teamwork spec interview", PromptTeamworkSpec, "", schema.RoleTeamworkSpec},
+		{"teamwork plan architecture", PromptTeamworkPlan, "", schema.RoleTeamworkPlan},
+		{"teamwork worker execution", PromptTeamworkWorker, "", schema.RoleTeamworkWorker},
+		{"teamwork adversarial review", PromptTeamworkReview, "", schema.RoleTeamworkReview},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

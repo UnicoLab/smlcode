@@ -23,6 +23,7 @@ const (
 	DocMemory   = "MEMORY.md"
 	DocScratch  = "SCRATCH.md"
 	DocSkills   = "SKILLS.md"
+	DocReview   = "REVIEW.md"
 )
 
 // Store reads/writes the markdown context workspace used as durable memory.
@@ -83,6 +84,18 @@ func (s *Store) Read(name string) (string, error) {
 func (s *Store) Write(name, content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return atomicfile.Write(s.Path(name), []byte(content), 0o644)
+}
+
+// WriteBounded writes a document while enforcing its document ceiling. If the
+// content exceeds the policy's MaxBytes, timestamped sections are pruned.
+func (s *Store) WriteBounded(name, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	policy := s.policyFor(name)
+	if policy.MaxBytes > 0 {
+		content = PruneTimestampedSections(content, policy.MaxBytes)
+	}
 	return atomicfile.Write(s.Path(name), []byte(content), 0o644)
 }
 

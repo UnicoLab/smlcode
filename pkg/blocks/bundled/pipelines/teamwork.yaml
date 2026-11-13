@@ -1,0 +1,71 @@
+api_version: blocks/v1
+kind: pipeline
+id: teamwork
+name: Teamwork Multi-Agent Engineering Pipeline
+description: >-
+  Default multi-agent Teamwork pipeline: structured interview & requirements specification (PRD),
+  architecture & task planning with contracts, worker execution under focus guardrails, and adversarial review.
+version: "1.0.0"
+author: UnicoLab
+license: MIT
+language: any
+tags: [teamwork, multi-agent, specification, architecture, execution, adversarial-review, pipeline]
+icon: "👥"
+shareable: true
+spec:
+  version: 1
+  order:
+    - init
+    - skills
+    - context
+    - explore
+    - docs
+    - clarify
+    - architect
+    - plan
+    - split
+    - coord
+    - execute
+    - learn
+    - polish
+    - test
+    - memory
+    - done
+  groups:
+    - id: interview
+      label: Specification & Interview
+      steps: [init, skills, context, explore, docs, clarify]
+    - id: design
+      label: Architecture & Planning
+      steps: [architect, plan, split]
+    - id: execute
+      label: Worker Execution Waves
+      steps: [coord, execute, learn]
+    - id: review
+      label: Adversarial Review & QA
+      steps: [polish, test]
+    - id: finish
+      label: Long-term Memory & Completion
+      steps: [memory, done]
+  phases:
+    init: {agent: "", when: always, label: Init, tip: Boot workspace + session, group: interview, enabled: true}
+    skills: {agent: "", when: always, label: Skills, tip: Load skills & knowledge packs, group: interview}
+    context: {agent: context, when: always, label: Context, tip: Refresh CONTEXT / project memory, group: interview}
+    explore: {agent: explorer, when: auto, label: Explore, tip: Discover relevant files & architecture, group: interview}
+    docs: {agent: docs, when: auto, label: Docs, tip: Read docs & project conventions, group: interview}
+    clarify: {agent: teamwork-spec, when: always, label: Clarify, tip: Lock PRD & specify requirements, group: interview}
+    architect: {agent: architect, when: auto, label: Architect, tip: Shape approach & component contracts, group: design}
+    plan: {agent: teamwork-plan, when: always, label: Plan, tip: Decompose PRD into milestones & contracts, group: design}
+    split: {agent: splitter, when: always, label: Split, tip: Break into atomic tasks with criteria, group: design}
+    coord: {agent: coordinator, when: always, label: Coord, tip: Coordinate board & focus guardrails, group: execute}
+    execute: {agent: teamwork-worker, when: always, label: Execute, tip: Workers implement within focus scope, group: execute}
+    learn: {agent: memory, when: auto, label: Learn, tip: Capture lessons mid-run, group: execute}
+    polish: {agent: placeholder, when: always, label: Polish, tip: Fill placeholders & flag precise gaps, group: review}
+    test: {agent: tester, when: always, label: Test, tip: Deterministic gates & holistic verification, group: review}
+    memory: {agent: memory, when: always, label: Memory, tip: Distill long-term memory, group: finish}
+    done: {agent: "", when: always, label: Done, tip: Run complete, group: finish}
+  execute:
+    default_role: teamwork-worker
+    reviewer: teamwork-review
+    corrector: corrector
+    max_waves: 2

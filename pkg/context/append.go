@@ -15,11 +15,14 @@ import (
 // for context/explorer/docs/planner/tester, so an unbounded PROJECT.md silently
 // eats a specialist's whole budget.
 const (
-	DefaultAppendMaxBytes = 48 * 1024
-	ProjectAppendMaxBytes = 24 * 1024
-	ContextAppendMaxBytes = 32 * 1024
-	MemoryAppendMaxBytes  = 32 * 1024
-	ScratchAppendMaxBytes = 64 * 1024
+	DefaultAppendMaxBytes  = 48 * 1024
+	ProjectAppendMaxBytes  = 24 * 1024
+	ContextAppendMaxBytes  = 32 * 1024
+	MemoryAppendMaxBytes   = 32 * 1024
+	ScratchAppendMaxBytes  = 64 * 1024
+	PRDAppendMaxBytes      = 24 * 1024
+	ContractAppendMaxBytes = 16 * 1024
+	ReviewAppendMaxBytes   = 24 * 1024
 )
 
 // AppendPolicy caps a document's size after an append.
@@ -38,6 +41,12 @@ func DefaultAppendPolicy(name string) AppendPolicy {
 		return AppendPolicy{MaxBytes: MemoryAppendMaxBytes}
 	case DocScratch:
 		return AppendPolicy{MaxBytes: ScratchAppendMaxBytes}
+	case DocPRD:
+		return AppendPolicy{MaxBytes: PRDAppendMaxBytes}
+	case DocContract:
+		return AppendPolicy{MaxBytes: ContractAppendMaxBytes}
+	case DocReview:
+		return AppendPolicy{MaxBytes: ReviewAppendMaxBytes}
 	default:
 		return AppendPolicy{MaxBytes: DefaultAppendMaxBytes}
 	}
@@ -146,5 +155,10 @@ func (s *Store) ReplaceSection(name, heading, body string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, _ := readFileString(s.Path(name))
-	return writeFileString(s.Path(name), replaceSection(existing, heading, body))
+	updated := replaceSection(existing, heading, body)
+	policy := s.policyFor(name)
+	if policy.MaxBytes > 0 && len(updated) > policy.MaxBytes {
+		updated = PruneTimestampedSections(updated, policy.MaxBytes)
+	}
+	return writeFileString(s.Path(name), updated)
 }

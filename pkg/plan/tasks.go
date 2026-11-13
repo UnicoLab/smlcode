@@ -509,25 +509,70 @@ func ParsePlanJSON(raw string) (Plan, error) {
 	raw = repairRole(extractJSON(raw), schema.RolePlan)
 	// Flexible decode: SLMs often emit steps as objects instead of strings.
 	var flex struct {
-		Summary     string          `json:"summary"`
-		Goals       []string        `json:"goals"`
-		Assumptions []string        `json:"assumptions"`
-		Risks       []string        `json:"risks"`
-		Steps       json.RawMessage `json:"steps"`
+		Summary       string          `json:"summary"`
+		Strategy      string          `json:"strategy"`
+		Goals         []string        `json:"goals"`
+		Assumptions   []string        `json:"assumptions"`
+		Risks         []string        `json:"risks"`
+		Steps         json.RawMessage `json:"steps"`
+		Milestones    []PlanMilestone `json:"milestones"`
+		Contracts     []PlanContract  `json:"contracts"`
+		FileOwnership []FileOwnership `json:"file_ownership"`
 	}
 	if err := json.Unmarshal([]byte(raw), &flex); err != nil {
+		if tp, ok := ParseTeamworkPlanJSON(original); ok {
+			var msSteps []string
+			var msGoals []string
+			for _, m := range tp.Milestones {
+				step := m.Title
+				if m.Description != "" {
+					step += ": " + m.Description
+				}
+				msSteps = append(msSteps, step)
+				if m.Title != "" {
+					msGoals = append(msGoals, m.Title)
+				}
+			}
+			return Plan{
+				Summary: tp.Strategy,
+				Goals:   msGoals,
+				Risks:   tp.Risks,
+				Steps:   msSteps,
+				Raw:     original,
+			}, nil
+		}
 		return Plan{
 			Summary: humanPlanFallback(original, raw),
 			Steps:   humanPlanSteps(original, raw),
 			Raw:     original,
 		}, nil
 	}
+	if flex.Summary == "" && flex.Strategy != "" {
+		flex.Summary = flex.Strategy
+	}
+	steps := parsePlanSteps(flex.Steps)
+	if len(steps) == 0 && len(flex.Milestones) > 0 {
+		for _, m := range flex.Milestones {
+			step := m.Title
+			if m.Description != "" {
+				step += ": " + m.Description
+			}
+			steps = append(steps, step)
+		}
+	}
+	if len(flex.Goals) == 0 && len(flex.Milestones) > 0 {
+		for _, m := range flex.Milestones {
+			if m.Title != "" {
+				flex.Goals = append(flex.Goals, m.Title)
+			}
+		}
+	}
 	p := Plan{
 		Summary:     strings.TrimSpace(flex.Summary),
 		Goals:       flex.Goals,
 		Assumptions: flex.Assumptions,
 		Risks:       flex.Risks,
-		Steps:       parsePlanSteps(flex.Steps),
+		Steps:       steps,
 		Raw:         raw,
 	}
 	if looksLikeRawJSON(p.Summary) || strings.HasPrefix(p.Summary, `"summary"`) {
@@ -672,10 +717,13 @@ func ParseTasksJSON(raw string) ([]Task, error) {
 
 // ReviewResult is the structured output of the reviewer specialist.
 type ReviewResult struct {
-	Approved bool     `json:"approved"`
-	Score    int      `json:"score"`
-	Issues   []string `json:"issues"`
-	Summary  string   `json:"summary"`
+	Approved           bool     `json:"approved"`
+	Score              int      `json:"score"`
+	Issues             []string `json:"issues"`
+	Summary            string   `json:"summary"`
+	Verdict            string   `json:"verdict,omitempty"`
+	ChallengeScenarios []string `json:"challenge_scenarios,omitempty"`
+	EdgeCases          []string `json:"edge_cases,omitempty"`
 
 	// NoVerdict marks a result the HARNESS synthesized because the reviewer
 	// never produced a readable verdict — an empty reply, prose, a tool-call
@@ -923,11 +971,18 @@ func ParseReviewJSON(raw string) ReviewResult {
 	var r ReviewResult
 	if err := json.Unmarshal([]byte(extracted), &r); err == nil {
 		if perr := json.Unmarshal([]byte(extracted), &probe); perr == nil && len(probe.Approved) > 0 {
+			if strings.EqualFold(r.Verdict, "reject") || strings.EqualFold(r.Verdict, "veto") {
+				r.Approved = false
+			}
 			return r
 		}
 	}
 	r = ReviewResult{Summary: strings.TrimSpace(firstLine(raw))}
-	if approvedTrue.MatchString(raw) && !approvedFalse.MatchString(raw) {
+	if approvedTrue.MatchString(raw) && !approvedFalse.MatchString(raw) &&
+		!strings.Contains(strings.ToLower(raw), `"verdict":"reject"`) &&
+		!strings.Contains(strings.ToLower(raw), `"verdict": "reject"`) &&
+		!strings.Contains(strings.ToLower(raw), `"verdict":"veto"`) &&
+		!strings.Contains(strings.ToLower(raw), `"verdict": "veto"`) {
 		r.Approved = true
 		return r
 	}

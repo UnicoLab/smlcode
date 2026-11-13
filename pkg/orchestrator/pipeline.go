@@ -18,6 +18,14 @@ func (o *Orchestrator) Pipeline() *pipeline.Config {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.cfg != nil && (strings.EqualFold(strings.TrimSpace(o.cfg.Workflow), "teamwork") || strings.EqualFold(strings.TrimSpace(o.cfg.ActivePipeline), "teamwork")) {
+		if o.pipe == nil || o.pipe.Execute.Reviewer != pipeline.RoleTeamworkReview {
+			t := pipeline.Teamwork()
+			t.Normalize()
+			o.pipe = &t
+		}
+		return o.pipe
+	}
 	if o.pipe == nil {
 		d := pipeline.Default()
 		o.pipe = &d
@@ -61,8 +69,30 @@ func (o *Orchestrator) SetPipeline(cfg *pipeline.Config) error {
 	return nil
 }
 
+// SetPipelineDirect activates a pipeline in-memory without saving to disk.
+func (o *Orchestrator) SetPipelineDirect(cfg *pipeline.Config) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if cfg == nil {
+		d := pipeline.Default()
+		o.pipe = &d
+		return
+	}
+	cfg.Normalize()
+	o.pipe = cfg
+}
+
 func (o *Orchestrator) loadPipelineLocked() {
 	if o == nil || o.cfg == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(o.cfg.Workflow), "teamwork") || strings.EqualFold(strings.TrimSpace(o.cfg.ActivePipeline), "teamwork") {
+		t := pipeline.Teamwork()
+		t.Normalize()
+		o.pipe = &t
 		return
 	}
 	cfg, err := pipeline.Load(o.cfg.SlmDir())

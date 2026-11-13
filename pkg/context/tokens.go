@@ -166,13 +166,13 @@ func TokensFromKB(kb int) int {
 // less irrelevant text measurably improves its instruction-following.
 func RoleBudgetPercent(role string) int {
 	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "worker", "corrector", "deep", "placeholder":
+	case "worker", "corrector", "deep", "placeholder", "teamwork-worker", "teamwork_worker":
 		return 100
-	case "reviewer", "tester":
+	case "reviewer", "tester", "adversarial_reviewer", "challenger", "teamwork-review", "teamwork_review":
 		return 85
-	case "architect", "planner", "splitter":
+	case "architect", "planner", "splitter", "teamwork-plan", "teamwork_plan":
 		return 70
-	case "explorer", "context", "docs":
+	case "explorer", "context", "docs", "interviewer", "spec", "specification", "teamwork-spec", "teamwork_spec":
 		return 60
 	case "coordinator", "memory":
 		return 50

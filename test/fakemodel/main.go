@@ -61,7 +61,13 @@ type fakeModel struct {
 	// THEN succeeds" without a real model.
 	badFirst int
 	writes   int
-	logf     func(string, ...any)
+
+	// Teamwork hermetic simulation flags (Feature F16)
+	teamworkReject bool
+	teamworkVeto   bool
+	teamworkAsk    bool
+
+	logf func(string, ...any)
 }
 
 func (f *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -154,8 +160,19 @@ func roleOf(system, all string) string {
 		return "escalate"
 	case strings.Contains(system, `"passed"`):
 		return "tester"
+	case strings.Contains(system, "teamwork_review") || strings.Contains(system, "teamwork-review") ||
+		strings.Contains(system, "adversarial_reviewer") || strings.Contains(system, "challenge_scenarios") ||
+		strings.Contains(system, "Adversarial reviewer for Teamwork deliverables"):
+		return "teamwork-review"
 	case strings.Contains(system, `{"approved"`), strings.Contains(system, "never approved"):
 		return "reviewer"
+	case strings.Contains(system, "teamwork_spec") || strings.Contains(system, "teamwork-spec") ||
+		strings.Contains(system, "ScopePRD") || strings.Contains(system, "needs_user") ||
+		strings.Contains(system, "Teamwork specification and requirements"):
+		return "teamwork-spec"
+	case strings.Contains(system, "teamwork_plan") || strings.Contains(system, "teamwork-plan") ||
+		strings.Contains(system, "CONTRACT.md") || strings.Contains(system, "Teamwork architect and planner"):
+		return "teamwork-plan"
 	case strings.Contains(system, `"tasks":[{"id":"T1"`):
 		return "splitter"
 	case strings.Contains(system, `"steps":["step one"`):
@@ -164,15 +181,24 @@ func roleOf(system, all string) string {
 		return "explorer"
 	case strings.Contains(system, `"doc_files"`):
 		return "docs"
+	case strings.Contains(system, "teamwork_worker") || strings.Contains(system, "teamwork-worker") ||
+		strings.Contains(system, "Implement ONE atomic task for Teamwork"):
+		return "teamwork-worker"
 	case strings.Contains(system, `"files_changed"`):
 		return "worker"
 	}
 	if m := packRoleRe.FindStringSubmatch(all); m != nil {
 		r := m[1]
-		for _, prefix := range []string{"go-", "python-", "react-", "ts-"} {
+		for _, prefix := range []string{"go-", "python-", "react-", "ts-", "teamwork-", "teamwork_"} {
 			r = strings.TrimPrefix(r, prefix)
 		}
 		return r
+	}
+	if strings.Contains(all, "needs_user") || strings.Contains(all, "teamwork-spec") || strings.Contains(all, "teamwork_spec") {
+		return "teamwork-spec"
+	}
+	if strings.Contains(all, "strategy") && strings.Contains(all, "milestones") {
+		return "teamwork-plan"
 	}
 	return "prose"
 }
@@ -222,6 +248,13 @@ func transcriptState(toolOut, file string) editState {
 func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool, st editState) (string, map[string]any) {
 	file, src := f.file, f.source
 	switch role {
+	case "teamwork-spec", "teamwork_spec", "spec", "interviewer":
+		if f.teamworkAsk {
+			return `{"needs_user":true,"assumptions":["Standard Go toolchain"],"acceptance":["go test ./... passes cleanly"],"entrypoint":"` + file + `","features":[{"id":"F1","title":"Basic calculator arithmetic","acceptance":"Add and Divide functions present","priority":"must","description":"Provide Add and Divide functions"}],"language":"go","non_goals":["GUI"],"questions":[{"id":"q1","header":"Scope","question":"Include divide?","options":[{"label":"Yes","description":"Add divide","recommended":true},{"label":"No","description":"Skip"}],"allow_freeform":false,"facet":"architecture","recommended":"Yes"}]}`, nil
+		}
+		return `{"needs_user":false,"assumptions":["Standard Go toolchain","Local isolated execution"],"acceptance":["go test ./... passes cleanly"],"entrypoint":"` + file + `","features":[{"id":"F1","title":"Basic calculator arithmetic","acceptance":"Add and Divide functions present","priority":"must","description":"Provide Add and Divide functions"}],"language":"go","non_goals":["GUI"],"questions":[{"id":"q1","header":"Scope","question":"Include divide?","options":[{"label":"Yes","description":"Add divide","recommended":true},{"label":"No","description":"Skip"}],"allow_freeform":false,"facet":"architecture","recommended":"Yes"}]}`, nil
+	case "teamwork-plan", "teamwork_plan":
+		return `{"strategy":"Decompose arithmetic functions into calc module","milestones":[{"id":"M1","title":"Implement arithmetic functions","acceptance":"go vet ./... passes","depends_on":[],"description":"Create ` + file + `"}],"file_ownership":[{"owner":"worker","paths":["` + file + `"]}],"contracts":[{"interface_id":"ICalc","provider":"worker","spec":"Add(int, int) int","consumers":["main"]}],"risks":[]}`, nil
 	case "explorer":
 		return `{"summary":"tiny go module","relevant_files":["go.mod","` + file + `"],"key_symbols":[],"risks":[],"notes":""}`, nil
 	case "docs":
@@ -233,6 +266,27 @@ func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool, st edit
 			`"description":"Add a Divide function to ` + file + `.",` +
 			`"role":"worker","files":["` + file + `"],` +
 			`"acceptance":"` + file + ` contains func Divide","depends_on":[]}]}`, nil
+	case "teamwork-worker", "teamwork_worker":
+		// Read before write: the harness refuses a blind overwrite of a file
+		// this session has never read, and it is right to.
+		if hasTools && !st.didWrite {
+			if !st.didRead {
+				return "", toolCall("ws_read", map[string]any{"path": file})
+			}
+			body := src
+			if f.badFirst > 0 {
+				f.mu.Lock()
+				f.writes++
+				n := f.writes
+				f.mu.Unlock()
+				if n <= f.badFirst {
+					body = "package calc\n\nfunc Divide( {\n" // deliberately unparsable
+				}
+			}
+			return "", toolCall("ws_write", map[string]any{"path": file, "content": body})
+		}
+		return `{"status":"done","summary":"added Divide to ` + file +
+			`","files_changed":["` + file + `"],"action_plan":["ws_read ` + file + `","ws_write ` + file + `"],"diff_summary":"Added Add and Divide functions","notes":""}`, nil
 	case "worker", "deep", "corrector", "editor":
 		// Read before write: the harness refuses a blind overwrite of a file
 		// this session has never read, and it is right to.
@@ -254,6 +308,27 @@ func (f *fakeModel) answerFor(role string, hasTools, sawToolResult bool, st edit
 		}
 		return `{"status":"done","summary":"added Divide to ` + file +
 			`","files_changed":["` + file + `"],"notes":""}`, nil
+	case "teamwork-review", "teamwork_review", "adversarial_reviewer", "review":
+		if f.teamworkVeto {
+			return `{"approved":false,"score":10,"verdict":"veto","summary":"` + file +
+				` vetoed by adversarial reviewer","challenge_scenarios":["Hostile input probing"],"edge_cases":[],"issues":["unrecoverable defect"]}`, nil
+		}
+		if f.rejectFirst > 0 {
+			f.mu.Lock()
+			f.reviews++
+			n := f.reviews
+			f.mu.Unlock()
+			if n <= f.rejectFirst {
+				return `{"approved":false,"score":20,"verdict":"reject","summary":"` + file +
+					` still does not satisfy the acceptance","challenge_scenarios":["Compiler smoke check"],"edge_cases":[],"issues":["not done"]}`, nil
+			}
+			return `{"approved":true,"score":92,"verdict":"approve","summary":"` + file + ` contains func Divide","challenge_scenarios":["Divide by zero handled"],"edge_cases":[],"issues":[]}`, nil
+		}
+		if f.reject || f.teamworkReject {
+			return `{"approved":false,"score":20,"verdict":"reject","summary":"` + file +
+				` still does not satisfy the acceptance","challenge_scenarios":["Compiler smoke check"],"edge_cases":[],"issues":["not done"]}`, nil
+		}
+		return `{"approved":true,"score":92,"verdict":"approve","summary":"` + file + ` contains func Divide","challenge_scenarios":["Divide by zero handled"],"edge_cases":[],"issues":[]}`, nil
 	case "reviewer", "reviewer-strict":
 		if f.rejectFirst > 0 {
 			f.mu.Lock()
@@ -378,6 +453,12 @@ func main() {
 		"the first N worker writes land unparsable source, so the smoke gate fails and the review ladder runs")
 	rejectFirst := flag.Int("reject-first", 0,
 		"reject the first N reviews, then approve (a task that succeeds after an escalate retry)")
+	teamworkReject := flag.Bool("teamwork-reject", false,
+		"teamwork reviewer rejects with verdict=reject")
+	teamworkVeto := flag.Bool("teamwork-veto", false,
+		"teamwork reviewer rejects with verdict=veto")
+	teamworkAsk := flag.Bool("teamwork-ask", false,
+		"teamwork spec interviewer returns needs_user=true with clarifying questions")
 	flag.Parse()
 
 	src := targetSource
@@ -388,7 +469,18 @@ func main() {
 		}
 		src = string(b)
 	}
-	f := &fakeModel{mode: *mode, delay: *delay, file: *file, source: src, reject: *reject, rejectFirst: *rejectFirst, badFirst: *badFirst}
+	f := &fakeModel{
+		mode:           *mode,
+		delay:          *delay,
+		file:           *file,
+		source:         src,
+		reject:         *reject,
+		rejectFirst:    *rejectFirst,
+		badFirst:       *badFirst,
+		teamworkReject: *teamworkReject,
+		teamworkVeto:   *teamworkVeto,
+		teamworkAsk:    *teamworkAsk,
+	}
 	if *verbose {
 		f.logf = func(format string, a ...any) { log.Printf(format, a...) }
 	}

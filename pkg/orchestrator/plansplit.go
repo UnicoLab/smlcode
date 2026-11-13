@@ -9,6 +9,7 @@ import (
 	"github.com/UnicoLab/slmcode/pkg/loop"
 	"github.com/UnicoLab/slmcode/pkg/multipass"
 	"github.com/UnicoLab/slmcode/pkg/plan"
+	"github.com/UnicoLab/slmcode/pkg/quality"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/stream"
 )
@@ -138,6 +139,12 @@ func (o *Orchestrator) runPlanPhase(ctx context.Context, in planSplitInput, repl
 	}
 
 	pl, _ = plan.ParsePlanJSON(planOut)
+	if tp, ok := plan.ParseTeamworkPlanJSON(planOut); ok && len(tp.Contracts) > 0 {
+		contractMD := plan.RenderContractsMarkdown(tp.Contracts)
+		_ = o.store.WriteBounded(contextstore.DocContract, contractMD)
+		o.shared.SetGlobal("contract", contractMD)
+		o.emit("plan", fmt.Sprintf("froze %d interface contract(s) in CONTRACT.md", len(tp.Contracts)), "")
+	}
 	if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
 		pl.Summary = firstSentence(stripJSONNoise(planOut))
 		if strings.TrimSpace(pl.Summary) == "" || looksLikeJSONBlob(pl.Summary) {
@@ -305,6 +312,20 @@ func (o *Orchestrator) runSplitPhase(ctx context.Context, in planSplitInput, pl 
 		t := board.Tasks[i]
 		if t.Column == "" {
 			t.Column = plan.ColReadyToDev
+		}
+		if len(t.Criteria) == 0 && strings.TrimSpace(t.Acceptance) != "" {
+			cmd := quality.SafeVerifyCommand(t.Acceptance)
+			if cmd == "" {
+				if cmds := quality.ExtractAcceptanceCommands(t.Acceptance); len(cmds) > 0 {
+					cmd = cmds[0]
+				}
+			}
+			t.Criteria = []plan.Criterion{{
+				ID:       "AC1",
+				Text:     t.Acceptance,
+				Verify:   cmd,
+				Priority: plan.PriorityMust,
+			}}
 		}
 		t.Normalize()
 		board.Tasks[i] = t

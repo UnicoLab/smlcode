@@ -98,6 +98,51 @@ func TestGBNFAcceptsAndRejectsFixtures(t *testing.T) {
 				`{"lessons":[{"text":"x","kind":"success"}]}`,
 			},
 		},
+		{
+			role: RoleTeamworkSpec,
+			accept: []string{
+				`{"needs_user":false,"assumptions":["SQLite"],"acceptance":["go test"]}`,
+				`{"needs_user":false,"assumptions":[],"acceptance":[],"entrypoint":"main.go","language":"go","non_goals":["oauth"]}`,
+			},
+			reject: []string{
+				`{"assumptions":[],"needs_user":false,"acceptance":[]}`,   // wrong key order
+				`{"needs_user":false,"assumptions":[]}`,                   // missing acceptance
+				`{"needs_user":"false","assumptions":[],"acceptance":[]}`, // string bool
+			},
+		},
+		{
+			role: RoleTeamworkPlan,
+			accept: []string{
+				`{"strategy":"modular","milestones":[{"id":"M1","title":"t","acceptance":"a"}],"file_ownership":[{"owner":"w","paths":["p"]}]}`,
+				`{"strategy":"modular","milestones":[{"id":"M1","title":"t","acceptance":"a"}],"file_ownership":[{"owner":"w","paths":["p"]}],"contracts":[],"risks":[]}`,
+			},
+			reject: []string{
+				`{"milestones":[],"strategy":"s","file_ownership":[]}`, // wrong key order
+				`{"strategy":"s","milestones":[],"file_ownership":[]}`, // empty milestones (minItems 1)
+			},
+		},
+		{
+			role: RoleTeamworkWorker,
+			accept: []string{
+				`{"status":"done","summary":"s","files_changed":["a.go"]}`,
+				`{"status":"blocked","summary":"s","files_changed":[],"action_plan":["ws_read"],"diff_summary":"d","notes":"n"}`,
+			},
+			reject: []string{
+				`{"summary":"s","status":"done","files_changed":[]}`,     // wrong key order
+				`{"status":"finished","summary":"s","files_changed":[]}`, // invalid enum
+			},
+		},
+		{
+			role: RoleTeamworkReview,
+			accept: []string{
+				`{"approved":true,"score":80,"verdict":"approve","summary":"fine"}`,
+				`{"approved":false,"score":20,"verdict":"reject","summary":"bad","challenge_scenarios":[],"edge_cases":[],"issues":["bug"]}`,
+			},
+			reject: []string{
+				`{"score":80,"approved":true,"verdict":"approve","summary":"fine"}`, // wrong key order
+				`{"approved":true,"score":80,"verdict":"pass","summary":"fine"}`,    // invalid verdict enum
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.role, func(t *testing.T) {

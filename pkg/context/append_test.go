@@ -64,6 +64,9 @@ func TestStoreAppendIsBounded(t *testing.T) {
 		{"project", DocProject, ProjectAppendMaxBytes},
 		{"context", DocContext, ContextAppendMaxBytes},
 		{"memory", DocMemory, MemoryAppendMaxBytes},
+		{"prd", DocPRD, PRDAppendMaxBytes},
+		{"contract", DocContract, ContractAppendMaxBytes},
+		{"review", DocReview, ReviewAppendMaxBytes},
 		{"other", DocPlan, DefaultAppendMaxBytes},
 	}
 	for _, tc := range tests {
@@ -137,6 +140,107 @@ func TestStoreReplaceSection(t *testing.T) {
 	}
 	if !strings.Contains(body, "## Key paths") {
 		t.Fatalf("other sections destroyed:\n%s", body)
+	}
+}
+
+func TestTeamworkDocumentCeilingsAndPolicies(t *testing.T) {
+	if DocReview != "REVIEW.md" {
+		t.Fatalf("DocReview = %q, want REVIEW.md", DocReview)
+	}
+	if PRDAppendMaxBytes != 24*1024 {
+		t.Fatalf("PRDAppendMaxBytes = %d, want %d", PRDAppendMaxBytes, 24*1024)
+	}
+	if ContractAppendMaxBytes != 16*1024 {
+		t.Fatalf("ContractAppendMaxBytes = %d, want %d", ContractAppendMaxBytes, 16*1024)
+	}
+	if ReviewAppendMaxBytes != 24*1024 {
+		t.Fatalf("ReviewAppendMaxBytes = %d, want %d", ReviewAppendMaxBytes, 24*1024)
+	}
+
+	tests := []struct {
+		doc  string
+		want int
+	}{
+		{DocPRD, PRDAppendMaxBytes},
+		{DocContract, ContractAppendMaxBytes},
+		{DocReview, ReviewAppendMaxBytes},
+		{DocProject, ProjectAppendMaxBytes},
+		{DocContext, ContextAppendMaxBytes},
+		{DocMemory, MemoryAppendMaxBytes},
+		{DocScratch, ScratchAppendMaxBytes},
+		{"CUSTOM.md", DefaultAppendMaxBytes},
+	}
+	for _, tc := range tests {
+		got := DefaultAppendPolicy(tc.doc).MaxBytes
+		if got != tc.want {
+			t.Errorf("DefaultAppendPolicy(%q).MaxBytes = %d, want %d", tc.doc, got, tc.want)
+		}
+	}
+}
+
+func TestStoreWriteBounded(t *testing.T) {
+	_, _, store := newWorkspace(t)
+
+	// Writing under ceiling preserves content exactly.
+	short := "# PRD\n\n## Overview\n\nInitial short requirements.\n"
+	if err := store.WriteBounded(DocPRD, short); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Read(DocPRD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != short {
+		t.Fatalf("expected exact match for short write, got %q", got)
+	}
+
+	// Writing content that exceeds ceiling with timestamped sections prunes oldest.
+	head := "# Review Report\n\n## Summary\n\nExecutive summary must survive.\n"
+	longDoc := timestampedDoc(head, 50, 800) // ~40KB, exceeds ReviewAppendMaxBytes (24KB)
+	if err := store.WriteBounded(DocReview, longDoc); err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := store.Read(DocReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) > ReviewAppendMaxBytes {
+		t.Fatalf("WriteBounded did not enforce ceiling: %d > %d", len(pruned), ReviewAppendMaxBytes)
+	}
+	if !strings.Contains(pruned, "Executive summary must survive") {
+		t.Fatalf("document head was lost:\n%s", pruned[:min(300, len(pruned))])
+	}
+	if !strings.Contains(pruned, "auto-appended sections pruned") {
+		t.Fatalf("expected prune notification marker, got:\n%s", pruned[:min(500, len(pruned))])
+	}
+}
+
+func TestStoreReplaceSectionWithCeilingPruning(t *testing.T) {
+	_, _, store := newWorkspace(t)
+	store.SetAppendPolicy(DocContract, 2048)
+
+	head := "# Contract\n\n## Overview\n\nCore contract terms.\n"
+	initialDoc := timestampedDoc(head, 10, 300) // ~3KB, will be capped when ReplaceSection runs
+	if err := store.Write(DocContract, initialDoc); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.ReplaceSection(DocContract, "New Section", "Replaced content here.\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := store.Read(DocContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > 2048 {
+		t.Fatalf("ReplaceSection failed to prune over-limit doc: %d bytes > 2048", len(body))
+	}
+	if !strings.Contains(body, "Core contract terms") {
+		t.Fatal("ReplaceSection prune destroyed the head")
+	}
+	if !strings.Contains(body, "Replaced content here") {
+		t.Fatal("ReplaceSection did not include the new section")
 	}
 }
 

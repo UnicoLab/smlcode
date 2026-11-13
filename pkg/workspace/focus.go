@@ -50,24 +50,36 @@ func RoleFrom(ctx context.Context) string {
 // Kept as data here rather than imported from pkg/agents: this package is a
 // leaf and must stay one.
 var readOnlyRoles = map[string]bool{
-	"explorer": true, "docs": true, "context": true, "planner": true,
-	"splitter": true, "reviewer": true, "reviewer-strict": true,
+	"explorer": true, "docs": true, "context": true, "planner": true, "plan": true,
+	"splitter": true, "reviewer": true, "reviewer-strict": true, "review": true,
 	"architect": true, "describer": true, "coordinator": true,
 	"orchestrator": true, "memory": true, "composer": true, "escalate": true,
+	"interviewer": true, "specification": true, "spec": true, "interview": true,
+	"adversarial_reviewer": true, "adversarial-reviewer": true,
+	"adversarial_review": true, "adversarial-review": true,
+	"challenger": true, "teamwork_spec": true, "teamwork-spec": true,
+	"teamwork_review": true, "teamwork-review": true,
+	"teamwork_plan": true, "teamwork-plan": true,
 }
 
 // roleSuffixes maps a language-specialised agent id (go-explorer,
 // python-reviewer) back to its generic role. Mirrors agents.genericRole.
 var roleSuffixes = map[string]bool{
 	"worker": true, "tester": true, "reviewer": true, "corrector": true,
+	"review": true, "plan": true,
 	"explorer": true, "planner": true, "splitter": true, "architect": true,
 	"editor": true, "describer": true, "docs": true, "context": true,
 	"placeholder": true, "deep": true,
+	"interviewer": true, "specification": true, "spec": true,
+	"adversarial_reviewer": true, "challenger": true,
+	"teamwork-spec": true, "teamwork-plan": true, "teamwork-worker": true, "teamwork-review": true,
+	"teamwork_spec": true, "teamwork_plan": true, "teamwork_worker": true, "teamwork_review": true,
 }
 
 // IsReadOnlyRole reports whether role's contract forbids editing files at all.
 func IsReadOnlyRole(role string) bool {
-	return readOnlyRoles[genericRoleName(normalizeRole(role))]
+	norm := normalizeRole(role)
+	return readOnlyRoles[norm] || readOnlyRoles[genericRoleName(norm)]
 }
 
 func normalizeRole(role string) string {
@@ -356,19 +368,19 @@ func (g *FocusGuard) Check(ctx context.Context, path string) error {
 	if err := CheckHarnessStateWrite(path); err != nil {
 		return err
 	}
+	path = normalizeRel(path)
+	role := RoleFrom(ctx)
+	if IsReadOnlyRole(role) {
+		return fmt.Errorf(readOnlyRoleRefusal, path, role)
+	}
 	if g == nil || g.Allow(path) {
 		return nil
 	}
-	path = normalizeRel(path)
-	role := RoleFrom(ctx)
 	// A protected path fails for a different reason than a wander, and saying
 	// "stay in your focus files" about a file that IS a focus file is the kind
 	// of refusal a small model argues with for six turns.
 	if g.IsProtected(path) {
 		return fmt.Errorf(protectedPathRefusal, path)
-	}
-	if IsReadOnlyRole(role) {
-		return fmt.Errorf(readOnlyRoleRefusal, path, role)
 	}
 	base := filepath.Base(path)
 	if isEntrypointName(base) && !strings.Contains(path, "/") {

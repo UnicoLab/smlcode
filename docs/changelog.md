@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.30.0 — 2026-11-13
+
+### Added
+
+- **Multi-Agent Teamwork Pipeline (`teamwork`)**:
+  - Added bundled 16-phase declarative Teamwork pipeline (`pkg/blocks/bundled/pipelines/teamwork.yaml`, `pipeline.Teamwork()`) orchestrating specification/interview (`clarify`), architecture & frozen interface contracts (`architect`/`plansplit`), scoped worker waves (`execute`), and multi-wave adversarial review (`review`).
+  - Added durable Teamwork plan & ownership structures (`TeamworkPlan`, `PlanMilestone`, `PlanContract`, `FileOwnership` in `pkg/plan/teamwork_plan.go`) and reloadable phase transition handlers across `pkg/orchestrator`.
+  - Exposed `--workflow teamwork` in `slmcode run` (`cmd/slmcode/cmd_core.go`) preserving CLI > env > config precedence, plus thread-safe public library façade `harness.RunTeamwork(ctx, query)` (`pkg/harness/harness.go`).
+- **Small Language Model (7B–32B) Guardrails & Context Optimizations**:
+  - Added Draft-07 JSON schemas, compiled GBNF grammars, and zero-drift prompt contracts for `teamwork_spec`, `teamwork_plan`, `teamwork_worker`, and `teamwork_review` (`pkg/schema/spec.go`, `pkg/agents/prompts.go`).
+  - Added role-aware token budgeting and deterministic KV-cache-preserving `TaskPack` packing (`pkg/context/tokens.go`, `pkg/context/pack.go`): 60% budget with identifier-only packing for `teamwork-spec`, 70% for `teamwork-plan`, 85% for `teamwork-review`, and full 100% allocation for `teamwork-worker`.
+  - Added durable document ceilings (`PRD.md` 24 KB, `CONTRACT.md` 16 KB, `REVIEW.md` 24 KB) with timestamp-based compaction (`pkg/context/append.go`, `pkg/context/store.go`), and dynamic tool output capping scaled down for context windows ≤ 16K tokens (`pkg/workspace/tools.go`).
+  - Hardened `FocusGuard` read-only role enforcement (`pkg/workspace/focus.go`) and blocked review `fastPath` auto-approvals on Teamwork runs (`pkg/loop/runner.go`) so adversarial review cannot be bypassed by raw disk writes.
+- **Test Harness & Standalone `fakemodel` Support**:
+  - Extended `test/fakemodel` with full Teamwork role simulation (`-teamwork-ask`, `-teamwork-reject`, `-teamwork-veto`) and added a 204-test opaque-box E2E acceptance suite (`test/e2e/teamwork_e2e_test.go`) alongside adversarial mutation and concurrency stress suites.
+
+### Fixed
+
+- Synchronized `Harness.Status()` under `h.mu` in `pkg/harness/harness.go` to eliminate a concurrent read-write data race with `InitWorkspace()`.
+
 ## v0.29.0 — 2026-10-20
 
 ### Added

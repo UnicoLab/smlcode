@@ -46,6 +46,27 @@ const DefaultReadWindow = 120
 // result can evict the task description from a 7B model's context.
 const DefaultMaxToolChars = 8000
 
+// MaxToolChars8K caps tool output for <= 8K token context windows.
+const MaxToolChars8K = 3000
+
+// MaxToolChars16K caps tool output for <= 16K token context windows.
+const MaxToolChars16K = 5000
+
+// AdaptiveMaxToolChars returns the tool output character limit scaled to the
+// model's context window in tokens. For small context models (<= 8K tokens),
+// outputs are capped at 3000 chars; for medium context (<= 16K tokens), 5000
+// chars; larger or unconfigured windows keep DefaultMaxToolChars (8000 chars).
+func AdaptiveMaxToolChars(contextTokens int) int {
+	switch {
+	case contextTokens > 0 && contextTokens <= 8192:
+		return MaxToolChars8K
+	case contextTokens > 0 && contextTokens <= 16384:
+		return MaxToolChars16K
+	default:
+		return DefaultMaxToolChars
+	}
+}
+
 // MaxGrepHits / MaxGlobHits bound search results; both announce truncation.
 const (
 	MaxGrepHits = 50
@@ -503,8 +524,17 @@ func (w *Workspace) readWindow() int {
 }
 
 func (w *Workspace) maxToolChars() int {
-	if w != nil && w.MaxToolChars > 0 {
+	if w == nil {
+		return DefaultMaxToolChars
+	}
+	if w.MaxToolChars > 0 {
 		return w.MaxToolChars
+	}
+	if w.ContextLimitTokens > 0 {
+		return AdaptiveMaxToolChars(w.ContextLimitTokens)
+	}
+	if w.MaxContextKB > 0 {
+		return AdaptiveMaxToolChars(w.MaxContextKB * 1024 / 4)
 	}
 	return DefaultMaxToolChars
 }
@@ -534,6 +564,10 @@ func (w *Workspace) backup(path string) {
 func (w *Workspace) checkFocus(ctx context.Context, path string) error {
 	if err := CheckHarnessStateWrite(path); err != nil {
 		return err
+	}
+	role := RoleFrom(ctx)
+	if IsReadOnlyRole(role) {
+		return fmt.Errorf(readOnlyRoleRefusal, normalizeRel(path), role)
 	}
 	if w == nil || w.Focus == nil {
 		return nil

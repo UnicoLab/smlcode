@@ -133,6 +133,26 @@ type Config struct {
 	Slots []Slot   `yaml:"slots,omitempty" json:"slots,omitempty"`
 }
 
+// Pipeline is an alias for Config, representing the config-driven execution graph.
+type Pipeline = Config
+
+// Teamwork role constants.
+const (
+	RoleTeamworkSpec   = "teamwork-spec"
+	RoleTeamworkPlan   = "teamwork-plan"
+	RoleTeamworkWorker = "teamwork-worker"
+	RoleTeamworkReview = "teamwork-review"
+)
+
+// Group constants for Teamwork.
+const (
+	GroupInterview = "interview"
+	GroupDesign    = "design"
+	GroupExecute   = "execute"
+	GroupReview    = "review"
+	GroupFinish    = "finish"
+)
+
 // Path returns <slmDir>/pipeline.yaml.
 func Path(slmDir string) string {
 	return filepath.Join(slmDir, FileName)

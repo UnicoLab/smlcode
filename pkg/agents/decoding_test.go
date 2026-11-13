@@ -83,6 +83,7 @@ func TestPromptsStayShortEnoughForA32KWindow(t *testing.T) {
 	limits := map[string]int{
 		plan.RoleWorker: 2600, "deep": 2600, plan.RoleCorrector: 2600,
 		plan.RolePlaceholder: 2800, RoleEditor: 2600,
+		RoleTeamworkWorker: 2600,
 		// The composer carries the whole language-specialist roster, and it is
 		// the one prompt whose cost is paid ONCE PER RUN rather than once per
 		// turn. The budget above exists because prompts compete with the CODE
@@ -124,7 +125,7 @@ func TestEditContractCarriesBothDemonstrations(t *testing.T) {
 		}
 	}
 	// Every tool-using coding role must carry it.
-	for _, p := range []string{PromptWorker, PromptDeepWorker, PromptCorrector, PromptPlaceholder, PromptEditor} {
+	for _, p := range []string{PromptWorker, PromptDeepWorker, PromptCorrector, PromptPlaceholder, PromptEditor, PromptTeamworkWorker} {
 		if !strings.Contains(p, "WORKED EXAMPLE") {
 			t.Error("a coding prompt is missing the edit demonstrations")
 		}
@@ -172,6 +173,10 @@ func TestNormalizeDecoding(t *testing.T) {
 		{"memory is markdown", RoleSpec{ID: "memory"}, false, false, "", false},
 		{"describer is prose", RoleSpec{ID: "describer"}, false, false, "", false},
 		{"unknown tool-less role", RoleSpec{ID: "my-custom-thing"}, false, false, "", false},
+		{"teamwork-spec", RoleSpec{ID: RoleTeamworkSpec}, true, false, schema.RoleTeamworkSpec, true},
+		{"teamwork-plan", RoleSpec{ID: RoleTeamworkPlan}, true, false, schema.RoleTeamworkPlan, true},
+		{"teamwork-worker", RoleSpec{ID: RoleTeamworkWorker, Tools: coding}, false, true, schema.RoleTeamworkWorker, false},
+		{"teamwork-review", RoleSpec{ID: RoleTeamworkReview}, true, false, schema.RoleTeamworkReview, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,6 +213,7 @@ func TestBuiltinRosterDecodingContracts(t *testing.T) {
 	jsonOnly := []string{
 		"planner", "splitter", "reviewer", "reviewer-strict", "architect",
 		"escalate", "composer", "coordinator", "orchestrator",
+		RoleTeamworkSpec, RoleTeamworkPlan, RoleTeamworkReview,
 	}
 	for _, id := range jsonOnly {
 		s, ok := byID[id]
@@ -224,7 +230,7 @@ func TestBuiltinRosterDecodingContracts(t *testing.T) {
 			t.Errorf("%s has no stop sequences — the prose tail will still be generated", id)
 		}
 	}
-	toolRoles := []string{"worker", "deep", "corrector", "tester", "placeholder", "explorer", "docs", "editor"}
+	toolRoles := []string{"worker", "deep", "corrector", "tester", "placeholder", "explorer", "docs", "editor", RoleTeamworkWorker}
 	for _, id := range toolRoles {
 		s, ok := byID[id]
 		if !ok {
@@ -276,6 +282,8 @@ func TestIsKnownRole(t *testing.T) {
 	for _, id := range []string{
 		"worker", "reviewer", "reviewer-strict", "tester", "planner",
 		"splitter", "composer", "describer", "editor", "escalate",
+		RoleTeamworkSpec, RoleTeamworkPlan, RoleTeamworkWorker, RoleTeamworkReview,
+		"teamwork_spec", "teamwork_plan", "teamwork_worker", "teamwork_review",
 	} {
 		if !IsKnownRole(id) {
 			t.Errorf("IsKnownRole(%q) = false", id)

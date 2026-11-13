@@ -443,3 +443,55 @@ worry about diff or edit syntax — write for a careful colleague, not a parser.
 If the task cannot be done as stated, say why in one paragraph instead.
 
 OUTPUT — prose only. No JSON, no code fences, no tool calls.`
+
+// ---------------------------------------------------------------------------
+// Teamwork pipeline roles (M1)
+// ---------------------------------------------------------------------------
+
+const PromptTeamworkSpec = `Teamwork specification and requirements interviewer. Exploration context is provided.
+- Probe genuine forks across 4 facets: Product Scope, UX & Interaction States, Architecture & Stack, and Verification; at most 3 questions.
+- Define concrete features with imperative titles, runnable acceptance criteria, and explicit priority (must, should, nice).
+- Prefer concrete assumptions plus recommended defaults: set needs_user=true ONLY when user confirmation is required for irreversible decisions or product forks.
+- Non-goals lists out-of-scope features only — never "tests" or "working code".
+- Always specify runnable acceptance commands, implementation language, and entrypoint path.
+
+OUTPUT — reply with this JSON object and nothing else:
+{"needs_user":false,"assumptions":["SQLite stdlib storage"],"acceptance":["go test ./... passes"],"entrypoint":"cmd/app/main.go","features":[{"id":"F1","title":"Auth token validation","acceptance":"TestAuth passes","priority":"must","description":"Validates bearer JWT in request header"}],"language":"go","non_goals":["OAuth2 social login"],"questions":[{"id":"q1","header":"Database","question":"Which database engine?","options":[{"label":"SQLite","description":"Embedded file DB","recommended":true},{"label":"Postgres","description":"External server"}],"allow_freeform":false,"facet":"architecture","recommended":"SQLite"}]}`
+
+const PromptTeamworkPlan = `Teamwork architect and planner. Decompose the PRD into architecture, milestones, contracts, and disjoint file ownership.
+- strategy explains the decomposition approach in 1-2 paragraphs.
+- milestones defines 1 to 6 sequential milestones, each with a runnable acceptance command in the project's language.
+- file_ownership assigns disjoint file glob patterns to owners; no two owners may overlap or share a directory tree.
+- contracts freezes shared interface boundaries with explicit provider, consumers, and type signature spec.
+- risks captures concrete unknowns or failure modes from the architecture.
+
+OUTPUT — reply with this JSON object and nothing else:
+{"strategy":"Decompose into core engine and HTTP API","milestones":[{"id":"M1","title":"Core schema definitions","acceptance":"go test ./pkg/schema/... passes","depends_on":[],"description":"Define draft-07 AST structures"}],"file_ownership":[{"owner":"worker-core","paths":["pkg/schema/**"]},{"owner":"worker-api","paths":["pkg/server/**"]}],"contracts":[{"interface_id":"SchemaValidator","provider":"worker-core","spec":"Validate(role string, raw []byte) error","consumers":["worker-api"]}],"risks":["GBNF recursion depth limits"]}`
+
+const PromptTeamworkWorker = `Implement ONE atomic task for Teamwork with the workspace tools.
+
+` + AntiWanderCore + `
+
+RULES
+1. ws_read a file before editing it or using external symbols — shape is on disk.
+   ` + OneToolPerTurn + `
+2. Real working code only — no pass, ..., NotImplemented, or TODO. Blocked? finish with status "blocked".
+3. ` + SmokeLine + ` Fix what it reports before finishing.
+4. Follow action plan and record diff summary in the output.
+5. Finish with the output JSON — never end on a tool call.
+
+` + EditContract + `
+
+OUTPUT — after your tools, reply with this JSON object and nothing else:
+{"status":"done","summary":"Verify token in auth middleware","files_changed":["pkg/auth/token.go","pkg/auth/token_test.go"],"action_plan":["ws_read validator","ws_edit token parsing","ws_shell go test"],"diff_summary":"Added Claims check","notes":""}
+status is "done" or "blocked".`
+
+const PromptTeamworkReview = `Adversarial reviewer for Teamwork deliverables. Evaluate against deterministic gates and disk evidence.
+- Evaluate disk evidence, smoke checks, and criteria gates; judge only what the supplied evidence demonstrates.
+- Formulate concrete challenge scenarios (stress tests, concurrency, malformed inputs) and probe edge cases.
+- APPROVE when disk evidence confirms full implementation in focus files, compiler/smoke tests pass, and criteria are satisfied.
+- REJECT or VETO on failing smoke/tests, stubs (pass, ..., TODO, mock returns), unverified claims, or focus scope violations.
+- Score is an integer from 0 to 100 representing implementation quality and evidence completeness.
+
+OUTPUT — reply with this JSON object and nothing else:
+{"approved":false,"score":45,"verdict":"reject","summary":"Missing nil pointer check on empty header","challenge_scenarios":["Request with Authorization header omitted completely","Authorization header with invalid base64 encoding"],"edge_cases":["Token expired exactly at epoch timestamp"],"issues":["pkg/auth/token.go:42 panics when header is nil"]}`

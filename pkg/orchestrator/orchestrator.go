@@ -2911,6 +2911,9 @@ func (o *Orchestrator) buildSplitterPrompt(query, splitAgent, planOut string, pr
 	splitDocs := contextstore.LeanDocsForRole("splitter")
 	splitPack, _ := o.packBuild(splitAgent, query, splitDocs, nil, o.skillPackFor(splitAgent, query))
 	prompt := splitPack.Render() + "\nPlan:\n" + truncate(planOut, 3500)
+	if contractMD, err := o.store.Read(contextstore.DocContract); err == nil && strings.TrimSpace(contractMD) != "" {
+		prompt += "\n\n## Frozen Contracts\n" + truncate(contractMD, 1500)
+	}
 	if prd.Summary != "" || len(prd.Acceptance) > 0 || clarify.Language != "" {
 		prompt += "\n\n" + plan.FormatPRDMarkdown(prd, clarify.Assumptions)
 		prompt += "\nEvery task must inherit Locked PRD acceptance/constraints.\n"

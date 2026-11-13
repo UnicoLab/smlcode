@@ -123,6 +123,8 @@ func NormalizeDecoding(s *RoleSpec) {
 func genericRole(id string) string {
 	id, _ = BaseRoleID(id)
 	for _, suffix := range []string{
+		"teamwork-spec", "teamwork_spec", "teamwork-plan", "teamwork_plan",
+		"teamwork-worker", "teamwork_worker", "teamwork-review", "teamwork_review",
 		"worker", "tester", "reviewer", "corrector", "explorer",
 		"planner", "splitter", "architect", "editor", "describer", "manager", "triage",
 	} {
@@ -182,6 +184,12 @@ func specs(coding []string) []RoleSpec {
 		// independently selectable, so a 32B can reason and a 7B can format.
 		{ID: RoleDescriber, Title: "Change describer (architect half)", Description: "Describes the change in prose for the editor to apply. No tools, no format constraints.", SystemPrompt: PromptDescriber, Tools: nil, MaxIter: 2, Temperature: 0.3, MaxTokens: 1536},
 		{ID: RoleEditor, Title: "Edit applier (editor half)", Description: "Applies a described change with the edit tools. Minimal reasoning, strict format.", SystemPrompt: PromptEditor, Tools: coding, MaxIter: 12, Temperature: 0.05, MaxTokens: 3072, SchemaRole: schema.RoleWorker},
+
+		// Teamwork multi-agent pipeline specialists (M1).
+		{ID: RoleTeamworkSpec, Title: "Teamwork specification & interview", Description: "Gathers requirements, clarifies scope forks across 4 facets, and defines verifiable features.", SystemPrompt: PromptTeamworkSpec, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536, SchemaRole: schema.RoleTeamworkSpec},
+		{ID: RoleTeamworkPlan, Title: "Teamwork planner & architect", Description: "Decomposes PRD into milestones, frozen contracts, and disjoint file ownership.", SystemPrompt: PromptTeamworkPlan, Tools: nil, MaxIter: 2, Temperature: 0.2, MaxTokens: 1536, SchemaRole: schema.RoleTeamworkPlan},
+		{ID: RoleTeamworkWorker, Title: "Teamwork task worker", Description: "Implements one atomic task within focus boundaries using workspace tools.", SystemPrompt: PromptTeamworkWorker, Tools: coding, MaxIter: 16, Temperature: 0.12, MaxTokens: 3072, SchemaRole: schema.RoleTeamworkWorker},
+		{ID: RoleTeamworkReview, Title: "Teamwork adversarial reviewer", Description: "Adversarial critic: stress-tests deliverables with challenge scenarios and edge-case probing.", SystemPrompt: PromptTeamworkReview, Tools: nil, MaxIter: 2, Temperature: 0.05, TemperatureSet: true, MaxTokens: 1024, SchemaRole: schema.RoleTeamworkReview},
 	}
 }
 
@@ -197,6 +205,12 @@ const (
 	// RoleTriage is the run's default project manager: it decides who takes a
 	// rejected delivery next. A squad may nominate its own instead.
 	RoleTriage = "triage"
+
+	// Teamwork pipeline roles (M1).
+	RoleTeamworkSpec   = "teamwork-spec"
+	RoleTeamworkPlan   = "teamwork-plan"
+	RoleTeamworkWorker = "teamwork-worker"
+	RoleTeamworkReview = "teamwork-review"
 )
 
 // PublicSpecs strips prompts for API/UI (built-ins only — callers merge customs).
@@ -368,8 +382,9 @@ func EnrichPublicSpecs(list []map[string]interface{}, globalProvider, globalMode
 // FindSpec returns a built-in RoleSpec by id, or nil.
 func FindSpec(id string) *RoleSpec {
 	id = strings.ToLower(strings.TrimSpace(id))
+	norm := strings.ReplaceAll(id, "_", "-")
 	for _, s := range Specs() {
-		if s.ID == id {
+		if s.ID == id || strings.ReplaceAll(s.ID, "_", "-") == norm {
 			cp := s
 			return &cp
 		}
@@ -525,9 +540,15 @@ var lightAgents = map[string]bool{
 	"reviewer": true, "coordinator": true, "splitter": true, "planner": true,
 	"context": true, "architect": true, "clarifier": true, "interviewer": true,
 	"orchestrator": true, "memory": true, "docs": true, "escalate": true,
-	"composer": true,
-	"manager":  true,
-	"triage":   true,
+	"composer":         true,
+	"manager":          true,
+	"triage":           true,
+	RoleTeamworkSpec:   true,
+	RoleTeamworkPlan:   true,
+	RoleTeamworkReview: true,
+	"teamwork_spec":    true,
+	"teamwork_plan":    true,
+	"teamwork_review":  true,
 }
 
 // isLightAgent classifies by BASE role, so an escalation rung is classified as
@@ -594,7 +615,11 @@ func (f *Factory) AllSpecs() []RoleSpec {
 // It covers built-ins only; use Factory.HasRole for a roster that includes
 // custom and block-defined agents.
 func IsKnownRole(id string) bool {
-	return BuiltinIDs()[strings.ToLower(strings.TrimSpace(id))]
+	id = strings.ToLower(strings.TrimSpace(id))
+	if BuiltinIDs()[id] {
+		return true
+	}
+	return BuiltinIDs()[strings.ReplaceAll(id, "_", "-")]
 }
 
 // HasRole reports whether this factory can create id (built-in, custom YAML, or
@@ -864,7 +889,8 @@ func isCodingRole(id string) bool {
 	base, _ := BaseRoleID(id)
 	switch base {
 	case plan.RoleWorker, "deep", plan.RoleCorrector, plan.RoleTester,
-		plan.RolePlaceholder, plan.RoleExplorer, "docs":
+		plan.RolePlaceholder, plan.RoleExplorer, "docs",
+		RoleTeamworkWorker, "teamwork_worker":
 		return true
 	default:
 		return false

@@ -238,7 +238,7 @@ func WithIdentifierOnlyRoles(roles ...string) Option {
 // SHAPE rather than about specific code. Giving them signatures instead of
 // bodies is the single cheapest way to free budget for the roles that edit.
 func DefaultIdentifierOnlyRoles() []string {
-	return []string{"explorer", "docs", "context", "architect", "coordinator", "memory"}
+	return []string{"explorer", "docs", "context", "architect", "coordinator", "memory", "interviewer", "specification", "spec", "teamwork-spec", "teamwork_spec"}
 }
 
 // Packer builds incremental, budgeted context packs from markdown + file excerpts.
@@ -844,7 +844,10 @@ func splitPriorityMarkdown(markdown string) (priority, rest string) {
 func isLeanRole(role string) bool {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "worker", "corrector", "deep", "reviewer", "tester",
-		"planner", "splitter", "coordinator", "architect", "context", "memory":
+		"planner", "splitter", "coordinator", "architect", "context", "memory",
+		"adversarial_reviewer", "challenger",
+		"teamwork-worker", "teamwork_worker", "teamwork-review", "teamwork_review",
+		"teamwork-plan", "teamwork_plan":
 		return true
 	default:
 		return false

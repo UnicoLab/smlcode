@@ -9,6 +9,7 @@ import (
 
 	"github.com/UnicoLab/slmcode/pkg/agents"
 	contextstore "github.com/UnicoLab/slmcode/pkg/context"
+	"github.com/UnicoLab/slmcode/pkg/pipeline"
 	"github.com/UnicoLab/slmcode/pkg/plan"
 	"github.com/UnicoLab/slmcode/pkg/session"
 	"github.com/UnicoLab/slmcode/pkg/stream"
@@ -43,28 +44,34 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	}
 	// When explicitly set to ask, ALWAYS run the interview (user wants to review).
 	// When auto, skip for concrete queries that don't need clarification.
-	if mode != plan.ClarifyAsk {
+	if mode != plan.ClarifyAsk && o.Pipeline().PhaseWhen("clarify") != pipeline.WhenAlways {
 		if !plan.NeedsClarification(query) && !forceClarifyGreenfield(query) {
 			return plan.ScopeInterview{}
 		}
 	}
 
 	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseClarify)
-	o.emitAgent("clarify", "interviewer", "", "scope interview", "", "")
+	clarifyAgent := o.phaseAgent("clarify", "interviewer")
+	o.emitAgent("clarify", clarifyAgent, "", "scope interview", "", "")
 
-	clarifyPrompt := agents.PromptClarifier + "\n\n## Query\n" + truncate(query, 1200) +
+	basePrompt := agents.PromptClarifier
+	if clarifyAgent == agents.RoleTeamworkSpec || clarifyAgent == "interviewer" || clarifyAgent == "teamwork_spec" {
+		basePrompt = agents.PromptTeamworkSpec
+	}
+
+	clarifyPrompt := basePrompt + "\n\n## Query\n" + truncate(query, 1200) +
 		"\n\n## Exploration\n" + sanitizeForContract(truncate(exploreOut, 2000)) +
 		"\n\nMode hint: clarify_mode=" + mode +
 		". If mode=auto, still emit recommended options but set needs_user=false." +
 		"\n\n## Project language\n" + o.langHint() +
 		"\nReturn STRICT JSON interview object."
-	clarifyOut, err := o.runRoleTracked(ctx, plan.RolePlanner, "", clarifyPrompt)
+	clarifyOut, err := o.runRoleTracked(ctx, clarifyAgent, "", clarifyPrompt)
 	if err != nil || strings.TrimSpace(clarifyOut) == "" {
 		o.emit("clarify", "interviewer skipped (empty/error) — using query as-is", "")
 		return plan.ScopeInterview{}
 	}
 	interview := plan.ParseScopeInterview(clarifyOut)
-	o.emitFull("clarify", stream.KindOutput, "interviewer", "",
+	o.emitFull("clarify", stream.KindOutput, clarifyAgent, "",
 		"interview draft ready", "", truncate(clarifyOut, 1200))
 
 	resolved := interview
@@ -84,8 +91,10 @@ func (o *Orchestrator) runScopeInterview(ctx context.Context, query, exploreOut 
 	md := plan.FormatPRDMarkdown(resolved.PRD, resolved.Assumptions)
 	if strings.TrimSpace(md) != "" {
 		_ = o.store.ReplaceSection(contextstore.DocContext, "Locked PRD", md)
+		_ = o.store.WriteBounded(contextstore.DocPRD, md)
+		o.shared.SetGlobal("prd", md)
 	}
-	o.emitFull("clarify", stream.KindOutput, "interviewer", "",
+	o.emitFull("clarify", stream.KindOutput, clarifyAgent, "",
 		"PRD locked", "", truncate(md, 1000))
 	plan.ClearScopeAsk(o.cfg.SlmDir())
 	return resolved

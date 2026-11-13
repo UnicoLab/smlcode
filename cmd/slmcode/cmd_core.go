@@ -224,57 +224,8 @@ func runCmd() *cobra.Command {
 				return fmt.Errorf("nothing to run — give a query or --issue")
 			}
 
-			workflow, _ := cmd.Flags().GetString("workflow")
-			mode, _ := cmd.Flags().GetString("mode")
-			agent, _ := cmd.Flags().GetString("agent")
-			pinSkills, _ := cmd.Flags().GetStringSlice("skill")
-			pinTeams, _ := cmd.Flags().GetStringSlice("team")
-			dynamic, _ := cmd.Flags().GetBool("dynamic")
-			noDynamic, _ := cmd.Flags().GetBool("no-dynamic")
-			switch strings.ToLower(strings.TrimSpace(workflow)) {
-			case "discover", "interview", "scope":
-				h.Config.Mode = config.ModeFull
-				h.Config.ClarifyMode = plan.ClarifyAsk
-				h.Config.PlanApprove = plan.PlanApproveModeAsk
-				pinSkills = append(pinSkills, "hve-ux-design", "hve-requirements")
-			case "hve-rpi", "rpi":
-				h.Config.Mode = config.ModeFull
-				pinSkills = append(pinSkills, "hve-rpi")
-			case "plan", "plan-first":
-				h.Config.Mode = config.ModeFull
-				h.Config.PlanApprove = plan.PlanApproveModeAsk
-			case "fast", "fast-build":
-				h.Config.Mode = config.ModeFull
-				h.Config.ClarifyMode = plan.ClarifyOff
-				h.Config.PlanApprove = plan.PlanApproveModeAuto
-			case "specialist":
-				h.Config.Mode = config.ModeSpecialist
-			case "auto":
-				h.Config.Mode = config.ModeFull
-			}
-			if mode != "" {
-				h.Config.Mode = mode
-			}
-			if dynamic {
-				h.Config.DynamicPipeline = true
-			} else if noDynamic {
-				h.Config.DynamicPipeline = false
-			}
-			if agent != "" {
-				h.Config.Specialist = agent
-				h.Config.Mode = config.ModeSpecialist
-			}
-			if len(pinSkills) > 0 {
-				h.Config.PinnedSkills = append(h.Config.PinnedSkills, pinSkills...)
-				for _, s := range pinSkills {
-					query += " @skill:" + s
-				}
-			}
-			// An explicit team choice is an instruction, not a hypothesis: it
-			// is used regardless of what the query text and the workspace
-			// would otherwise have scored.
-			if len(pinTeams) > 0 {
-				h.Config.Teams = append(append([]string{}, h.Config.Teams...), pinTeams...)
+			if err := applyRunFlags(cmd, h.Config, &query); err != nil {
+				return err
 			}
 
 			// Pre-flight #1, and it costs nothing: resolve every human-in-the-
@@ -315,6 +266,9 @@ func runCmd() *cobra.Command {
 			cli.KeyVal("provider", h.Config.Provider)
 			cli.KeyVal("model", h.Config.Model)
 			cli.KeyVal("backend", h.Config.Backend)
+			if h.Config.Workflow != "" && h.Config.Workflow != config.WorkflowAuto {
+				cli.KeyVal("workflow", h.Config.Workflow)
+			}
 			cli.KeyVal("mode", h.Config.Mode)
 			if h.Config.Mode == config.ModeSpecialist {
 				cli.KeyVal("specialist", h.Config.Specialist)
@@ -411,7 +365,7 @@ func runCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().String("workflow", "", "lifecycle workflow preset: auto | discover | hve-rpi | plan | fast | specialist")
+	cmd.Flags().String("workflow", "", "lifecycle workflow preset: auto | teamwork | discover | hve-rpi | plan | fast | specialist")
 	cmd.Flags().String("mode", "", "full | specialist (overrides config)")
 	cmd.Flags().String("agent", "", "run a single specialist (worker, explorer, …)")
 	cmd.Flags().Bool("dynamic", false, "run the composer specialist to assemble a task-specific pipeline (default: on)")
@@ -421,6 +375,98 @@ func runCmd() *cobra.Command {
 	registerDeliveryFlags(cmd)
 	registerIsolationFlags(cmd)
 	return cmd
+}
+
+// applyRunWorkflow resolves the --workflow flag (respecting configuration precedence)
+// and applies workflow preset defaults (mode, dynamic pipeline, clarify, plan approval,
+// pinned skills) to the harness config.
+func applyRunWorkflow(cmd *cobra.Command, cfg *config.Config, pinSkills *[]string) error {
+	if cmd == nil || cfg == nil {
+		return nil
+	}
+	if flagChanged(cmd, "workflow") {
+		workflow, _ := cmd.Flags().GetString("workflow")
+		if strings.TrimSpace(workflow) != "" && !config.IsValidWorkflow(workflow) {
+			return failf(2, "unknown workflow %q — allowed: auto, teamwork, discover, hve-rpi, plan, fast, specialist", workflow)
+		}
+		cfg.Workflow = config.NormalizeWorkflow(workflow)
+	}
+	switch cfg.Workflow {
+	case config.WorkflowTeamwork:
+		cfg.Mode = config.ModeFull
+		cfg.DynamicPipeline = false
+	case config.WorkflowDiscover:
+		cfg.Mode = config.ModeFull
+		cfg.ClarifyMode = plan.ClarifyAsk
+		cfg.PlanApprove = plan.PlanApproveModeAsk
+		if pinSkills != nil {
+			*pinSkills = append(*pinSkills, "hve-ux-design", "hve-requirements")
+		}
+	case config.WorkflowHveRPI:
+		cfg.Mode = config.ModeFull
+		if pinSkills != nil {
+			*pinSkills = append(*pinSkills, "hve-rpi")
+		}
+	case config.WorkflowPlan:
+		cfg.Mode = config.ModeFull
+		cfg.PlanApprove = plan.PlanApproveModeAsk
+	case config.WorkflowFast:
+		cfg.Mode = config.ModeFull
+		cfg.ClarifyMode = plan.ClarifyOff
+		cfg.PlanApprove = plan.PlanApproveModeAuto
+	case config.WorkflowSpecialist:
+		cfg.Mode = config.ModeSpecialist
+	case config.WorkflowAuto:
+		cfg.Mode = config.ModeFull
+	}
+	return nil
+}
+
+// applyRunFlags resolves run command flags and overlays them onto the harness config
+// and query, respecting workflow preset defaults and explicit flag overrides.
+func applyRunFlags(cmd *cobra.Command, cfg *config.Config, query *string) error {
+	if cmd == nil || cfg == nil {
+		return nil
+	}
+	pinSkills, _ := cmd.Flags().GetStringSlice("skill")
+	pinTeams, _ := cmd.Flags().GetStringSlice("team")
+
+	if err := applyRunWorkflow(cmd, cfg, &pinSkills); err != nil {
+		return err
+	}
+
+	mode, _ := cmd.Flags().GetString("mode")
+	agent, _ := cmd.Flags().GetString("agent")
+	dynamic, _ := cmd.Flags().GetBool("dynamic")
+	noDynamic, _ := cmd.Flags().GetBool("no-dynamic")
+
+	if mode != "" {
+		cfg.Mode = mode
+	}
+	if dynamic {
+		cfg.DynamicPipeline = true
+	} else if noDynamic {
+		cfg.DynamicPipeline = false
+	}
+	if agent != "" {
+		cfg.Specialist = agent
+		cfg.Mode = config.ModeSpecialist
+	}
+	if len(pinSkills) > 0 {
+		cfg.PinnedSkills = append(cfg.PinnedSkills, pinSkills...)
+		if query != nil {
+			for _, s := range pinSkills {
+				*query += " @skill:" + s
+			}
+		}
+	}
+	// An explicit team choice is an instruction, not a hypothesis: it
+	// is used regardless of what the query text and the workspace
+	// would otherwise have scored.
+	if len(pinTeams) > 0 {
+		cfg.Teams = append(append([]string{}, cfg.Teams...), pinTeams...)
+	}
+	return nil
 }
 
 // portIsBound reports whether a TCP port is already in use.

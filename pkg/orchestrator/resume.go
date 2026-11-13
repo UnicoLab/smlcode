@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -128,8 +129,44 @@ func (o *Orchestrator) Resume(ctx context.Context, turnID string) (*Result, erro
 		o.shared.SetGlobal("resume_mode", "board")
 	}
 
+	// Reload durable PRD, CONTRACT, and REVIEW if present on disk under .slmcode/.
+	o.reloadDurableDocs()
+
 	skillPack := o.skillPackFor(plan.RoleWorker, query)
 	return o.finishFromExecute(ctx, runID, query, skillPack, &board, start)
+}
+
+// reloadDurableDocs restores PRD.md, CONTRACT.md, and REVIEW.md from .slmcode/ into the
+// active context store and shared memory on turn resume.
+func (o *Orchestrator) reloadDurableDocs() {
+	if o == nil || o.cfg == nil {
+		return
+	}
+	slmDir := o.cfg.SlmDir()
+	if prdBytes, err := os.ReadFile(filepath.Join(slmDir, contextstore.DocPRD)); err == nil && len(prdBytes) > 0 {
+		if o.store != nil {
+			_ = o.store.WriteBounded(contextstore.DocPRD, string(prdBytes))
+		}
+		if o.shared != nil {
+			o.shared.SetGlobal("prd", string(prdBytes))
+		}
+	}
+	if contractBytes, err := os.ReadFile(filepath.Join(slmDir, contextstore.DocContract)); err == nil && len(contractBytes) > 0 {
+		if o.store != nil {
+			_ = o.store.WriteBounded(contextstore.DocContract, string(contractBytes))
+		}
+		if o.shared != nil {
+			o.shared.SetGlobal("contract", string(contractBytes))
+		}
+	}
+	if reviewBytes, err := os.ReadFile(filepath.Join(slmDir, contextstore.DocReview)); err == nil && len(reviewBytes) > 0 {
+		if o.store != nil {
+			_ = o.store.WriteBounded(contextstore.DocReview, string(reviewBytes))
+		}
+		if o.shared != nil {
+			o.shared.SetGlobal("review", string(reviewBytes))
+		}
+	}
 }
 
 // finishFromExecute runs execute → test → memory → summary for an existing board.
@@ -830,6 +867,21 @@ func (o *Orchestrator) completeRun(ctx context.Context, runID, query, skillPack 
 	// team was fenced out of.
 	o.settleSquadStamps(board)
 	session.SetPhase(o.cfg.SlmDir(), o.turn(), session.PhaseMemory)
+
+	// Persist verification and review report to DocReview (REVIEW.md)
+	var reviewMD strings.Builder
+	reviewMD.WriteString("# Verification & Adversarial Review Report\n\n")
+	fmt.Fprintf(&reviewMD, "- **Run ID:** `%s`\n", runID)
+	fmt.Fprintf(&reviewMD, "- **Tester Rejected:** %v\n", testerRejected)
+	fmt.Fprintf(&reviewMD, "- **QA Failed:** %v\n", qaFailed)
+	if qaCmd != "" {
+		fmt.Fprintf(&reviewMD, "- **QA Command:** `%s`\n", qaCmd)
+	}
+	reviewMD.WriteString("\n## Tester Output\n\n```json\n")
+	reviewMD.WriteString(strings.TrimSpace(testOut))
+	reviewMD.WriteString("\n```\n")
+	_ = o.store.WriteBounded(contextstore.DocReview, reviewMD.String())
+	o.shared.SetGlobal("review", reviewMD.String())
 	// pipeline gate: phaseEnabled("memory") — when=never skips distillation
 	var lessonsMD string
 	// The distiller runs only when the run left something to distill: a

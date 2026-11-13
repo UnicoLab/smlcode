@@ -81,6 +81,8 @@ var schemaFields = map[string]schemaMeta{
 		"model", nil, false, false, false, false},
 
 	// ── pipeline ──
+	"workflow": {"Workflow preset", "Lifecycle workflow preset: auto (default) | teamwork (multi-agent PRD/contracts/review) | discover | hve-rpi | plan | fast | specialist",
+		"pipeline", []string{WorkflowAuto, WorkflowTeamwork, WorkflowDiscover, WorkflowHveRPI, WorkflowPlan, WorkflowFast, WorkflowSpecialist}, true, false, false, false},
 	"mode":       {"Mode", "full runs the whole pipeline; specialist runs a single role", "pipeline", []string{ModeFull, ModeSpecialist}, false, false, false, false},
 	"specialist": {"Specialist", "Role id run when mode=specialist (worker, explorer, …)", "pipeline", nil, false, false, false, false},
 	"dynamic_pipeline": {"Dynamic pipeline", "Run the composer specialist first to assemble a task-specific pipeline (phases, team, tools, skills)",

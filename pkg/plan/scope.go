@@ -37,15 +37,25 @@ type ScopeQuestion struct {
 	Recommended   string        `json:"recommended,omitempty"` // label or freeform default
 }
 
+// ScopeFeature defines a concrete functional feature requirement in Teamwork.
+type ScopeFeature struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Acceptance  string `json:"acceptance"`
+	Priority    string `json:"priority"` // "must" | "should" | "nice"
+}
+
 // ScopePRD is the locked product requirements used for plan + every task.
 type ScopePRD struct {
-	Summary     string   `json:"summary,omitempty"`
-	Goals       []string `json:"goals,omitempty"`
-	NonGoals    []string `json:"non_goals,omitempty"`
-	Acceptance  []string `json:"acceptance,omitempty"`
-	Constraints []string `json:"constraints,omitempty"`
-	Language    string   `json:"language,omitempty"`
-	Entrypoint  string   `json:"entrypoint,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Goals       []string       `json:"goals,omitempty"`
+	NonGoals    []string       `json:"non_goals,omitempty"`
+	Acceptance  []string       `json:"acceptance,omitempty"`
+	Constraints []string       `json:"constraints,omitempty"`
+	Language    string         `json:"language,omitempty"`
+	Entrypoint  string         `json:"entrypoint,omitempty"`
+	Features    []ScopeFeature `json:"features,omitempty"`
 }
 
 // ScopeInterview is the clarifier/interviewer output (extended ClarifyResult).
@@ -57,6 +67,7 @@ type ScopeInterview struct {
 	NonGoals    []string        `json:"non_goals"`
 	Language    string          `json:"language"`
 	Entrypoint  string          `json:"entrypoint"`
+	Features    []ScopeFeature  `json:"features,omitempty"`
 	PRD         ScopePRD        `json:"prd"`
 	Raw         string          `json:"-"`
 }
@@ -130,6 +141,7 @@ func ParseScopeInterview(raw string) ScopeInterview {
 		NonGoals    []string        `json:"non_goals"`
 		Language    string          `json:"language"`
 		Entrypoint  string          `json:"entrypoint"`
+		Features    []ScopeFeature  `json:"features"`
 		PRD         ScopePRD        `json:"prd"`
 	}
 	if err := json.Unmarshal([]byte(extracted), &rich); err != nil {
@@ -145,6 +157,7 @@ func ParseScopeInterview(raw string) ScopeInterview {
 		NonGoals:    rich.NonGoals,
 		Language:    rich.Language,
 		Entrypoint:  rich.Entrypoint,
+		Features:    rich.Features,
 		PRD:         rich.PRD,
 		Raw:         raw,
 	}
@@ -270,6 +283,17 @@ func normalizeInterview(in *ScopeInterview) {
 	}
 	if len(in.PRD.Constraints) == 0 && len(in.Assumptions) > 0 {
 		in.PRD.Constraints = append([]string{}, in.Assumptions...)
+	}
+	if len(in.PRD.Features) == 0 && len(in.Features) > 0 {
+		in.PRD.Features = append([]ScopeFeature{}, in.Features...)
+	}
+	if len(in.Features) == 0 && len(in.PRD.Features) > 0 {
+		in.Features = append([]ScopeFeature{}, in.PRD.Features...)
+	}
+	for _, f := range in.PRD.Features {
+		if f.Title != "" && len(in.PRD.Goals) == 0 {
+			in.PRD.Goals = append(in.PRD.Goals, f.Title)
+		}
 	}
 }
 
@@ -441,6 +465,12 @@ func FormatPRDMarkdown(prd ScopePRD, assumptions []string) string {
 	writeBulletSection(&b, "Goals", prd.Goals)
 	writeBulletSection(&b, "Non-goals", prd.NonGoals)
 	writeBulletSection(&b, "Acceptance", prd.Acceptance)
+	if len(prd.Features) > 0 {
+		b.WriteString("\n### Features\n")
+		for _, f := range prd.Features {
+			fmt.Fprintf(&b, "- **[%s] %s** (%s): %s\n", f.ID, f.Title, f.Priority, f.Acceptance)
+		}
+	}
 	writeBulletSection(&b, "Constraints / decisions", firstNonEmptySlice(prd.Constraints, assumptions))
 	return b.String()
 }
@@ -497,6 +527,25 @@ func EnsureTaskPRDs(tasks []Task, prd ScopePRD, query string) []Task {
 		// Append non-goals as notes so workers don't wander.
 		if len(prd.NonGoals) > 0 && !strings.Contains(strings.ToLower(t.Notes), "non-goal") {
 			t.Notes = strings.TrimSpace(t.Notes + "\nNon-goals: " + strings.Join(prd.NonGoals, "; "))
+		}
+		// Seed criteria from PRD features when empty.
+		if len(t.Criteria) == 0 && len(prd.Features) > 0 && !strings.EqualFold(t.Role, RoleExplorer) {
+			for _, f := range prd.Features {
+				if f.Acceptance != "" {
+					prio := PriorityMust
+					if f.Priority != "" {
+						prio = f.Priority
+					}
+					t.Criteria = append(t.Criteria, Criterion{
+						ID:       f.ID,
+						Text:     f.Title + ": " + f.Acceptance,
+						Priority: prio,
+					})
+					if len(t.Criteria) >= MaxCriteria {
+						break
+					}
+				}
+			}
 		}
 		if prd.Language != "" && !strings.Contains(strings.ToLower(t.Description), "language") {
 			t.Description = strings.TrimSpace(t.Description +

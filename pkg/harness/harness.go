@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/UnicoLab/slmcode/pkg/config"
@@ -92,10 +93,16 @@ func New(root string) (*Harness, error) {
 }
 
 func (h *Harness) Init() error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("harness not initialized")
+	}
 	return orchestrator.InitWorkspace(h.Config.Root, h.Config)
 }
 
 func (h *Harness) EnsureInitialized() error {
+	if h == nil || h.Config == nil {
+		return fmt.Errorf("harness not initialized")
+	}
 	// Skills materialize may create .slmcode/ early — require config.yaml as the real init marker.
 	if _, err := os.Stat(h.Config.ConfigPath()); os.IsNotExist(err) {
 		return h.Init()
@@ -104,21 +111,94 @@ func (h *Harness) EnsureInitialized() error {
 }
 
 func (h *Harness) Run(ctx context.Context, query string) (*orchestrator.Result, error) {
+	if h == nil || h.Config == nil {
+		return nil, fmt.Errorf("harness not initialized")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err := h.EnsureInitialized(); err != nil {
 		return nil, err
+	}
+	if h.Orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator not initialized or harness closed")
 	}
 	return h.Orchestrator.Run(ctx, query)
 }
 
-// Resume continues an interrupted query turn from the last board checkpoint.
-func (h *Harness) Resume(ctx context.Context, turnID string) (*orchestrator.Result, error) {
+// RunTeamwork executes a query using the 4-stage Teamwork multi-agent pipeline:
+// Stage 1: Specification / Interview (locks PRD.md)
+// Stage 2: Architecture / Contracts (freezes CONTRACT.md)
+// Stage 3: Worker Execution (focus-guarded waves)
+// Stage 4: Adversarial Review & QA (hard gates + challenge probing, writes REVIEW.md)
+func (h *Harness) RunTeamwork(ctx context.Context, query string) (*orchestrator.Result, error) {
+	if h == nil {
+		return nil, fmt.Errorf("nil harness")
+	}
+	if h.Config == nil {
+		return nil, fmt.Errorf("harness not initialized")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("nothing to run — empty query")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := h.EnsureInitialized(); err != nil {
 		return nil, err
+	}
+	orch := h.Orchestrator
+	cfg := h.Config
+	if orch == nil {
+		return nil, fmt.Errorf("orchestrator not initialized or harness closed")
+	}
+
+	prevWorkflow := cfg.Workflow
+	prevDynamic := cfg.DynamicPipeline
+	cfg.Workflow = config.WorkflowTeamwork
+	cfg.DynamicPipeline = false
+	defer func() {
+		cfg.Workflow = prevWorkflow
+		cfg.DynamicPipeline = prevDynamic
+	}()
+
+	return orch.Run(ctx, query)
+}
+
+// Resume continues an interrupted query turn from the last board checkpoint.
+func (h *Harness) Resume(ctx context.Context, turnID string) (*orchestrator.Result, error) {
+	if h == nil || h.Config == nil {
+		return nil, fmt.Errorf("harness not initialized")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.EnsureInitialized(); err != nil {
+		return nil, err
+	}
+	if h.Orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator not initialized or harness closed")
 	}
 	return h.Orchestrator.Resume(ctx, turnID)
 }
 
 func (h *Harness) Status() (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("harness not initialized")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.Config == nil {
+		return "", fmt.Errorf("harness not initialized")
+	}
 	store := contextstore.New(h.Config.SlmDir())
 	query, _ := store.Read(contextstore.DocQuery)
 	planDoc, _ := store.Read(contextstore.DocPlan)
